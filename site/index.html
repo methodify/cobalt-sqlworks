@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cobalt SQL Works</title>
+<meta name="description" content="A fast, focused, open-source desktop SQL client for SQL Server, Azure SQL and Microsoft Fabric — the spiritual successor to Azure Data Studio.">
+<link rel="icon" href="favicon.png">
+<style>
+  :root {
+    --ink: #0b2e8a; --ink-2: #1f2a44; --blue: #2f6bff; --muted: #5b6784; --line: #e3e8f4;
+    --bg: #f7f9ff; --card: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #c9d8ff; --ink-2: #e6ecff; --blue: #7ea2ff; --muted: #9aa8c7; --line: #26304a; --bg: #0f1424; --card: #171d31; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.55 system-ui, "Segoe UI", Inter, Roboto, sans-serif; color: var(--ink-2); background: var(--bg); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+  header { padding: 56px 0 28px; }
+  .brand { display: flex; align-items: center; gap: 18px; }
+  .brand img { width: 84px; height: 84px; border-radius: 18px; }
+  .brand h1 { margin: 0; font-size: 40px; letter-spacing: -0.5px; color: var(--ink); }
+  .brand small { display: block; font-size: 14px; letter-spacing: 3px; color: var(--blue); font-weight: 600; }
+  .tag { font-size: 20px; color: var(--muted); max-width: 640px; margin: 22px 0 0; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
+  .btn { display: inline-block; padding: 12px 18px; border-radius: 10px; text-decoration: none; font-weight: 600; border: 1px solid var(--line); color: var(--ink-2); background: var(--card); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  section { padding: 26px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 22px; margin: 0 0 14px; color: var(--ink); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--muted); font-size: 15px; }
+  #downloads ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+  #downloads li { display: flex; justify-content: space-between; gap: 12px; padding: 10px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  #downloads a { color: var(--blue); text-decoration: none; font-weight: 600; }
+  #downloads .size { color: var(--muted); font-size: 14px; white-space: nowrap; }
+  .note { color: var(--muted); font-size: 14px; }
+  code { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 14px; }
+  footer { padding: 30px 0 50px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); }
+  footer a { color: var(--blue); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <img src="icon-256.png" alt="Cobalt SQL Works icon">
+      <div>
+        <h1>Cobalt</h1>
+        <small>SQL WORKS</small>
+      </div>
+    </div>
+    <p class="tag">A fast, focused, open-source desktop SQL client for SQL Server, Azure SQL and Microsoft Fabric. The spiritual successor to Azure Data Studio, written in Rust.</p>
+    <div class="cta">
+      <a class="btn primary" id="dl-primary" href="https://github.com/methodify/cobalt-sqlworks/releases/latest">Download</a>
+      <a class="btn" href="https://github.com/methodify/cobalt-sqlworks">Source on GitHub</a>
+      <a class="btn" href="https://github.com/methodify/cobalt-sqlworks/blob/main/docs/alpha_notes.md">Getting started</a>
+    </div>
+  </header>
+
+  <section id="downloads">
+    <h2>Downloads <span class="note" id="dl-version"></span></h2>
+    <ul id="dl-list"><li><span class="note">Loading the latest release…</span></li></ul>
+    <p class="note">Windows: the installer needs no admin rights; the zip is portable. Linux: <code>.deb</code> for Debian/Ubuntu, <code>.AppImage</code> or the tarball elsewhere. macOS builds are experimental.</p>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>Connection library</h3><p>Groups, colors, SQL login, Windows integrated auth, and Entra ID (interactive, device code, Azure CLI, service principal). Imports Azure Data Studio connections.</p></div>
+      <div class="card"><h3>Fabric-native</h3><p>Fabric Warehouse, SQL analytics endpoints and SQL database in Fabric connect out of the box, including the routing and protocol quirks other drivers miss.</p></div>
+      <div class="card"><h3>Editor and results</h3><p>T-SQL highlighting and completion, streaming results grid with a row cap and fetch-more, sort and filter, cell viewer, messages with clickable errors.</p></div>
+      <div class="card"><h3>Exports that fit the lakehouse</h3><p>CSV, Excel, JSON, XML, Markdown, plus Parquet, Arrow and Delta Lake tables written straight from a result set.</p></div>
+      <div class="card"><h3>Execution plans</h3><p>Estimated and actual plan graphs with properties and top operators, and <code>.sqlplan</code> files open directly.</p></div>
+      <div class="card"><h3>Light, fast, scriptable</h3><p>A single native binary. Command palette, ADS keyboard shortcuts, history, hot exit, and an agent channel so tooling can drive the UI.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    Cobalt SQL Works is free and open source (MIT or Apache-2.0). Built by <a href="https://github.com/methodify">methodify</a>.
+    Issues and ideas: <a href="https://github.com/methodify/cobalt-sqlworks/issues">GitHub issues</a>.
+  </footer>
+</div>
+<script>
+(async () => {
+  const list = document.getElementById('dl-list');
+  const ver = document.getElementById('dl-version');
+  const primary = document.getElementById('dl-primary');
+  try {
+    const r = await fetch('https://api.github.com/repos/methodify/cobalt-sqlworks/releases/latest', { headers: { Accept: 'application/vnd.github+json' } });
+    if (!r.ok) throw new Error(r.status);
+    const rel = await r.json();
+    ver.textContent = rel.tag_name ? '· ' + rel.tag_name : '';
+    const assets = (rel.assets || []).filter(a => !/SHA256SUMS/.test(a.name));
+    if (!assets.length) throw new Error('no assets');
+    const label = n => /setup\.exe$/i.test(n) ? 'Windows installer' : /windows.*\.zip$/i.test(n) ? 'Windows portable zip' : /\.deb$/i.test(n) ? 'Debian / Ubuntu package' : /\.AppImage$/i.test(n) ? 'Linux AppImage' : /linux.*\.tar\.gz$/i.test(n) ? 'Linux tarball' : /\.dmg$/i.test(n) ? 'macOS disk image (experimental)' : n;
+    const mb = b => (b / 1048576).toFixed(1) + ' MB';
+    list.innerHTML = assets.map(a => `<li><span><a href="${a.browser_download_url}">${label(a.name)}</a> <span class="note">${a.name}</span></span><span class="size">${mb(a.size)}</span></li>`).join('');
+    const win = assets.find(a => /setup\.exe$/i.test(a.name));
+    if (win) primary.href = win.browser_download_url;
+    const sums = (rel.assets || []).find(a => /SHA256SUMS/.test(a.name));
+    if (sums) list.insertAdjacentHTML('beforeend', `<li><span><a href="${sums.browser_download_url}">SHA256SUMS</a></span><span class="size">checksums</span></li>`);
+  } catch (e) {
+    list.innerHTML = '<li><span class="note">See the <a href="https://github.com/methodify/cobalt-sqlworks/releases">releases page</a> for downloads.</span></li>';
+  }
+})();
+</script>
+</body>
+</html>

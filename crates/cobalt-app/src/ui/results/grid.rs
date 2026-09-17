@@ -48,6 +48,7 @@ struct Delegate<'a> {
     click: Option<(usize, usize, bool, bool)>,
     drag_to: Option<(usize, usize)>,
     header_click: Option<(usize, bool)>,
+    corner_click: bool,
     gutter_click: Option<(usize, bool)>,
     funnel_click: Option<(usize, Pos2)>,
     double_click: Option<(usize, usize)>,
@@ -67,16 +68,30 @@ impl Delegate<'_> {
 impl TableDelegate for Delegate<'_> {
     fn header_cell_ui(&mut self, ui: &mut Ui, cell: &HeaderCellInfo) {
         let rect = ui.max_rect();
+        // egui_table paints the header row once per scroll region (sticky and scrolling columns),
+        // so every cell is visited twice and one visit is fully clipped away. Interacting in the
+        // clipped visit registers a second identical widget, which stacks a duplicate tooltip.
+        if !ui.clip_rect().intersects(rect) {
+            return;
+        }
         let painter = ui.painter();
         painter.rect_filled(rect, 0.0, self.theme.bg_grid_header);
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         let Some(col) = self.data_col(cell.col_range.start) else {
-            // gutter header: select-all corner
+            // gutter header: select-all corner (like ADS/Excel)
             let resp = ui.interact(rect, ui.id().with("corner"), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "select all cells"));
+            if resp.hovered() {
+                ui.painter().rect_filled(rect.shrink(2.0), 2.0, self.theme.bg_selection_inactive);
+            }
             if resp.clicked() {
                 self.grid.selection = Selection::All;
+                self.grid.anchor = Some((0, 0));
+                self.grid.focused = true;
+                self.corner_click = true;
             }
+            resp.on_hover_text("Select all");
             return;
         };
         let Some(info) = self.rs.columns.get(col) else { return };
@@ -179,6 +194,9 @@ impl TableDelegate for Delegate<'_> {
         let x = if right { text_rect.right() - galley.size().x } else { text_rect.left() };
         clip.galley(Pos2::new(x.max(text_rect.left()), y), galley, color);
 
+        if !ui.clip_rect().intersects(rect) {
+            return; // clipped duplicate visit (see header_cell_ui)
+        }
         let resp = ui.interact(rect, ui.id().with(("cell", row, col)), Sense::click_and_drag());
         if resp.clicked() || resp.drag_started() {
             let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
@@ -256,12 +274,24 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     }
     let gutter = args.show_row_numbers;
 
+    // Keyboard focus: the grid owns a focusable id so a click on a cell takes focus away from the
+    // editor's text box (otherwise Ctrl+A / Ctrl+C keep acting on the SQL text).
+    let focus_id = args.id_salt.with("kb-focus");
+    let kb_focus = ui.memory(|m| m.has_focus(focus_id));
+    if args.grid.focused && !kb_focus && ui.memory(|m| m.focused().is_some()) {
+        args.grid.focused = false; // something else (the editor, a dialog field) took the keyboard
+    }
+
     // keyboard navigation when focused
     let mut actions = Vec::new();
+    if kb_focus && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
+        actions.push(GridAction::Copy);
+    }
     if args.grid.focused && rows > 0 && cols > 0 {
         let (anchor_r, anchor_c) = args.grid.anchor.unwrap_or((0, 0));
         let mut mv: Option<(isize, isize)> = None;
         let mut shift = false;
+        let mut select_all = false;
         let page = 20isize;
         ui.input_mut(|i| {
             shift = i.modifiers.shift;
@@ -286,11 +316,9 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
             } else if i.consume_key(Modifiers::NONE, Key::End) {
                 mv = Some((0, cols as isize));
             } else if i.consume_key(Modifiers::COMMAND, Key::A) {
-                // handled below
-                mv = None;
-                i.consume_key(Modifiers::COMMAND, Key::A);
+                // Ctrl/Cmd+A: select every cell (copy/export then take the whole set)
+                select_all = true;
             }
-            if i.consume_key(Modifiers::COMMAND, Key::A) {}
             if i.consume_key(Modifiers::NONE, Key::Enter) {
                 mv = None;
                 // open viewer
@@ -299,6 +327,12 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         if ui.input(|i| i.key_pressed(Key::Enter)) {
             if let Some((r, c)) = args.grid.anchor {
                 actions.push(GridAction::OpenViewer(r, c));
+            }
+        }
+        if select_all {
+            args.grid.selection = Selection::All;
+            if args.grid.anchor.is_none() {
+                args.grid.anchor = Some((0, 0));
             }
         }
         if let Some((dr, dc)) = mv {
@@ -337,6 +371,7 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         click: None,
         drag_to: None,
         header_click: None,
+        corner_click: false,
         gutter_click: None,
         funnel_click: None,
         double_click: None,
@@ -374,9 +409,13 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         }
     }
 
+    // keep the focus id alive every frame (egui drops focus for ids it does not see)
+    ui.interact(response.rect, focus_id, Sense::focusable_noninteractive());
+
     // resolve interactions
-    if response.clicked() || response.drag_started() || delegate.click.is_some() || delegate.gutter_click.is_some() {
+    if response.clicked() || response.drag_started() || delegate.click.is_some() || delegate.gutter_click.is_some() || delegate.corner_click {
         delegate.grid.focused = true;
+        ui.memory_mut(|m| m.request_focus(focus_id));
     }
     if let Some((row, col, shift, _ctrl)) = delegate.click {
         if shift && delegate.grid.anchor.is_some() {

@@ -360,6 +360,14 @@ impl AgentApp for CobaltApp {
                 let modifiers = egui::Modifiers { alt: flag("alt"), ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
                 self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
                 self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+                // the platform turns Ctrl+C/X/V into dedicated events; mirror that for injected keys
+                if modifiers.ctrl && !modifiers.shift {
+                    match key {
+                        egui::Key::C => self.state.injected_events.push(egui::Event::Copy),
+                        egui::Key::X => self.state.injected_events.push(egui::Event::Cut),
+                        _ => {}
+                    }
+                }
                 egui.request_repaint();
                 ActionResult::ok()
             }

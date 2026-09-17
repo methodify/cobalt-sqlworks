@@ -70,6 +70,8 @@ If your tenant's conditional access ever rejects the public client, switch the p
 - Results/Messages: clicking **Results** after **Messages** works again (the Messages pane was swallowing the tab strip's clicks).
 - Row cap: the timer freezes while "Paused at row cap" and resumes on *Fetch more*; the toolbar **Cancel** (and Alt+C) now ends a paused query, same as *Stop* on the strip.
 - The app has its own icon (window, taskbar, exe, installer): `assets/icon.svg`; wordmark in `assets/logo.svg`.
+- Grid selection: **Ctrl+A** after clicking a cell selects every cell, and the blank corner above the row numbers does the same (hover shows *Select all*). Clicking a cell now takes keyboard focus from the editor, so Ctrl+A / Ctrl+C act on the grid until you click back into the SQL text.
+- Column-header tooltips no longer appear twice (egui_table visits each header cell once per scroll region; the clipped visit is now skipped).
 
 ## Known gaps in this alpha
 
