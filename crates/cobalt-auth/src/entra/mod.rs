@@ -85,7 +85,7 @@ impl EntraConfig {
     /// Build from the persisted user settings.
     pub fn from_settings(s: &cobalt_core::ConnectionSettings) -> Self {
         Self {
-            client_id: s.entra_client_id.trim().to_owned(),
+            client_id: s.effective_entra_client_id().to_owned(),
             tenant: s
                 .entra_default_tenant
                 .as_deref()

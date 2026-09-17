@@ -288,7 +288,7 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
         }
         AuthMethod::WindowsIntegrated => finish_connect(state, cx, profile, ResolvedCredentials::WindowsIntegrated, purpose),
         AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. } | AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } => {
-            if matches!(profile.auth, AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. }) && cx.settings.connections.entra_client_id.trim().is_empty() {
+            if matches!(profile.auth, AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. }) && cx.settings.connections.effective_entra_client_id().is_empty() {
                 let msg = "No Entra client ID is configured. Set one in Settings → Connections (or use Azure CLI authentication after `az login`).";
                 cx.toast(ToastKind::Error, msg);
                 if let ConnectPurpose::Tab { tab, .. } = &purpose {

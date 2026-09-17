@@ -166,6 +166,9 @@ impl Default for ExportSettings {
     }
 }
 
+/// Cobalt SQL Works public-client app registration (multi-tenant, personal accounts allowed).
+pub const DEFAULT_ENTRA_CLIENT_ID: &str = "ecec63e7-6f92-470c-be3e-0fccff2e8c34";
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConnectionSettings {
@@ -177,11 +180,19 @@ pub struct ConnectionSettings {
     pub metadata_connection: bool,
     pub reconnect_on_run: bool,
 }
+impl ConnectionSettings {
+    /// The configured client id, or Cobalt's default when the setting is blank.
+    pub fn effective_entra_client_id(&self) -> &str {
+        let t = self.entra_client_id.trim();
+        if t.is_empty() { DEFAULT_ENTRA_CLIENT_ID } else { t }
+    }
+}
+
 impl Default for ConnectionSettings {
     fn default() -> Self {
         Self {
-            // Placeholder until the project's registration exists; users can override.
-            entra_client_id: String::new(),
+            // Cobalt SQL Works public-client registration (multi-tenant). Users can override.
+            entra_client_id: DEFAULT_ENTRA_CLIENT_ID.into(),
             entra_default_tenant: None,
             entra_redirect_port: None,
             default_auth: "sql_login".into(),

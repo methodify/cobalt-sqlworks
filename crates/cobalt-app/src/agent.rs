@@ -144,11 +144,18 @@ impl AgentApp for CobaltApp {
                 let Some(server) = arg_str(args, "server") else { return ActionResult::BadArgs("server is required".into()) };
                 let user = arg_str(args, "user").unwrap_or_default();
                 let password = arg_str(args, "password").unwrap_or_default();
-                let mut p = ConnectionProfile::new(server, AuthMethod::SqlLogin { user: user.clone(), password: None });
+                let auth = match arg_str(args, "auth").as_deref() {
+                    Some("entra") | Some("entra_interactive") => AuthMethod::EntraInteractive { tenant: arg_str(args, "tenant"), account_hint: arg_str(args, "account_hint") },
+                    Some("device_code") => AuthMethod::EntraDeviceCode { tenant: arg_str(args, "tenant") },
+                    Some("azure_cli") => AuthMethod::AzureCli { tenant: arg_str(args, "tenant") },
+                    Some("windows") => AuthMethod::WindowsIntegrated,
+                    _ => AuthMethod::SqlLogin { user: user.clone(), password: None },
+                };
+                let mut p = ConnectionProfile::new(server, auth);
                 p.name = arg_str(args, "name");
                 p.database = arg_str(args, "database");
                 p.options.trust_server_certificate = args.and_then(|a| a.get("trust_server_certificate")).and_then(|v| v.as_bool()).unwrap_or(true);
-                if !password.is_empty() {
+                if !password.is_empty() && matches!(p.auth, AuthMethod::SqlLogin { .. }) {
                     let r = SecretRef::for_profile(&p.id, "password");
                     if self.secrets.set(&r, &Secret::new(password)).is_ok() {
                         p.auth = AuthMethod::SqlLogin { user, password: Some(r) };
