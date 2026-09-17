@@ -640,7 +640,9 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                     ui.end_row();
                 });
                 ui.add_space(4.0);
-                egui::CollapsingHeader::new("Advanced").open(Some(d.show_advanced)).show(ui, |ui| {
+                // `open(Some(..))` pins the header to our flag every frame, so the click must
+                // toggle the flag or the header snaps shut again.
+                let adv = egui::CollapsingHeader::new("Advanced").open(Some(d.show_advanced)).show(ui, |ui| {
                     let o = &mut d.profile.options;
                     egui::Grid::new("adv-grid").num_columns(2).spacing([10.0, 6.0]).min_col_width(120.0).show(ui, |ui| {
                         ui.label("Encrypt");
@@ -679,6 +681,9 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                         ui.end_row();
                     });
                 });
+                if adv.header_response.clicked() {
+                    d.show_advanced = !d.show_advanced;
+                }
             });
             ui.add_space(16.0);
             ui.vertical(|ui| {
