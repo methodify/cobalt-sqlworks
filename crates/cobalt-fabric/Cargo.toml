@@ -1,0 +1,17 @@
+[package]
+name = "cobalt-fabric"
+description = "Microsoft Fabric REST client: workspaces, SQL-capable items and their connection details"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

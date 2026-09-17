@@ -81,6 +81,7 @@ impl CobaltApp {
                 paths: &self.paths,
                 auth_tx: &self.auth_tx_ref(),
                 export_tx: &self.export_tx_ref(),
+                fabric_tx: &self.fabric_tx_ref(),
                 egui,
                 toasts: &toasts,
             };
@@ -378,6 +379,49 @@ impl AgentApp for CobaltApp {
                 egui.request_repaint();
                 ActionResult::ok()
             }
+            "fabric_state" => {
+                let f = &self.state.fabric;
+                let ws: Vec<Value> = f.workspaces.get().map(|w| w.iter().map(|w| json!({"id": w.id, "name": w.display_name, "kind": format!("{:?}", w.kind), "expanded": f.expanded.contains(&w.id),
+                    "items": f.items.get(&w.id).and_then(|l| l.get()).map(|v| v.iter().map(|i| json!({"id": i.id, "name": i.display_name, "kind": format!("{:?}", i.kind), "pinned": f.is_pinned(&i.id),
+                        "target": f.details.get(&i.id).and_then(|d| d.get()).map(|t| json!({"server": t.server, "database": t.database, "provisioning": t.provisioning}))})).collect::<Vec<_>>())})).collect()).unwrap_or_default();
+                ActionResult::with(&json!({
+                    "status": format!("{:?}", f.status()),
+                    "account": f.account.as_ref().map(|a| a.username.clone()),
+                    "slot": f.slot.map(|s| s.to_string()),
+                    "workspaces": ws,
+                    "pins": f.pins.iter().map(|p| json!({"item_id": p.item_id, "name": p.display_name, "workspace": p.workspace_name})).collect::<Vec<_>>(),
+                }))
+            }
+            "fabric" => {
+                // {action: sign_in|sign_out|refresh|expand|open|pin|save|copy|portal, workspace?: name, item?: name}
+                use crate::fabric::FabricAction as FA;
+                let act = arg_str(args, "action").unwrap_or_default();
+                // prefer the parent item over its SQL-endpoint child when names collide
+                let find_item = |name: &str| {
+                    let all: Vec<_> = self.state.fabric.items.values().filter_map(|l| l.get()).flatten().filter(|i| i.display_name.eq_ignore_ascii_case(name) || i.id == name).collect();
+                    all.iter().find(|i| !i.kind.is_child_endpoint()).or(all.first()).map(|i| i.id.clone())
+                };
+                let find_ws = |name: &str| self.state.fabric.workspaces.get().and_then(|w| w.iter().find(|w| w.display_name.eq_ignore_ascii_case(name) || w.id == name)).map(|w| w.id.clone());
+                let action = match act.as_str() {
+                    "sign_in" => FA::SignIn,
+                    "sign_out" => FA::SignOut,
+                    "refresh" => FA::Refresh,
+                    "expand" => match arg_str(args, "workspace").and_then(|n| find_ws(&n)) { Some(id) => FA::ToggleWorkspace(id), None => return ActionResult::BadArgs("no such workspace".into()) },
+                    "open" | "pin" | "save" | "copy" | "portal" => {
+                        let Some(id) = arg_str(args, "item").and_then(|n| find_item(&n)) else { return ActionResult::BadArgs("no such item (expand its workspace first)".into()) };
+                        match act.as_str() {
+                            "open" => FA::Open { item_id: id },
+                            "pin" => FA::TogglePin { item_id: id },
+                            "save" => FA::SaveToServers { item_id: id },
+                            "copy" => FA::CopyConnectionString { item_id: id },
+                            _ => FA::OpenInPortal { item_id: id },
+                        }
+                    }
+                    _ => return ActionResult::BadArgs("unknown fabric action".into()),
+                };
+                self.with_ctx(egui, |s, cx| crate::fabric::action(s, cx, action));
+                ActionResult::ok()
+            }
             "focus_editor" => {
                 if let Some(t) = self.state.active_mut() {
                     t.editor.request_focus = true;
@@ -422,6 +466,7 @@ impl CobaltApp {
                 paths: &self.paths,
                 auth_tx: &self.auth_tx_ref(),
                 export_tx: &self.export_tx_ref(),
+                fabric_tx: &self.fabric_tx_ref(),
                 egui,
                 toasts: &toasts,
             };

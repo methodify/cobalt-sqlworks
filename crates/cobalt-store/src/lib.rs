@@ -27,4 +27,5 @@ pub use settings::{load_settings, save_settings};
 pub use store::history::{HistoryEntry, HistoryQuery, HistoryStatus, NewHistoryEntry};
 pub use store::library::{ImportSummary, LibraryExport};
 pub use store::tabs::TabSnapshot;
+pub use store::fabric::FabricPin;
 pub use store::{Store, MIGRATIONS, SCHEMA_VERSION};

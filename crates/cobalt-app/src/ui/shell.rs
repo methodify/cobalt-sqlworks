@@ -133,6 +133,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ToggleSidebar);
                 item(ui, &mut cmds, Command::ShowServers);
                 item(ui, &mut cmds, Command::ShowHistory);
+                item(ui, &mut cmds, Command::ShowFabric);
                 ui.separator();
                 item(ui, &mut cmds, Command::ToggleTheme);
                 item(ui, &mut cmds, Command::ZoomIn);
@@ -163,7 +164,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     egui::Panel::left("strip").exact_size(44.0).resizable(false).show_separator_line(false).frame(egui::Frame::new().fill(theme.bg_sidebar)).show(ui, |ui| {
         ui.add_space(6.0);
-        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
+        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
         for (view, icon, tip) in items {
             let active = f.state.sidebar_visible && f.state.sidebar_view == view;
             let color = if active { theme.accent } else { theme.text_muted };
@@ -175,6 +176,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 ui.painter().rect_filled(rect.shrink(4.0), 6.0, theme.bg_hover);
             }
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), color);
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sidebar {:?}", view)));
             let resp = resp.on_hover_text(tip);
             if resp.clicked() {
                 if active {
@@ -214,6 +216,13 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             let actions = history::show(ui, f.state, theme);
             for a in actions {
                 history_action(f, a);
+            }
+        }
+        SidebarView::Fabric => {
+            crate::fabric::on_panel_shown(f.state, f.cx);
+            let actions = crate::ui::fabric::show(ui, &mut f.state.fabric, theme);
+            for a in actions {
+                crate::fabric::action(f.state, f.cx, a);
             }
         }
     });
@@ -1045,6 +1054,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ShowServers => {
             state.sidebar_visible = true;
             state.sidebar_view = SidebarView::Servers;
+        }
+        Command::ShowFabric => {
+            state.sidebar_visible = true;
+            state.sidebar_view = SidebarView::Fabric;
         }
         Command::ShowHistory => {
             state.sidebar_visible = true;

@@ -30,6 +30,7 @@ macro_rules! make_ctx {
             paths: &$app.paths,
             auth_tx: &$app.auth_tx,
             export_tx: &$app.export_tx,
+            fabric_tx: &$app.fabric_tx,
             egui: $egui,
             toasts: $toasts,
         }
@@ -52,6 +53,8 @@ pub struct CobaltApp {
     auth_rx: Receiver<AuthDone>,
     export_tx: Sender<ExportDone>,
     export_rx: Receiver<ExportDone>,
+    fabric_tx: crossbeam_channel::Sender<crate::fabric::FabricEvent>,
+    fabric_rx: Receiver<crate::fabric::FabricEvent>,
     update_tx: crossbeam_channel::Sender<crate::update::UpdateOutcome>,
     update_rx: Receiver<crate::update::UpdateOutcome>,
     update_started: bool,
@@ -102,6 +105,7 @@ impl CobaltApp {
         let (auth_tx, auth_rx) = crossbeam_channel::unbounded();
         let (export_tx, export_rx) = crossbeam_channel::unbounded();
         let (update_tx, update_rx) = crossbeam_channel::unbounded();
+        let (fabric_tx, fabric_rx) = crossbeam_channel::unbounded();
         let mut state = AppState::new();
         state.formatter = CellFormatter::from_settings(&settings.results);
         let toasts = egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomRight).with_margin(egui::vec2(12.0, 32.0));
@@ -121,6 +125,8 @@ impl CobaltApp {
             auth_rx,
             export_tx,
             export_rx,
+            fabric_tx,
+            fabric_rx,
             update_tx,
             update_rx,
             update_started: false,
@@ -201,6 +207,9 @@ impl CobaltApp {
             }
             while let Ok(done) = self.export_rx.try_recv() {
                 ops::on_export_done(&mut self.state, &cx, done);
+            }
+            while let Ok(ev) = self.fabric_rx.try_recv() {
+                crate::fabric::on_event(&mut self.state, &cx, ev);
             }
             // update check: once shortly after start-up (if enabled), or on request from Help
             let startup_due = !self.update_started && self.frames > 120 && self.settings.updates.check_on_startup;
@@ -327,6 +336,7 @@ impl eframe::App for CobaltApp {
                 paths: &self.paths,
                 auth_tx: &self.auth_tx,
                 export_tx: &self.export_tx,
+                fabric_tx: &self.fabric_tx,
                 egui: &ctx,
                 toasts: &toasts,
             };
@@ -384,5 +394,8 @@ impl CobaltApp {
     }
     pub(crate) fn export_tx_ref(&self) -> Sender<ExportDone> {
         self.export_tx.clone()
+    }
+    pub(crate) fn fabric_tx_ref(&self) -> Sender<crate::fabric::FabricEvent> {
+        self.fabric_tx.clone()
     }
 }

@@ -20,6 +20,8 @@ pub struct Library {
     pub servers: HashMap<ProfileId, ServerNode>,
     pub expanded_groups: HashSet<GroupId>,
     pub filter: String,
+    /// Profiles synthesised by the Fabric explorer (not in the store, not in the tree).
+    pub ephemeral: Vec<ConnectionProfile>,
 }
 
 impl Library {
@@ -27,7 +29,7 @@ impl Library {
         self.groups.iter().find(|g| g.id == id)
     }
     pub fn profile(&self, id: ProfileId) -> Option<&ConnectionProfile> {
-        self.profiles.iter().find(|p| p.id == id)
+        self.profiles.iter().chain(self.ephemeral.iter()).find(|p| p.id == id)
     }
     pub fn profile_mut(&mut self, id: ProfileId) -> Option<&mut ConnectionProfile> {
         self.profiles.iter_mut().find(|p| p.id == id)
@@ -571,10 +573,12 @@ pub struct GridFind {
 pub enum SidebarView {
     Servers,
     History,
+    Fabric,
 }
 
 pub struct AppState {
     pub library: Library,
+    pub fabric: crate::fabric::FabricState,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
     pub next_untitled: usize,
@@ -732,6 +736,7 @@ impl AppState {
             next_untitled: 1,
             sidebar_visible: true,
             sidebar_view: SidebarView::Servers,
+            fabric: Default::default(),
             sidebar_width: 280.0,
             pending_meta: HashMap::new(),
             formatter: CellFormatter::default(),

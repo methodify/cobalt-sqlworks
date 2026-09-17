@@ -39,8 +39,15 @@ pub trait Prompter: Send + Sync {
 pub struct CredentialResolver {
     secrets: Arc<dyn SecretStore>,
     cfg: RwLock<EntraConfig>,
-    cache: Mutex<HashMap<ProfileId, TokenSet>>,
+    /// Access tokens per (profile, resource). One refresh token per profile serves every
+    /// resource the user consented to (SQL, the Fabric REST API, OneLake).
+    cache: Mutex<HashMap<(ProfileId, String), TokenSet>>,
 }
+
+/// Resource whose `.default` scope a token is minted for.
+pub const SQL_RESOURCE: &str = "https://database.windows.net/";
+pub const FABRIC_API_RESOURCE: &str = "https://api.fabric.microsoft.com";
+pub const ONELAKE_RESOURCE: &str = "https://storage.azure.com/";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UserFlow {
@@ -155,7 +162,7 @@ impl CredentialResolver {
 
     /// Drop the stored refresh token and any cached token for a profile ("Sign out").
     pub fn forget(&self, profile_id: &ProfileId) -> Result<()> {
-        self.cache.lock().unwrap().remove(profile_id);
+        self.cache.lock().unwrap().retain(|(id, _), _| id != profile_id);
         self.secrets.delete(&Self::refresh_token_ref(profile_id))
     }
 
@@ -164,8 +171,9 @@ impl CredentialResolver {
         self.cache
             .lock()
             .unwrap()
-            .get(profile_id)
-            .map(|t| t.account.clone())
+            .iter()
+            .find(|((id, _), _)| id == profile_id)
+            .map(|(_, t)| t.account.clone())
     }
 
     /// Whether a refresh token is stored for the profile (i.e. a silent sign-in is likely).
@@ -190,16 +198,65 @@ impl CredentialResolver {
         flow: UserFlow,
         prompt: &dyn Prompter,
     ) -> Result<ResolvedCredentials> {
-        let cfg = self.config().with_tenant(tenant);
-        cfg.require_client_id()?;
-        let id = profile.id;
+        let resource = self.config().sql_resource.clone();
+        let ts = self.resource_token(profile.id, &resource, tenant, login_hint, flow, prompt).await?;
+        Ok(token_creds(&ts))
+    }
 
-        // 1. Cached, still valid.
-        let cached = self.cache.lock().unwrap().get(&id).cloned();
+    /// A token for the Fabric REST API (`https://api.fabric.microsoft.com/.default`) on the
+    /// account behind `profile_id`, silently when possible, otherwise via `prompt`.
+    pub async fn fabric_api_token(&self, profile_id: ProfileId, tenant: Option<&str>, login_hint: Option<&str>, prompt: &dyn Prompter) -> Result<TokenSet> {
+        self.resource_token(profile_id, FABRIC_API_RESOURCE, tenant, login_hint, UserFlow::Interactive, prompt).await
+    }
+
+    /// A token for OneLake / ADLS (`https://storage.azure.com/.default`).
+    pub async fn onelake_token(&self, profile_id: ProfileId, tenant: Option<&str>, login_hint: Option<&str>, prompt: &dyn Prompter) -> Result<TokenSet> {
+        self.resource_token(profile_id, ONELAKE_RESOURCE, tenant, login_hint, UserFlow::Interactive, prompt).await
+    }
+
+    /// Silent-only variant: cached or refreshed, never interactive. `Ok(None)` means sign-in is
+    /// needed (the caller decides whether to prompt).
+    pub async fn resource_token_silent(&self, profile_id: ProfileId, resource: &str, tenant: Option<&str>) -> Result<Option<TokenSet>> {
+        let cfg = self.config().with_tenant(tenant).with_resource(resource);
+        cfg.require_client_id()?;
+        let key = (profile_id, resource.to_string());
+        let cached = self.cache.lock().unwrap().get(&key).cloned();
         if let Some(ts) = &cached {
             if ts.access.is_valid_for(TOKEN_MARGIN) {
-                tracing::debug!(%id, "using cached Entra access token");
-                return Ok(token_creds(ts));
+                return Ok(Some(ts.clone()));
+            }
+        }
+        let rt = self.secrets.get(&Self::refresh_token_ref(&profile_id)).ok().flatten().or_else(|| cached.and_then(|t| t.refresh.clone()));
+        let Some(rt) = rt else { return Ok(None) };
+        match refresh(&cfg, &rt).await {
+            Ok(ts) => {
+                self.remember_for(profile_id, resource, &ts);
+                Ok(Some(ts))
+            }
+            Err(AuthError::InteractionRequired(_)) | Err(AuthError::Provider { .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn resource_token(
+        &self,
+        id: ProfileId,
+        resource: &str,
+        tenant: Option<&str>,
+        login_hint: Option<&str>,
+        flow: UserFlow,
+        prompt: &dyn Prompter,
+    ) -> Result<TokenSet> {
+        let cfg = self.config().with_tenant(tenant).with_resource(resource);
+        cfg.require_client_id()?;
+        let key = (id, resource.to_string());
+
+        // 1. Cached, still valid.
+        let cached = self.cache.lock().unwrap().get(&key).cloned();
+        if let Some(ts) = &cached {
+            if ts.access.is_valid_for(TOKEN_MARGIN) {
+                tracing::debug!(%id, resource, "using cached Entra access token");
+                return Ok(ts.clone());
             }
         }
 
@@ -221,14 +278,15 @@ impl CredentialResolver {
                             ts.account = prev.account.clone();
                         }
                     }
-                    tracing::info!(%id, user = %ts.account.username, "Entra token refreshed silently");
-                    self.remember(id, &ts);
-                    return Ok(token_creds(&ts));
+                    tracing::info!(%id, resource, user = %ts.account.username, "Entra token refreshed silently");
+                    self.remember_for(id, resource, &ts);
+                    return Ok(ts);
                 }
                 Err(e @ (AuthError::InteractionRequired(_) | AuthError::Provider { .. })) => {
-                    tracing::warn!(%id, error = %e, "refresh token rejected; falling back to interactive sign-in");
-                    let _ = self.secrets.delete(&rt_ref);
-                    self.cache.lock().unwrap().remove(&id);
+                    // Consent for this resource may be missing while the refresh token is fine for
+                    // others: keep the token, go interactive for this resource.
+                    tracing::warn!(%id, resource, error = %e, "refresh rejected for this resource; falling back to interactive sign-in");
+                    self.cache.lock().unwrap().remove(&key);
                 }
                 Err(e) => return Err(e),
             }
@@ -265,17 +323,22 @@ impl CredentialResolver {
             r = run => r?,
             _ = watch_cancel => return Err(AuthError::Cancelled),
         };
-        self.remember(id, &ts);
-        Ok(token_creds(&ts))
+        self.remember_for(id, resource, &ts);
+        Ok(ts)
     }
 
     fn remember(&self, id: ProfileId, ts: &TokenSet) {
+        let resource = self.config().sql_resource.clone();
+        self.remember_for(id, &resource, ts);
+    }
+
+    fn remember_for(&self, id: ProfileId, resource: &str, ts: &TokenSet) {
         if let Some(rt) = &ts.refresh {
             if let Err(e) = self.secrets.set(&Self::refresh_token_ref(&id), rt) {
                 tracing::warn!(%id, error = %e, "could not store the refresh token; you will be asked to sign in again next time");
             }
         }
-        self.cache.lock().unwrap().insert(id, ts.clone());
+        self.cache.lock().unwrap().insert((id, resource.to_string()), ts.clone());
     }
 }
 

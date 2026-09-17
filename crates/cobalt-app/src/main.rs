@@ -6,6 +6,7 @@
 mod app;
 mod commands;
 mod copy;
+mod fabric;
 mod ops;
 mod session;
 mod state;

@@ -28,6 +28,7 @@ pub struct Ctx<'a> {
     pub paths: &'a AppPaths,
     pub auth_tx: &'a Sender<AuthDone>,
     pub export_tx: &'a Sender<ExportDone>,
+    pub fabric_tx: &'a Sender<crate::fabric::FabricEvent>,
     pub egui: &'a egui::Context,
     pub toasts: &'a RefCell<Vec<(ToastKind, String)>>,
 }
@@ -51,11 +52,11 @@ pub struct ExportDone {
     pub result: Result<String, String>,
 }
 
-struct UiPrompter {
-    cancel: Arc<AtomicBool>,
-    device: Arc<parking_lot::Mutex<Option<(String, String)>>>,
-    url: Arc<parking_lot::Mutex<Option<String>>>,
-    egui: egui::Context,
+pub(crate) struct UiPrompter {
+    pub(crate) cancel: Arc<AtomicBool>,
+    pub(crate) device: Arc<parking_lot::Mutex<Option<(String, String)>>>,
+    pub(crate) url: Arc<parking_lot::Mutex<Option<String>>>,
+    pub(crate) egui: egui::Context,
 }
 
 impl Prompter for UiPrompter {
@@ -104,6 +105,11 @@ pub fn open_connection_dialog(state: &mut AppState, cx: &Ctx, existing: Option<P
             (p, true)
         }
     };
+    open_connection_dialog_from(state, cx, profile, is_new, connect_after);
+}
+
+/// The connection editor prefilled with `profile` (new or existing).
+pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile, is_new: bool, connect_after: Option<ConnectPurpose>) {
     let (tenant, account_hint, sp_client_id) = match &profile.auth {
         AuthMethod::EntraInteractive { tenant, account_hint } => (tenant.clone().unwrap_or_default(), account_hint.clone().unwrap_or_default(), String::new()),
         AuthMethod::EntraDeviceCode { tenant } | AuthMethod::AzureCli { tenant } => (tenant.clone().unwrap_or_default(), String::new(), String::new()),

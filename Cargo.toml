@@ -10,6 +10,7 @@ members = [
     "crates/cobalt-export",
     "crates/cobalt-export-delta",
     "crates/cobalt-plan",
+    "crates/cobalt-fabric",
     "crates/cobalt-app",
 ]
 
@@ -31,6 +32,7 @@ cobalt-sql = { path = "crates/cobalt-sql" }
 cobalt-results = { path = "crates/cobalt-results" }
 cobalt-export = { path = "crates/cobalt-export" }
 cobalt-export-delta = { path = "crates/cobalt-export-delta" }
+cobalt-fabric = { path = "crates/cobalt-fabric" }
 cobalt-plan = { path = "crates/cobalt-plan" }
 
 # --- UI (all must track the same egui) ---
@@ -84,7 +86,7 @@ thiserror = "2"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = { version = "1", features = ["serde"] }
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 parking_lot = "0.12"
 crossbeam-channel = "0.5"
 memmap2 = "0.9"

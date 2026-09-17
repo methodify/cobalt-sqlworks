@@ -98,6 +98,13 @@ impl EntraConfig {
     }
 
     /// A copy with the tenant replaced when the profile specifies one.
+    /// The same settings aimed at another resource (`https://api.fabric.microsoft.com`, …).
+    pub fn with_resource(&self, resource: &str) -> Self {
+        let mut c = self.clone();
+        c.sql_resource = resource.to_string();
+        c
+    }
+
     pub fn with_tenant(&self, tenant: Option<&str>) -> Self {
         let mut c = self.clone();
         if let Some(t) = tenant.map(str::trim).filter(|t| !t.is_empty()) {

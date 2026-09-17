@@ -1,6 +1,7 @@
 //! The SQLite database behind the connection library, history, tab snapshots, and caches.
 
 pub mod catalog;
+pub mod fabric;
 pub mod groups;
 pub mod history;
 pub mod kv;
@@ -16,12 +17,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 /// Schema version this build expects (= `MIGRATIONS.len()`).
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// Ordered migrations; `MIGRATIONS[n]` brings the schema to version `n + 1`. Each runs in
 /// its own transaction and is recorded in `schema_version`. Never edit a shipped entry;
 /// append a new one.
-pub const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+pub const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE groups (
@@ -111,6 +112,25 @@ CREATE TABLE kv (
 CREATE TABLE recent_connections (
     profile_id TEXT PRIMARY KEY REFERENCES profiles(id) ON DELETE CASCADE,
     used_at    TEXT NOT NULL
+);
+"#;
+
+/// v2: Fabric explorer pins and REST cache.
+const SCHEMA_V2: &str = r#"
+CREATE TABLE fabric_pins (
+    item_id        TEXT PRIMARY KEY,
+    workspace_id   TEXT NOT NULL,
+    item_kind      TEXT NOT NULL,
+    display_name   TEXT NOT NULL,
+    workspace_name TEXT NOT NULL,
+    position       INTEGER NOT NULL,
+    pinned_at      TEXT NOT NULL
+);
+
+CREATE TABLE fabric_cache (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
 );
 "#;
 
