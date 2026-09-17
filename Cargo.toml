@@ -1,0 +1,126 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/cobalt-core",
+    "crates/cobalt-driver",
+    "crates/cobalt-auth",
+    "crates/cobalt-store",
+    "crates/cobalt-sql",
+    "crates/cobalt-results",
+    "crates/cobalt-export",
+    "crates/cobalt-export-delta",
+    "crates/cobalt-plan",
+    "crates/cobalt-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/methodify/cobalt-sqlworks"
+authors = ["Bryon Williams", "Cobalt SQL Works contributors"]
+
+[workspace.dependencies]
+# --- internal ---
+cobalt-core = { path = "crates/cobalt-core" }
+cobalt-driver = { path = "crates/cobalt-driver" }
+cobalt-auth = { path = "crates/cobalt-auth" }
+cobalt-store = { path = "crates/cobalt-store" }
+cobalt-sql = { path = "crates/cobalt-sql" }
+cobalt-results = { path = "crates/cobalt-results" }
+cobalt-export = { path = "crates/cobalt-export" }
+cobalt-export-delta = { path = "crates/cobalt-export-delta" }
+cobalt-plan = { path = "crates/cobalt-plan" }
+
+# --- UI (all must track the same egui) ---
+egui = "0.36"
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "wayland", "x11"] }
+egui_extras = { version = "0.36", features = ["svg", "image"] }
+egui_table = "0.10"
+egui_dock = "0.21"
+egui-notify = "0.23"
+egui-phosphor = "0.14"
+egui_kittest = "0.36"
+egui_agent = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0", default-features = false, features = ["eframe", "uds", "pipe", "accesskit-introspection", "screenshot"] }
+egui_agent_macros = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0" }
+
+# --- data: arrow pinned to what deltalake 0.32 requires ---
+arrow = { version = "58", features = ["ipc", "prettyprint"] }
+arrow-array = "58"
+arrow-schema = "58"
+arrow-ipc = "58"
+parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "lz4"] }
+deltalake = { version = "0.32", default-features = false, features = ["native-tls"] }
+
+# --- db ---
+tiberius = { package = "tiberius-ng", version = "0.13", default-features = false, features = ["tds80", "native-tls", "chrono", "rust_decimal", "winauth", "sql-browser-tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "fs"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures-util = "0.3"
+async-trait = "0.1"
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+
+# --- auth ---
+oauth2 = { version = "5", default-features = false, features = ["reqwest", "native-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json"] }
+azure_identity = "1"
+azure_core = "1"
+keyring = { version = "4", features = ["v1"] }
+tiny_http = "0.12"
+
+# --- sql / text ---
+sqlparser = "0.63"
+sqlformat = "0.5"
+quick-xml = { version = "0.42", features = ["serialize"] }
+rust_xlsxwriter = "0.99"
+csv = "1"
+
+# --- misc ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+parking_lot = "0.12"
+crossbeam-channel = "0.5"
+memmap2 = "0.9"
+tempfile = "3"
+calamine = { version = "0.36", features = ["dates"] }
+directories = "6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+rfd = "0.17"
+open = "5"
+regex = "1"
+once_cell = "1"
+indexmap = { version = "2", features = ["serde"] }
+smallvec = "1"
+unicode-width = "0.2"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.9"
+url = "2"
+humansize = "2"
+
+[profile.dev]
+opt-level = 1
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+# Vendored tiberius-ng with a small additive patch (raw token stream for PRINT/RAISERROR
+# messages, DONE counts and error ordering; packet-level resync after cancellation; exact
+# money decoding). See vendor/tiberius-ng/COBALT-PATCH.md.
+[patch.crates-io]
+tiberius-ng = { path = "vendor/tiberius-ng" }

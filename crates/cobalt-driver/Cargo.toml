@@ -1,0 +1,30 @@
+[package]
+name = "cobalt-driver"
+description = "Database driver abstraction for Cobalt SQL Works and the SQL Server (TDS) implementation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["mssql"]
+mssql = ["dep:tiberius", "dep:tokio-util"]
+
+[dependencies]
+cobalt-core.workspace = true
+arrow.workspace = true
+async-trait.workspace = true
+futures-util.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, optional = true }
+tiberius = { workspace = true, optional = true }
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

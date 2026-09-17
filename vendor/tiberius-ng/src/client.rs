@@ -1,0 +1,768 @@
+mod auth;
+mod config;
+mod connection;
+
+mod tls;
+#[cfg(any(
+    feature = "rustls",
+    feature = "native-tls",
+    feature = "vendored-openssl"
+))]
+mod tls_stream;
+
+pub use auth::*;
+pub use config::*;
+pub(crate) use connection::*;
+
+use crate::tds::codec::RpcValue;
+use crate::tds::stream::ReceivedToken;
+use crate::{
+    result::ExecuteResult,
+    tds::{
+        codec::{self, IteratorJoin},
+        stream::{QueryStream, TokenStream},
+    },
+    BulkLoadRequest, ColumnFlag, MetaDataColumn, SqlReadBytes, ToSql,
+};
+use codec::{
+    BatchRequest, ColumnData, IsolationLevel, PacketHeader, RpcParam, RpcProcId, TokenRpcRequest,
+    TransactionManagerRequest,
+};
+use enumflags2::BitFlags;
+use futures_util::io::{AsyncRead, AsyncWrite};
+use futures_util::stream::TryStreamExt;
+use std::{borrow::Cow, fmt::Debug};
+
+/// `Client` is the main entry point to the SQL Server, providing query
+/// execution capabilities.
+///
+/// A `Client` is created using the [`Config`], defining the needed
+/// connection options and capabilities.
+///
+/// # Example
+///
+/// ```no_run
+/// # use tiberius::{Config, AuthMethod};
+/// use tokio_util::compat::TokioAsyncWriteCompatExt;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// let mut config = Config::new();
+///
+/// config.host("0.0.0.0");
+/// config.port(1433);
+/// config.authentication(AuthMethod::sql_server("SA", "<Mys3cureP4ssW0rD>"));
+///
+/// let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+/// tcp.set_nodelay(true)?;
+/// // Client is ready to use.
+/// let client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Cancellation safety
+///
+/// A single [`Client`] drives one connection and one request at a time. If a
+/// `query`/`execute`/`simple_query` future — or the result stream it returns —
+/// is dropped before the request has been sent in full and the response fully
+/// consumed (for example under a `tokio::time::timeout` or a `select!` branch
+/// that loses the race), the connection may be left mid-message and out of sync
+/// with the server. A cancelled *write* is detected and any further use of that
+/// connection fails cleanly; a result stream dropped mid-response cannot be
+/// recovered. In both cases the safe course is to drop the `Client` and open a
+/// new connection (a connection pool should discard the connection on error)
+/// rather than reuse it.
+///
+/// [`Config`]: struct.Config.html
+#[derive(Debug)]
+pub struct Client<S: AsyncRead + AsyncWrite + Unpin + Send> {
+    pub(crate) connection: Connection<S>,
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin + Send> Client<S> {
+    /// Uses an instance of [`Config`] to specify the connection
+    /// options required to connect to the database using an established
+    /// tcp connection
+    ///
+    /// Note: `tcp_stream` is a connected stream, so some parts of the `Config`
+    /// (such as multi-subnet failover, which selects between resolved
+    /// addresses) must be handled while establishing that stream, outside of
+    /// this constructor.
+    ///
+    /// [`Config`]: struct.Config.html
+    pub async fn connect(config: Config, tcp_stream: S) -> crate::Result<Client<S>> {
+        Ok(Client {
+            connection: Connection::connect(config, tcp_stream).await?,
+        })
+    }
+
+    /// Executes SQL statements in the SQL Server, returning the number rows
+    /// affected. Useful for `INSERT`, `UPDATE` and `DELETE` statements. The
+    /// `query` can define the parameter placement by annotating them with
+    /// `@PN`, where N is the index of the parameter, starting from `1`. If
+    /// executing multiple queries at a time, delimit them with `;` and refer to
+    /// [`ExecuteResult`] how to get results for the separate queries.
+    ///
+    /// For mapping of Rust types when writing, see the documentation for
+    /// [`ToSql`]. For reading data from the database, see the documentation for
+    /// [`FromSql`].
+    ///
+    /// This API is not quite suitable for dynamic query parameters. In these
+    /// cases using a [`Query`] object might be easier.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use tiberius::Config;
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let results = client
+    ///     .execute(
+    ///         "INSERT INTO ##Test (id) VALUES (@P1), (@P2), (@P3)",
+    ///         &[&1i32, &2i32, &3i32],
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`ExecuteResult`]: struct.ExecuteResult.html
+    /// [`ToSql`]: trait.ToSql.html
+    /// [`FromSql`]: trait.FromSql.html
+    /// [`Query`]: struct.Query.html
+    pub async fn execute<'a>(
+        &mut self,
+        query: impl Into<Cow<'a, str>>,
+        params: &[&dyn ToSql],
+    ) -> crate::Result<ExecuteResult> {
+        self.connection.flush_stream().await?;
+        let rpc_params = Self::rpc_params(query);
+
+        let params = params.iter().map(|s| s.to_sql());
+        self.rpc_perform_query(RpcProcId::ExecuteSQL, rpc_params, params)
+            .await?;
+
+        ExecuteResult::new(&mut self.connection).await
+    }
+
+    /// Executes SQL statements in the SQL Server, returning resulting rows.
+    /// Useful for `SELECT` statements. The `query` can define the parameter
+    /// placement by annotating them with `@PN`, where N is the index of the
+    /// parameter, starting from `1`. If executing multiple queries at a time,
+    /// delimit them with `;` and refer to [`QueryStream`] on proper stream
+    /// handling.
+    ///
+    /// For mapping of Rust types when writing, see the documentation for
+    /// [`ToSql`]. For reading data from the database, see the documentation for
+    /// [`FromSql`].
+    ///
+    /// This API can be cumbersome for dynamic query parameters. In these cases,
+    /// if fighting too much with the compiler, using a [`Query`] object might be
+    /// easier.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tiberius::Config;
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let stream = client
+    ///     .query(
+    ///         "SELECT @P1, @P2, @P3",
+    ///         &[&1i32, &2i32, &3i32],
+    ///     )
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// [`QueryStream`]: struct.QueryStream.html
+    /// [`Query`]: struct.Query.html
+    /// [`ToSql`]: trait.ToSql.html
+    /// [`FromSql`]: trait.FromSql.html
+    pub async fn query<'a, 'b>(
+        &'a mut self,
+        query: impl Into<Cow<'b, str>>,
+        params: &'b [&'b dyn ToSql],
+    ) -> crate::Result<QueryStream<'a>>
+    where
+        'a: 'b,
+    {
+        self.connection.flush_stream().await?;
+        let rpc_params = Self::rpc_params(query);
+
+        let params = params.iter().map(|p| p.to_sql());
+        self.rpc_perform_query(RpcProcId::ExecuteSQL, rpc_params, params)
+            .await?;
+
+        let ts = TokenStream::new(&mut self.connection);
+        let mut result = QueryStream::new(ts.try_unfold());
+        result.forward_to_metadata().await?;
+
+        Ok(result)
+    }
+
+    /// Execute multiple queries, delimited with `;` and return multiple result
+    /// sets; one for each query.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tiberius::Config;
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let row = client.simple_query("SELECT 1 AS col").await?.into_row().await?.unwrap();
+    /// assert_eq!(Some(1i32), row.get("col"));
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Warning
+    ///
+    /// Do not use this with any user specified input. Please resort to prepared
+    /// statements using the [`query`] method.
+    ///
+    /// [`query`]: #method.query
+    pub async fn simple_query<'a, 'b>(
+        &'a mut self,
+        query: impl Into<Cow<'b, str>>,
+    ) -> crate::Result<QueryStream<'a>>
+    where
+        'a: 'b,
+    {
+        self.connection.flush_stream().await?;
+
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::batch(id), req).await?;
+
+        let ts = TokenStream::new(&mut self.connection);
+
+        let mut result = QueryStream::new(ts.try_unfold());
+        result.forward_to_metadata().await?;
+
+        Ok(result)
+    }
+
+    /// Execute a `BULK INSERT` statement, efficiently storing a large number of
+    /// rows to a specified table. Note: make sure the input row follows the same
+    /// schema as the table, otherwise calling `send()` will return an error.
+    ///
+    /// This is equivalent to calling `bulk_insert("table_name", &["*"])` to merge
+    /// all of a tables columns.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tiberius::{Config, IntoRow};
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let create_table = r#"
+    ///     CREATE TABLE ##bulk_test (
+    ///         id INT IDENTITY PRIMARY KEY,
+    ///         val INT NOT NULL
+    ///     )
+    /// "#;
+    ///
+    /// client.simple_query(create_table).await?;
+    ///
+    /// // Start the bulk insert with the client.
+    /// let mut req = client.bulk_insert("##bulk_test").await?;
+    ///
+    /// for i in [0i32, 1i32, 2i32] {
+    ///     let row = (i).into_row();
+    ///
+    ///     // The request will handle flushing to the wire in an optimal way,
+    ///     // balancing between memory usage and IO performance.
+    ///     req.send(row).await?;
+    /// }
+    ///
+    /// // The request must be finalized.
+    /// let res = req.finalize().await?;
+    /// assert_eq!(3, res.total());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn bulk_insert<'a>(
+        &'a mut self,
+        table: &'a str,
+    ) -> crate::Result<BulkLoadRequest<'a, S>> {
+        self.bulk_insert_columns(table, &["*"]).await
+    }
+
+    /// Execute a `BULK INSERT` statement, efficiently storing a large number of
+    /// rows to a specified table. Note: make sure the input row follows the same
+    /// schema as the column list, otherwise calling `send()` will return an error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use tiberius::{Config, IntoRow};
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let create_table = r#"
+    ///     CREATE TABLE ##bulk_test_columns (
+    ///         id INT IDENTITY PRIMARY KEY,
+    ///         foo INT NOT NULL,
+    ///         bar FLOAT NOT NULL
+    ///     )
+    /// "#;
+    ///
+    /// client.simple_query(create_table).await?;
+    ///
+    /// // Start the bulk insert with the client.
+    /// let mut req = client.bulk_insert_columns("##bulk_test_columns", &["foo", "bar"]).await?;
+    ///
+    /// for (i, j) in [(0i32, 0f64), (1i32, 1f64), (2i32, 2f64)] {
+    ///     let row = (i, j).into_row();
+    ///
+    ///     // The request will handle flushing to the wire in an optimal way,
+    ///     // balancing between memory usage and IO performance.
+    ///     req.send(row).await?;
+    /// }
+    ///
+    /// // The request must be finalized.
+    /// let res = req.finalize().await?;
+    /// assert_eq!(3, res.total());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn bulk_insert_columns<'a>(
+        &'a mut self,
+        table: &'a str,
+        columns: &'a [&'a str],
+    ) -> crate::Result<BulkLoadRequest<'a, S>> {
+        // Retrieve column metadata from the server, keeping only the updateable
+        // columns as bulk targets (identity/computed columns are skipped).
+        let columns: Vec<_> = self
+            .column_metadata(table, columns)
+            .await?
+            .into_iter()
+            .filter(|column| column.base.flags.contains(ColumnFlag::Updateable))
+            .collect();
+
+        // now start bulk upload
+        self.connection.flush_stream().await?;
+        let col_data = columns.iter().map(|c| format!("{}", c)).join(", ");
+        let query = format!("INSERT BULK {} ({})", table, col_data);
+
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+        let id = self.connection.context_mut().next_packet_id();
+
+        self.connection.send(PacketHeader::batch(id), req).await?;
+
+        let ts = TokenStream::new(&mut self.connection);
+        ts.flush_done().await?;
+
+        BulkLoadRequest::new(&mut self.connection, columns)
+    }
+
+    /// Retrieve the column metadata for a set of columns of a table, including
+    /// the column names, types (with their size, precision and scale) and flags
+    /// such as nullability and whether a column is an identity column.
+    ///
+    /// Pass `&["*"]` as `columns` to return the metadata for every column of the
+    /// table.
+    ///
+    /// ```no_run
+    /// # use tiberius::Config;
+    /// # use tokio_util::compat::TokioAsyncWriteCompatExt;
+    /// # use std::env;
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// # let c_str = env::var("TIBERIUS_TEST_CONNECTION_STRING").unwrap_or(
+    /// #     "server=tcp:localhost,1433;integratedSecurity=true;TrustServerCertificate=true".to_owned(),
+    /// # );
+    /// # let config = Config::from_ado_string(&c_str)?;
+    /// # let tcp = tokio::net::TcpStream::connect(config.get_addr()).await?;
+    /// # tcp.set_nodelay(true)?;
+    /// # let mut client = tiberius::Client::connect(config, tcp.compat_write()).await?;
+    /// let meta = client.column_metadata("some_table", &["*"]).await?;
+    /// assert!(meta[0].base().is_identity());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn column_metadata(
+        &mut self,
+        table: &str,
+        columns: &[&str],
+    ) -> crate::Result<Vec<MetaDataColumn<'static>>> {
+        self.connection.flush_stream().await?;
+
+        // Ask the server for the column layout without returning any rows.
+        let columns = columns.join(", ");
+        let query = format!("SELECT TOP 0 {columns} FROM {table}");
+
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::batch(id), req).await?;
+
+        let token_stream = TokenStream::new(&mut self.connection).try_unfold();
+
+        let columns = token_stream
+            .try_fold(None, |mut columns, token| async move {
+                if let ReceivedToken::NewResultset(metadata) = token {
+                    columns = Some(metadata.columns.clone());
+                };
+
+                Ok(columns)
+            })
+            .await?;
+
+        let columns = columns.ok_or_else(|| {
+            crate::Error::Protocol("expecting column metadata from query but not found".into())
+        })?;
+
+        // Own the column names so the returned metadata is not tied to the
+        // lifetime of the token stream.
+        Ok(columns
+            .into_iter()
+            .map(|c| MetaDataColumn {
+                base: c.base,
+                col_name: std::borrow::Cow::Owned(c.col_name.into_owned()),
+            })
+            .collect())
+    }
+
+    // ------------------------------------------------------------------------------------
+    // Cobalt patch: raw token access (see COBALT-PATCH.md)
+    // ------------------------------------------------------------------------------------
+
+    /// Sends `query` as a plain SQL batch and returns without reading any part of the
+    /// response. Pull the response with [`next_token`] until it yields `None`.
+    ///
+    /// [`next_token`]: #method.next_token
+    pub async fn simple_query_send<'a>(
+        &mut self,
+        query: impl Into<Cow<'a, str>>,
+    ) -> crate::Result<()> {
+        self.connection.flush_stream().await?;
+
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::batch(id), req).await
+    }
+
+    /// Reads the next raw token of the response in flight; `Ok(None)` once the response has
+    /// been consumed completely. ERROR tokens are returned as [`ReceivedToken::Error`], never
+    /// as `Err`. Environment changes (packet size, transactions) are applied to the connection
+    /// context exactly as the higher-level streams do.
+    ///
+    /// Cancellation safety: if the returned future is dropped part-way through a token, the
+    /// connection is mid-value. Call [`cancel_query`] (which resynchronises on packet
+    /// boundaries) before issuing the next request.
+    ///
+    /// [`cancel_query`]: #method.cancel_query
+    pub async fn next_token(&mut self) -> crate::Result<Option<ReceivedToken>> {
+        if self.connection.is_eof() {
+            return Ok(None);
+        }
+
+        TokenStream::new(&mut self.connection)
+            .try_unfold()
+            .try_next()
+            .await
+    }
+
+    /// `true` when no response bytes are pending on the connection.
+    pub fn is_response_complete(&self) -> bool {
+        self.connection.is_eof()
+    }
+
+    /// Sends a TDS Attention signal to the server (packet type `0x06`,
+    /// MS-TDS section 2.2.1.6) to cancel the request that is currently in
+    /// flight on this connection, and drains the acknowledging token stream so
+    /// the connection can be reused for further queries.
+    ///
+    /// The server responds to the Attention signal by aborting the running
+    /// batch or RPC and returning a `DONE` token with the `DONE_ATTN` status
+    /// bit set. This method waits for that acknowledgement before returning,
+    /// discarding any remaining rows or tokens from the cancelled request.
+    ///
+    /// # Query cancellation and futures
+    ///
+    /// Dropping a [`query`], [`execute`] or [`simple_query`] future (for
+    /// example when a `tokio::time::timeout` elapses or a `select!` branch is
+    /// cancelled) stops the client from polling the stream, but it does *not*
+    /// tell the server to stop working on the request. To actually cancel the
+    /// in-flight work on the server, keep the [`Client`] and call
+    /// `cancel_query` on it. Because `cancel_query` borrows the client
+    /// mutably, it can only be issued once the borrowing result stream has
+    /// been dropped — typically from a separate task holding the client, or
+    /// after a cancelled/timed-out future has released its borrow.
+    ///
+    /// [`query`]: #method.query
+    /// [`execute`]: #method.execute
+    /// [`simple_query`]: #method.simple_query
+    pub async fn cancel_query(&mut self) -> crate::Result<()> {
+        // Cobalt patch: resynchronise on packet boundaries rather than parsing tokens. The
+        // result stream may have been dropped part-way through a value, in which case the
+        // token stream cannot be parsed (and could wait forever for bytes that never come).
+        self.connection.send_attention().await?;
+        self.connection.resync_after_attention().await
+    }
+
+    /// Closes this database connection explicitly.
+    pub async fn close(self) -> crate::Result<()> {
+        self.connection.close().await
+    }
+
+    /// Begins a new transaction using a Transaction Manager request
+    /// (`TM_BEGIN_XACT`, MS-TDS 2.2.6.8) instead of a `BEGIN TRAN` T-SQL
+    /// batch.
+    ///
+    /// On success the server replies with a `BeginTransaction` environment
+    /// change token whose descriptor is stored in the connection context and
+    /// automatically attached to subsequent requests, scoping them to the
+    /// transaction. Commit the work with [`commit_transaction`] or discard it
+    /// with [`rollback_transaction`].
+    ///
+    /// The transaction uses the server's default isolation level. Use
+    /// [`begin_transaction_with_isolation`] to request a specific one.
+    ///
+    /// [`commit_transaction`]: #method.commit_transaction
+    /// [`rollback_transaction`]: #method.rollback_transaction
+    /// [`begin_transaction_with_isolation`]: #method.begin_transaction_with_isolation
+    pub async fn begin_transaction(&mut self) -> crate::Result<()> {
+        self.begin_transaction_with_isolation(IsolationLevel::Unspecified)
+            .await
+    }
+
+    /// Begins a new transaction with an explicit isolation level using a
+    /// Transaction Manager request (`TM_BEGIN_XACT`, MS-TDS 2.2.6.8).
+    ///
+    /// See [`begin_transaction`] for details on transaction scoping.
+    ///
+    /// [`begin_transaction`]: #method.begin_transaction
+    pub async fn begin_transaction_with_isolation(
+        &mut self,
+        isolation_level: IsolationLevel,
+    ) -> crate::Result<()> {
+        let req = TransactionManagerRequest::begin(
+            self.connection.context().transaction_descriptor(),
+            isolation_level,
+            "",
+        );
+
+        self.send_transaction_manager_request(req).await
+    }
+
+    /// Commits the active transaction using a Transaction Manager request
+    /// (`TM_COMMIT_XACT`, MS-TDS 2.2.6.8).
+    ///
+    /// After a successful commit the connection is no longer scoped to a
+    /// transaction.
+    pub async fn commit_transaction(&mut self) -> crate::Result<()> {
+        let req = TransactionManagerRequest::commit(
+            self.connection.context().transaction_descriptor(),
+            "",
+        );
+
+        self.send_transaction_manager_request(req).await
+    }
+
+    /// Rolls back the active transaction using a Transaction Manager request
+    /// (`TM_ROLLBACK_XACT`, MS-TDS 2.2.6.8).
+    ///
+    /// After a successful rollback the connection is no longer scoped to a
+    /// transaction.
+    pub async fn rollback_transaction(&mut self) -> crate::Result<()> {
+        let req = TransactionManagerRequest::rollback(
+            self.connection.context().transaction_descriptor(),
+            "",
+        );
+
+        self.send_transaction_manager_request(req).await
+    }
+
+    /// Creates a named savepoint in the active transaction using a Transaction
+    /// Manager request (`TM_SAVE_XACT`, MS-TDS 2.2.6.8).
+    ///
+    /// The savepoint can later be targeted by a T-SQL `ROLLBACK TRANSACTION
+    /// <name>` to undo work performed after it while keeping the surrounding
+    /// transaction open.
+    pub async fn save_transaction<'a>(
+        &mut self,
+        name: impl Into<Cow<'a, str>>,
+    ) -> crate::Result<()> {
+        let req = TransactionManagerRequest::save(
+            self.connection.context().transaction_descriptor(),
+            name,
+        );
+
+        self.send_transaction_manager_request(req).await
+    }
+
+    async fn send_transaction_manager_request(
+        &mut self,
+        req: TransactionManagerRequest<'_>,
+    ) -> crate::Result<()> {
+        self.connection.flush_stream().await?;
+
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection
+            .send(PacketHeader::transaction_manager(id), req)
+            .await?;
+
+        // The server responds with a DONE token (plus an ENVCHANGE token that
+        // the token stream applies to the connection context, updating the
+        // active transaction descriptor).
+        TokenStream::new(&mut self.connection).flush_done().await?;
+
+        Ok(())
+    }
+
+    pub(crate) fn rpc_params<'a>(query: impl Into<Cow<'a, str>>) -> Vec<RpcParam<'a>> {
+        vec![
+            RpcParam {
+                name: Cow::Borrowed("stmt"),
+                flags: BitFlags::empty(),
+                value: RpcValue::Scalar(ColumnData::String(Some(query.into()))),
+            },
+            RpcParam {
+                name: Cow::Borrowed("params"),
+                flags: BitFlags::empty(),
+                value: RpcValue::Scalar(ColumnData::I32(Some(0))),
+            },
+        ]
+    }
+
+    pub(crate) async fn rpc_perform_query<'a, 'b>(
+        &'a mut self,
+        proc_id: RpcProcId,
+        mut rpc_params: Vec<RpcParam<'b>>,
+        params: impl Iterator<Item = ColumnData<'b>>,
+    ) -> crate::Result<()>
+    where
+        'a: 'b,
+    {
+        let mut param_str = String::new();
+
+        for (i, param) in params.enumerate() {
+            if i > 0 {
+                param_str.push(',')
+            }
+            param_str.push_str(&format!("@P{} ", i + 1));
+            param_str.push_str(&param.type_name());
+
+            rpc_params.push(RpcParam {
+                name: Cow::Owned(format!("@P{}", i + 1)),
+                flags: BitFlags::empty(),
+                value: RpcValue::Scalar(param),
+            });
+        }
+
+        if let Some(params) = rpc_params.iter_mut().find(|x| x.name == "params") {
+            params.value = RpcValue::Scalar(ColumnData::String(Some(param_str.into())));
+        }
+
+        let req = TokenRpcRequest::new(
+            proc_id,
+            rpc_params,
+            self.connection.context().transaction_descriptor(),
+        );
+
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::rpc(id), req).await?;
+
+        Ok(())
+    }
+
+    /// Sends a named-procedure RPC request with the given parameters. The caller
+    /// is responsible for flushing the connection beforehand and for consuming
+    /// the resulting token stream.
+    pub(crate) async fn rpc_run_command<'a, 'b>(
+        &'a mut self,
+        command_name: Cow<'b, str>,
+        rpc_params: Vec<RpcParam<'b>>,
+    ) -> crate::Result<()>
+    where
+        'a: 'b,
+    {
+        let req = TokenRpcRequest::new(
+            command_name,
+            rpc_params,
+            self.connection.context().transaction_descriptor(),
+        );
+
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::rpc(id), req).await?;
+
+        Ok(())
+    }
+
+    /// Runs a batch query solely to retrieve its column metadata. Used to
+    /// resolve the column layout of a table-valued parameter type.
+    pub(crate) async fn query_run_for_metadata<'b>(
+        &mut self,
+        query: String,
+    ) -> crate::Result<Option<Vec<MetaDataColumn<'b>>>> {
+        self.connection.flush_stream().await?;
+
+        let req = BatchRequest::new(query, self.connection.context().transaction_descriptor());
+
+        let id = self.connection.context_mut().next_packet_id();
+        self.connection.send(PacketHeader::batch(id), req).await?;
+
+        let token_stream = TokenStream::new(&mut self.connection).try_unfold();
+
+        let columns = token_stream
+            .try_fold(None, |mut columns, token| async move {
+                if let ReceivedToken::NewResultset(metadata) = token {
+                    columns = Some(metadata.columns.clone());
+                };
+
+                Ok(columns)
+            })
+            .await?;
+
+        Ok(columns)
+    }
+}

@@ -1,0 +1,22 @@
+[package]
+name = "cobalt-export-delta"
+description = "Delta Lake exporter (delta-rs), isolated for build-time reasons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+cobalt-results.workspace = true
+arrow.workspace = true
+deltalake.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+url.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+parquet.workspace = true

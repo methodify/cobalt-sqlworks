@@ -1,0 +1,24 @@
+[package]
+name = "cobalt-export"
+description = "Result exporters: CSV, TSV, JSON, JSONL, XML, Markdown, Excel, Parquet, Arrow IPC"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+cobalt-results.workspace = true
+arrow = { workspace = true, features = ["ipc_compression"] }
+arrow-ipc.workspace = true
+parquet.workspace = true
+rust_xlsxwriter = { workspace = true, features = ["constant_memory"] }
+csv.workspace = true
+quick-xml.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+calamine.workspace = true
