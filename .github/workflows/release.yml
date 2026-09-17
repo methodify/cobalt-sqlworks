@@ -114,8 +114,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-packager
         run: cargo install cargo-packager --locked
-      - name: Build
-        run: cargo build --release -p cobalt-app --locked
+      - name: Build (without the egui_agent channel — it does not compile on macOS yet)
+        run: cargo build --release -p cobalt-app --locked --no-default-features
       - name: Package (dmg)
         run: cargo packager --release --formats dmg -p cobalt-app
       - uses: actions/upload-artifact@v4
@@ -139,9 +139,16 @@ jobs:
           cd artifacts
           find . -type f ! -name SHA256SUMS -exec sha256sum {} \; | sed 's# \./[^/]*/# #' > SHA256SUMS
           cat SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          name: Cobalt SQL Works ${{ needs.check-version.outputs.version }}
-          generate_release_notes: true
-          files: |
-            artifacts/**/*
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          files=$(find artifacts -type f | sort)
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" $files --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$tag" $files --repo "$GITHUB_REPOSITORY" \
+              --title "Cobalt SQL Works ${{ needs.check-version.outputs.version }}" \
+              --generate-notes
+          fi
