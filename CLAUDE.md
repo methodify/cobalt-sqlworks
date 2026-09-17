@@ -37,7 +37,8 @@ tests/seed.sql          test database for the Docker SQL Server
 
 ## Build, run, test
 
-- `cargo build -p cobalt-app` (dev) · `cargo build --release -p cobalt-app` · full cold build ≈ 10 min.
+- `cargo build -p cobalt-app --features agent` (dev, with the egui_agent channel) · `cargo build --release -p cobalt-app`
+  (release: no agent feature, ever) · full cold build ≈ 10 min.
 - Dev binary: `target/debug/cobalt.exe`. Launch for agent driving: `bash scripts/launch.sh`
   (kills, builds, starts with `COBALT_AGENT=1`, pipe `cobalt.agent`). Then
   `egui-agent-cli --pipe cobalt.agent invoke state --quiet`, `... invoke connect --args '{"profile":"local"}'`, etc.

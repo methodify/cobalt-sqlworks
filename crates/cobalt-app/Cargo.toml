@@ -11,8 +11,9 @@ name = "cobalt"
 path = "src/main.rs"
 
 [features]
-default = ["agent"]
-# Compile the egui_agent control channel in (still inert unless COBALT_AGENT=1).
+default = []
+# Dev only: compile the egui_agent control channel in (`--features agent`; inert unless
+# COBALT_AGENT=1). Release builds never include it.
 agent = ["dep:egui_agent", "dep:egui_agent_macros"]
 
 [dependencies]

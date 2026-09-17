@@ -5,7 +5,7 @@ set -u
 cd "$(dirname "$0")/.."
 taskkill //IM cobalt.exe //F >/dev/null 2>&1; sleep 1
 if [ "${1:-}" != "--no-build" ]; then
-  cargo build -p cobalt-app 2>&1 | grep -E "^error|^warning: unused|Finished" -A6 | head -40
+  cargo build -p cobalt-app --features agent 2>&1 | grep -E "^error|^warning: unused|Finished" -A6 | head -40
 fi
 LOG_LEVEL="${COBALT_LOG:-info}"
 ROOT_W="$(pwd -W 2>/dev/null || pwd)"

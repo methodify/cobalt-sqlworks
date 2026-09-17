@@ -71,6 +71,7 @@ If your tenant's conditional access ever rejects the public client, switch the p
 - Row cap: the timer freezes while "Paused at row cap" and resumes on *Fetch more*; the toolbar **Cancel** (and Alt+C) now ends a paused query, same as *Stop* on the strip.
 - The app has its own icon (window, taskbar, exe, installer): `assets/icon.svg`; wordmark in `assets/logo.svg`.
 - Grid selection: **Ctrl+A** after clicking a cell selects every cell, and the blank corner above the row numbers does the same (hover shows *Select all*). Clicking a cell now takes keyboard focus from the editor, so Ctrl+A / Ctrl+C act on the grid until you click back into the SQL text.
+- The egui_agent control channel is now a dev-only cargo feature (`--features agent`); release builds from v0.1.1 on do not contain it (v0.1.0 has it compiled in but inert unless `COBALT_AGENT=1`).
 - **Help → Check for Updates…** asks GitHub for the latest release; the same check runs once at start-up (Settings → Updates to turn it off or stop skipping a version).
 - Column-header tooltips no longer appear twice (egui_table visits each header cell once per scroll region; the clipped visit is now skipped).
 
