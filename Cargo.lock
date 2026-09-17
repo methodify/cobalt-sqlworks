@@ -1022,9 +1022,9 @@ dependencies = [
 
 [[package]]
 name = "buoyant_kernel_derive"
-version = "1.1.0"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5cdc90bb920438aa9a39089b76f0614183af303f181bf18d05b456a30dd9740"
+checksum = "6f22616ba486e89c304e6bf092f573545220da1f3e1399bb594b47698578a588"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1257,7 +1257,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cobalt-app"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-auth"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "azure_core",
  "azure_identity",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow-schema",
  "chrono",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-driver"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export-delta"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-fabric"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-plan"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cobalt-core",
  "quick-xml 0.42.0",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-results"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-sql"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "cobalt-core",
  "once_cell",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-store"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "cobalt-core",
@@ -6988,9 +6988,9 @@ checksum = "0b993bddc193ae5bd0d623b49ec06ac3e9312875fdae725a975c51db1cc1677f"
 
 [[package]]
 name = "unicode-ident"
-version = "1.0.25"
+version = "1.0.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab72a15cf68d77cb0987d3684aa8a45c5ef827e8cb49ee2f30bfd7ba2feb519f"
+checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 
 [[package]]
 name = "unicode-segmentation"

@@ -64,6 +64,20 @@ What it took (all in the vendored driver, see `vendor/tiberius-ng/COBALT-PATCH.m
 If your tenant's conditional access ever rejects the public client, switch the profile's auth to
 **device code** or **Azure CLI**.
 
+## New in 0.2.0 — Fabric explorer and OneLake export (2026-09-18)
+
+- Click the **cube** on the left rail (Ctrl+Shift+B). It adopts your existing Entra sign-in silently
+  (or offers *Sign in with Microsoft*), then lists every workspace you can reach. Expand one to see
+  its warehouses, lakehouse SQL endpoints, SQL databases and mirrored databases. **Double-click** opens
+  a connected tab; right-click for *Pin*, *Save to Servers…*, *Copy connection string*, *Open in
+  Fabric portal*. Pins show at the top and survive restarts.
+- **Save results → Destination: OneLake lakehouse.** Delta tables land in the lakehouse's `Tables/`
+  and are queryable from its SQL endpoint right away; Parquet/CSV/Excel/… land in `Files/`. The
+  lakehouse list comes from the Fabric panel. Tested against your `test` lakehouse.
+- Registration permissions you added (Workspace.Read.All, Item.Read.All, OneLake.ReadWrite.All under
+  Power BI Service) are exactly what these need. If you ever add *Azure Storage → user_impersonation*
+  the OneLake write will use that token instead; not required.
+
 ## Fixed after your first pass (2026-09-17)
 
 - Connection editor: the **Advanced** section now opens (encrypt mode, trust server certificate, host name in certificate, timeouts, intent).
