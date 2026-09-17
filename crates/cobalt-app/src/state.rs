@@ -279,7 +279,7 @@ impl EditorTab {
     pub fn display_title(&self) -> String {
         let mut t = self.title.clone();
         if self.is_dirty() {
-            t.push_str(" ●");
+            t.push_str(" •");
         }
         t
     }

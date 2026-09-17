@@ -22,7 +22,7 @@
 use arrow::array::{
     ArrayRef, BinaryBuilder, BooleanBuilder, Date32Builder, Decimal128Builder, Float32Builder, Float64Builder, Int16Builder, Int32Builder,
     Int64Builder, LargeBinaryBuilder, LargeStringBuilder, RecordBatch, StringBuilder, Time64NanosecondBuilder, TimestampMillisecondBuilder,
-    TimestampNanosecondBuilder, UInt8Builder,
+    TimestampMicrosecondBuilder, TimestampNanosecondBuilder, UInt8Builder,
 };
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cobalt_core::{ColumnInfo, SqlType};
@@ -33,6 +33,7 @@ use tiberius::{ColumnData, ColumnFlag, FixedLenType, MetaDataColumn, TokenColMet
 const DAYS_0001_TO_1970: i64 = 719_162;
 const DAYS_1900_TO_1970: i64 = 25_567;
 const NS_PER_DAY: i64 = 86_400_000_000_000;
+const US_PER_DAY: i64 = 86_400_000_000;
 const MS_PER_DAY: i64 = 86_400_000;
 /// `len` value tiberius reports for `(max)` var types.
 const PLP_MAX_LEN: usize = 0xFFFF;
@@ -172,6 +173,17 @@ pub fn date_to_date32(d: &Date) -> i32 {
 pub fn datetime2_to_ns(dt: &DateTime2) -> Option<i64> {
     let days = dt.date().days() as i64 - DAYS_0001_TO_1970;
     days.checked_mul(NS_PER_DAY)?.checked_add(time_ns(&dt.time()))
+}
+
+/// Microseconds since 1970-01-01 (naive); the 100 ns digit is truncated. Covers 0001-01-01 .. 9999-12-31.
+pub fn datetime2_to_us(dt: &DateTime2) -> Option<i64> {
+    let days = dt.date().days() as i64 - DAYS_0001_TO_1970;
+    days.checked_mul(US_PER_DAY)?.checked_add(time_ns(&dt.time()) / 1000)
+}
+
+/// UTC microseconds (see `datetimeoffset_to_utc_ns`).
+pub fn datetimeoffset_to_utc_us(dto: &DateTimeOffset) -> Option<i64> {
+    datetime2_to_us(&dto.datetime2())
 }
 
 /// UTC nanoseconds. Per MS-TDS 2.2.5.5.1.9 the `datetime2` part of a `datetimeoffset` is
@@ -332,6 +344,8 @@ enum ColumnBuilder {
     TimestampMs(TimestampMillisecondBuilder),
     TimestampNs(TimestampNanosecondBuilder),
     TimestampNsUtc(TimestampNanosecondBuilder),
+    TimestampUs(TimestampMicrosecondBuilder),
+    TimestampUsUtc(TimestampMicrosecondBuilder),
     Utf8(StringBuilder),
     LargeUtf8(LargeStringBuilder),
     Binary(BinaryBuilder),
@@ -353,6 +367,10 @@ impl ColumnBuilder {
             DataType::Time64(TimeUnit::Nanosecond) => Self::Time64(Time64NanosecondBuilder::with_capacity(capacity)),
             DataType::Timestamp(TimeUnit::Millisecond, None) => Self::TimestampMs(TimestampMillisecondBuilder::with_capacity(capacity)),
             DataType::Timestamp(TimeUnit::Nanosecond, None) => Self::TimestampNs(TimestampNanosecondBuilder::with_capacity(capacity)),
+            DataType::Timestamp(TimeUnit::Microsecond, None) => Self::TimestampUs(TimestampMicrosecondBuilder::with_capacity(capacity)),
+            DataType::Timestamp(TimeUnit::Microsecond, Some(tz)) => {
+                Self::TimestampUsUtc(TimestampMicrosecondBuilder::with_capacity(capacity).with_data_type(DataType::Timestamp(TimeUnit::Microsecond, Some(tz.clone()))))
+            }
             DataType::Timestamp(TimeUnit::Nanosecond, Some(tz)) => {
                 Self::TimestampNsUtc(TimestampNanosecondBuilder::with_capacity(capacity).with_data_type(DataType::Timestamp(TimeUnit::Nanosecond, Some(tz.clone()))))
             }
@@ -464,6 +482,29 @@ impl ColumnBuilder {
                 C::DateTime2(None) => b.append_null(),
                 _ => return false,
             },
+            Self::TimestampUs(b) => match v {
+                C::DateTime2(Some(dt)) => match datetime2_to_us(dt) {
+                    Some(us) => b.append_value(us),
+                    None => return false,
+                },
+                C::DateTime2(None) => b.append_null(),
+                C::DateTime(x) => b.append_option(x.as_ref().map(|d| datetime_to_ms(d) * 1_000)),
+                C::SmallDateTime(x) => b.append_option(x.as_ref().map(|d| smalldatetime_to_ms(d) * 1_000)),
+                _ => return false,
+            },
+            Self::TimestampUsUtc(b) => match v {
+                C::DateTimeOffset(Some(dto)) => match datetimeoffset_to_utc_us(dto) {
+                    Some(us) => b.append_value(us),
+                    None => return false,
+                },
+                C::DateTimeOffset(None) => b.append_null(),
+                C::DateTime2(Some(dt)) => match datetime2_to_us(dt) {
+                    Some(us) => b.append_value(us),
+                    None => return false,
+                },
+                C::DateTime2(None) => b.append_null(),
+                _ => return false,
+            },
             Self::Utf8(b) => match v {
                 C::String(x) => b.append_option(x.as_deref()),
                 C::Xml(x) => b.append_option(x.as_ref().map(|x| x.as_ref().as_ref())),
@@ -503,6 +544,8 @@ impl ColumnBuilder {
             Self::TimestampMs(b) => b.append_null(),
             Self::TimestampNs(b) => b.append_null(),
             Self::TimestampNsUtc(b) => b.append_null(),
+            Self::TimestampUs(b) => b.append_null(),
+            Self::TimestampUsUtc(b) => b.append_null(),
             Self::Utf8(b) => b.append_null(),
             Self::LargeUtf8(b) => b.append_null(),
             Self::Binary(b) => b.append_null(),
@@ -527,6 +570,8 @@ impl ColumnBuilder {
             Self::TimestampMs(b) => b.len(),
             Self::TimestampNs(b) => b.len(),
             Self::TimestampNsUtc(b) => b.len(),
+            Self::TimestampUs(b) => b.len(),
+            Self::TimestampUsUtc(b) => b.len(),
             Self::Utf8(b) => b.len(),
             Self::LargeUtf8(b) => b.len(),
             Self::Binary(b) => b.len(),
@@ -549,6 +594,8 @@ impl ColumnBuilder {
             Self::TimestampMs(b) => Arc::new(b.finish()),
             Self::TimestampNs(b) => Arc::new(b.finish()),
             Self::TimestampNsUtc(b) => Arc::new(b.finish()),
+            Self::TimestampUs(b) => Arc::new(b.finish()),
+            Self::TimestampUsUtc(b) => Arc::new(b.finish()),
             Self::Utf8(b) => Arc::new(b.finish()),
             Self::LargeUtf8(b) => Arc::new(b.finish()),
             Self::Binary(b) => Arc::new(b.finish()),
@@ -767,7 +814,7 @@ mod tests {
         let dec = batch.column(0).as_primitive::<Decimal128Type>();
         assert_eq!(dec.value(0), 1_234_500);
         assert!(dec.is_null(1));
-        let ts = batch.column(1).as_primitive::<TimestampNanosecondType>();
+        let ts = batch.column(1).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
         assert_eq!(ts.value(0), 0);
         assert_eq!(batch.column(2).as_string::<i32>().value(0), "42");
         assert_eq!(batch.column(3).as_primitive::<Decimal128Type>().value(0), 9223372036854775807);

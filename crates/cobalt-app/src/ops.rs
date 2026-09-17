@@ -704,6 +704,10 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         t.id = snap.tab_id;
         t.title = snap.title;
         t.custom_title = !t.title.starts_with("SQLQuery_");
+        if let Some(n) = t.title.strip_prefix("SQLQuery_").and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
+            t.untitled_index = n;
+            state.next_untitled = state.next_untitled.max(n + 1);
+        }
         t.text = snap.text;
         t.file_path = snap.file_path.clone();
         t.editor.cursor = snap.cursor;

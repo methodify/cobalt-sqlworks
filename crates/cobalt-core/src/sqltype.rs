@@ -120,7 +120,7 @@ impl SqlType {
     }
 
     /// The Arrow type this column materializes as. Mapping is deliberately lossless-first:
-    /// decimals → Decimal128, datetime2 → Timestamp(µs/ns), datetimeoffset → Timestamp(µs, UTC) with the
+    /// decimals → Decimal128, datetime2 → Timestamp(µs), datetimeoffset → Timestamp(µs, UTC) with the
     /// original offset kept in a companion column by the driver when needed, uniqueidentifier → Utf8,
     /// xml/json → Utf8 (LargeUtf8 for max types), sql_variant → Utf8 (formatted).
     pub fn arrow_type(&self) -> arrow_schema::DataType {
@@ -139,8 +139,9 @@ impl SqlType {
             SqlType::Date => D::Date32,
             SqlType::Time { .. } => D::Time64(T::Nanosecond),
             SqlType::DateTime | SqlType::SmallDateTime => D::Timestamp(T::Millisecond, None),
-            SqlType::DateTime2 { .. } => D::Timestamp(T::Nanosecond, None),
-            SqlType::DateTimeOffset { .. } => D::Timestamp(T::Nanosecond, Some("UTC".into())),
+            // Microseconds: nanoseconds cannot represent dates before 1677 (Fabric/Dataverse use 0001-01-01 sentinels).
+            SqlType::DateTime2 { .. } => D::Timestamp(T::Microsecond, None),
+            SqlType::DateTimeOffset { .. } => D::Timestamp(T::Microsecond, Some("UTC".into())),
             SqlType::Char { .. } | SqlType::VarChar { len: Some(_) } | SqlType::NChar { .. } | SqlType::NVarChar { len: Some(_) } => D::Utf8,
             SqlType::VarChar { len: None } | SqlType::NVarChar { len: None } | SqlType::Text | SqlType::NText | SqlType::Xml | SqlType::Json => D::LargeUtf8,
             SqlType::Binary { .. } | SqlType::VarBinary { len: Some(_) } | SqlType::Timestamp => D::Binary,

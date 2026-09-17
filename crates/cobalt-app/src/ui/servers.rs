@@ -90,7 +90,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
 fn group_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, g: &ServerGroup, groups: &[ServerGroup], profiles: &[ConnectionProfile], depth: usize, filter: &str, active: Option<ProfileId>, actions: &mut Vec<TreeAction>) {
     let expanded = lib.expanded_groups.contains(&g.id) || !filter.is_empty();
     let members: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.group == Some(g.id)).collect();
-    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: false, icon: icons::FOLDER, icon_color: Some(Theme::color32(g.color)), label: &g.name, detail: Some(&format!("{}", members.len())), selected: false, color_dot: None, id_salt: &g.id.to_string() });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: false, icon: icons::FOLDER, icon_color: Some(Theme::color32(g.color)), label: &g.name, detail: Some(&format!("{}", members.len())), selected: false, color_dot: None, id_salt: &g.id.to_string(), kind: "group" });
     if r.toggle || r.response.clicked() {
         if lib.expanded_groups.contains(&g.id) {
             lib.expanded_groups.remove(&g.id);
@@ -135,7 +135,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
     let icon = if p.looks_like_fabric() { icons::CLOUD } else if p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
-    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, id_salt: &p.id.to_string() });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, id_salt: &p.id.to_string(), kind: "server" });
     if r.toggle || r.response.clicked() {
         if expanded {
             node.expanded = false;
@@ -143,6 +143,8 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
             node.expanded = true;
             if !connected {
                 actions.push(TreeAction::ConnectServer(p.id));
+            } else if node.databases.needs_load() {
+                actions.push(TreeAction::RefreshServer(p.id));
             }
         }
     }
@@ -210,7 +212,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
         }
         Loadable::Failed(e) => {
             let msg = format!("{} {}", icons::WARNING, e.lines().next().unwrap_or(""));
-            tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "err" });
+            tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "err", kind: "error" });
         }
         Loadable::Loaded(dbs) => {
             let show_sys = node.show_system_dbs;
@@ -230,7 +232,7 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
     let expanded = dbn.expanded;
     let loading = dbn.objects.is_loading();
     let detail = if db.state != "ONLINE" && !db.state.is_empty() { Some(db.state.as_str()) } else if db.is_read_only { Some("read-only") } else { None };
-    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon: icons::DATABASE, icon_color: Some(if db.is_system { theme.text_faint } else { theme.accent }), label: &db.name, detail, selected: false, color_dot: None, id_salt: &db.name });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon: icons::DATABASE, icon_color: Some(if db.is_system { theme.text_faint } else { theme.accent }), label: &db.name, detail, selected: false, color_dot: None, id_salt: &db.name, kind: "database" });
     if r.toggle || r.response.clicked() {
         dbn.expanded = !expanded;
         if !expanded && dbn.objects.needs_load() {
@@ -259,7 +261,7 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
     }
     if let Loadable::Failed(e) = &dbn.objects {
         let msg = e.lines().next().unwrap_or("").to_string();
-        tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "dberr" });
+        tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "dberr", kind: "error" });
         return;
     }
     let caps = engine.map(|e| e.capabilities).unwrap_or(EngineKind::SqlServer.capabilities());
@@ -315,7 +317,7 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         Folder::Schemas => icons::FOLDERS,
         _ => icons::FOLDER_SIMPLE,
     };
-    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: dbn.objects.is_loading(), icon, icon_color: Some(theme.warning), label: folder.label(), detail: detail.as_deref(), selected: false, color_dot: None, id_salt: &format!("{}-{:?}", db.name, folder) });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: dbn.objects.is_loading(), icon, icon_color: Some(theme.warning), label: folder.label(), detail: detail.as_deref(), selected: false, color_dot: None, id_salt: &format!("{}-{:?}", db.name, folder), kind: "folder" });
     if r.toggle || r.response.clicked() {
         if expanded {
             dbn.expanded_folders.remove(&folder);
@@ -344,7 +346,7 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                 if !filter.is_empty() && !s.to_lowercase().contains(&filter) {
                     continue;
                 }
-                let r = tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: None, label: s, detail: None, selected: false, color_dot: None, id_salt: s });
+                let r = tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: None, label: s, detail: None, selected: false, color_dot: None, id_salt: s, kind: "schema" });
                 r.response.context_menu(|ui| {
                     if ui.button("Copy name").clicked() {
                         actions.push(TreeAction::CopyText(s.clone()));
@@ -371,7 +373,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     let expandable = matches!(obj.kind, ObjectKind::Table | ObjectKind::View | ObjectKind::Procedure | ObjectKind::TableFunction | ObjectKind::ScalarFunction | ObjectKind::TableType);
     let expanded = dbn.expanded_objects.contains(&oid);
     let label = obj.qualified();
-    let r = tree_row(ui, theme, TreeRow { depth, expandable, expanded, loading: false, icon: icon_for_object(obj.kind), icon_color: None, label: &label, detail: None, selected: false, color_dot: None, id_salt: &format!("{}-{}", oid, obj.name) });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable, expanded, loading: false, icon: icon_for_object(obj.kind), icon_color: None, label: &label, detail: None, selected: false, color_dot: None, id_salt: &format!("{}-{}", oid, obj.name), kind: obj.kind.label() });
     if (r.toggle || r.response.clicked()) && expandable {
         if expanded {
             dbn.expanded_objects.remove(&oid);
@@ -449,7 +451,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             SubFolder::Parameters => ("Parameters", dbn.parameters.get(&oid).map(|l| l.is_loading()).unwrap_or(false), dbn.parameters.get(&oid).and_then(|l| l.get()).map(|v| v.len())),
         };
         let detail = loaded_count.map(|c| c.to_string());
-        let r = tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: true, expanded: sub_expanded, loading, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.warning), label, detail: detail.as_deref(), selected: false, color_dot: None, id_salt: &format!("{oid}-{sub:?}") });
+        let r = tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: true, expanded: sub_expanded, loading, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.warning), label, detail: detail.as_deref(), selected: false, color_dot: None, id_salt: &format!("{oid}-{sub:?}"), kind: "folder" });
         if r.toggle || r.response.clicked() {
             if sub_expanded {
                 dbn.expanded_subfolders.remove(&key);
@@ -475,7 +477,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                     for c in cols {
                         let detail = format!("{}{}{}", c.sql_type, if c.nullable { ", null" } else { ", not null" }, if c.is_identity { ", identity" } else if c.is_computed { ", computed" } else { "" });
                         let icon = if c.in_primary_key { icons::KEY } else { icons::COLUMNS };
-                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon, icon_color: if c.in_primary_key { Some(theme.warning) } else { None }, label: &c.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-c-{}", c.name) });
+                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon, icon_color: if c.in_primary_key { Some(theme.warning) } else { None }, label: &c.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-c-{}", c.name), kind: "column" });
                         if r.response.double_clicked() {
                             actions.push(TreeAction::InsertIntoEditor(quote_ident(&c.name)));
                         }
@@ -491,7 +493,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                         });
                     }
                 } else if let Some(Loadable::Failed(e)) = dbn.columns.get(&oid) {
-                    tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: e, detail: None, selected: false, color_dot: None, id_salt: "colerr" });
+                    tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: e, detail: None, selected: false, color_dot: None, id_salt: "colerr", kind: "error" });
                 }
             }
             SubFolder::Keys => {
@@ -509,7 +511,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                             KeyKind::Check => icons::CHECK_SQUARE,
                             KeyKind::Default => icons::EQUALS,
                         };
-                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon, icon_color: None, label: &k.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-k-{}", k.name) });
+                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon, icon_color: None, label: &k.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-k-{}", k.name), kind: "key" });
                         r.response.context_menu(|ui| {
                             if ui.button("Copy name").clicked() {
                                 actions.push(TreeAction::CopyText(k.name.clone()));
@@ -526,7 +528,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                         if !i.included_columns.is_empty() {
                             detail.push_str(&format!(" include ({})", i.included_columns.join(", ")));
                         }
-                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::LIST_MAGNIFYING_GLASS, icon_color: None, label: &i.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-i-{}", i.name) });
+                        let r = tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::LIST_MAGNIFYING_GLASS, icon_color: None, label: &i.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-i-{}", i.name), kind: "index" });
                         r.response.context_menu(|ui| {
                             if ui.button("Copy name").clicked() {
                                 actions.push(TreeAction::CopyText(i.name.clone()));
@@ -540,7 +542,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                 if let Some(Loadable::Loaded(params)) = dbn.parameters.get(&oid) {
                     for prm in params {
                         let detail = format!("{}{}", prm.sql_type, if prm.is_output { ", output" } else { "" });
-                        tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::AT, icon_color: None, label: &prm.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-p-{}", prm.name) });
+                        tree_row(ui, theme, TreeRow { depth: depth + 2, expandable: false, expanded: false, loading: false, icon: icons::AT, icon_color: None, label: &prm.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("{oid}-p-{}", prm.name), kind: "parameter" });
                     }
                 }
             }

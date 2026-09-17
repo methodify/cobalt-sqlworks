@@ -200,8 +200,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
 
 fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
-    let width = f.state.sidebar_width;
-    let panel = egui::Panel::left("sidebar").resizable(true).default_size(width).size_range(200.0..=700.0).frame(egui::Frame::new().fill(theme.bg_sidebar));
+    let panel = egui::Panel::left("sidebar").resizable(true).default_size(280.0).size_range(200.0..=640.0).frame(egui::Frame::new().fill(theme.bg_sidebar));
     let resp = panel.show(ui, |ui| match f.state.sidebar_view {
         SidebarView::Servers => {
             let active_profile = f.state.active().and_then(|t| t.profile.as_ref()).map(|p| p.id);
@@ -273,6 +272,8 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     let galley = ui.painter().layout_no_wrap(title.clone(), font.clone(), theme.text);
                     let w = galley.size().x + 44.0 + if t.pinned { 14.0 } else { 0.0 };
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w.max(90.0), 32.0), Sense::click());
+                    let a11y_title = title.clone();
+                    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, format!("tab {a11y_title}")));
                     let bg = if active { theme.bg_panel } else if resp.hovered() { theme.bg_hover } else { theme.bg_sidebar };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
                     if let Some(c) = color {

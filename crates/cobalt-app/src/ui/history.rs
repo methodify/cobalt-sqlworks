@@ -69,7 +69,6 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<HistoryActi
             let frame = egui::Frame::new().fill(if selected { theme.bg_selection } else { theme.bg_panel }).inner_margin(egui::Margin::symmetric(8, 5)).corner_radius(4.0);
             let resp = frame
                 .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         let (icon, color) = match e.status.as_str() {
                             "success" => (icons::CHECK_CIRCLE, theme.success),

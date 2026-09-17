@@ -133,7 +133,7 @@ fn arg_usize(args: Option<&Value>, key: &str) -> Option<usize> {
 
 impl AgentApp for CobaltApp {
     fn snapshot(&self, cx: &SnapshotCtx<'_>) -> Snapshot {
-        Snapshot::new().nodes(cx.registry_nodes()).with_data(&self.state_json())
+        Snapshot::new().nodes(cx.registry_nodes()).nodes(cx.accesskit_nodes()).nodes(cx.event_nodes()).with_data(&self.state_json())
     }
 
     fn dispatch(&mut self, action: &Action, egui: &egui::Context) -> ActionResult {

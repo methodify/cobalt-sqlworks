@@ -195,11 +195,11 @@ async fn t02_all_types_values() {
     assert_eq!(c(12).as_primitive::<arrow::datatypes::Date32Type>().value(0), (date - epoch).num_days() as i32);
     assert_eq!(c(13).as_primitive::<arrow::datatypes::Time64NanosecondType>().value(0), (13 * 3600 + 45 * 60 + 30) * 1_000_000_000 + 123_456_700);
     assert_eq!(c(14).as_primitive::<arrow::datatypes::TimestampMillisecondType>().value(0), ns(2026, 9, 16, 13, 45, 30, 123_000_000) / 1_000_000);
-    assert_eq!(c(15).as_primitive::<arrow::datatypes::TimestampNanosecondType>().value(0), ns(2026, 9, 16, 13, 45, 30, 123_456_700));
+    assert_eq!(c(15).as_primitive::<arrow::datatypes::TimestampMicrosecondType>().value(0), ns(2026, 9, 16, 13, 45, 30, 123_456_700) / 1000);
     assert_eq!(c(16).as_primitive::<arrow::datatypes::TimestampMillisecondType>().value(0), ns(2026, 9, 16, 13, 45, 0, 0) / 1_000_000);
-    let dto = c(17).as_primitive::<arrow::datatypes::TimestampNanosecondType>();
-    assert_eq!(dto.data_type(), &DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())));
-    assert_eq!(dto.value(0), ns(2026, 9, 16, 20, 45, 30, 123_456_700), "datetimeoffset must be converted to UTC");
+    let dto = c(17).as_primitive::<arrow::datatypes::TimestampMicrosecondType>();
+    assert_eq!(dto.data_type(), &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())));
+    assert_eq!(dto.value(0), ns(2026, 9, 16, 20, 45, 30, 123_456_700) / 1000, "datetimeoffset must be converted to UTC");
     assert_eq!(c(18).as_string::<i32>().value(0), "abc       ");
     assert_eq!(c(19).as_string::<i32>().value(0), "hello world");
     assert_eq!(c(20).as_string::<i32>().value(0), "ñandú     ");

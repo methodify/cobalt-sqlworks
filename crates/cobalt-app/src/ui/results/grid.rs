@@ -104,10 +104,12 @@ impl TableDelegate for Delegate<'_> {
         let funnel_resp = ui.interact(funnel_rect, ui.id().with(("funnel", col)), Sense::click());
         let funnel_color = if filtered { self.theme.accent } else if funnel_resp.hovered() { self.theme.text } else { self.theme.text_faint };
         painter.text(funnel_rect.center(), Align2::CENTER_CENTER, egui_phosphor::regular::FUNNEL, FontId::proportional(13.0), funnel_color);
+        funnel_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("filter {}", info.name)));
         if funnel_resp.clicked() {
             self.funnel_click = Some((col, funnel_rect.left_bottom()));
         }
         let head_resp = ui.interact(Rect::from_min_max(rect.min, Pos2::new(funnel_rect.left(), rect.max.y)), ui.id().with(("head", col)), Sense::click());
+        head_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("column {}", info.name)));
         if head_resp.clicked() {
             let shift = ui.input(|i| i.modifiers.shift);
             self.header_click = Some((col, shift));
@@ -244,10 +246,13 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     let rs = args.rs.clone();
     let rows = rs.visible_count();
     let cols = rs.column_count();
+    let mut seed_state = false;
     if !args.grid.widths_initialized && (rows > 0 || !rs.state().is_live()) {
         init_widths(ui, &mut args, &font, &header_font);
+        seed_state = true;
     } else if args.grid.col_widths.len() != cols {
         args.grid.col_widths.resize(cols, 120.0);
+        seed_state = true;
     }
     let gutter = args.show_row_numbers;
 
@@ -348,6 +353,15 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         table = table.scroll_to_row(r as u64, None).scroll_to_column(if gutter { c + 1 } else { c }, None);
     }
     let table_id = table.get_id(ui);
+    if seed_state || egui_table::TableState::load(ui.ctx(), table_id).is_none() {
+        // egui_table auto-sizes brand-new tables from cell content (which we paint, not lay out),
+        // so seed its state with our measured widths.
+        let mut st = egui_table::TableState::default();
+        for (i, w) in delegate.grid.col_widths.iter().enumerate() {
+            st.col_widths.insert(args.id_salt.with(("col", i)), *w);
+        }
+        st.store(ui.ctx(), table_id);
+    }
     let response = table.show(ui, &mut delegate);
 
     // persist resized widths back into our state

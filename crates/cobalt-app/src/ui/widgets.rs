@@ -37,6 +37,8 @@ pub struct TreeRow<'a> {
     pub selected: bool,
     pub color_dot: Option<Color32>,
     pub id_salt: &'a str,
+    /// Accessibility prefix, e.g. "server" → label "server: local".
+    pub kind: &'a str,
 }
 
 pub struct TreeRowResponse {
@@ -49,6 +51,9 @@ pub fn tree_row(ui: &mut Ui, theme: &Theme, row: TreeRow<'_>) -> TreeRowResponse
     let indent = 14.0 * row.depth as f32 + 4.0;
     let desired = Vec2::new(ui.available_width().max(100.0), row_h);
     let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
+    let label_for_a11y = if row.kind.is_empty() { row.label.to_owned() } else { format!("{}: {}", row.kind, row.label) };
+    let expanded_a11y = row.expanded;
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, expanded_a11y, label_for_a11y.clone()));
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let hovered = response.hovered();
     let painter = ui.painter();
