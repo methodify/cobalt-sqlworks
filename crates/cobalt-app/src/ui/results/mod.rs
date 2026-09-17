@@ -163,6 +163,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             });
                         }
                         let view = &mut run.result_sets[set];
+                        let find_h = if view.grid.find.is_some() { 28.0 } else { 0.0 };
+                        if view.grid.find.is_some() {
+                            find_bar(ui, view, theme, args.fmt);
+                        }
+                        let grid_h = (grid_h - find_h).max(60.0);
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), grid_h), egui::Sense::hover());
                         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("rs-child", run.id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
                         child.set_clip_rect(rect);
@@ -314,6 +319,85 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
         }
     }
     actions
+}
+
+/// Find-in-results bar. Matches are recomputed when the text or the view changes (capped at 200k cells).
+fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, fmt: &CellFormatter) {
+    let rs = view.rs.clone();
+    let Some(find) = view.grid.find.as_mut() else { return };
+    let mut close = false;
+    let mut step: i32 = 0;
+    egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(icons::MAGNIFYING_GLASS);
+            let r = ui.add(egui::TextEdit::singleline(&mut find.text).hint_text("Find in results").desired_width(220.0).id(egui::Id::new(("grid-find", rs.index, std::sync::Arc::as_ptr(&rs) as usize))));
+            if !r.has_focus() && find.matches.is_empty() && find.text.is_empty() {
+                r.request_focus();
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                step = 1;
+                r.request_focus();
+            }
+            let gen = rs.generation();
+            let changed = r.changed() || find.generation != gen;
+            if changed {
+                find.generation = gen;
+                find.matches.clear();
+                find.current = 0;
+                let needle = find.text.to_lowercase();
+                if !needle.is_empty() {
+                    let rows = rs.visible_count();
+                    let cols = rs.column_count();
+                    let mut budget = 200_000usize;
+                    'outer: for row in 0..rows {
+                        for col in 0..cols {
+                            if budget == 0 {
+                                break 'outer;
+                            }
+                            budget -= 1;
+                            if rs.cell_text(row, col, fmt).to_lowercase().contains(&needle) {
+                                find.matches.push((row, col));
+                            }
+                        }
+                    }
+                }
+                step = if find.matches.is_empty() { 0 } else { 0 };
+                if !find.matches.is_empty() {
+                    let (r0, c0) = find.matches[0];
+                    view.grid.anchor = Some((r0, c0));
+                    view.grid.selection = Selection::Cells { r0, c0, r1: r0, c1: c0 };
+                    view.grid.scroll_to = Some((r0, c0));
+                }
+            }
+            if ui.small_button(icons::CARET_UP).on_hover_text("Previous (Shift+Enter)").clicked() {
+                step = -1;
+            }
+            if ui.small_button(icons::CARET_DOWN).on_hover_text("Next (Enter)").clicked() {
+                step = 1;
+            }
+            let label = if find.text.is_empty() { String::new() } else if find.matches.is_empty() { "No matches".into() } else { format!("{} of {}", find.current + 1, find.matches.len()) };
+            ui.label(RichText::new(label).size(12.0).color(theme.text_muted));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(icons::X).clicked() {
+                    close = true;
+                }
+            });
+        });
+    });
+    if step != 0 && !find.matches.is_empty() {
+        let n = find.matches.len();
+        find.current = ((find.current as i32 + step).rem_euclid(n as i32)) as usize;
+        let (r0, c0) = find.matches[find.current];
+        view.grid.anchor = Some((r0, c0));
+        view.grid.selection = Selection::Cells { r0, c0, r1: r0, c1: c0 };
+        view.grid.scroll_to = Some((r0, c0));
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close = true;
+    }
+    if close {
+        view.grid.find = None;
+    }
 }
 
 pub fn state_color(theme: &Theme, state: &RunState) -> Color32 {

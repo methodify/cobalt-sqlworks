@@ -122,6 +122,8 @@ async fn run_script(
         let mut cap = if opts.row_cap == 0 { u64::MAX } else { opts.row_cap };
         let mut batch_error: Option<ServerMessage> = None;
         let mut last_repaint = Instant::now();
+        // rows received past the cap, appended when the user asks for more
+        let mut held: Option<arrow::array::RecordBatch> = None;
 
         loop {
             let item = tokio::select! {
@@ -136,7 +138,25 @@ async fn run_script(
                         }
                         Some(TabMsg::FetchMore { rows }) => {
                             cap = rows.map(|r| rows_in_set + r).unwrap_or(u64::MAX);
-                            if let Some(rs) = &current { rs.set_state(RunState::Streaming); }
+                            if let Some(rs) = &current {
+                                rs.set_state(RunState::Streaming);
+                                if let Some(h) = held.take() {
+                                    let n = h.num_rows() as u64;
+                                    let take = n.min(cap - rows_in_set);
+                                    if take < n {
+                                        held = Some(h.slice(take as usize, (n - take) as usize));
+                                    }
+                                    if take > 0 {
+                                        let _ = rs.append(h.slice(0, take as usize));
+                                        rows_in_set += take;
+                                        total_rows += take;
+                                    }
+                                    if rows_in_set >= cap {
+                                        rs.set_state(RunState::Paused);
+                                        shared.emit(Event::Paused { tab, run, index: rs.index, rows: rows_in_set });
+                                    }
+                                }
+                            }
                             continue;
                         }
                         Some(_) => continue, // ignore other messages while running
@@ -155,9 +175,18 @@ async fn run_script(
                 }
                 StreamItem::Rows(batch) => {
                     if let Some(rs) = &current {
-                        let n = batch.num_rows() as u64;
-                        if let Err(e) = rs.append(batch) {
-                            tracing::error!(error = %e, "append failed");
+                        let mut batch = batch;
+                        let mut n = batch.num_rows() as u64;
+                        if rows_in_set + n > cap {
+                            let take = cap.saturating_sub(rows_in_set);
+                            held = Some(batch.slice(take as usize, (n - take) as usize));
+                            batch = batch.slice(0, take as usize);
+                            n = take;
+                        }
+                        if n > 0 {
+                            if let Err(e) = rs.append(batch) {
+                                tracing::error!(error = %e, "append failed");
+                            }
                         }
                         rows_in_set += n;
                         total_rows += n;
@@ -171,6 +200,15 @@ async fn run_script(
                     }
                 }
                 StreamItem::ResultSetEnd { rows } => {
+                    if let Some(h) = held.take() {
+                        // the server finished while we were capped: keep the remainder appended so nothing is lost
+                        if let Some(rs) = &current {
+                            let n = h.num_rows() as u64;
+                            let _ = rs.append(h);
+                            rows_in_set += n;
+                            total_rows += n;
+                        }
+                    }
                     if let Some(rs) = current.take() {
                         rs.set_state(RunState::Complete);
                         shared.emit(Event::ResultSetDone { tab, run, index: rs.index, rows: rows.max(rows_in_set) });

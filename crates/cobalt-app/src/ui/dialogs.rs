@@ -12,8 +12,10 @@ use egui::{Key, RichText, Ui, Vec2};
 use egui_phosphor::regular as icons;
 
 fn modal<R>(ctx: &egui::Context, theme: &Theme, id: &str, width: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
+    let max_h = ctx.content_rect().height() - 60.0;
     let m = egui::Modal::new(egui::Id::new(id)).frame(egui::Frame::window(&ctx.global_style()).fill(theme.bg_panel).inner_margin(16.0)).show(ctx, |ui| {
         ui.set_width(width);
+        ui.set_max_height(max_h);
         add(ui)
     });
     let close = m.should_close();
@@ -666,7 +668,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                     });
                 });
             });
-            ui.separator();
+            ui.add_space(16.0);
             ui.vertical(|ui| {
                 ui.label(RichText::new("Recent").strong().color(theme.text_muted));
                 for p in d.recent.clone() {

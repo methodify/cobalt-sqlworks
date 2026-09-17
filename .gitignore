@@ -5,3 +5,4 @@
 /dist
 *.log
 /.cobalt-dev/
+/target-linux

@@ -311,6 +311,24 @@ impl AgentApp for CobaltApp {
                 self.run_command(egui, c);
                 ActionResult::ok()
             }
+            "select_cell" => {
+                let row = arg_usize(args, "row").unwrap_or(0);
+                let col = arg_usize(args, "col").unwrap_or(0);
+                let set = arg_usize(args, "set").unwrap_or(0);
+                let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
+                let Some(r) = t.run.as_mut() else { return ActionResult::BadArgs("no run".into()) };
+                let mut data_sets: Vec<&mut crate::state::ResultSetView> = r.result_sets.iter_mut().filter(|s| !s.is_plan).collect();
+                let Some(v) = data_sets.get_mut(set) else { return ActionResult::BadArgs("no such result set".into()) };
+                for s in r.result_sets.iter_mut() {
+                    s.grid.focused = false;
+                }
+                let v = r.result_sets.iter_mut().filter(|s| !s.is_plan).nth(set).unwrap();
+                v.grid.focused = true;
+                v.grid.anchor = Some((row, col));
+                v.grid.selection = crate::state::Selection::Cells { r0: row, c0: col, r1: row, c1: col };
+                v.grid.scroll_to = Some((row, col));
+                ActionResult::ok()
+            }
             "dismiss_dialog" => {
                 self.state.dialog = crate::state::Dialog::None;
                 ActionResult::ok()
