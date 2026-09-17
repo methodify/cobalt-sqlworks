@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 cobalt-core.workspace = true
 cobalt-results.workspace = true
+cobalt-export.workspace = true
 arrow.workspace = true
 deltalake.workspace = true
 tokio.workspace = true

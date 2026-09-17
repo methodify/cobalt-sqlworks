@@ -97,11 +97,9 @@ fn read_dom(xml: &str) -> Result<Elem, PlanError> {
                     stack.push(elem);
                 }
             }
-            Event::End(_) => {
-                if stack.len() > 1 {
-                    let done = stack.pop().expect("non-empty");
-                    stack.last_mut().expect("document root").children.push(done);
-                }
+            Event::End(_) if stack.len() > 1 => {
+                let done = stack.pop().expect("non-empty");
+                stack.last_mut().expect("document root").children.push(done);
             }
             Event::Eof => break,
             // Showplan carries everything in attributes; text/entities/PIs are ignored.

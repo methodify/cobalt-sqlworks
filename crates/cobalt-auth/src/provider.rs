@@ -6,12 +6,14 @@
 //! - Azure CLI, Windows integrated, service principal: straight through.
 
 use crate::entra::{
-    azure_cli_token, client_secret_token, device_code_login, interactive_login, refresh, CancelToken, DeviceCodePrompt,
-    EntraAccount, EntraConfig, TokenSet,
+    azure_cli_token, client_secret_token, device_code_login, interactive_login, refresh,
+    CancelToken, DeviceCodePrompt, EntraAccount, EntraConfig, TokenSet,
 };
 use crate::secrets::SecretStore;
 use crate::{AuthError, Result};
-use cobalt_core::{AuthMethod, ConnectionProfile, ProfileId, ResolvedCredentials, Secret, SecretRef};
+use cobalt_core::{
+    AuthMethod, ConnectionProfile, ProfileId, ResolvedCredentials, Secret, SecretRef,
+};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -48,7 +50,11 @@ enum UserFlow {
 
 impl CredentialResolver {
     pub fn new(secrets: Arc<dyn SecretStore>, cfg: EntraConfig) -> Self {
-        Self { secrets, cfg: RwLock::new(cfg), cache: Mutex::new(HashMap::new()) }
+        Self {
+            secrets,
+            cfg: RwLock::new(cfg),
+            cache: Mutex::new(HashMap::new()),
+        }
     }
 
     pub fn config(&self) -> EntraConfig {
@@ -69,7 +75,11 @@ impl CredentialResolver {
     }
 
     /// Resolve credentials for `profile`, prompting through `prompt` when nothing silent works.
-    pub async fn resolve(&self, profile: &ConnectionProfile, prompt: &dyn Prompter) -> Result<ResolvedCredentials> {
+    pub async fn resolve(
+        &self,
+        profile: &ConnectionProfile,
+        prompt: &dyn Prompter,
+    ) -> Result<ResolvedCredentials> {
         match &profile.auth {
             AuthMethod::SqlLogin { user, password } => {
                 let stored = match password {
@@ -80,21 +90,51 @@ impl CredentialResolver {
                     Some(p) => p,
                     None => prompt.password(profile)?.ok_or(AuthError::Cancelled)?,
                 };
-                Ok(ResolvedCredentials::SqlLogin { user: user.clone(), password })
+                Ok(ResolvedCredentials::SqlLogin {
+                    user: user.clone(),
+                    password,
+                })
             }
-            AuthMethod::EntraInteractive { tenant, account_hint } => {
-                self.user_token(profile, tenant.as_deref(), account_hint.as_deref(), UserFlow::Interactive, prompt).await
+            AuthMethod::EntraInteractive {
+                tenant,
+                account_hint,
+            } => {
+                self.user_token(
+                    profile,
+                    tenant.as_deref(),
+                    account_hint.as_deref(),
+                    UserFlow::Interactive,
+                    prompt,
+                )
+                .await
             }
             AuthMethod::EntraDeviceCode { tenant } => {
-                self.user_token(profile, tenant.as_deref(), None, UserFlow::DeviceCode, prompt).await
+                self.user_token(
+                    profile,
+                    tenant.as_deref(),
+                    None,
+                    UserFlow::DeviceCode,
+                    prompt,
+                )
+                .await
             }
             AuthMethod::AzureCli { tenant } => {
-                let tenant = tenant.as_deref().or(self.config().tenant.as_deref()).map(str::to_owned);
+                let tenant = tenant
+                    .as_deref()
+                    .or(self.config().tenant.as_deref())
+                    .map(str::to_owned);
                 let t = azure_cli_token(tenant.as_deref()).await?;
-                Ok(ResolvedCredentials::EntraToken { token: t.token, expires_at: Some(t.expires_at) })
+                Ok(ResolvedCredentials::EntraToken {
+                    token: t.token,
+                    expires_at: Some(t.expires_at),
+                })
             }
             AuthMethod::WindowsIntegrated => Ok(ResolvedCredentials::WindowsIntegrated),
-            AuthMethod::EntraServicePrincipal { tenant, client_id, secret } => {
+            AuthMethod::EntraServicePrincipal {
+                tenant,
+                client_id,
+                secret,
+            } => {
                 let stored = match secret {
                     Some(r) => self.secrets.get(r)?,
                     None => None,
@@ -105,7 +145,10 @@ impl CredentialResolver {
                 };
                 let cfg = self.config();
                 let t = client_secret_token(&cfg, tenant, client_id, &secret).await?;
-                Ok(ResolvedCredentials::EntraToken { token: t.token, expires_at: Some(t.expires_at) })
+                Ok(ResolvedCredentials::EntraToken {
+                    token: t.token,
+                    expires_at: Some(t.expires_at),
+                })
             }
         }
     }
@@ -118,12 +161,19 @@ impl CredentialResolver {
 
     /// The account behind the cached token, if this process has acquired one for the profile.
     pub fn signed_in_account(&self, profile_id: &ProfileId) -> Option<EntraAccount> {
-        self.cache.lock().unwrap().get(profile_id).map(|t| t.account.clone())
+        self.cache
+            .lock()
+            .unwrap()
+            .get(profile_id)
+            .map(|t| t.account.clone())
     }
 
     /// Whether a refresh token is stored for the profile (i.e. a silent sign-in is likely).
     pub fn is_remembered(&self, profile_id: &ProfileId) -> bool {
-        matches!(self.secrets.get(&Self::refresh_token_ref(profile_id)), Ok(Some(_)))
+        matches!(
+            self.secrets.get(&Self::refresh_token_ref(profile_id)),
+            Ok(Some(_))
+        )
     }
 
     /// Put a token set in the in-memory cache (and persist its refresh token). Public so the
@@ -189,9 +239,17 @@ impl CredentialResolver {
         let run = async {
             match flow {
                 UserFlow::Interactive => {
-                    interactive_login(&cfg, login_hint, |url| prompt.open_browser(url), cancel.clone()).await
+                    interactive_login(
+                        &cfg,
+                        login_hint,
+                        |url| prompt.open_browser(url),
+                        cancel.clone(),
+                    )
+                    .await
                 }
-                UserFlow::DeviceCode => device_code_login(&cfg, |p| prompt.device_code(p), cancel.clone()).await,
+                UserFlow::DeviceCode => {
+                    device_code_login(&cfg, |p| prompt.device_code(p), cancel.clone()).await
+                }
             }
         };
         let watch_cancel = async {
@@ -222,17 +280,23 @@ impl CredentialResolver {
 }
 
 fn token_creds(ts: &TokenSet) -> ResolvedCredentials {
-    ResolvedCredentials::EntraToken { token: ts.access.token.clone(), expires_at: Some(ts.access.expires_at) }
+    ResolvedCredentials::EntraToken {
+        token: ts.access.token.clone(),
+        expires_at: Some(ts.access.expires_at),
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
+
+/// Callback invoked with a sign-in URL.
+pub type OpenUrlFn = Box<dyn Fn(&str) + Send + Sync>;
 
 /// A [`Prompter`] with canned answers, for tests and headless use. Records everything it is
 /// asked so tests can assert on the prompt order.
 #[derive(Default)]
 pub struct HeadlessPrompter {
     password: Option<Secret>,
-    on_open: Option<Box<dyn Fn(&str) + Send + Sync>>,
+    on_open: Option<OpenUrlFn>,
     opened: Mutex<Vec<String>>,
     device_prompts: Mutex<Vec<DeviceCodePrompt>>,
     password_prompts: AtomicUsize,
@@ -295,24 +359,43 @@ mod tests {
 
     fn resolver() -> (Arc<MemoryStore>, CredentialResolver) {
         let store = Arc::new(MemoryStore::new());
-        (store.clone(), CredentialResolver::new(store, EntraConfig::new("test-client")))
+        (
+            store.clone(),
+            CredentialResolver::new(store, EntraConfig::new("test-client")),
+        )
     }
 
     fn token_set(secs: i64, refresh: Option<&str>) -> TokenSet {
         TokenSet {
-            access: AccessToken { token: Secret::new("at"), expires_at: Utc::now() + chrono::Duration::seconds(secs), scope: "s".into() },
+            access: AccessToken {
+                token: Secret::new("at"),
+                expires_at: Utc::now() + chrono::Duration::seconds(secs),
+                scope: "s".into(),
+            },
             refresh: refresh.map(Secret::new),
-            account: EntraAccount { username: "u@x.y".into(), ..Default::default() },
+            account: EntraAccount {
+                username: "u@x.y".into(),
+                ..Default::default()
+            },
         }
     }
 
     #[tokio::test]
     async fn sql_login_uses_stored_password_without_prompting() {
         let (store, r) = resolver();
-        let mut p = ConnectionProfile::new("srv", AuthMethod::SqlLogin { user: "sa".into(), password: None });
+        let mut p = ConnectionProfile::new(
+            "srv",
+            AuthMethod::SqlLogin {
+                user: "sa".into(),
+                password: None,
+            },
+        );
         let sref = SecretRef::for_profile(&p.id, "password");
         store.set(&sref, &Secret::new("stored")).unwrap();
-        p.auth = AuthMethod::SqlLogin { user: "sa".into(), password: Some(sref) };
+        p.auth = AuthMethod::SqlLogin {
+            user: "sa".into(),
+            password: Some(sref),
+        };
         let prompt = HeadlessPrompter::new().with_password("typed");
         match r.resolve(&p, &prompt).await.unwrap() {
             ResolvedCredentials::SqlLogin { user, password } => {
@@ -327,17 +410,30 @@ mod tests {
     #[tokio::test]
     async fn sql_login_prompts_when_nothing_stored() {
         let (_store, r) = resolver();
-        let p = ConnectionProfile::new("srv", AuthMethod::SqlLogin { user: "sa".into(), password: None });
+        let p = ConnectionProfile::new(
+            "srv",
+            AuthMethod::SqlLogin {
+                user: "sa".into(),
+                password: None,
+            },
+        );
         let prompt = HeadlessPrompter::new().with_password("typed");
         match r.resolve(&p, &prompt).await.unwrap() {
-            ResolvedCredentials::SqlLogin { password, .. } => assert_eq!(password.expose(), "typed"),
+            ResolvedCredentials::SqlLogin { password, .. } => {
+                assert_eq!(password.expose(), "typed")
+            }
             other => panic!("{other:?}"),
         }
         assert_eq!(prompt.password_prompt_count(), 1);
         // Stored ref that points nowhere also prompts.
         let p2 = ConnectionProfile::new(
             "srv",
-            AuthMethod::SqlLogin { user: "sa".into(), password: Some(SecretRef { key: "missing".into() }) },
+            AuthMethod::SqlLogin {
+                user: "sa".into(),
+                password: Some(SecretRef {
+                    key: "missing".into(),
+                }),
+            },
         );
         assert!(r.resolve(&p2, &prompt).await.is_ok());
         assert_eq!(prompt.password_prompt_count(), 2);
@@ -346,7 +442,13 @@ mod tests {
     #[tokio::test]
     async fn sql_login_cancelled_prompt_is_cancelled() {
         let (_store, r) = resolver();
-        let p = ConnectionProfile::new("srv", AuthMethod::SqlLogin { user: "sa".into(), password: None });
+        let p = ConnectionProfile::new(
+            "srv",
+            AuthMethod::SqlLogin {
+                user: "sa".into(),
+                password: None,
+            },
+        );
         let e = r.resolve(&p, &HeadlessPrompter::new()).await.unwrap_err();
         assert!(matches!(e, AuthError::Cancelled));
     }
@@ -355,14 +457,23 @@ mod tests {
     async fn windows_integrated_passes_through() {
         let (_store, r) = resolver();
         let p = ConnectionProfile::new("srv", AuthMethod::WindowsIntegrated);
-        assert!(matches!(r.resolve(&p, &HeadlessPrompter::new()).await.unwrap(), ResolvedCredentials::WindowsIntegrated));
+        assert!(matches!(
+            r.resolve(&p, &HeadlessPrompter::new()).await.unwrap(),
+            ResolvedCredentials::WindowsIntegrated
+        ));
     }
 
     #[tokio::test]
     async fn entra_without_client_id_is_a_clear_error() {
         let store = Arc::new(MemoryStore::new());
         let r = CredentialResolver::new(store, EntraConfig::default());
-        let p = ConnectionProfile::new("srv", AuthMethod::EntraInteractive { tenant: None, account_hint: None });
+        let p = ConnectionProfile::new(
+            "srv",
+            AuthMethod::EntraInteractive {
+                tenant: None,
+                account_hint: None,
+            },
+        );
         let e = r.resolve(&p, &HeadlessPrompter::new()).await.unwrap_err();
         assert!(matches!(e, AuthError::MissingClientId));
         assert!(e.to_string().contains("Settings"));
@@ -371,7 +482,13 @@ mod tests {
     #[tokio::test]
     async fn cached_valid_token_is_used_without_any_io() {
         let (store, r) = resolver();
-        let p = ConnectionProfile::new("srv", AuthMethod::EntraInteractive { tenant: None, account_hint: None });
+        let p = ConnectionProfile::new(
+            "srv",
+            AuthMethod::EntraInteractive {
+                tenant: None,
+                account_hint: None,
+            },
+        );
         r.insert_cached(p.id, token_set(600, Some("rt")));
         assert!(store.contains(&CredentialResolver::refresh_token_ref(&p.id)));
         let prompt = HeadlessPrompter::new().with_on_open(|_| panic!("no browser expected"));

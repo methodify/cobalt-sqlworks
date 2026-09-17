@@ -26,7 +26,12 @@ impl LibraryExport {
     pub const VERSION: u32 = 1;
 
     pub fn new(groups: Vec<ServerGroup>, profiles: Vec<ConnectionProfile>) -> Self {
-        Self { version: Self::VERSION, exported_at: Some(Utc::now()), groups, profiles }
+        Self {
+            version: Self::VERSION,
+            exported_at: Some(Utc::now()),
+            groups,
+            profiles,
+        }
     }
 
     pub fn to_json(&self) -> Result<String> {

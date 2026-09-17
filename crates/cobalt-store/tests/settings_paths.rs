@@ -26,7 +26,11 @@ fn settings_roundtrip() {
     assert!(text.contains("[editor]"));
     assert!(text.contains("tab_size = 2"));
     assert!(!text.contains(".tmp"));
-    assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 1, "no temp file left behind");
+    assert_eq!(
+        fs::read_dir(path.parent().unwrap()).unwrap().count(),
+        1,
+        "no temp file left behind"
+    );
 
     let loaded = load_settings(&path);
     assert_eq!(loaded, s);
@@ -35,7 +39,10 @@ fn settings_roundtrip() {
 #[test]
 fn settings_missing_file_is_default() {
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(load_settings(&dir.path().join("nope.toml")), Settings::default());
+    assert_eq!(
+        load_settings(&dir.path().join("nope.toml")),
+        Settings::default()
+    );
 }
 
 #[test]
@@ -45,12 +52,19 @@ fn settings_partial_file_fills_defaults() {
     fs::write(&path, "[editor]\ntab_size = 2\n").unwrap();
     let s = load_settings(&path);
     assert_eq!(s.editor.tab_size, 2);
-    assert_eq!(s.editor.insert_spaces, EditorSettings::default().insert_spaces);
+    assert_eq!(
+        s.editor.insert_spaces,
+        EditorSettings::default().insert_spaces
+    );
     assert_eq!(s.appearance, Appearance::default());
     assert_eq!(s.history, HistorySettings::default());
 
     // Unknown keys are tolerated (forward compatibility).
-    fs::write(&path, "[editor]\ntab_size = 3\nfuture_knob = true\n[future_section]\nx = 1\n").unwrap();
+    fs::write(
+        &path,
+        "[editor]\ntab_size = 3\nfuture_knob = true\n[future_section]\nx = 1\n",
+    )
+    .unwrap();
     assert_eq!(load_settings(&path).editor.tab_size, 3);
 }
 
@@ -62,7 +76,10 @@ fn settings_bad_file_defaults_and_backs_up() {
     assert_eq!(load_settings(&path), Settings::default());
     let bad = cobalt_store::settings::bad_path(&path);
     assert!(bad.ends_with("settings.toml.bad"));
-    assert_eq!(fs::read_to_string(bad).unwrap(), "[editor\ntab_size = = 2\n");
+    assert_eq!(
+        fs::read_to_string(bad).unwrap(),
+        "[editor\ntab_size = = 2\n"
+    );
     // Wrong type is also a parse failure.
     fs::write(&path, "[editor]\ntab_size = \"two\"\n").unwrap();
     assert_eq!(load_settings(&path), Settings::default());
@@ -83,10 +100,19 @@ fn settings_save_overwrites_existing() {
 fn app_paths_for_test_and_spill_cleanup() {
     let dir = tempfile::tempdir().unwrap();
     let paths = AppPaths::for_test(dir.path());
-    for d in [&paths.config_dir, &paths.data_dir, &paths.cache_dir, &paths.log_dir, &paths.temp_dir] {
+    for d in [
+        &paths.config_dir,
+        &paths.data_dir,
+        &paths.cache_dir,
+        &paths.log_dir,
+        &paths.temp_dir,
+    ] {
         assert!(d.is_dir(), "{}", d.display());
     }
-    assert_eq!(paths.settings_file(), dir.path().join("config").join("settings.toml"));
+    assert_eq!(
+        paths.settings_file(),
+        dir.path().join("config").join("settings.toml")
+    );
     assert_eq!(paths.db_file(), dir.path().join("data").join("cobalt.db"));
     assert_eq!(paths.spill_dir(), dir.path().join("temp").join("spill"));
 
@@ -99,12 +125,21 @@ fn app_paths_for_test_and_spill_cleanup() {
     fs::write(spill.join(format!("{SPILL_PREFIX}dir")).join("part"), b"z").unwrap();
     fs::write(spill.join("keep-me.txt"), b"k").unwrap();
     assert_eq!(paths.clean_spill_dir().unwrap(), 3);
-    let left: Vec<_> = fs::read_dir(&spill).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    let left: Vec<_> = fs::read_dir(&spill)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
     assert_eq!(left, ["keep-me.txt"]);
 
-    let moved = paths.clone().with_temp_dir(dir.path().join("other-temp")).unwrap();
+    let moved = paths
+        .clone()
+        .with_temp_dir(dir.path().join("other-temp"))
+        .unwrap();
     assert!(moved.temp_dir.is_dir());
-    assert_eq!(moved.spill_dir(), dir.path().join("other-temp").join("spill"));
+    assert_eq!(
+        moved.spill_dir(),
+        dir.path().join("other-temp").join("spill")
+    );
 
     // Store opens fine at the resolved db path.
     let store = Store::open(&paths.db_file()).unwrap();

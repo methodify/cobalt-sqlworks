@@ -69,7 +69,14 @@ pub struct NewHistoryEntry {
 
 impl NewHistoryEntry {
     pub fn new(server: impl Into<String>, sql: impl Into<String>) -> Self {
-        Self { profile_id: None, server: server.into(), database: None, sql: sql.into(), started_at: Utc::now(), tab_id: None }
+        Self {
+            profile_id: None,
+            server: server.into(),
+            database: None,
+            sql: sql.into(),
+            started_at: Utc::now(),
+            tab_id: None,
+        }
     }
 }
 
@@ -109,7 +116,10 @@ impl Default for HistoryQuery {
 
 impl HistoryQuery {
     pub fn text(text: impl Into<String>) -> Self {
-        Self { text: Some(text.into()), ..Default::default() }
+        Self {
+            text: Some(text.into()),
+            ..Default::default()
+        }
     }
 }
 
@@ -228,7 +238,11 @@ impl Store {
                 args.push(v);
                 clauses.push(clause.replace("{}", &format!("?{}", args.len())));
             }
-            let where_sql = if clauses.is_empty() { String::new() } else { format!("WHERE {}", clauses.join(" AND ")) };
+            let where_sql = if clauses.is_empty() {
+                String::new()
+            } else {
+                format!("WHERE {}", clauses.join(" AND "))
+            };
             args.push(Value::Integer(q.limit as i64));
             args.push(Value::Integer(q.offset as i64));
             let sql = format!(
@@ -243,7 +257,10 @@ impl Store {
 
         let Some(text) = text else { return run(None) };
 
-        match run(Some(("id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH {})", Value::Text(text.to_owned())))) {
+        match run(Some((
+            "id IN (SELECT rowid FROM history_fts WHERE history_fts MATCH {})",
+            Value::Text(text.to_owned()),
+        ))) {
             Ok(v) => Ok(v),
             Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(_, msg))) => {
                 tracing::debug!(query = text, error = ?msg, "FTS rejected query; falling back to LIKE");
@@ -256,7 +273,10 @@ impl Store {
 
     pub fn set_starred(&self, id: i64, starred: bool) -> Result<()> {
         let conn = self.lock()?;
-        let n = conn.execute("UPDATE history SET starred = ?2 WHERE id = ?1", params![id, starred as i64])?;
+        let n = conn.execute(
+            "UPDATE history SET starred = ?2 WHERE id = ?1",
+            params![id, starred as i64],
+        )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("history entry {id}")));
         }
@@ -287,7 +307,10 @@ impl Store {
             let mut removed = 0;
             if retention_days > 0 {
                 let cutoff = Utc::now() - Duration::days(i64::from(retention_days));
-                removed += tx.execute("DELETE FROM history WHERE starred = 0 AND started_at < ?1", params![fmt_ts(&cutoff)])?;
+                removed += tx.execute(
+                    "DELETE FROM history WHERE starred = 0 AND started_at < ?1",
+                    params![fmt_ts(&cutoff)],
+                )?;
             }
             if max_entries > 0 {
                 removed += tx.execute(
@@ -309,7 +332,10 @@ impl Store {
     /// Rebuild the FTS index from the `history` table (after a restore or if search looks off).
     pub fn rebuild_history_index(&self) -> Result<()> {
         let conn = self.lock()?;
-        conn.execute("INSERT INTO history_fts(history_fts) VALUES ('rebuild')", [])?;
+        conn.execute(
+            "INSERT INTO history_fts(history_fts) VALUES ('rebuild')",
+            [],
+        )?;
         Ok(())
     }
 }

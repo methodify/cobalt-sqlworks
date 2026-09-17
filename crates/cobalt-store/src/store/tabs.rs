@@ -39,7 +39,8 @@ impl TabSnapshot {
     }
 }
 
-const COLS: &str = "tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at";
+const COLS: &str =
+    "tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at";
 
 fn row_to_tab(row: &Row<'_>) -> rusqlite::Result<TabSnapshot> {
     Ok(TabSnapshot {
@@ -83,15 +84,20 @@ impl Store {
 
     pub fn get_tab(&self, tab_id: TabId) -> Result<Option<TabSnapshot>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM tab_snapshots WHERE tab_id = ?1"))?;
-        Ok(stmt.query_row(params![tab_id.to_string()], row_to_tab).optional()?)
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {COLS} FROM tab_snapshots WHERE tab_id = ?1"
+        ))?;
+        Ok(stmt
+            .query_row(params![tab_id.to_string()], row_to_tab)
+            .optional()?)
     }
 
     /// Tabs that were open at last exit, oldest first (so re-adding them preserves order).
     pub fn load_open_tabs(&self) -> Result<Vec<TabSnapshot>> {
         let conn = self.lock()?;
-        let mut stmt =
-            conn.prepare_cached(&format!("SELECT {COLS} FROM tab_snapshots WHERE closed_at IS NULL ORDER BY updated_at, tab_id"))?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {COLS} FROM tab_snapshots WHERE closed_at IS NULL ORDER BY updated_at, tab_id"
+        ))?;
         let rows = stmt.query_map([], row_to_tab)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -123,14 +129,21 @@ impl Store {
             "UPDATE tab_snapshots SET closed_at = NULL, updated_at = ?2 WHERE tab_id = ?1",
             params![tab_id.to_string(), fmt_ts(&Utc::now())],
         )?;
-        let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM tab_snapshots WHERE tab_id = ?1"))?;
-        Ok(stmt.query_row(params![tab_id.to_string()], row_to_tab).optional()?)
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {COLS} FROM tab_snapshots WHERE tab_id = ?1"
+        ))?;
+        Ok(stmt
+            .query_row(params![tab_id.to_string()], row_to_tab)
+            .optional()?)
     }
 
     /// Forget a tab entirely.
     pub fn delete_tab(&self, tab_id: TabId) -> Result<bool> {
         let conn = self.lock()?;
-        Ok(conn.execute("DELETE FROM tab_snapshots WHERE tab_id = ?1", params![tab_id.to_string()])? > 0)
+        Ok(conn.execute(
+            "DELETE FROM tab_snapshots WHERE tab_id = ?1",
+            params![tab_id.to_string()],
+        )? > 0)
     }
 
     /// Keep only the `keep` most recently closed tabs. Returns rows removed.

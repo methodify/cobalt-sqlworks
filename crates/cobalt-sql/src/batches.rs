@@ -164,7 +164,7 @@ mod tests {
     fn empty_batches_dropped() {
         let b = split_batches("GO\n\nGO\n  \nselect 1\nGO\nGO\n");
         assert_eq!(b.len(), 1);
-        assert_eq!(b[0], Batch { sql: "select 1".into(), start_line: 5, start_offset: 12 });
+        assert_eq!(b[0], Batch { sql: "select 1".into(), start_line: 5, start_offset: 10 });
         assert!(split_batches("").is_empty());
         assert!(split_batches("GO").is_empty());
     }

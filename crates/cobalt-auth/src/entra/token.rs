@@ -50,11 +50,12 @@ pub(crate) async fn post_form(url: &str, form: &[(&str, &str)]) -> Result<TokenR
             .map_err(|e| AuthError::Other(format!("malformed token response ({status}): {e}")))?;
         Ok(TokenReply::Ok(ok))
     } else {
-        let err: OAuthErrorBody = serde_json::from_slice(&body).unwrap_or_else(|_| OAuthErrorBody {
-            error: format!("http_{}", status.as_u16()),
-            error_description: String::from_utf8_lossy(&body).chars().take(500).collect(),
-            error_codes: vec![],
-        });
+        let err: OAuthErrorBody =
+            serde_json::from_slice(&body).unwrap_or_else(|_| OAuthErrorBody {
+                error: format!("http_{}", status.as_u16()),
+                error_description: String::from_utf8_lossy(&body).chars().take(500).collect(),
+                error_codes: vec![],
+            });
         Ok(TokenReply::Err(err))
     }
 }
@@ -85,15 +86,24 @@ const INTERACTION_CODES: &[i64] = &[
 ];
 
 pub(crate) fn map_oauth_error(e: OAuthErrorBody) -> AuthError {
-    let desc = if e.error_description.is_empty() { e.error.clone() } else { e.error_description.clone() };
+    let desc = if e.error_description.is_empty() {
+        e.error.clone()
+    } else {
+        e.error_description.clone()
+    };
     let interactive_by_code = e.error_codes.iter().any(|c| INTERACTION_CODES.contains(c))
-        || INTERACTION_CODES.iter().any(|c| desc.contains(&format!("AADSTS{c}")));
+        || INTERACTION_CODES
+            .iter()
+            .any(|c| desc.contains(&format!("AADSTS{c}")));
     match e.error.as_str() {
         "interaction_required" | "invalid_grant" | "login_required" | "consent_required" => {
             AuthError::InteractionRequired(desc)
         }
         _ if interactive_by_code => AuthError::InteractionRequired(desc),
-        _ => AuthError::Provider { error: e.error, description: desc },
+        _ => AuthError::Provider {
+            error: e.error,
+            description: desc,
+        },
     }
 }
 
@@ -112,7 +122,10 @@ pub(crate) fn into_token_set(
         expires_at: Utc::now() + Duration::seconds(expires_in),
         scope: t.scope.clone().unwrap_or_else(|| cfg.user_scopes()),
     };
-    let refresh = t.refresh_token.map(Secret::new).or_else(|| previous_refresh.cloned());
+    let refresh = t
+        .refresh_token
+        .map(Secret::new)
+        .or_else(|| previous_refresh.cloned());
     let account = t
         .id_token
         .as_deref()
@@ -120,7 +133,11 @@ pub(crate) fn into_token_set(
         .or_else(|| account_from_jwt(&t.access_token))
         .or_else(|| fallback_account.cloned())
         .unwrap_or_default();
-    TokenSet { access, refresh, account }
+    TokenSet {
+        access,
+        refresh,
+        account,
+    }
 }
 
 /// Decode a JWT's payload segment as JSON. **No signature check**: the caller only displays
@@ -135,7 +152,10 @@ pub fn decode_jwt_claims(jwt: &str) -> Option<serde_json::Value> {
 pub(crate) fn account_from_jwt(jwt: &str) -> Option<EntraAccount> {
     let c = decode_jwt_claims(jwt)?;
     let s = |k: &str| c.get(k).and_then(|v| v.as_str()).map(str::to_owned);
-    let username = s("preferred_username").or_else(|| s("upn")).or_else(|| s("unique_name")).or_else(|| s("email"))?;
+    let username = s("preferred_username")
+        .or_else(|| s("upn"))
+        .or_else(|| s("unique_name"))
+        .or_else(|| s("email"))?;
     let tid = s("tid");
     let oid = s("oid").or_else(|| s("sub"));
     let home_account_id = match (&oid, &tid) {
@@ -143,7 +163,12 @@ pub(crate) fn account_from_jwt(jwt: &str) -> Option<EntraAccount> {
         (Some(o), None) => Some(o.clone()),
         _ => None,
     };
-    Some(EntraAccount { username, name: s("name"), tenant_id: tid, home_account_id })
+    Some(EntraAccount {
+        username,
+        name: s("name"),
+        tenant_id: tid,
+        home_account_id,
+    })
 }
 
 /// Silent renewal. Sends `grant_type=refresh_token`; the returned set keeps the old refresh
@@ -181,13 +206,20 @@ mod tests {
         let a = account_from_jwt(&jwt).unwrap();
         assert_eq!(a.username, "ada@contoso.com");
         assert_eq!(a.name.as_deref(), Some("Ada Lovelace"));
-        assert_eq!(a.tenant_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"));
-        assert_eq!(a.home_account_id.as_deref(), Some("aaaa-bbbb.11111111-2222-3333-4444-555555555555"));
+        assert_eq!(
+            a.tenant_id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+        assert_eq!(
+            a.home_account_id.as_deref(),
+            Some("aaaa-bbbb.11111111-2222-3333-4444-555555555555")
+        );
     }
 
     #[test]
     fn access_token_upn_is_a_fallback() {
-        let jwt = fake_jwt(serde_json::json!({ "upn": "bob@contoso.com", "tid": "t1", "oid": "o1" }));
+        let jwt =
+            fake_jwt(serde_json::json!({ "upn": "bob@contoso.com", "tid": "t1", "oid": "o1" }));
         let a = account_from_jwt(&jwt).unwrap();
         assert_eq!(a.username, "bob@contoso.com");
         assert_eq!(a.name, None);
@@ -204,10 +236,11 @@ mod tests {
     fn padded_jwt_payload_decodes() {
         // Some encoders leave '=' padding on; we must accept it.
         let header = URL_SAFE_NO_PAD.encode(b"{}");
-        let payload = base64::engine::general_purpose::URL_SAFE.encode(br#"{"preferred_username":"p@x.y"}"#);
+        let payload =
+            base64::engine::general_purpose::URL_SAFE.encode(br#"{"preferred_username":"p@x.yz"}"#);
         assert!(payload.ends_with('='));
         let a = account_from_jwt(&format!("{header}.{payload}.s")).unwrap();
-        assert_eq!(a.username, "p@x.y");
+        assert_eq!(a.username, "p@x.yz");
     }
 
     #[test]
@@ -217,14 +250,34 @@ mod tests {
             error_description: desc.into(),
             error_codes: codes,
         };
-        assert!(matches!(map_oauth_error(body("invalid_grant", "AADSTS70008: expired", vec![70008])), AuthError::InteractionRequired(_)));
-        assert!(matches!(map_oauth_error(body("interaction_required", "AADSTS50076: MFA", vec![50076])), AuthError::InteractionRequired(_)));
+        assert!(matches!(
+            map_oauth_error(body("invalid_grant", "AADSTS70008: expired", vec![70008])),
+            AuthError::InteractionRequired(_)
+        ));
+        assert!(matches!(
+            map_oauth_error(body(
+                "interaction_required",
+                "AADSTS50076: MFA",
+                vec![50076]
+            )),
+            AuthError::InteractionRequired(_)
+        ));
         // code only in the description
-        assert!(matches!(map_oauth_error(body("access_denied", "AADSTS53003: blocked by CA", vec![])), AuthError::InteractionRequired(_)));
+        assert!(matches!(
+            map_oauth_error(body("access_denied", "AADSTS53003: blocked by CA", vec![])),
+            AuthError::InteractionRequired(_)
+        ));
         // code only in error_codes
-        assert!(matches!(map_oauth_error(body("access_denied", "blocked", vec![50079])), AuthError::InteractionRequired(_)));
+        assert!(matches!(
+            map_oauth_error(body("access_denied", "blocked", vec![50079])),
+            AuthError::InteractionRequired(_)
+        ));
         // unrelated → Provider
-        match map_oauth_error(body("invalid_client", "AADSTS7000218: public client", vec![7000218])) {
+        match map_oauth_error(body(
+            "invalid_client",
+            "AADSTS7000218: public client",
+            vec![7000218],
+        )) {
             AuthError::Provider { error, description } => {
                 assert_eq!(error, "invalid_client");
                 assert!(description.contains("AADSTS7000218"));
@@ -235,15 +288,30 @@ mod tests {
 
     #[test]
     fn provider_hints_for_common_aadsts() {
-        let e = AuthError::provider("access_denied", "AADSTS53003: Access has been blocked by Conditional Access policies");
+        let e = AuthError::provider(
+            "access_denied",
+            "AADSTS53003: Access has been blocked by Conditional Access policies",
+        );
         assert!(e.hint().unwrap().contains("device-code"));
-        let e = AuthError::provider("unauthorized_client", "AADSTS700016: Application not found in the directory");
+        let e = AuthError::provider(
+            "unauthorized_client",
+            "AADSTS700016: Application not found in the directory",
+        );
         assert!(e.hint().unwrap().contains("client ID"));
-        let e = AuthError::provider("invalid_request", "AADSTS50011: The redirect URI does not match");
+        let e = AuthError::provider(
+            "invalid_request",
+            "AADSTS50011: The redirect URI does not match",
+        );
         assert!(e.hint().unwrap().contains("localhost"));
         assert!(AuthError::MissingClientId.hint().is_some());
-        assert!(AuthError::AzureCli("az not found on PATH".into()).hint().unwrap().contains("Install"));
-        assert!(AuthError::AzureCli("Please run 'az login'".into()).hint().unwrap().contains("az login"));
+        assert!(AuthError::AzureCli("az not found on PATH".into())
+            .hint()
+            .unwrap()
+            .contains("Install"));
+        assert!(AuthError::AzureCli("Please run 'az login'".into())
+            .hint()
+            .unwrap()
+            .contains("az login"));
         assert!(AuthError::Cancelled.hint().is_none());
     }
 
@@ -251,7 +319,13 @@ mod tests {
     fn token_set_keeps_old_refresh_when_absent() {
         let cfg = EntraConfig::new("cid");
         let old = Secret::new("old-rt");
-        let t = TokenResponse { access_token: "at".into(), expires_in: Some(10), refresh_token: None, id_token: None, scope: None };
+        let t = TokenResponse {
+            access_token: "at".into(),
+            expires_in: Some(10),
+            refresh_token: None,
+            id_token: None,
+            scope: None,
+        };
         let ts = into_token_set(&cfg, t, Some(&old), None);
         assert_eq!(ts.refresh.as_ref().unwrap().expose(), "old-rt");
         assert_eq!(ts.access.scope, cfg.user_scopes());
@@ -259,8 +333,17 @@ mod tests {
         assert!(!ts.access.is_valid_for(std::time::Duration::from_secs(30)));
         assert_eq!(ts.account, EntraAccount::default());
 
-        let t = TokenResponse { access_token: "at".into(), expires_in: None, refresh_token: Some("new-rt".into()), id_token: None, scope: Some("s".into()) };
-        let fallback = EntraAccount { username: "prev@x.y".into(), ..Default::default() };
+        let t = TokenResponse {
+            access_token: "at".into(),
+            expires_in: None,
+            refresh_token: Some("new-rt".into()),
+            id_token: None,
+            scope: Some("s".into()),
+        };
+        let fallback = EntraAccount {
+            username: "prev@x.y".into(),
+            ..Default::default()
+        };
         let ts = into_token_set(&cfg, t, Some(&old), Some(&fallback));
         assert_eq!(ts.refresh.as_ref().unwrap().expose(), "new-rt");
         assert_eq!(ts.account.username, "prev@x.y");

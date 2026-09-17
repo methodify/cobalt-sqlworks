@@ -6,7 +6,6 @@
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use std::collections::{HashMap, VecDeque};
-use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -50,11 +49,20 @@ impl MockIdp {
                 };
                 let mut body = String::new();
                 let _ = req.as_reader().read_to_string(&mut body);
-                let form: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes()).into_owned().collect();
+                let form: HashMap<String, String> = url::form_urlencoded::parse(body.as_bytes())
+                    .into_owned()
+                    .collect();
                 let path = req.url().split('?').next().unwrap_or("").to_owned();
-                st.requests.lock().unwrap().push(Recorded { path: path.clone(), form });
+                st.requests.lock().unwrap().push(Recorded {
+                    path: path.clone(),
+                    form,
+                });
                 let (status, json) = if path.ends_with("/devicecode") {
-                    st.devicecode_reply.lock().unwrap().clone().unwrap_or((404, serde_json::json!({"error": "no_devicecode_reply"})))
+                    st.devicecode_reply
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or((404, serde_json::json!({"error": "no_devicecode_reply"})))
                 } else if path.ends_with("/token") {
                     st.token_replies
                         .lock()
@@ -70,15 +78,29 @@ impl MockIdp {
                 let _ = req.respond(resp);
             }
         });
-        Self { base: format!("http://127.0.0.1:{port}"), server, state, stop, thread: Some(thread) }
+        Self {
+            base: format!("http://127.0.0.1:{port}"),
+            server,
+            state,
+            stop,
+            thread: Some(thread),
+        }
     }
 
     pub fn config(&self, client_id: &str) -> cobalt_auth::EntraConfig {
-        cobalt_auth::EntraConfig { client_id: client_id.into(), authority_host: self.base.clone(), ..Default::default() }
+        cobalt_auth::EntraConfig {
+            client_id: client_id.into(),
+            authority_host: self.base.clone(),
+            ..Default::default()
+        }
     }
 
     pub fn queue_token(&self, status: u16, body: serde_json::Value) {
-        self.state.token_replies.lock().unwrap().push_back((status, body));
+        self.state
+            .token_replies
+            .lock()
+            .unwrap()
+            .push_back((status, body));
     }
 
     pub fn queue_token_ok(&self, access: &str, refresh: Option<&str>, id_token: Option<&str>) {
@@ -86,7 +108,10 @@ impl MockIdp {
     }
 
     pub fn queue_token_error(&self, error: &str, description: &str) {
-        self.queue_token(400, serde_json::json!({ "error": error, "error_description": description }));
+        self.queue_token(
+            400,
+            serde_json::json!({ "error": error, "error_description": description }),
+        );
     }
 
     pub fn set_devicecode(&self, status: u16, body: serde_json::Value) {
@@ -98,7 +123,10 @@ impl MockIdp {
     }
 
     pub fn token_requests(&self) -> Vec<Recorded> {
-        self.requests().into_iter().filter(|r| r.path.ends_with("/token")).collect()
+        self.requests()
+            .into_iter()
+            .filter(|r| r.path.ends_with("/token"))
+            .collect()
     }
 }
 
@@ -125,7 +153,12 @@ pub fn fake_id_token(username: &str, name: &str) -> String {
     }))
 }
 
-pub fn token_json(access: &str, expires_in: i64, refresh: Option<&str>, id_token: Option<&str>) -> serde_json::Value {
+pub fn token_json(
+    access: &str,
+    expires_in: i64,
+    refresh: Option<&str>,
+    id_token: Option<&str>,
+) -> serde_json::Value {
     let mut v = serde_json::json!({
         "token_type": "Bearer",
         "scope": "https://database.windows.net/.default openid profile",
@@ -155,12 +188,19 @@ pub fn devicecode_json(interval: u64, expires_in: u64) -> serde_json::Value {
 
 /// Pretend to be the browser: fetch the authorize URL's `state`/`redirect_uri` and hit the
 /// loopback redirect with `query`. Returns the page's status and body.
-pub async fn fake_browser(authorize_url: &str, query: impl FnOnce(&str) -> String) -> (u16, String) {
+pub async fn fake_browser(
+    authorize_url: &str,
+    query: impl FnOnce(&str) -> String,
+) -> (u16, String) {
     let url = url::Url::parse(authorize_url).unwrap();
     let q: HashMap<_, _> = url.query_pairs().into_owned().collect();
     let redirect = q["redirect_uri"].replace("localhost", "127.0.0.1");
     let target = format!("{redirect}/?{}", query(&q["state"]));
-    let resp = reqwest::Client::new().get(&target).send().await.expect("loopback GET");
+    let resp = reqwest::Client::new()
+        .get(&target)
+        .send()
+        .await
+        .expect("loopback GET");
     let status = resp.status().as_u16();
     (status, resp.text().await.unwrap_or_default())
 }

@@ -50,8 +50,8 @@ pub async fn device_code_login(
         let err: super::token::OAuthErrorBody = serde_json::from_slice(&body).unwrap_or_default();
         return Err(map_oauth_error(err));
     }
-    let dc: DeviceCodeResponse =
-        serde_json::from_slice(&body).map_err(|e| AuthError::Other(format!("malformed devicecode response: {e}")))?;
+    let dc: DeviceCodeResponse = serde_json::from_slice(&body)
+        .map_err(|e| AuthError::Other(format!("malformed devicecode response: {e}")))?;
 
     let expires_in = Duration::from_secs(dc.expires_in.unwrap_or(900));
     let mut interval = Duration::from_secs(dc.interval.unwrap_or(5));
@@ -59,7 +59,10 @@ pub async fn device_code_login(
         user_code: dc.user_code.clone(),
         verification_uri: dc.verification_uri.clone(),
         message: dc.message.clone().unwrap_or_else(|| {
-            format!("To sign in, open {} in a web browser and enter the code {} to authenticate.", dc.verification_uri, dc.user_code)
+            format!(
+                "To sign in, open {} in a web browser and enter the code {} to authenticate.",
+                dc.verification_uri, dc.user_code
+            )
         }),
         expires_in,
     };
@@ -93,7 +96,11 @@ pub async fn device_code_login(
                 "authorization_declined" => {
                     return Err(AuthError::Provider {
                         error: e.error,
-                        description: if e.error_description.is_empty() { "the sign-in was declined".into() } else { e.error_description },
+                        description: if e.error_description.is_empty() {
+                            "the sign-in was declined".into()
+                        } else {
+                            e.error_description
+                        },
                     })
                 }
                 _ => return Err(map_oauth_error(e)),
@@ -130,14 +137,18 @@ mod tests {
             c2.cancel();
         });
         let started = Instant::now();
-        let e = sleep_cancellable(Duration::from_secs(10), &c).await.unwrap_err();
+        let e = sleep_cancellable(Duration::from_secs(10), &c)
+            .await
+            .unwrap_err();
         assert!(matches!(e, AuthError::Cancelled));
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]
     async fn device_code_requires_client_id() {
-        let e = device_code_login(&EntraConfig::default(), |_| {}, CancelToken::new()).await.unwrap_err();
+        let e = device_code_login(&EntraConfig::default(), |_| {}, CancelToken::new())
+            .await
+            .unwrap_err();
         assert!(matches!(e, AuthError::MissingClientId));
     }
 }

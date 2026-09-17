@@ -6,12 +6,14 @@ use chrono::Utc;
 use cobalt_core::{AuthMethod, Color, ConnectionOptions, ConnectionProfile, GroupId, ProfileId};
 use rusqlite::{params, OptionalExtension, Row};
 
-const COLS: &str = "p.id, p.group_id, p.name, p.server, p.port, p.database, p.auth_json, p.options_json, \
+const COLS: &str =
+    "p.id, p.group_id, p.name, p.server, p.port, p.database, p.auth_json, p.options_json, \
                     p.color, p.read_only_guard, p.last_used";
 
 fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<ConnectionProfile> {
     let auth: AuthMethod = serde_json::from_str(&row.get::<_, String>(6)?).map_err(conv)?;
-    let options: ConnectionOptions = serde_json::from_str(&row.get::<_, String>(7)?).map_err(conv)?;
+    let options: ConnectionOptions =
+        serde_json::from_str(&row.get::<_, String>(7)?).map_err(conv)?;
     let port: Option<i64> = row.get(4)?;
     Ok(ConnectionProfile {
         id: ProfileId(parse_uuid(&row.get::<_, String>(0)?)?),
@@ -22,7 +24,10 @@ fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<ConnectionProfile> {
         database: row.get(5)?,
         auth,
         options,
-        color: row.get::<_, Option<String>>(8)?.as_deref().and_then(Color::parse),
+        color: row
+            .get::<_, Option<String>>(8)?
+            .as_deref()
+            .and_then(Color::parse),
         read_only_guard: row.get::<_, i64>(9)? != 0,
         last_used: opt_ts(row.get(10)?)?,
     })
@@ -55,8 +60,11 @@ impl Store {
 
     pub fn get_profile(&self, id: ProfileId) -> Result<Option<ConnectionProfile>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM profiles p WHERE p.id = ?1"))?;
-        Ok(stmt.query_row(params![id.to_string()], row_to_profile).optional()?)
+        let mut stmt =
+            conn.prepare_cached(&format!("SELECT {COLS} FROM profiles p WHERE p.id = ?1"))?;
+        Ok(stmt
+            .query_row(params![id.to_string()], row_to_profile)
+            .optional()?)
     }
 
     /// Insert or update. New profiles go to the end of their group; existing ones keep their
@@ -94,7 +102,10 @@ impl Store {
             ],
         )?;
         // MAX('' , '') yields '' rather than NULL; normalise.
-        conn.execute("UPDATE profiles SET last_used = NULL WHERE id = ?1 AND last_used = ''", params![p.id.to_string()])?;
+        conn.execute(
+            "UPDATE profiles SET last_used = NULL WHERE id = ?1 AND last_used = ''",
+            params![p.id.to_string()],
+        )?;
         Ok(())
     }
 
@@ -102,8 +113,14 @@ impl Store {
     pub fn delete_profile(&self, id: ProfileId) -> Result<bool> {
         let id_s = id.to_string();
         self.tx(|tx| {
-            tx.execute("DELETE FROM catalog_cache WHERE profile_id = ?1", params![id_s])?;
-            tx.execute("DELETE FROM recent_connections WHERE profile_id = ?1", params![id_s])?;
+            tx.execute(
+                "DELETE FROM catalog_cache WHERE profile_id = ?1",
+                params![id_s],
+            )?;
+            tx.execute(
+                "DELETE FROM recent_connections WHERE profile_id = ?1",
+                params![id_s],
+            )?;
             let n = tx.execute("DELETE FROM profiles WHERE id = ?1", params![id_s])?;
             Ok(n > 0)
         })
@@ -114,7 +131,10 @@ impl Store {
         let now = fmt_ts(&Utc::now());
         let id_s = id.to_string();
         self.tx(|tx| {
-            let n = tx.execute("UPDATE profiles SET last_used = ?2 WHERE id = ?1", params![id_s, now])?;
+            let n = tx.execute(
+                "UPDATE profiles SET last_used = ?2 WHERE id = ?1",
+                params![id_s, now],
+            )?;
             if n == 0 {
                 return Err(crate::StoreError::NotFound(format!("profile {id}")));
             }
@@ -143,7 +163,9 @@ impl Store {
     pub fn reorder_profiles(&self, group: Option<GroupId>, ids: &[ProfileId]) -> Result<()> {
         let group_s = group.map(|g| g.to_string());
         self.tx(|tx| {
-            let mut stmt = tx.prepare_cached("UPDATE profiles SET group_id = ?2, sort_order = ?3 WHERE id = ?1")?;
+            let mut stmt = tx.prepare_cached(
+                "UPDATE profiles SET group_id = ?2, sort_order = ?3 WHERE id = ?1",
+            )?;
             for (i, id) in ids.iter().enumerate() {
                 stmt.execute(params![id.to_string(), group_s, i as i64])?;
             }

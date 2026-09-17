@@ -144,6 +144,17 @@ impl CellFormatter {
                     .with_timestamp_tz_format(Some(&self.datetime_format))
                     .with_date_format(Some("%Y-%m-%d"))
                     .with_time_format(Some("%H:%M:%S%.f"));
+                // Named zones ("UTC" — what the driver stamps on datetimeoffset) need arrow's
+                // `chrono-tz` feature to format; fall back to the UTC wall-clock time by
+                // dropping the zone (the instant is already UTC).
+                let naive = match arr.data_type() {
+                    DataType::Timestamp(unit, Some(tz)) if ArrayFormatter::try_new(arr.as_ref(), &opts).is_err() => {
+                        tracing::trace!(%tz, "formatting tz timestamp as naive UTC");
+                        Some(strip_timezone(arr, unit))
+                    }
+                    _ => None,
+                };
+                let arr: &ArrayRef = naive.as_ref().unwrap_or(arr);
                 match ArrayFormatter::try_new(arr.as_ref(), &opts) {
                     Ok(f) => {
                         for i in 0..n {
@@ -187,6 +198,17 @@ impl CellFormatter {
     }
 }
 
+/// Same instants, no timezone (i.e. UTC wall-clock time).
+fn strip_timezone(arr: &ArrayRef, unit: &arrow::datatypes::TimeUnit) -> ArrayRef {
+    use arrow::datatypes::*;
+    match unit {
+        TimeUnit::Second => Arc::new(arr.as_primitive::<TimestampSecondType>().clone().with_timezone_opt(None::<String>)),
+        TimeUnit::Millisecond => Arc::new(arr.as_primitive::<TimestampMillisecondType>().clone().with_timezone_opt(None::<String>)),
+        TimeUnit::Microsecond => Arc::new(arr.as_primitive::<TimestampMicrosecondType>().clone().with_timezone_opt(None::<String>)),
+        TimeUnit::Nanosecond => Arc::new(arr.as_primitive::<TimestampNanosecondType>().clone().with_timezone_opt(None::<String>)),
+    }
+}
+
 /// LRU of formatted columns keyed by (chunk, column, formatter generation).
 pub struct DisplayCache {
     cap: usize,
@@ -215,5 +237,48 @@ impl DisplayCache {
     }
     pub fn clear(&self) {
         self.entries.lock().clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Date32Array, TimestampMillisecondArray, TimestampNanosecondArray};
+    use cobalt_core::SqlType;
+
+    #[test]
+    fn dates_and_zero_seconds_keep_trailing_zeros() {
+        let fmt = CellFormatter::default();
+        let col = ColumnInfo::new("d", SqlType::Date, true, 0);
+        let arr: ArrayRef = Arc::new(Date32Array::from(vec![Some(19002), None])); // 2022-01-10
+        let out = fmt.format_column(&arr, &col);
+        assert_eq!(&*out[0], "2022-01-10");
+        assert_eq!(&*out[1], "NULL");
+        let col = ColumnInfo::new("t", SqlType::DateTime, true, 0);
+        let arr: ArrayRef = Arc::new(TimestampMillisecondArray::from(vec![Some(1_704_164_640_000), Some(1_704_164_645_100)]));
+        let out = fmt.format_column(&arr, &col);
+        assert_eq!(&*out[0], "2024-01-02 03:04:00");
+        assert_eq!(&*out[1], "2024-01-02 03:04:05.1");
+    }
+
+    #[test]
+    fn utc_timestamps_format_without_chrono_tz() {
+        let fmt = CellFormatter::default();
+        let col = ColumnInfo::new("dto", SqlType::DateTimeOffset { scale: 7 }, true, 0);
+        let arr: ArrayRef = Arc::new(TimestampNanosecondArray::from(vec![Some(1_704_164_645_123_456_700), None]).with_timezone("UTC"));
+        let out = fmt.format_column(&arr, &col);
+        assert_eq!(&*out[0], "2024-01-02 03:04:05.1234567");
+        assert_eq!(&*out[1], "NULL");
+    }
+
+    #[test]
+    fn builders_change_generation() {
+        let a = CellFormatter::default();
+        let b = a.clone().with_max_chars(0);
+        let c = a.clone().with_null_text("<null>");
+        assert_ne!(a.generation(), b.generation());
+        assert_ne!(a.generation(), c.generation());
+        assert_eq!(b.max_chars, 0);
+        assert_eq!(&*c.null_text, "<null>");
     }
 }

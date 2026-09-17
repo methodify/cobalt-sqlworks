@@ -120,12 +120,29 @@ pub fn layout(stmt: &Statement, opts: &LayoutOptions) -> Layout {
             }
         }
     }
-    // `order` is pre-order; process in reverse so children are placed before parents.
     let mut depth_of = vec![0usize; stmt.nodes.len()];
     for &(n, d) in &order {
         depth_of[n] = d;
     }
-    for &(n, _) in order.iter().rev() {
+    // Left-to-right post-order: children (in plan order) are placed before their parent,
+    // and the first subtree's leaves come before the second subtree's leaves.
+    let mut post: Vec<usize> = Vec::with_capacity(order.len());
+    let mut stack: Vec<usize> = vec![root];
+    let mut seen = vec![false; stmt.nodes.len()];
+    while let Some(n) = stack.pop() {
+        if seen[n] {
+            continue;
+        }
+        seen[n] = true;
+        post.push(n);
+        for &c in &stmt.nodes[n].children {
+            if c < stmt.nodes.len() && !seen[c] {
+                stack.push(c);
+            }
+        }
+    }
+    post.reverse();
+    for &n in &post {
         let kids: Vec<usize> = stmt.nodes[n]
             .children
             .iter()

@@ -588,11 +588,7 @@ mod tests {
 
     #[test]
     fn options_from_settings() {
-        let mut s = ExportSettings::default();
-        s.csv_delimiter = "\\t".into();
-        s.csv_line_ending = "\n".into();
-        s.parquet_compression = "snappy".into();
-        s.parquet_row_group_rows = 0;
+        let s = ExportSettings { csv_delimiter: "\\t".into(), csv_line_ending: "\n".into(), parquet_compression: "snappy".into(), parquet_row_group_rows: 0, ..Default::default() };
         let o = ExportOptions::from_settings(&s);
         assert_eq!(o.csv.delimiter, b'\t');
         assert_eq!(o.csv.line_ending, LineEnding::Lf);

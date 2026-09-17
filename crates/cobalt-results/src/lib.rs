@@ -537,6 +537,12 @@ impl ResultSet {
     }
 }
 
+impl std::fmt::Debug for ResultSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResultSet").field("index", &self.index).field("columns", &self.columns.len()).field("rows", &self.row_count()).field("state", &self.state()).finish()
+    }
+}
+
 impl Drop for ResultSet {
     fn drop(&mut self) {
         let inner = self.inner.get_mut();
@@ -598,6 +604,25 @@ mod tests {
         assert_eq!(&*rs.cell_text(0, 0, &fmt), "1");
         let b = rs.view_to_single_batch().unwrap();
         assert_eq!(b.num_rows(), 8);
+    }
+
+    #[test]
+    fn gather_rows_projects_and_orders() {
+        let rs = sample();
+        // Rows spanning two chunks, out of order, with a column projection.
+        let b = rs.gather_rows(&[5, 1, 9], &[1, 0]).unwrap();
+        assert_eq!(b.num_rows(), 3);
+        assert_eq!(b.schema().field(0).name(), "name");
+        let names: Vec<CellValue> = (0..3).map(|r| CellValue::from_array(b.column(0), r)).collect();
+        assert_eq!(names, vec![CellValue::Text("n5".into()), CellValue::Text("n1".into()), CellValue::Null]);
+        assert_eq!(CellValue::from_array(b.column(1), 2), CellValue::Int(9));
+        // Through a sorted view the indexes are visible rows.
+        rs.apply_view(ViewSpec { filters: vec![], sort: vec![SortKey { column: 0, descending: true }] }).unwrap();
+        let b = rs.gather_rows(&[0, 1], &[0]).unwrap();
+        assert_eq!(CellValue::from_array(b.column(0), 0), CellValue::Int(11));
+        assert_eq!(CellValue::from_array(b.column(0), 1), CellValue::Int(10));
+        assert!(rs.gather_rows(&[99], &[0]).is_err());
+        assert_eq!(rs.gather_rows(&[], &[0]).unwrap().num_rows(), 0);
     }
 
     #[test]

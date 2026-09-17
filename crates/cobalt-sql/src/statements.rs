@@ -116,6 +116,8 @@ struct Splitter<'a> {
     insert_pending: bool,
     /// `MERGE` — no keyword splits until `;`.
     in_merge: bool,
+    /// The current `UPDATE` has already seen its `SET`.
+    set_seen: bool,
     /// Inside a `CREATE PROCEDURE/FUNCTION/TRIGGER` — nothing splits until the end.
     module_body: bool,
 }
@@ -135,6 +137,7 @@ impl<'a> Splitter<'a> {
             expect_body: false,
             insert_pending: false,
             in_merge: false,
+            set_seen: false,
             module_body: false,
         }
     }
@@ -187,6 +190,7 @@ impl<'a> Splitter<'a> {
         self.expect_body = false;
         self.insert_pending = false;
         self.in_merge = false;
+        self.set_seen = false;
     }
 
     fn begin_statement(&mut self, i: usize, kind: &str) {
@@ -195,6 +199,7 @@ impl<'a> Splitter<'a> {
         self.in_cte = false;
         self.insert_pending = false;
         self.in_merge = false;
+        self.set_seen = false;
         match kind {
             "WITH" => self.in_cte = true,
             "INSERT" => self.insert_pending = true,
@@ -241,7 +246,7 @@ impl<'a> Splitter<'a> {
                         let suppressed = self.in_cte
                             || self.in_merge
                             || self.expect_body
-                            || (upper == "SET" && matches!(self.stmt_kind.as_str(), "UPDATE" | "MERGE"))
+                            || (upper == "SET" && self.stmt_kind == "UPDATE" && !self.set_seen)
                             || (self.insert_pending && matches!(upper.as_str(), "SELECT" | "EXEC" | "EXECUTE" | "WITH"))
                             || self.prev_is_as(i)
                             || (upper == "WITH" && !self.with_starts_cte(i));
@@ -304,6 +309,7 @@ impl<'a> Splitter<'a> {
                         "SET" => {
                             if self.paren_depth == 0 {
                                 self.set_seen = true;
+                                self.expect_body = false;
                             }
                         }
                         "CREATE" | "ALTER" if self.cur_start == Some(i) => {

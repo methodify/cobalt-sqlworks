@@ -17,7 +17,10 @@ pub mod paths;
 pub mod settings;
 pub mod store;
 
-pub use ads_import::{default_ads_settings_path, parse_ads_settings, parse_ads_settings_detailed, strip_jsonc, AdsImport};
+pub use ads_import::{
+    default_ads_settings_path, parse_ads_settings, parse_ads_settings_detailed, strip_jsonc,
+    AdsImport,
+};
 pub use error::{Result, StoreError};
 pub use paths::{AppPaths, SPILL_PREFIX};
 pub use settings::{load_settings, save_settings};

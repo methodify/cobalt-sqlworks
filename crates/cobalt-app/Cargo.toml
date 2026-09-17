@@ -17,14 +17,14 @@ agent = ["dep:egui_agent", "dep:egui_agent_macros"]
 
 [dependencies]
 cobalt-core.workspace = true
-# cobalt-driver.workspace = true  # re-enable when integrated
-# cobalt-auth.workspace = true  # re-enable when integrated
-# cobalt-store.workspace = true  # re-enable when integrated
-# cobalt-sql.workspace = true  # re-enable when integrated
+cobalt-driver.workspace = true
+cobalt-auth.workspace = true
+cobalt-store.workspace = true
+cobalt-sql.workspace = true
 cobalt-results.workspace = true
-# cobalt-export.workspace = true  # re-enable when integrated
-# cobalt-export-delta.workspace = true  # re-enable when integrated
-# cobalt-plan.workspace = true  # re-enable when integrated
+cobalt-export.workspace = true
+cobalt-export-delta.workspace = true
+cobalt-plan.workspace = true
 
 egui.workspace = true
 eframe.workspace = true
@@ -39,6 +39,7 @@ egui_agent_macros = { workspace = true, optional = true }
 arrow.workspace = true
 tokio.workspace = true
 crossbeam-channel.workspace = true
+futures-util.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true

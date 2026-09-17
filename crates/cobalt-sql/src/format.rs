@@ -23,7 +23,8 @@ impl Default for FormatOptions {
 pub fn format(sql: &str, opts: &FormatOptions) -> String {
     let options = sqlformat::FormatOptions {
         indent: sqlformat::Indent::Spaces(opts.indent.clamp(0, u8::MAX as usize) as u8),
-        uppercase: Some(opts.uppercase_keywords),
+        // `Some(false)` would force lower case; `None` leaves the author's casing alone.
+        uppercase: if opts.uppercase_keywords { Some(true) } else { None },
         // sqlformat counts line breaks, not blank lines.
         lines_between_queries: (opts.lines_between_queries + 1).clamp(1, u8::MAX as usize) as u8,
         dialect: sqlformat::Dialect::SQLServer,

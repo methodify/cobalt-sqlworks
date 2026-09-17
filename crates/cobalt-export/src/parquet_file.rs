@@ -31,7 +31,7 @@ pub(crate) fn write<W: Write + Send>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut
     };
     let props = WriterProperties::builder()
         .set_compression(compression)
-        .set_max_row_group_size(o.row_group_rows.max(1))
+        .set_max_row_group_row_count(Some(o.row_group_rows.max(1)))
         .set_statistics_enabled(if o.statistics { EnabledStatistics::Page } else { EnabledStatistics::None })
         .set_created_by(CREATED_BY.to_string())
         .set_key_value_metadata(Some(vec![KeyValue::new(SQL_TYPES_KEY.to_string(), ctx.sql_types_json())]))

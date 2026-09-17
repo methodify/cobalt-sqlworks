@@ -21,9 +21,16 @@ impl Pkce {
     /// Build from a known verifier (tests / RFC vectors).
     pub fn from_verifier(verifier: impl Into<String>) -> Self {
         let verifier = verifier.into();
-        debug_assert!((43..=128).contains(&verifier.len()), "PKCE verifier length {}", verifier.len());
+        debug_assert!(
+            (43..=128).contains(&verifier.len()),
+            "PKCE verifier length {}",
+            verifier.len()
+        );
         let challenge = challenge_for(&verifier);
-        Self { verifier, challenge }
+        Self {
+            verifier,
+            challenge,
+        }
     }
 }
 
@@ -52,7 +59,10 @@ mod tests {
     fn generated_verifier_is_unreserved_and_sized() {
         let p = Pkce::generate();
         assert_eq!(p.verifier.len(), 43);
-        assert!(p.verifier.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(p
+            .verifier
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         assert_eq!(p.challenge, challenge_for(&p.verifier));
         assert_ne!(p.verifier, Pkce::generate().verifier);
     }

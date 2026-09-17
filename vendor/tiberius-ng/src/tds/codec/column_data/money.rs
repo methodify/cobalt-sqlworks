@@ -63,8 +63,8 @@ mod tests {
 
         let data = decode(&mut buf.into_sql_read_bytes(), 4).await.unwrap();
         match data {
-            ColumnData::F64(Some(v)) => assert!((v - 1.2345).abs() < 1e-9, "v={}", v),
-            other => panic!("expected F64, got {:?}", other),
+            ColumnData::Numeric(Some(n)) => assert_eq!((n.value(), n.scale()), (12345, 4)),
+            other => panic!("expected Numeric, got {:?}", other),
         }
     }
 
@@ -81,8 +81,8 @@ mod tests {
 
         let data = decode(&mut buf.into_sql_read_bytes(), 8).await.unwrap();
         match data {
-            ColumnData::F64(Some(v)) => assert!((v - 429499.7296).abs() < 1e-6, "v={}", v),
-            other => panic!("expected F64, got {:?}", other),
+            ColumnData::Numeric(Some(n)) => assert_eq!((n.value(), n.scale()), (4294997296, 4)),
+            other => panic!("expected Numeric, got {:?}", other),
         }
     }
 

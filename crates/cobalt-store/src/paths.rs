@@ -29,8 +29,12 @@ impl AppPaths {
     /// Linux: `~/.config/cobalt sql works`, `~/.local/share/...`, `~/.cache/...`.
     /// macOS: `~/Library/Application Support/dev.Cobalt.Cobalt-SQL-Works`.
     pub fn new() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from(cobalt_core::APP_QUALIFIER, cobalt_core::APP_ORG, cobalt_core::APP_NAME)
-            .ok_or(StoreError::NoProjectDirs)?;
+        let dirs = directories::ProjectDirs::from(
+            cobalt_core::APP_QUALIFIER,
+            cobalt_core::APP_ORG,
+            cobalt_core::APP_NAME,
+        )
+        .ok_or(StoreError::NoProjectDirs)?;
         let paths = Self {
             config_dir: dirs.config_dir().to_path_buf(),
             data_dir: dirs.data_dir().to_path_buf(),
@@ -65,7 +69,13 @@ impl AppPaths {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        for d in [&self.config_dir, &self.data_dir, &self.cache_dir, &self.log_dir, &self.temp_dir] {
+        for d in [
+            &self.config_dir,
+            &self.data_dir,
+            &self.cache_dir,
+            &self.log_dir,
+            &self.temp_dir,
+        ] {
             fs::create_dir_all(d)?;
         }
         Ok(())
@@ -98,10 +108,16 @@ impl AppPaths {
                 continue;
             }
             let path = entry.path();
-            let res = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+            let res = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
             match res {
                 Ok(()) => removed += 1,
-                Err(e) => tracing::debug!(path = %path.display(), error = %e, "could not remove stale spill file"),
+                Err(e) => {
+                    tracing::debug!(path = %path.display(), error = %e, "could not remove stale spill file")
+                }
             }
         }
         Ok(removed)

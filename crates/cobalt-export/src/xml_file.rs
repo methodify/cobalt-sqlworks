@@ -65,6 +65,7 @@ pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn Fn
     let rows = ctx.for_each_batch(progress, |batch| {
         let cols = ctx.format_batch(batch, &ctx.fmt);
         let mut w = Writer::new(Vec::with_capacity(batch.num_rows() * names.len() * 24));
+        #[allow(clippy::needless_range_loop)] // `r` indexes both the batch and every formatted column
         for r in 0..batch.num_rows() {
             w.get_mut().extend_from_slice(&indent(1));
             if o.attribute_style {

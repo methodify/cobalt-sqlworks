@@ -628,9 +628,9 @@ mod tests {
         assert_eq!(k[2], (TokenKind::Punct, "("));
         assert_eq!(k[3], (TokenKind::Operator, "*"));
         assert_eq!(k[6], (TokenKind::Identifier, "n"));
-        assert!(k.iter().any(|t| *t == (TokenKind::BracketedIdentifier, "[Order Details]")));
-        assert!(k.iter().any(|t| *t == (TokenKind::Operator, "<>")));
-        assert!(k.iter().any(|t| *t == (TokenKind::Number, "1")));
+        assert!(k.contains(&(TokenKind::BracketedIdentifier, "[Order Details]")));
+        assert!(k.contains(&(TokenKind::Operator, "<>")));
+        assert!(k.contains(&(TokenKind::Number, "1")));
     }
 
     #[test]
@@ -681,7 +681,7 @@ mod tests {
         assert_eq!(k[0], (TokenKind::Keyword, "declare"));
         assert_eq!(k[2], (TokenKind::Type, "NVarChar"));
         assert_eq!(k[7], (TokenKind::Function, "left"));
-        assert!(k.iter().any(|t| *t == (TokenKind::Keyword, "left")));
+        assert!(k.contains(&(TokenKind::Keyword, "left")));
         assert!(is_keyword("Select") && is_function("getdate") && is_type("INT"));
         assert!(!is_keyword("foo"));
     }

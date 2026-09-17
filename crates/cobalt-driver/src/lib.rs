@@ -28,9 +28,14 @@ pub enum StreamItem {
     ResultSetEnd { rows: u64 },
     /// DML/DDL statement completed without a result set.
     RowsAffected(u64),
+    /// PRINT / RAISERROR ≤ 10 / STATISTICS output (`is_error: false`) and server errors
+    /// (`is_error: true`), in the order the server sent them.
     Message(ServerMessage),
     /// The batch finished. `error` is set when the batch was aborted by a server error
-    /// (severity > 10); prior items are still valid.
+    /// (severity > 10); prior items are still valid. `error` repeats the *first* error that was
+    /// already delivered as a `Message` (so the run can be marked failed) — do not append it to
+    /// the messages pane a second time. A command timeout also ends here with an error and
+    /// `cancelled: false`; a user cancel ends with `cancelled: true` and no error.
     Done { error: Option<ServerMessage>, cancelled: bool },
 }
 
@@ -142,8 +147,7 @@ pub fn split_batches(script: &str) -> Vec<Batch> {
     let mut out = Vec::new();
     let mut current = String::new();
     let mut start_line = 1u32;
-    let mut line_no = 1u32;
-    for line in script.split_inclusive('\n') {
+    for (line_no, line) in (1u32..).zip(script.split_inclusive('\n')) {
         let trimmed = line.trim();
         let upper = trimmed.to_ascii_uppercase();
         let is_go = upper == "GO" || upper.starts_with("GO ") && upper[3..].trim().parse::<u32>().is_ok() || upper == "GO;";
@@ -162,7 +166,6 @@ pub fn split_batches(script: &str) -> Vec<Batch> {
             }
             current.push_str(line);
         }
-        line_no += 1;
     }
     if !current.trim().is_empty() {
         out.push(Batch { sql: current, start_line });

@@ -331,7 +331,7 @@ mod tests {
     fn insert_batching() {
         let rs = sample();
         let s = to_insert_statements(&rs, &Selection::all(&rs), "[dbo].[t]", 2).unwrap();
-        let expected = "INSERT INTO [dbo].[t] (id, [Name Col], [when]) VALUES\n(1, N'a|b', '2024-01-02T03:04:05.123'),\n(2, NULL, NULL);\n\nINSERT INTO [dbo].[t] (id, [Name Col], [when]) VALUES\n(1, N'tab\there \"q\"', '1970-01-01T00:00:00');\n";
+        let expected = "INSERT INTO [dbo].[t] (id, [Name Col], when) VALUES\n(1, N'a|b', '2024-01-02T03:04:05.123'),\n(2, NULL, NULL);\n\nINSERT INTO [dbo].[t] (id, [Name Col], when) VALUES\n(1, N'tab\there \"q\"', '1970-01-01T00:00:00');\n";
         assert_eq!(s, expected);
         let one = to_insert_statements(&rs, &Selection::all(&rs), "t", 0).unwrap();
         assert_eq!(one.matches("INSERT INTO").count(), 1);

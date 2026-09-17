@@ -146,12 +146,15 @@ impl Store {
     fn init(mut conn: Connection) -> Result<Self> {
         conn.busy_timeout(Duration::from_secs(5))?;
         // WAL is not available for in-memory databases; the pragma reports "memory" then.
-        let _mode: String = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
+        let _mode: String =
+            conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "temp_store", "MEMORY")?;
         migrate(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Current schema version recorded in the database.
@@ -168,7 +171,10 @@ impl Store {
     }
 
     /// Run `f` inside a transaction with exclusive access to the connection.
-    pub(crate) fn tx<T>(&self, f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>) -> Result<T> {
+    pub(crate) fn tx<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let mut conn = self.lock()?;
         let tx = conn.transaction()?;
         let out = f(&tx)?;
@@ -185,7 +191,11 @@ fn current_version(conn: &Connection) -> rusqlite::Result<i64> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
     )?;
-    conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_version", [], |r| r.get(0))
+    conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_version",
+        [],
+        |r| r.get(0),
+    )
 }
 
 fn migrate(conn: &mut Connection) -> Result<()> {
@@ -199,7 +209,10 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         let version = idx as i64 + 1;
         let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
-        tx.execute("INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)", rusqlite::params![version, fmt_ts(&Utc::now())])?;
+        tx.execute(
+            "INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![version, fmt_ts(&Utc::now())],
+        )?;
         tx.commit()?;
         tracing::info!(version, "applied store migration");
     }
@@ -217,7 +230,9 @@ pub(crate) fn fmt_ts(t: &DateTime<Utc>) -> String {
 pub(crate) fn parse_ts(s: &str) -> rusqlite::Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(s)
         .map(|d| d.with_timezone(&Utc))
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))
+        .map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+        })
 }
 
 pub(crate) fn opt_ts(s: Option<String>) -> rusqlite::Result<Option<DateTime<Utc>>> {

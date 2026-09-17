@@ -1,3 +1,4 @@
+#![allow(missing_docs)] // Cobalt patch: items became public for raw token access
 use crate::{tds::Collation, Error, SqlReadBytes};
 use byteorder::{LittleEndian, ReadBytesExt};
 use fmt::Debug;

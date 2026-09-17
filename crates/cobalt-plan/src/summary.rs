@@ -10,13 +10,16 @@ pub fn fmt_thousands(n: f64) -> String {
     let neg = n < 0.0;
     let whole = n.abs().round() as u64;
     let s = whole.to_string();
-    let mut out = String::with_capacity(s.len() + s.len() / 3);
-    for (i, ch) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(ch);
+    // Split into 3-digit groups from the right (digits are ASCII, so byte slicing is safe).
+    let mut groups: Vec<&str> = Vec::with_capacity(s.len() / 3 + 1);
+    let mut end = s.len();
+    while end > 3 {
+        groups.push(&s[end - 3..end]);
+        end -= 3;
     }
+    groups.push(&s[..end]);
+    groups.reverse();
+    let mut out = groups.join(",");
     if neg {
         out.insert(0, '-');
     }
@@ -49,7 +52,9 @@ pub fn node_label(stmt: &Statement, node: usize) -> String {
 /// Example: `Clustered Index Seek on dbo.big (PK) → Nested Loops → Sort; est 1,234 rows; cost 0.0123`
 pub fn statement_summary(stmt: &Statement) -> String {
     let Some(root) = stmt.root else {
-        let text = stmt.text.trim();
+        // Statement text can span lines (`&#10;` in the XML); keep the summary on one line.
+        let text = stmt.text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let text = text.trim();
         let short: String = text.chars().take(60).collect();
         return if text.is_empty() {
             format!("{} (no plan)", stmt.statement_type)

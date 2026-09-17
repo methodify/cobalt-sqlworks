@@ -1,3 +1,4 @@
+#![allow(missing_docs)] // Cobalt patch: items became public for raw token access
 use std::{
     borrow::{BorrowMut, Cow},
     fmt::Display,

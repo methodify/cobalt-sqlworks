@@ -119,7 +119,11 @@ fn ads_fixture_groups_hierarchy() {
     assert_eq!(prod.parent, None, "child of ROOT is top-level");
     assert_eq!(prod.color, Color(0xA1, 0x63, 0x4D));
     assert_eq!(prod.description.as_deref(), Some("Live systems"));
-    assert_eq!(prod.id, GroupId::parse("6b8a4d1e-9c1f-4d63-a8bd-6a2e2b0c5c11").unwrap(), "ADS GUID ids are preserved");
+    assert_eq!(
+        prod.id,
+        GroupId::parse("6b8a4d1e-9c1f-4d63-a8bd-6a2e2b0c5c11").unwrap(),
+        "ADS GUID ids are preserved"
+    );
     assert_eq!(fabric.parent, Some(prod.id));
     assert_eq!(fabric.color, Color(0x16, 0x9C, 0xA8), "palette name mapped");
     assert_eq!(broken.parent, None);
@@ -133,34 +137,75 @@ fn ads_fixture_connections() {
     let profiles = &imp.library.profiles;
     assert_eq!(profiles.len(), 3);
     assert_eq!(imp.skipped_count(), 1);
-    assert_eq!(imp.skipped[0], ("Postgres analytics".to_string(), "PGSQL".to_string()));
+    assert_eq!(
+        imp.skipped[0],
+        ("Postgres analytics".to_string(), "PGSQL".to_string())
+    );
 
-    let prod = imp.library.groups.iter().find(|g| g.name == "Production").unwrap();
-    let fabric_g = imp.library.groups.iter().find(|g| g.name == "Fabric").unwrap();
+    let prod = imp
+        .library
+        .groups
+        .iter()
+        .find(|g| g.name == "Production")
+        .unwrap();
+    let fabric_g = imp
+        .library
+        .groups
+        .iter()
+        .find(|g| g.name == "Fabric")
+        .unwrap();
 
-    let orders = profiles.iter().find(|p| p.name.as_deref() == Some("Orders DB")).unwrap();
+    let orders = profiles
+        .iter()
+        .find(|p| p.name.as_deref() == Some("Orders DB"))
+        .unwrap();
     assert_eq!(orders.server, "sql-prod-01.contoso.local,1433");
     assert_eq!(orders.database.as_deref(), Some("Orders"));
-    assert_eq!(orders.auth, AuthMethod::SqlLogin { user: "orders_app".into(), password: None });
+    assert_eq!(
+        orders.auth,
+        AuthMethod::SqlLogin {
+            user: "orders_app".into(),
+            password: None
+        }
+    );
     assert_eq!(orders.group, Some(prod.id));
     assert_eq!(orders.options.encrypt, Encrypt::Mandatory);
     assert!(orders.options.trust_server_certificate);
     assert_eq!(orders.options.connect_timeout_secs, 15);
     assert_eq!(orders.options.command_timeout_secs, 60);
-    assert_eq!(orders.options.application_intent, ApplicationIntent::ReadOnly);
-    assert_eq!(orders.options.application_name, ConnectionOptions::default().application_name, "azdata not carried over");
-    assert_eq!(orders.id, ProfileId::parse("2f0c5d4a-1111-4a2b-9c3d-000000000001").unwrap());
+    assert_eq!(
+        orders.options.application_intent,
+        ApplicationIntent::ReadOnly
+    );
+    assert_eq!(
+        orders.options.application_name,
+        ConnectionOptions::default().application_name,
+        "azdata not carried over"
+    );
+    assert_eq!(
+        orders.id,
+        ProfileId::parse("2f0c5d4a-1111-4a2b-9c3d-000000000001").unwrap()
+    );
 
-    let local = profiles.iter().find(|p| p.server == "localhost\\SQLEXPRESS").unwrap();
+    let local = profiles
+        .iter()
+        .find(|p| p.server == "localhost\\SQLEXPRESS")
+        .unwrap();
     assert_eq!(local.name, None, "empty connectionName becomes None");
     assert_eq!(local.database, None);
     assert_eq!(local.auth, AuthMethod::WindowsIntegrated);
     assert_eq!(local.group, None, "ROOT group becomes ungrouped");
     assert_eq!(local.options.encrypt, Encrypt::Optional);
-    assert!(local.options.trust_server_certificate, "string \"true\" accepted");
+    assert!(
+        local.options.trust_server_certificate,
+        "string \"true\" accepted"
+    );
     assert_eq!(local.display_name(), "localhost\\SQLEXPRESS");
 
-    let fabric = profiles.iter().find(|p| p.name.as_deref() == Some("Fabric DW")).unwrap();
+    let fabric = profiles
+        .iter()
+        .find(|p| p.name.as_deref() == Some("Fabric DW"))
+        .unwrap();
     assert!(fabric.looks_like_fabric());
     assert_eq!(
         fabric.auth,
@@ -180,10 +225,16 @@ fn ads_import_lands_in_store() {
     let lib = parse_ads_settings(FIXTURE).unwrap();
     let s = Store::open_in_memory().unwrap();
     let summary = s.import_library(&lib, false).unwrap();
-    assert_eq!((summary.groups, summary.profiles, summary.orphaned_profiles), (3, 3, 0));
+    assert_eq!(
+        (summary.groups, summary.profiles, summary.orphaned_profiles),
+        (3, 3, 0)
+    );
     let stored = s.list_profiles().unwrap();
     assert_eq!(stored.len(), 3);
-    let fabric = stored.iter().find(|p| p.name.as_deref() == Some("Fabric DW")).unwrap();
+    let fabric = stored
+        .iter()
+        .find(|p| p.name.as_deref() == Some("Fabric DW"))
+        .unwrap();
     assert!(fabric.auth.is_entra());
     let groups = s.list_groups().unwrap();
     let fabric_g = groups.iter().find(|g| g.name == "Fabric").unwrap();
@@ -199,8 +250,14 @@ fn ads_edge_cases() {
     assert_eq!(imp.warnings.len(), 1);
 
     // Not JSON at all.
-    assert!(matches!(parse_ads_settings("not json"), Err(StoreError::Ads(_))));
-    assert!(matches!(parse_ads_settings("[1,2]"), Err(StoreError::Ads(_))));
+    assert!(matches!(
+        parse_ads_settings("not json"),
+        Err(StoreError::Ads(_))
+    ));
+    assert!(matches!(
+        parse_ads_settings("[1,2]"),
+        Err(StoreError::Ads(_))
+    ));
 
     // AzureMFAAndUser without azureAccount falls back to user; non-GUID ids get fresh ones;
     // no server is skipped with a warning; unknown auth type is a warning.
@@ -218,19 +275,40 @@ fn ads_edge_cases() {
     .unwrap();
     assert_eq!(imp.library.profiles.len(), 3);
     let a = &imp.library.profiles[0];
-    assert_eq!(a.auth, AuthMethod::EntraInteractive { tenant: None, account_hint: Some("u@x.com".into()) });
+    assert_eq!(
+        a.auth,
+        AuthMethod::EntraInteractive {
+            tenant: None,
+            account_hint: Some("u@x.com".into())
+        }
+    );
     assert_eq!(a.options.encrypt, Encrypt::Mandatory);
     assert_eq!(a.port, Some(1433));
     assert!(imp.warnings.iter().any(|w| w.contains("no server")));
     assert!(imp.warnings.iter().any(|w| w.contains("dstsAuth")));
-    assert_eq!(imp.library.profiles[1].auth, AuthMethod::SqlLogin { user: "z".into(), password: None });
-    assert_eq!(imp.library.profiles[2].auth, AuthMethod::SqlLogin { user: String::new(), password: None }, "missing provider/auth = MSSQL SQL login");
+    assert_eq!(
+        imp.library.profiles[1].auth,
+        AuthMethod::SqlLogin {
+            user: "z".into(),
+            password: None
+        }
+    );
+    assert_eq!(
+        imp.library.profiles[2].auth,
+        AuthMethod::SqlLogin {
+            user: String::new(),
+            password: None
+        },
+        "missing provider/auth = MSSQL SQL login"
+    );
 }
 
 #[test]
 fn ads_default_path_candidates() {
     let cands = cobalt_store::ads_import::ads_settings_candidates();
-    assert!(cands.iter().all(|p| p.ends_with(std::path::Path::new("azuredatastudio/User/settings.json"))));
+    assert!(cands
+        .iter()
+        .all(|p| p.ends_with(std::path::Path::new("azuredatastudio/User/settings.json"))));
     // Whatever exists (or not) on this box, the function must not panic.
     let _ = default_ads_settings_path();
 }

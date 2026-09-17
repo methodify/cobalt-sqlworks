@@ -69,7 +69,10 @@ fn tmp_path(path: &Path) -> PathBuf {
 }
 
 fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "settings.toml".into());
+    let mut name = path
+        .file_name()
+        .map(|n| n.to_os_string())
+        .unwrap_or_else(|| "settings.toml".into());
     name.push(suffix);
     path.with_file_name(name)
 }

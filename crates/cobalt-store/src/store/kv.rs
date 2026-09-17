@@ -11,7 +11,11 @@ impl Store {
     /// (and logged) so a schema change in a UI struct never blocks startup.
     pub fn get_kv<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
         let conn = self.lock()?;
-        let raw: Option<String> = conn.query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| r.get(0)).optional()?;
+        let raw: Option<String> = conn
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |r| {
+                r.get(0)
+            })
+            .optional()?;
         match raw {
             None => Ok(None),
             Some(s) => match serde_json::from_str(&s) {

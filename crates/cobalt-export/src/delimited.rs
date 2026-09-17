@@ -25,7 +25,7 @@ pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn Fn
         _ => {}
     }
 
-    let mut emit = |buf: Vec<u8>, sink: &mut W| -> Result<()> {
+    let emit = |buf: Vec<u8>, sink: &mut W| -> Result<()> {
         match encoding {
             Encoding::Utf8 => sink.write_all(&buf)?,
             Encoding::Utf16Le => {

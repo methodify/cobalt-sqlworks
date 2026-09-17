@@ -24,7 +24,9 @@ pub enum AuthError {
     Timeout,
     #[error("Azure CLI: {0}")]
     AzureCli(String),
-    #[error("no Entra client ID is configured — set one under Settings → Connections → Entra client ID")]
+    #[error(
+        "no Entra client ID is configured — set one under Settings → Connections → Entra client ID"
+    )]
     MissingClientId,
     #[error("{0}")]
     Other(String),
@@ -34,7 +36,10 @@ pub type Result<T> = std::result::Result<T, AuthError>;
 
 impl AuthError {
     pub fn provider(error: impl Into<String>, description: impl Into<String>) -> Self {
-        AuthError::Provider { error: error.into(), description: description.into() }
+        AuthError::Provider {
+            error: error.into(),
+            description: description.into(),
+        }
     }
 
     pub fn other(msg: impl fmt::Display) -> Self {
@@ -69,7 +74,15 @@ impl AuthError {
 }
 
 /// AADSTS codes that mean "this public client can't satisfy the tenant's policy".
-const CONDITIONAL_ACCESS: &[&str] = &["AADSTS53000", "AADSTS53001", "AADSTS53003", "AADSTS530032", "AADSTS50076", "AADSTS50079", "AADSTS50074"];
+const CONDITIONAL_ACCESS: &[&str] = &[
+    "AADSTS53000",
+    "AADSTS53001",
+    "AADSTS53003",
+    "AADSTS530032",
+    "AADSTS50076",
+    "AADSTS50079",
+    "AADSTS50074",
+];
 
 fn provider_hint(error: &str, description: &str) -> Option<&'static str> {
     if CONDITIONAL_ACCESS.iter().any(|c| description.contains(c)) {
@@ -83,13 +96,17 @@ fn provider_hint(error: &str, description: &str) -> Option<&'static str> {
         );
     }
     if description.contains("AADSTS50011") {
-        return Some("The app registration needs `http://localhost` as a Mobile and desktop redirect URI.");
+        return Some(
+            "The app registration needs `http://localhost` as a Mobile and desktop redirect URI.",
+        );
     }
     if description.contains("AADSTS65001") || description.contains("AADSTS65004") {
         return Some("Consent was not granted for Azure SQL Database access. An admin may need to grant it for this app.");
     }
     if description.contains("AADSTS7000218") {
-        return Some("The app registration must be a public client (\"Allow public client flows\" = Yes).");
+        return Some(
+            "The app registration must be a public client (\"Allow public client flows\" = Yes).",
+        );
     }
     match error {
         "authorization_declined" => Some("The sign-in was declined in the browser."),

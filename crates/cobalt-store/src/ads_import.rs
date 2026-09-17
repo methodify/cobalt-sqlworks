@@ -7,7 +7,8 @@
 
 use crate::{LibraryExport, Result, StoreError};
 use cobalt_core::{
-    ApplicationIntent, AuthMethod, Color, ConnectionOptions, ConnectionProfile, Encrypt, GroupId, ProfileId, ServerGroup,
+    ApplicationIntent, AuthMethod, Color, ConnectionOptions, ConnectionProfile, Encrypt, GroupId,
+    ProfileId, ServerGroup,
 };
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -37,15 +38,25 @@ pub fn parse_ads_settings(json: &str) -> Result<LibraryExport> {
 /// Like [`parse_ads_settings`] but also reports skipped connections and warnings.
 pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
     let clean = strip_jsonc(json);
-    let root: Value = serde_json::from_str(&clean).map_err(|e| StoreError::Ads(format!("settings.json is not valid JSON: {e}")))?;
-    let root = root.as_object().ok_or_else(|| StoreError::Ads("settings.json root is not an object".into()))?;
+    let root: Value = serde_json::from_str(&clean)
+        .map_err(|e| StoreError::Ads(format!("settings.json is not valid JSON: {e}")))?;
+    let root = root
+        .as_object()
+        .ok_or_else(|| StoreError::Ads("settings.json root is not an object".into()))?;
 
     let mut out = AdsImport::default();
     let empty = Vec::new();
-    let raw_groups = root.get("datasource.connectionGroups").and_then(Value::as_array).unwrap_or(&empty);
-    let raw_conns = root.get("datasource.connections").and_then(Value::as_array).unwrap_or(&empty);
+    let raw_groups = root
+        .get("datasource.connectionGroups")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
+    let raw_conns = root
+        .get("datasource.connections")
+        .and_then(Value::as_array)
+        .unwrap_or(&empty);
     if raw_groups.is_empty() && raw_conns.is_empty() {
-        out.warnings.push("no datasource.connections or datasource.connectionGroups keys found".into());
+        out.warnings
+            .push("no datasource.connections or datasource.connectionGroups keys found".into());
     }
 
     // ---- groups ------------------------------------------------------------------------
@@ -60,7 +71,8 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
     for g in raw_groups {
         let Some(obj) = g.as_object() else { continue };
         let Some(ads_id) = str_field(obj, "id") else {
-            out.warnings.push("skipped a connection group without an id".into());
+            out.warnings
+                .push("skipped a connection group without an id".into());
             continue;
         };
         groups.push(RawGroup {
@@ -76,7 +88,11 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
     // parent does not exist is treated as top-level too.
     let root_ids: HashSet<String> = groups
         .iter()
-        .filter(|g| g.parent.is_none() || g.ads_id.eq_ignore_ascii_case("ROOT") || g.name.eq_ignore_ascii_case("ROOT"))
+        .filter(|g| {
+            g.parent.is_none()
+                || g.ads_id.eq_ignore_ascii_case("ROOT")
+                || g.name.eq_ignore_ascii_case("ROOT")
+        })
         .map(|g| g.ads_id.clone())
         .collect();
 
@@ -85,7 +101,10 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
         if root_ids.contains(&g.ads_id) {
             continue;
         }
-        group_ids.insert(g.ads_id.clone(), GroupId::parse(&g.ads_id).unwrap_or_default());
+        group_ids.insert(
+            g.ads_id.clone(),
+            GroupId::parse(&g.ads_id).unwrap_or_default(),
+        );
     }
     let mut palette_i = 0usize;
     for g in &groups {
@@ -96,19 +115,30 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
             Some(p) if root_ids.contains(p) => None,
             Some(p) if all_ids.contains(p.as_str()) => group_ids.get(p).copied(),
             Some(p) => {
-                out.warnings.push(format!("group {:?} refers to unknown parent {p}; placed at top level", g.name));
+                out.warnings.push(format!(
+                    "group {:?} refers to unknown parent {p}; placed at top level",
+                    g.name
+                ));
                 None
             }
             None => None,
         };
-        let color = g.color.as_deref().and_then(parse_ads_color).unwrap_or_else(|| {
-            let c = Color::PALETTE[palette_i % Color::PALETTE.len()];
-            palette_i += 1;
-            c
-        });
+        let color = g
+            .color
+            .as_deref()
+            .and_then(parse_ads_color)
+            .unwrap_or_else(|| {
+                let c = Color::PALETTE[palette_i % Color::PALETTE.len()];
+                palette_i += 1;
+                c
+            });
         out.library.groups.push(ServerGroup {
             id: group_ids[&g.ads_id],
-            name: if g.name.is_empty() { "Imported group".into() } else { g.name.clone() },
+            name: if g.name.is_empty() {
+                "Imported group".into()
+            } else {
+                g.name.clone()
+            },
             color,
             parent,
             description: g.description.clone(),
@@ -120,7 +150,10 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
     let empty_obj = Map::new();
     for c in raw_conns {
         let Some(obj) = c.as_object() else { continue };
-        let options = obj.get("options").and_then(Value::as_object).unwrap_or(&empty_obj);
+        let options = obj
+            .get("options")
+            .and_then(Value::as_object)
+            .unwrap_or(&empty_obj);
         let provider = str_field(obj, "providerName").unwrap_or_else(|| "MSSQL".into());
         let display = str_field(options, "connectionName")
             .filter(|s| !s.is_empty())
@@ -130,8 +163,12 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
             out.skipped.push((display, provider));
             continue;
         }
-        let Some(server) = str_field(options, "server").map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) else {
-            out.warnings.push(format!("skipped connection {display:?}: no server"));
+        let Some(server) = str_field(options, "server")
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+        else {
+            out.warnings
+                .push(format!("skipped connection {display:?}: no server"));
             continue;
         };
 
@@ -141,7 +178,9 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
             .and_then(|g| {
                 let mapped = group_ids.get(&g).copied();
                 if mapped.is_none() {
-                    out.warnings.push(format!("connection {display:?} refers to unknown group {g}; left ungrouped"));
+                    out.warnings.push(format!(
+                        "connection {display:?} refers to unknown group {g}; left ungrouped"
+                    ));
                 }
                 mapped
             });
@@ -152,13 +191,22 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
         let auth_type = str_field(options, "authenticationType").unwrap_or_default();
         let auth = match auth_type.as_str() {
             "AzureMFA" | "AzureMFAAndUser" | "azureMFA" | "azureMFAAndUser" => {
-                AuthMethod::EntraInteractive { tenant, account_hint: account.or(user) }
+                AuthMethod::EntraInteractive {
+                    tenant,
+                    account_hint: account.or(user),
+                }
             }
             "Integrated" | "integrated" => AuthMethod::WindowsIntegrated,
-            "SqlLogin" | "sqlLogin" | "" => AuthMethod::SqlLogin { user: user.unwrap_or_default(), password: None },
+            "SqlLogin" | "sqlLogin" | "" => AuthMethod::SqlLogin {
+                user: user.unwrap_or_default(),
+                password: None,
+            },
             other => {
                 out.warnings.push(format!("connection {display:?}: unknown authenticationType {other:?}; treated as SQL login"));
-                AuthMethod::SqlLogin { user: user.unwrap_or_default(), password: None }
+                AuthMethod::SqlLogin {
+                    user: user.unwrap_or_default(),
+                    password: None,
+                }
             }
         };
 
@@ -173,10 +221,13 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
         if let Some(b) = bool_field(options, "trustServerCertificate") {
             opts.trust_server_certificate = b;
         }
-        opts.host_name_in_certificate = str_field(options, "hostNameInCertificate").filter(|s| !s.is_empty());
+        opts.host_name_in_certificate =
+            str_field(options, "hostNameInCertificate").filter(|s| !s.is_empty());
         if let Some(a) = str_field(options, "applicationName").filter(|s| !s.is_empty()) {
             // ADS stamps its own name; don't carry that over.
-            if !a.eq_ignore_ascii_case("azdata") && !a.to_ascii_lowercase().contains("azuredatastudio") {
+            if !a.eq_ignore_ascii_case("azdata")
+                && !a.to_ascii_lowercase().contains("azuredatastudio")
+            {
                 opts.application_name = a;
             }
         }
@@ -197,15 +248,25 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
         if let Some(b) = bool_field(options, "multipleActiveResultSets") {
             opts.mars = b;
         }
-        opts.packet_size = num_field(options, "packetSize").filter(|v| *v > 0).map(|v| v as u32);
+        opts.packet_size = num_field(options, "packetSize")
+            .filter(|v| *v > 0)
+            .map(|v| v as u32);
 
-        let id = str_field(obj, "id").and_then(|s| ProfileId::parse(&s)).unwrap_or_default();
+        let id = str_field(obj, "id")
+            .and_then(|s| ProfileId::parse(&s))
+            .unwrap_or_default();
         out.library.profiles.push(ConnectionProfile {
             id,
-            name: str_field(options, "connectionName").map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()),
+            name: str_field(options, "connectionName")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty()),
             server,
-            port: num_field(options, "port").filter(|v| *v > 0 && *v <= 65535).map(|v| v as u16),
-            database: str_field(options, "database").map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()),
+            port: num_field(options, "port")
+                .filter(|v| *v > 0 && *v <= 65535)
+                .map(|v| v as u16),
+            database: str_field(options, "database")
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty()),
             auth,
             group,
             color: None,
@@ -233,7 +294,10 @@ pub fn ads_settings_candidates() -> Vec<PathBuf> {
     if let Some(appdata) = std::env::var_os("APPDATA").filter(|s| !s.is_empty()) {
         out.push(join(PathBuf::from(appdata)));
     }
-    if let Some(home) = std::env::var_os("HOME").filter(|s| !s.is_empty()).map(PathBuf::from) {
+    if let Some(home) = std::env::var_os("HOME")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+    {
         out.push(join(home.join("Library").join("Application Support")));
         if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME").filter(|s| !s.is_empty()) {
             out.push(join(PathBuf::from(xdg)));
@@ -309,7 +373,11 @@ fn bool_field(obj: &Map<String, Value>, key: &str) -> Option<bool> {
 fn num_field(obj: &Map<String, Value>, key: &str) -> Option<i64> {
     match obj.get(key)? {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
-        Value::String(s) => s.trim().parse::<i64>().ok().or_else(|| s.trim().parse::<f64>().ok().map(|f| f as i64)),
+        Value::String(s) => s
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .or_else(|| s.trim().parse::<f64>().ok().map(|f| f as i64)),
         _ => None,
     }
 }

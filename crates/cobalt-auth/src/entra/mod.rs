@@ -76,14 +76,22 @@ impl Default for EntraConfig {
 
 impl EntraConfig {
     pub fn new(client_id: impl Into<String>) -> Self {
-        Self { client_id: client_id.into(), ..Default::default() }
+        Self {
+            client_id: client_id.into(),
+            ..Default::default()
+        }
     }
 
     /// Build from the persisted user settings.
     pub fn from_settings(s: &cobalt_core::ConnectionSettings) -> Self {
         Self {
             client_id: s.entra_client_id.trim().to_owned(),
-            tenant: s.entra_default_tenant.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+            tenant: s
+                .entra_default_tenant
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(str::to_owned),
             redirect_port: s.entra_redirect_port,
             ..Default::default()
         }
@@ -99,13 +107,21 @@ impl EntraConfig {
     }
 
     pub fn tenant(&self) -> &str {
-        self.tenant.as_deref().map(str::trim).filter(|t| !t.is_empty()).unwrap_or(DEFAULT_TENANT)
+        self.tenant
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .unwrap_or(DEFAULT_TENANT)
     }
 
     /// `https://login.microsoftonline.com/{tenant}` (no trailing slash).
     pub fn authority(&self) -> String {
         let host = self.authority_host.trim().trim_end_matches('/');
-        let base = if host.contains("://") { host.to_owned() } else { format!("https://{host}") };
+        let base = if host.contains("://") {
+            host.to_owned()
+        } else {
+            format!("https://{host}")
+        };
         format!("{base}/{}", self.tenant())
     }
 

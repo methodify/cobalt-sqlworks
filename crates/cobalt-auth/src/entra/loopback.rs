@@ -22,7 +22,8 @@ impl Listener {
     /// Bind `127.0.0.1:{port}` (`0` = ephemeral).
     pub fn bind(port: Option<u16>) -> Result<Self> {
         let addr = format!("127.0.0.1:{}", port.unwrap_or(0));
-        let server = Server::http(&addr).map_err(|e| AuthError::Other(format!("cannot listen on {addr}: {e}")))?;
+        let server = Server::http(&addr)
+            .map_err(|e| AuthError::Other(format!("cannot listen on {addr}: {e}")))?;
         let port = server
             .server_addr()
             .to_ip()
@@ -43,7 +44,12 @@ impl Listener {
 
     /// Block until the redirect arrives, the deadline passes, or `cancel` flips. Meant to run
     /// inside `spawn_blocking`; polls every 200 ms so a cancel is honoured promptly.
-    pub fn wait_for_code(self, expected_state: &str, timeout: Duration, cancel: &CancelToken) -> Result<Redirect> {
+    pub fn wait_for_code(
+        self,
+        expected_state: &str,
+        timeout: Duration,
+        cancel: &CancelToken,
+    ) -> Result<Redirect> {
         let deadline = Instant::now() + timeout;
         loop {
             if cancel.is_cancelled() {
@@ -67,7 +73,9 @@ impl Listener {
                 let _ = req.respond(Response::from_string("").with_status_code(404));
                 continue;
             }
-            let params: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+            let params: HashMap<String, String> = url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect();
             let outcome = interpret(&params, expected_state);
             let (status, page) = match &outcome {
                 Ok(_) => (200, success_page()),
@@ -80,18 +88,31 @@ impl Listener {
 }
 
 /// Decide what a redirect's query string means.
-pub(crate) fn interpret(params: &HashMap<String, String>, expected_state: &str) -> Result<Redirect> {
+pub(crate) fn interpret(
+    params: &HashMap<String, String>,
+    expected_state: &str,
+) -> Result<Redirect> {
     if let Some(err) = params.get("error") {
         let desc = params.get("error_description").cloned().unwrap_or_default();
-        return Err(AuthError::Provider { error: err.clone(), description: desc });
+        return Err(AuthError::Provider {
+            error: err.clone(),
+            description: desc,
+        });
     }
     match params.get("state") {
         Some(s) if s == expected_state => {}
-        _ => return Err(AuthError::Other("sign-in response did not match this request (state mismatch); please try again".into())),
+        _ => {
+            return Err(AuthError::Other(
+                "sign-in response did not match this request (state mismatch); please try again"
+                    .into(),
+            ))
+        }
     }
     match params.get("code") {
         Some(c) if !c.is_empty() => Ok(Redirect { code: c.clone() }),
-        _ => Err(AuthError::Other("sign-in response carried no authorization code".into())),
+        _ => Err(AuthError::Other(
+            "sign-in response carried no authorization code".into(),
+        )),
     }
 }
 
@@ -119,19 +140,19 @@ code{font-size:.85em;opacity:.8;word-break:break-word}
 
 pub(crate) fn success_page() -> String {
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Signed in - Cobalt SQL Works</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>{STYLE}</style></head>
+        r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Signed in - Cobalt SQL Works</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>{STYLE}</style></head>
 <body><div class="card"><div class="mark"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></div>
 <h1>You're signed in to Cobalt SQL Works</h1><p>You can close this tab and return to the app.</p></div>
-<script>setTimeout(function(){{try{{window.close()}}catch(e){{}}}},1500)</script></body></html>"#
+<script>setTimeout(function(){{try{{window.close()}}catch(e){{}}}},1500)</script></body></html>"##
     )
 }
 
 pub(crate) fn error_page(message: &str) -> String {
     let msg = escape(message);
     format!(
-        r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed - Cobalt SQL Works</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>{STYLE}</style></head>
+        r##"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Sign-in failed - Cobalt SQL Works</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>{STYLE}</style></head>
 <body><div class="card err"><div class="mark"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
-<h1>Sign-in didn't complete</h1><p>Cobalt SQL Works could not finish signing you in.</p><p><code>{msg}</code></p><p>Close this tab and try again from the app.</p></div></body></html>"#
+<h1>Sign-in didn't complete</h1><p>Cobalt SQL Works could not finish signing you in.</p><p><code>{msg}</code></p><p>Close this tab and try again from the app.</p></div></body></html>"##
     )
 }
 
@@ -155,7 +176,10 @@ mod tests {
     use super::*;
 
     fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
@@ -174,8 +198,15 @@ mod tests {
 
     #[test]
     fn interpret_provider_error_wins_over_state() {
-        let e = interpret(&params(&[("error", "access_denied"), ("error_description", "AADSTS65004: user declined"), ("state", "s1")]), "s1")
-            .unwrap_err();
+        let e = interpret(
+            &params(&[
+                ("error", "access_denied"),
+                ("error_description", "AADSTS65004: user declined"),
+                ("state", "s1"),
+            ]),
+            "s1",
+        )
+        .unwrap_err();
         match e {
             AuthError::Provider { error, description } => {
                 assert_eq!(error, "access_denied");
@@ -196,7 +227,10 @@ mod tests {
         let ok = success_page();
         assert!(ok.contains("#1F6FEB"));
         assert!(ok.contains("You're signed in to Cobalt SQL Works"));
-        assert!(!ok.contains("http://") && !ok.contains("https://"), "no external resources");
+        assert!(
+            !ok.contains("http://") && !ok.contains("https://"),
+            "no external resources"
+        );
         let err = error_page("<script>alert(1)</script> & \"q\"");
         assert!(err.contains("&lt;script&gt;"));
         assert!(!err.contains("<script>alert"));
@@ -220,7 +254,9 @@ mod tests {
             c2.cancel();
         });
         let started = Instant::now();
-        let e = l.wait_for_code("s", Duration::from_secs(30), &cancel).unwrap_err();
+        let e = l
+            .wait_for_code("s", Duration::from_secs(30), &cancel)
+            .unwrap_err();
         assert!(matches!(e, AuthError::Cancelled));
         assert!(started.elapsed() < Duration::from_secs(5));
     }
@@ -228,7 +264,9 @@ mod tests {
     #[test]
     fn listener_times_out() {
         let l = Listener::bind(None).unwrap();
-        let e = l.wait_for_code("s", Duration::from_millis(300), &CancelToken::new()).unwrap_err();
+        let e = l
+            .wait_for_code("s", Duration::from_millis(300), &CancelToken::new())
+            .unwrap_err();
         assert!(matches!(e, AuthError::Timeout));
     }
 }

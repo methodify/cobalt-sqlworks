@@ -1,11 +1,17 @@
 //! Cobalt SQL Works — entry point.
 //!
-//! STATUS: M0 skeleton. Proves eframe 0.36 + egui_agent 0.3.0 + the data stack build together
-//! and opens a themed window. The real shell lands in M2+.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod commands;
+mod copy;
+mod ops;
+mod session;
+mod state;
+mod ui;
+#[cfg(feature = "agent")]
+mod agent;
 
 fn main() -> eframe::Result {
     init_tracing();

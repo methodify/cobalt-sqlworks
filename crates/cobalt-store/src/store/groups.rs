@@ -24,7 +24,9 @@ impl Store {
     /// All groups ordered by `sort_order`, then name. Callers build the tree from `parent`.
     pub fn list_groups(&self) -> Result<Vec<ServerGroup>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM groups ORDER BY sort_order, name COLLATE NOCASE"))?;
+        let mut stmt = conn.prepare_cached(&format!(
+            "SELECT {COLS} FROM groups ORDER BY sort_order, name COLLATE NOCASE"
+        ))?;
         let rows = stmt.query_map([], row_to_group)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -32,13 +34,17 @@ impl Store {
     pub fn get_group(&self, id: GroupId) -> Result<Option<ServerGroup>> {
         let conn = self.lock()?;
         let mut stmt = conn.prepare_cached(&format!("SELECT {COLS} FROM groups WHERE id = ?1"))?;
-        Ok(stmt.query_row(params![id.to_string()], row_to_group).optional()?)
+        Ok(stmt
+            .query_row(params![id.to_string()], row_to_group)
+            .optional()?)
     }
 
     /// Insert or update. The parent must already exist (or be `None`).
     pub fn upsert_group(&self, g: &ServerGroup) -> Result<()> {
         if g.parent == Some(g.id) {
-            return Err(StoreError::Invalid("a group cannot be its own parent".into()));
+            return Err(StoreError::Invalid(
+                "a group cannot be its own parent".into(),
+            ));
         }
         let conn = self.lock()?;
         conn.execute(
@@ -63,13 +69,21 @@ impl Store {
     /// ungrouped / top-level when `None`). Returns `false` if no such group existed.
     pub fn delete_group(&self, id: GroupId, reassign_to: Option<GroupId>) -> Result<bool> {
         if reassign_to == Some(id) {
-            return Err(StoreError::Invalid("cannot reassign to the group being deleted".into()));
+            return Err(StoreError::Invalid(
+                "cannot reassign to the group being deleted".into(),
+            ));
         }
         let id_s = id.to_string();
         let target = reassign_to.map(|g| g.to_string());
         self.tx(|tx| {
-            tx.execute("UPDATE profiles SET group_id = ?2 WHERE group_id = ?1", params![id_s, target])?;
-            tx.execute("UPDATE groups SET parent_id = ?2 WHERE parent_id = ?1", params![id_s, target])?;
+            tx.execute(
+                "UPDATE profiles SET group_id = ?2 WHERE group_id = ?1",
+                params![id_s, target],
+            )?;
+            tx.execute(
+                "UPDATE groups SET parent_id = ?2 WHERE parent_id = ?1",
+                params![id_s, target],
+            )?;
             let n = tx.execute("DELETE FROM groups WHERE id = ?1", params![id_s])?;
             Ok(n > 0)
         })
@@ -78,7 +92,9 @@ impl Store {
     /// Re-parent a group. Refuses cycles (moving a group under one of its own descendants).
     pub fn move_group(&self, id: GroupId, new_parent: Option<GroupId>) -> Result<()> {
         if new_parent == Some(id) {
-            return Err(StoreError::Invalid("a group cannot be its own parent".into()));
+            return Err(StoreError::Invalid(
+                "a group cannot be its own parent".into(),
+            ));
         }
         self.tx(|tx| {
             // Walk up from the proposed parent; if we meet `id`, it's a cycle.
@@ -86,10 +102,16 @@ impl Store {
             let mut hops = 0;
             while let Some(p) = cursor {
                 if p == id {
-                    return Err(StoreError::Invalid("cannot move a group under its own descendant".into()));
+                    return Err(StoreError::Invalid(
+                        "cannot move a group under its own descendant".into(),
+                    ));
                 }
                 cursor = tx
-                    .query_row("SELECT parent_id FROM groups WHERE id = ?1", params![p.to_string()], |r| r.get::<_, Option<String>>(0))
+                    .query_row(
+                        "SELECT parent_id FROM groups WHERE id = ?1",
+                        params![p.to_string()],
+                        |r| r.get::<_, Option<String>>(0),
+                    )
                     .optional()?
                     .ok_or_else(|| StoreError::NotFound(format!("group {p}")))?
                     .and_then(|s| GroupId::parse(&s));

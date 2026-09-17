@@ -38,7 +38,10 @@ impl KeyringStore {
 
     /// Why the store is unavailable, if it is.
     pub fn unavailable_reason() -> Option<String> {
-        keyring::Entry::store_status().as_ref().err().map(|e| e.to_string())
+        keyring::Entry::store_status()
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
     }
 
     fn entry(r: &SecretRef) -> Result<keyring::Entry> {
@@ -69,7 +72,9 @@ impl SecretStore for KeyringStore {
     }
 
     fn set(&self, r: &SecretRef, s: &Secret) -> Result<()> {
-        Self::entry(r)?.set_password(s.expose()).map_err(map_keyring)
+        Self::entry(r)?
+            .set_password(s.expose())
+            .map_err(map_keyring)
     }
 
     fn delete(&self, r: &SecretRef) -> Result<()> {
@@ -135,16 +140,28 @@ impl FileFallbackStore {
             path = %path.display(),
             "OS credential store unavailable: secrets will be stored base64-encoded in a plain file. Anyone who can read this file can read your passwords and refresh tokens."
         );
-        Self { path, lock: Mutex::new(()) }
+        Self {
+            path,
+            lock: Mutex::new(()),
+        }
     }
 
     /// `<data dir>/secrets.json` (Windows: `%APPDATA%/Cobalt/Cobalt SQL Works/data/secrets.json`;
     /// Linux: `~/.local/share/cobaltsqlworks/secrets.json`).
     pub fn in_data_dir() -> Result<Self> {
-        let dirs = directories::ProjectDirs::from(cobalt_core::APP_QUALIFIER, cobalt_core::APP_ORG, cobalt_core::APP_NAME)
-            .ok_or_else(|| AuthError::Other("no home directory; cannot locate a data dir for the secrets file".into()))?;
+        let dirs = directories::ProjectDirs::from(
+            cobalt_core::APP_QUALIFIER,
+            cobalt_core::APP_ORG,
+            cobalt_core::APP_NAME,
+        )
+        .ok_or_else(|| {
+            AuthError::Other(
+                "no home directory; cannot locate a data dir for the secrets file".into(),
+            )
+        })?;
         let dir = dirs.data_dir();
-        std::fs::create_dir_all(dir).map_err(|e| AuthError::Secret(format!("create {}: {e}", dir.display())))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| AuthError::Secret(format!("create {}: {e}", dir.display())))?;
         Ok(Self::new(dir.join("secrets.json")))
     }
 
@@ -155,18 +172,21 @@ impl FileFallbackStore {
     fn load(&self) -> Result<BTreeMap<String, String>> {
         match std::fs::read(&self.path) {
             Ok(bytes) if bytes.is_empty() => Ok(BTreeMap::new()),
-            Ok(bytes) => {
-                serde_json::from_slice(&bytes).map_err(|e| AuthError::Secret(format!("{}: {e}", self.path.display())))
-            }
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| AuthError::Secret(format!("{}: {e}", self.path.display()))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
-            Err(e) => Err(AuthError::Secret(format!("read {}: {e}", self.path.display()))),
+            Err(e) => Err(AuthError::Secret(format!(
+                "read {}: {e}",
+                self.path.display()
+            ))),
         }
     }
 
     fn save(&self, map: &BTreeMap<String, String>) -> Result<()> {
         let json = serde_json::to_vec_pretty(map).map_err(|e| AuthError::Secret(e.to_string()))?;
         let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, json).map_err(|e| AuthError::Secret(format!("write {}: {e}", tmp.display())))?;
+        std::fs::write(&tmp, json)
+            .map_err(|e| AuthError::Secret(format!("write {}: {e}", tmp.display())))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -187,8 +207,9 @@ impl SecretStore for FileFallbackStore {
                 let bytes = base64::engine::general_purpose::STANDARD
                     .decode(b64)
                     .map_err(|e| AuthError::Secret(format!("corrupt entry {}: {e}", r.key)))?;
-                let s = String::from_utf8(bytes)
-                    .map_err(|_| AuthError::Secret(format!("corrupt entry {}: not UTF-8", r.key)))?;
+                let s = String::from_utf8(bytes).map_err(|_| {
+                    AuthError::Secret(format!("corrupt entry {}: not UTF-8", r.key))
+                })?;
                 Ok(Some(Secret::new(s)))
             }
         }
@@ -198,7 +219,10 @@ impl SecretStore for FileFallbackStore {
         tracing::warn!(key = %r.key, "storing a secret in the plain-file fallback store");
         let _g = self.lock.lock().unwrap();
         let mut map = self.load()?;
-        map.insert(r.key.clone(), base64::engine::general_purpose::STANDARD.encode(s.expose()));
+        map.insert(
+            r.key.clone(),
+            base64::engine::general_purpose::STANDARD.encode(s.expose()),
+        );
         self.save(&map)
     }
 
@@ -251,7 +275,10 @@ mod tests {
             store.set(&r, &Secret::new("tok/with+chars=")).unwrap();
         }
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(!raw.contains("tok/with+chars="), "secret must not be stored verbatim");
+        assert!(
+            !raw.contains("tok/with+chars="),
+            "secret must not be stored verbatim"
+        );
         let store = FileFallbackStore::new(&path);
         assert_eq!(store.get(&r).unwrap().unwrap().expose(), "tok/with+chars=");
         store.delete(&r).unwrap();

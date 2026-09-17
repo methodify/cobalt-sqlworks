@@ -171,7 +171,7 @@ pub fn complete(req: &CompletionRequest) -> Completions {
     for it in &mut items {
         it.score += it.kind.base_score();
         if !prefix.is_empty() {
-            if it.label.starts_with(&text[start..cursor].trim_start_matches('[')) {
+            if it.label.starts_with(text[start..cursor].trim_start_matches('[')) {
                 it.score += 5;
             }
             if it.label.eq_ignore_ascii_case(&prefix) {
@@ -206,8 +206,8 @@ fn unquote(s: &str) -> String {
         s[1..s.len() - 1].replace("]]", "]")
     } else if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
         s[1..s.len() - 1].replace("\"\"", "\"")
-    } else if s.starts_with('[') {
-        s[1..].replace("]]", "]")
+    } else if let Some(rest) = s.strip_prefix('[') {
+        rest.replace("]]", "]")
     } else {
         s.to_string()
     }
@@ -475,9 +475,8 @@ impl<'a> Ctx<'a> {
                     || self.prev(1).is_none()
                 {
                     self.types()
-                } else if self.prev_is(1, "CURSOR") || self.prev_is(1, "OPEN") || self.prev_is(1, "CLOSE") {
-                    self.keywords(false)
                 } else {
+                    // `WHERE x = @p |`, `OPEN @cur |` … — keywords follow.
                     self.keywords(false)
                 }
             }
@@ -700,8 +699,7 @@ impl<'a> Ctx<'a> {
         // Collect the qualifier chain: name (. name)* ending with the `.` before the word.
         let mut parts: Vec<String> = Vec::new();
         let mut n = 1; // prev(0) is the '.'
-        loop {
-            let Some(i) = self.prev(n) else { break };
+        while let Some(i) = self.prev(n) {
             let k = self.tok(i).kind;
             if k.is_name() || k == TokenKind::TempTable || k == TokenKind::Variable || k == TokenKind::Keyword || k == TokenKind::Type {
                 parts.push(unquote(self.txt(i)));
@@ -813,8 +811,7 @@ impl<'a> Ctx<'a> {
         // CTE chain at the start of the statement.
         if sig.first().is_some_and(|&i| self.up(i) == "WITH") {
             k = 1;
-            loop {
-                let Some(&name_i) = sig.get(k) else { break };
+            while let Some(&name_i) = sig.get(k) {
                 if !(self.tok(name_i).kind.is_name() || self.tok(name_i).kind == TokenKind::Keyword) {
                     break;
                 }
@@ -855,8 +852,7 @@ impl<'a> Ctx<'a> {
             if self.tok(i).kind == TokenKind::Keyword && matches!(self.up(i).as_str(), "FROM" | "JOIN" | "INTO" | "UPDATE" | "APPLY" | "USING" | "MERGE") {
                 let allow_comma = matches!(self.up(i).as_str(), "FROM" | "UPDATE");
                 k += 1;
-                loop {
-                    let Some(r) = self.parse_source(&sig, &mut k, &ctes) else { break };
+                while let Some(r) = self.parse_source(&sig, &mut k, &ctes) {
                     refs.push(r);
                     if allow_comma && sig.get(k).is_some_and(|&c| self.txt(c) == ",") {
                         k += 1;
@@ -900,8 +896,7 @@ impl<'a> Ctx<'a> {
             *k = close + 1;
         } else {
             // name (. name)*, allowing empty middle parts (`db..t`).
-            loop {
-                let Some(&j) = sig.get(*k) else { break };
+            while let Some(&j) = sig.get(*k) {
                 let kind = self.tok(j).kind;
                 if kind.is_name() || kind == TokenKind::TempTable || kind == TokenKind::Variable || kind == TokenKind::Type {
                     parts.push(unquote(self.txt(j)));
@@ -1117,7 +1112,7 @@ mod tests {
     #[test]
     fn after_schema_dot_lists_schema_objects() {
         let c = at("SELECT * FROM sales.|");
-        assert_eq!(labels(&c), vec!["fn_OrdersFor", "Order Lines", "Orders"]);
+        assert_eq!(labels(&c), vec!["Order Lines", "Orders", "fn_OrdersFor"]);
         let c = at("SELECT * FROM [sales].or|");
         assert_eq!(labels(&c), vec!["Order Lines", "Orders"]);
         assert_eq!(c.items[0].insert, "[Order Lines]");

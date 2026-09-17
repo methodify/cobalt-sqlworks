@@ -16,9 +16,11 @@ pub mod provider;
 pub mod secrets;
 
 pub use entra::{
-    azure_cli_token, client_secret_token, device_code_login, interactive_login, open_in_browser, refresh, AccessToken,
-    CancelToken, DeviceCodePrompt, EntraAccount, EntraConfig, TokenSet,
+    azure_cli_token, client_secret_token, device_code_login, interactive_login, open_in_browser,
+    refresh, AccessToken, CancelToken, DeviceCodePrompt, EntraAccount, EntraConfig, TokenSet,
 };
 pub use error::{AuthError, Result};
 pub use provider::{CredentialResolver, HeadlessPrompter, Prompter};
-pub use secrets::{default_secret_store, FileFallbackStore, KeyringStore, MemoryStore, SecretStore};
+pub use secrets::{
+    default_secret_store, FileFallbackStore, KeyringStore, MemoryStore, SecretStore,
+};

@@ -7,13 +7,25 @@ fn mem() -> Store {
 }
 
 fn sql_profile(name: &str, server: &str) -> ConnectionProfile {
-    let mut p = ConnectionProfile::new(server, AuthMethod::SqlLogin { user: "sa".into(), password: None });
+    let mut p = ConnectionProfile::new(
+        server,
+        AuthMethod::SqlLogin {
+            user: "sa".into(),
+            password: None,
+        },
+    );
     p.name = Some(name.into());
     p
 }
 
 fn entra_profile(name: &str, server: &str) -> ConnectionProfile {
-    let mut p = ConnectionProfile::new(server, AuthMethod::EntraInteractive { tenant: Some("t1".into()), account_hint: Some("me@x.com".into()) });
+    let mut p = ConnectionProfile::new(
+        server,
+        AuthMethod::EntraInteractive {
+            tenant: Some("t1".into()),
+            account_hint: Some("me@x.com".into()),
+        },
+    );
     p.name = Some(name.into());
     p
 }
@@ -38,7 +50,9 @@ fn schema_creates_and_reopens() {
 #[test]
 fn fts5_is_available() {
     let s = mem();
-    let id = s.add_history(&NewHistoryEntry::new("srv", "select 1")).unwrap();
+    let id = s
+        .add_history(&NewHistoryEntry::new("srv", "select 1"))
+        .unwrap();
     let hits = s.search_history(&HistoryQuery::text("select")).unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, id);
@@ -50,7 +64,9 @@ fn store_is_send_and_sync() {
     assert_send_sync::<Store>();
     let s = std::sync::Arc::new(mem());
     let s2 = s.clone();
-    std::thread::spawn(move || s2.set_kv("from-thread", &true).unwrap()).join().unwrap();
+    std::thread::spawn(move || s2.set_kv("from-thread", &true).unwrap())
+        .join()
+        .unwrap();
     assert_eq!(s.get_kv::<bool>("from-thread").unwrap(), Some(true));
 }
 
@@ -68,7 +84,10 @@ fn group_crud_and_ordering() {
     s.upsert_group(&b).unwrap();
 
     let list = s.list_groups().unwrap();
-    assert_eq!(list.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Dev", "Prod"]);
+    assert_eq!(
+        list.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(),
+        ["Dev", "Prod"]
+    );
     assert_eq!(list[0], b);
 
     a.name = "Production".into();
@@ -78,7 +97,10 @@ fn group_crud_and_ordering() {
 
     s.reorder_groups(&[a.id, b.id]).unwrap();
     let list = s.list_groups().unwrap();
-    assert_eq!(list.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(), ["Production", "Dev"]);
+    assert_eq!(
+        list.iter().map(|g| g.name.as_str()).collect::<Vec<_>>(),
+        ["Production", "Dev"]
+    );
 
     assert!(s.delete_group(b.id, None).unwrap());
     assert!(!s.delete_group(b.id, None).unwrap());
@@ -97,13 +119,25 @@ fn group_nesting_and_move_cycle_guard() {
     s.upsert_group(&child).unwrap();
     s.upsert_group(&grandchild).unwrap();
 
-    assert!(matches!(s.move_group(root.id, Some(grandchild.id)), Err(StoreError::Invalid(_))));
-    assert!(matches!(s.move_group(root.id, Some(root.id)), Err(StoreError::Invalid(_))));
+    assert!(matches!(
+        s.move_group(root.id, Some(grandchild.id)),
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(matches!(
+        s.move_group(root.id, Some(root.id)),
+        Err(StoreError::Invalid(_))
+    ));
     s.move_group(grandchild.id, None).unwrap();
     assert_eq!(s.get_group(grandchild.id).unwrap().unwrap().parent, None);
     s.move_group(grandchild.id, Some(root.id)).unwrap();
-    assert_eq!(s.get_group(grandchild.id).unwrap().unwrap().parent, Some(root.id));
-    assert!(matches!(s.move_group(GroupId::new(), None), Err(StoreError::NotFound(_))));
+    assert_eq!(
+        s.get_group(grandchild.id).unwrap().unwrap().parent,
+        Some(root.id)
+    );
+    assert!(matches!(
+        s.move_group(GroupId::new(), None),
+        Err(StoreError::NotFound(_))
+    ));
 }
 
 #[test]
@@ -131,7 +165,10 @@ fn delete_group_reassigns_profiles_and_children() {
     s.delete_group(g2.id, None).unwrap();
     assert_eq!(s.get_profile(p1.id).unwrap().unwrap().group, None);
     assert_eq!(s.get_group(sub.id).unwrap().unwrap().parent, None);
-    assert!(matches!(s.delete_group(sub.id, Some(sub.id)), Err(StoreError::Invalid(_))));
+    assert!(matches!(
+        s.delete_group(sub.id, Some(sub.id)),
+        Err(StoreError::Invalid(_))
+    ));
 }
 
 // ---- profiles --------------------------------------------------------------------------
@@ -143,7 +180,12 @@ fn profile_roundtrip_all_fields() {
     s.upsert_group(&g).unwrap();
     let mut p = ConnectionProfile::new(
         "myhost\\inst",
-        AuthMethod::SqlLogin { user: "app".into(), password: Some(SecretRef { key: "k:password".into() }) },
+        AuthMethod::SqlLogin {
+            user: "app".into(),
+            password: Some(SecretRef {
+                key: "k:password".into(),
+            }),
+        },
     );
     p.name = Some("Warehouse".into());
     p.port = Some(1444);
@@ -163,11 +205,20 @@ fn profile_roundtrip_all_fields() {
     assert!(s.get_profile(ProfileId::new()).unwrap().is_none());
 
     for auth in [
-        AuthMethod::EntraInteractive { tenant: None, account_hint: None },
-        AuthMethod::EntraDeviceCode { tenant: Some("t".into()) },
+        AuthMethod::EntraInteractive {
+            tenant: None,
+            account_hint: None,
+        },
+        AuthMethod::EntraDeviceCode {
+            tenant: Some("t".into()),
+        },
         AuthMethod::AzureCli { tenant: None },
         AuthMethod::WindowsIntegrated,
-        AuthMethod::EntraServicePrincipal { tenant: "t".into(), client_id: "c".into(), secret: None },
+        AuthMethod::EntraServicePrincipal {
+            tenant: "t".into(),
+            client_id: "c".into(),
+            secret: None,
+        },
     ] {
         let q = ConnectionProfile::new("x", auth.clone());
         s.upsert_profile(&q).unwrap();
@@ -197,23 +248,36 @@ fn profile_ordering_by_group_then_sort_then_name() {
         s.upsert_profile(p).unwrap();
     }
     // Insert order gives sort_order; a2 (0) before a1 (1) within Alpha.
-    let names = |v: Vec<ConnectionProfile>| v.into_iter().map(|p| p.name.unwrap()).collect::<Vec<_>>();
+    let names =
+        |v: Vec<ConnectionProfile>| v.into_iter().map(|p| p.name.unwrap()).collect::<Vec<_>>();
     assert_eq!(names(s.list_profiles().unwrap()), ["zzz", "b1", "a2", "a1"]);
 
     s.reorder_profiles(Some(g_a.id), &[a1.id, a2.id]).unwrap();
     assert_eq!(names(s.list_profiles().unwrap()), ["zzz", "b1", "a1", "a2"]);
-    assert_eq!(names(s.list_profiles_in_group(Some(g_a.id)).unwrap()), ["a1", "a2"]);
+    assert_eq!(
+        names(s.list_profiles_in_group(Some(g_a.id)).unwrap()),
+        ["a1", "a2"]
+    );
 
     // Reorder can also move a profile between groups.
     s.reorder_profiles(Some(g_b.id), &[a2.id, b1.id]).unwrap();
-    assert_eq!(names(s.list_profiles_in_group(Some(g_b.id)).unwrap()), ["a2", "b1"]);
-    assert_eq!(names(s.list_profiles_in_group(Some(g_a.id)).unwrap()), ["a1"]);
+    assert_eq!(
+        names(s.list_profiles_in_group(Some(g_b.id)).unwrap()),
+        ["a2", "b1"]
+    );
+    assert_eq!(
+        names(s.list_profiles_in_group(Some(g_a.id)).unwrap()),
+        ["a1"]
+    );
 
     // Updating a profile keeps its position; changing its group appends it there.
     let mut a1_renamed = a1.clone();
     a1_renamed.name = Some("a1-renamed".into());
     s.upsert_profile(&a1_renamed).unwrap();
-    assert_eq!(names(s.list_profiles_in_group(Some(g_a.id)).unwrap()), ["a1-renamed"]);
+    assert_eq!(
+        names(s.list_profiles_in_group(Some(g_a.id)).unwrap()),
+        ["a1-renamed"]
+    );
     assert_eq!(s.profile_count().unwrap(), 4);
 }
 
@@ -234,10 +298,16 @@ fn profile_delete_touch_and_recent() {
     s.touch_profile(p1.id).unwrap();
 
     let recent = s.recent_profiles(10).unwrap();
-    assert_eq!(recent.iter().map(|p| p.id).collect::<Vec<_>>(), [p1.id, p2.id]);
+    assert_eq!(
+        recent.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [p1.id, p2.id]
+    );
     assert!(recent[0].last_used.is_some());
     assert_eq!(s.recent_profiles(1).unwrap().len(), 1);
-    assert!(matches!(s.touch_profile(ProfileId::new()), Err(StoreError::NotFound(_))));
+    assert!(matches!(
+        s.touch_profile(ProfileId::new()),
+        Err(StoreError::NotFound(_))
+    ));
 
     // Re-upserting a profile without last_used does not lose it.
     let stale = p1.clone();
@@ -247,7 +317,14 @@ fn profile_delete_touch_and_recent() {
 
     assert!(s.delete_profile(p1.id).unwrap());
     assert!(!s.delete_profile(p1.id).unwrap());
-    assert_eq!(s.recent_profiles(10).unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [p2.id]);
+    assert_eq!(
+        s.recent_profiles(10)
+            .unwrap()
+            .iter()
+            .map(|p| p.id)
+            .collect::<Vec<_>>(),
+        [p2.id]
+    );
     assert_eq!(s.profile_count().unwrap(), 2);
 }
 
@@ -265,7 +342,11 @@ fn seed_history(s: &Store) -> Vec<i64> {
     for (i, sql) in sqls.iter().enumerate() {
         let mut e = NewHistoryEntry::new("srv1", *sql);
         e.started_at = Utc::now() - Duration::minutes((sqls.len() - i) as i64);
-        e.database = Some(if i % 2 == 0 { "db1".into() } else { "db2".into() });
+        e.database = Some(if i % 2 == 0 {
+            "db1".into()
+        } else {
+            "db2".into()
+        });
         ids.push(s.add_history(&e).unwrap());
     }
     ids
@@ -289,19 +370,30 @@ fn history_add_finish_get() {
     assert!(running.ended_at.is_none());
 
     let ended = e.started_at + Duration::milliseconds(1234);
-    s.finish_history(id, ended, Some(1234), Some(7), HistoryStatus::Success, None).unwrap();
+    s.finish_history(id, ended, Some(1234), Some(7), HistoryStatus::Success, None)
+        .unwrap();
     let done = s.get_history(id).unwrap().unwrap();
     assert_eq!(done.status, HistoryStatus::Success);
     assert_eq!(done.duration_ms, Some(1234));
     assert_eq!(done.rows, Some(7));
-    assert_eq!(done.ended_at.unwrap().timestamp_micros(), ended.timestamp_micros());
-    assert_eq!(done.started_at.timestamp_micros(), e.started_at.timestamp_micros());
+    assert_eq!(
+        done.ended_at.unwrap().timestamp_micros(),
+        ended.timestamp_micros()
+    );
+    assert_eq!(
+        done.started_at.timestamp_micros(),
+        e.started_at.timestamp_micros()
+    );
 
-    s.finish_history(id, ended, None, None, HistoryStatus::Error, Some("boom")).unwrap();
+    s.finish_history(id, ended, None, None, HistoryStatus::Error, Some("boom"))
+        .unwrap();
     let failed = s.get_history(id).unwrap().unwrap();
     assert_eq!(failed.status, HistoryStatus::Error);
     assert_eq!(failed.error.as_deref(), Some("boom"));
-    assert!(matches!(s.finish_history(9999, ended, None, None, HistoryStatus::Cancelled, None), Err(StoreError::NotFound(_))));
+    assert!(matches!(
+        s.finish_history(9999, ended, None, None, HistoryStatus::Cancelled, None),
+        Err(StoreError::NotFound(_))
+    ));
     assert_eq!(s.history_count().unwrap(), 1);
 }
 
@@ -310,26 +402,74 @@ fn history_search_newest_first_and_filters() {
     let s = mem();
     let ids = seed_history(&s);
     let all = s.search_history(&HistoryQuery::default()).unwrap();
-    assert_eq!(all.iter().map(|h| h.id).collect::<Vec<_>>(), ids.iter().rev().copied().collect::<Vec<_>>());
+    assert_eq!(
+        all.iter().map(|h| h.id).collect::<Vec<_>>(),
+        ids.iter().rev().copied().collect::<Vec<_>>()
+    );
 
-    let db1 = s.search_history(&HistoryQuery { database: Some("db1".into()), ..Default::default() }).unwrap();
+    let db1 = s
+        .search_history(&HistoryQuery {
+            database: Some("db1".into()),
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(db1.len(), 3);
     assert!(db1.iter().all(|h| h.database.as_deref() == Some("db1")));
 
-    let none = s.search_history(&HistoryQuery { server: Some("other".into()), ..Default::default() }).unwrap();
+    let none = s
+        .search_history(&HistoryQuery {
+            server: Some("other".into()),
+            ..Default::default()
+        })
+        .unwrap();
     assert!(none.is_empty());
 
-    s.finish_history(ids[0], Utc::now(), None, None, HistoryStatus::Error, Some("x")).unwrap();
-    let errs = s.search_history(&HistoryQuery { status: Some(HistoryStatus::Error), ..Default::default() }).unwrap();
+    s.finish_history(
+        ids[0],
+        Utc::now(),
+        None,
+        None,
+        HistoryStatus::Error,
+        Some("x"),
+    )
+    .unwrap();
+    let errs = s
+        .search_history(&HistoryQuery {
+            status: Some(HistoryStatus::Error),
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(errs.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[0]]);
 
-    let paged = s.search_history(&HistoryQuery { limit: 2, offset: 1, ..Default::default() }).unwrap();
-    assert_eq!(paged.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[3], ids[2]]);
+    let paged = s
+        .search_history(&HistoryQuery {
+            limit: 2,
+            offset: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        paged.iter().map(|h| h.id).collect::<Vec<_>>(),
+        [ids[3], ids[2]]
+    );
 
-    let recent = s.search_history(&HistoryQuery { since: Some(Utc::now() - Duration::minutes(2)), ..Default::default() }).unwrap();
+    let recent = s
+        .search_history(&HistoryQuery {
+            since: Some(Utc::now() - Duration::minutes(2)),
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(recent.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[4]]);
-    let old = s.search_history(&HistoryQuery { until: Some(Utc::now() - Duration::minutes(4)), ..Default::default() }).unwrap();
-    assert_eq!(old.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[1], ids[0]]);
+    let old = s
+        .search_history(&HistoryQuery {
+            until: Some(Utc::now() - Duration::minutes(4)),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        old.iter().map(|h| h.id).collect::<Vec<_>>(),
+        [ids[1], ids[0]]
+    );
 }
 
 #[test]
@@ -337,20 +477,44 @@ fn history_fts_word_phrase_prefix() {
     let s = mem();
     let ids = seed_history(&s);
     let word = s.search_history(&HistoryQuery::text("select")).unwrap();
-    assert_eq!(word.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[4], ids[1], ids[0]]);
+    assert_eq!(
+        word.iter().map(|h| h.id).collect::<Vec<_>>(),
+        [ids[4], ids[1], ids[0]]
+    );
 
-    let phrase = s.search_history(&HistoryQuery::text("\"from bigtable\"")).unwrap();
+    let phrase = s
+        .search_history(&HistoryQuery::text("\"from bigtable\""))
+        .unwrap();
     assert_eq!(phrase.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[1]]);
 
     let prefix = s.search_history(&HistoryQuery::text("big*")).unwrap();
-    assert_eq!(prefix.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[4], ids[1]]);
+    assert_eq!(
+        prefix.iter().map(|h| h.id).collect::<Vec<_>>(),
+        [ids[4], ids[1]]
+    );
 
-    let boolean = s.search_history(&HistoryQuery::text("select NOT bigtable")).unwrap();
-    assert_eq!(boolean.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[4], ids[0]]);
+    let boolean = s
+        .search_history(&HistoryQuery::text("select NOT bigtable"))
+        .unwrap();
+    assert_eq!(
+        boolean.iter().map(|h| h.id).collect::<Vec<_>>(),
+        [ids[4], ids[0]]
+    );
 
     // Combined with a filter.
-    let q = HistoryQuery { text: Some("select".into()), database: Some("db2".into()), ..Default::default() };
-    assert_eq!(s.search_history(&q).unwrap().iter().map(|h| h.id).collect::<Vec<_>>(), [ids[1]]);
+    let q = HistoryQuery {
+        text: Some("select".into()),
+        database: Some("db2".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        s.search_history(&q)
+            .unwrap()
+            .iter()
+            .map(|h| h.id)
+            .collect::<Vec<_>>(),
+        [ids[1]]
+    );
 }
 
 #[test]
@@ -364,7 +528,9 @@ fn history_search_falls_back_to_like_on_fts_syntax_error() {
     assert!(paren.is_empty());
     let punct = s.search_history(&HistoryQuery::text("sp_who2")).unwrap();
     assert_eq!(punct.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[3]]);
-    let pct = s.search_history(&HistoryQuery::text("100% of -nothing")).unwrap();
+    let pct = s
+        .search_history(&HistoryQuery::text("100% of -nothing"))
+        .unwrap();
     assert!(pct.is_empty());
 }
 
@@ -373,19 +539,33 @@ fn history_star_delete_clear() {
     let s = mem();
     let ids = seed_history(&s);
     s.set_starred(ids[2], true).unwrap();
-    assert!(matches!(s.set_starred(12345, true), Err(StoreError::NotFound(_))));
-    let starred = s.search_history(&HistoryQuery { starred_only: true, ..Default::default() }).unwrap();
+    assert!(matches!(
+        s.set_starred(12345, true),
+        Err(StoreError::NotFound(_))
+    ));
+    let starred = s
+        .search_history(&HistoryQuery {
+            starred_only: true,
+            ..Default::default()
+        })
+        .unwrap();
     assert_eq!(starred.iter().map(|h| h.id).collect::<Vec<_>>(), [ids[2]]);
     assert!(starred[0].starred);
 
     assert!(s.delete_history(ids[0]).unwrap());
     assert!(!s.delete_history(ids[0]).unwrap());
     // Deleted rows leave the FTS index too.
-    assert!(s.search_history(&HistoryQuery::text("Orders")).unwrap().is_empty());
+    assert!(s
+        .search_history(&HistoryQuery::text("Orders"))
+        .unwrap()
+        .is_empty());
 
     assert_eq!(s.clear_history(true).unwrap(), 3);
     assert_eq!(s.history_count().unwrap(), 1);
-    assert_eq!(s.get_history(ids[2]).unwrap().unwrap().sql, "UPDATE dbo.Customers SET name = 'x' WHERE id = 2");
+    assert_eq!(
+        s.get_history(ids[2]).unwrap().unwrap().sql,
+        "UPDATE dbo.Customers SET name = 'x' WHERE id = 2"
+    );
     assert_eq!(s.clear_history(false).unwrap(), 1);
     assert_eq!(s.history_count().unwrap(), 0);
 }
@@ -405,18 +585,36 @@ fn history_prune_by_age_and_count_keeps_starred() {
     // Age: >90 days removes ids[5..=9] minus starred 8, 9 -> removes 5, 6, 7.
     let removed = s.prune_history(90, 0).unwrap();
     assert_eq!(removed, 3);
-    let left: Vec<i64> = s.search_history(&HistoryQuery::default()).unwrap().iter().map(|h| h.id).collect();
-    assert_eq!(left, [ids[0], ids[1], ids[2], ids[3], ids[4], ids[8], ids[9]]);
+    let left: Vec<i64> = s
+        .search_history(&HistoryQuery::default())
+        .unwrap()
+        .iter()
+        .map(|h| h.id)
+        .collect();
+    assert_eq!(
+        left,
+        [ids[0], ids[1], ids[2], ids[3], ids[4], ids[8], ids[9]]
+    );
 
     // Count: keep newest 3 -> unstarred beyond them (ids 3, 4) go; starred 8, 9 stay.
     let removed = s.prune_history(0, 3).unwrap();
     assert_eq!(removed, 2);
-    let left: Vec<i64> = s.search_history(&HistoryQuery::default()).unwrap().iter().map(|h| h.id).collect();
+    let left: Vec<i64> = s
+        .search_history(&HistoryQuery::default())
+        .unwrap()
+        .iter()
+        .map(|h| h.id)
+        .collect();
     assert_eq!(left, [ids[0], ids[1], ids[2], ids[8], ids[9]]);
 
     assert_eq!(s.prune_history(0, 0).unwrap(), 0);
     s.rebuild_history_index().unwrap();
-    assert_eq!(s.search_history(&HistoryQuery::text("select")).unwrap().len(), 5);
+    assert_eq!(
+        s.search_history(&HistoryQuery::text("select"))
+            .unwrap()
+            .len(),
+        5
+    );
 }
 
 // ---- tab snapshots ---------------------------------------------------------------------
@@ -444,7 +642,10 @@ fn tab_snapshot_lifecycle() {
     assert_eq!(got.cursor, 5);
     assert_eq!(got.file_path, snap1.file_path);
     assert_eq!(got.profile_id, snap1.profile_id);
-    assert_eq!(got.updated_at.timestamp_micros(), snap1.updated_at.timestamp_micros());
+    assert_eq!(
+        got.updated_at.timestamp_micros(),
+        snap1.updated_at.timestamp_micros()
+    );
 
     // Update text in place.
     snap1.text = "select 1 -- edited".into();
@@ -484,19 +685,36 @@ fn prune_closed_tabs_keeps_most_recent() {
     s.save_tab(&open).unwrap();
 
     let closed = s.recently_closed(2).unwrap();
-    assert_eq!(closed.iter().map(|t| t.tab_id).collect::<Vec<_>>(), [ids[4], ids[3]]);
+    assert_eq!(
+        closed.iter().map(|t| t.tab_id).collect::<Vec<_>>(),
+        [ids[4], ids[3]]
+    );
     assert_eq!(s.prune_closed_tabs(2).unwrap(), 3);
     let closed = s.recently_closed(10).unwrap();
-    assert_eq!(closed.iter().map(|t| t.tab_id).collect::<Vec<_>>(), [ids[4], ids[3]]);
+    assert_eq!(
+        closed.iter().map(|t| t.tab_id).collect::<Vec<_>>(),
+        [ids[4], ids[3]]
+    );
     assert_eq!(s.load_open_tabs().unwrap().len(), 1, "open tabs untouched");
 }
 
 // ---- catalog cache ---------------------------------------------------------------------
 
 fn sample_catalog(db: &str) -> DatabaseCatalog {
-    let mut c = DatabaseCatalog { database: db.into(), schemas: vec!["dbo".into(), "sales".into()], ..Default::default() };
-    c.objects.push(ObjectRef { database: db.into(), schema: "dbo".into(), name: "Orders".into(), kind: ObjectKind::Table, object_id: Some(10) });
-    c.columns.insert(10, vec![ColumnInfo::new("id", SqlType::Int, false, 0)]);
+    let mut c = DatabaseCatalog {
+        database: db.into(),
+        schemas: vec!["dbo".into(), "sales".into()],
+        ..Default::default()
+    };
+    c.objects.push(ObjectRef {
+        database: db.into(),
+        schema: "dbo".into(),
+        name: "Orders".into(),
+        kind: ObjectKind::Table,
+        object_id: Some(10),
+    });
+    c.columns
+        .insert(10, vec![ColumnInfo::new("id", SqlType::Int, false, 0)]);
     c.refreshed_at = Some(Utc::now());
     c
 }
@@ -551,13 +769,28 @@ fn kv_roundtrip_typed() {
         maximized: bool,
     }
     assert_eq!(s.get_kv::<Geometry>("window").unwrap(), None);
-    let g = Geometry { x: 10, y: -5, maximized: true };
+    let g = Geometry {
+        x: 10,
+        y: -5,
+        maximized: true,
+    };
     s.set_kv("window", &g).unwrap();
     assert_eq!(s.get_kv::<Geometry>("window").unwrap(), Some(g));
-    s.set_kv("window", &Geometry { x: 1, y: 1, maximized: false }).unwrap();
+    s.set_kv(
+        "window",
+        &Geometry {
+            x: 1,
+            y: 1,
+            maximized: false,
+        },
+    )
+    .unwrap();
     assert_eq!(s.get_kv::<Geometry>("window").unwrap().unwrap().x, 1);
     s.set_kv("name", "str value").unwrap();
-    assert_eq!(s.get_kv::<String>("name").unwrap().as_deref(), Some("str value"));
+    assert_eq!(
+        s.get_kv::<String>("name").unwrap().as_deref(),
+        Some("str value")
+    );
     // Type mismatch is a miss, not an error.
     assert_eq!(s.get_kv::<Geometry>("name").unwrap(), None);
     assert!(s.delete_kv("name").unwrap());
@@ -579,7 +812,10 @@ fn library_export_import_replace() {
     p1.group = Some(g2.id);
     let p2 = sql_profile("p2", "s2");
     let mut p2_with_secret = p2.clone();
-    p2_with_secret.auth = AuthMethod::SqlLogin { user: "sa".into(), password: Some(SecretRef::for_profile(&p2.id, "password")) };
+    p2_with_secret.auth = AuthMethod::SqlLogin {
+        user: "sa".into(),
+        password: Some(SecretRef::for_profile(&p2.id, "password")),
+    };
     a.upsert_profile(&p1).unwrap();
     a.upsert_profile(&p2_with_secret).unwrap();
 
@@ -588,7 +824,14 @@ fn library_export_import_replace() {
     assert_eq!(lib.groups.len(), 2);
     assert_eq!(lib.profiles.len(), 2);
     let exported_p2 = lib.profiles.iter().find(|p| p.id == p2.id).unwrap();
-    assert_eq!(exported_p2.auth, AuthMethod::SqlLogin { user: "sa".into(), password: None }, "secret refs stripped");
+    assert_eq!(
+        exported_p2.auth,
+        AuthMethod::SqlLogin {
+            user: "sa".into(),
+            password: None
+        },
+        "secret refs stripped"
+    );
 
     let json = lib.to_json().unwrap();
     assert!(json.contains("\"version\": 1"));
@@ -596,16 +839,27 @@ fn library_export_import_replace() {
     assert_eq!(parsed, lib);
 
     let b = mem();
-    b.upsert_profile(&sql_profile("pre-existing", "old")).unwrap();
+    b.upsert_profile(&sql_profile("pre-existing", "old"))
+        .unwrap();
     let summary = b.import_library(&parsed, false).unwrap();
-    assert_eq!((summary.groups, summary.profiles, summary.orphaned_profiles), (2, 2, 0));
+    assert_eq!(
+        (summary.groups, summary.profiles, summary.orphaned_profiles),
+        (2, 2, 0)
+    );
     assert_eq!(b.list_groups().unwrap(), a.list_groups().unwrap());
     assert_eq!(b.get_profile(p1.id).unwrap().unwrap(), p1);
-    assert_eq!(b.profile_count().unwrap(), 2, "replace mode dropped the pre-existing profile");
+    assert_eq!(
+        b.profile_count().unwrap(),
+        2,
+        "replace mode dropped the pre-existing profile"
+    );
 
     let mut newer = parsed.clone();
     newer.version = 99;
-    assert!(matches!(LibraryExport::from_json(&newer.to_json().unwrap()), Err(StoreError::Invalid(_))));
+    assert!(matches!(
+        LibraryExport::from_json(&newer.to_json().unwrap()),
+        Err(StoreError::Invalid(_))
+    ));
 }
 
 #[test]
@@ -628,12 +882,21 @@ fn library_import_merge_keeps_existing_and_handles_orphans() {
     orphan.group = Some(GroupId::new()); // not in the import, not in the store
     let mut child_of_kept = ServerGroup::new("Child", Color::PALETTE[3]);
     child_of_kept.parent = Some(keep_group.id); // parent exists in store only
-    let lib = LibraryExport::new(vec![new_group.clone(), child_of_kept.clone()], vec![updated.clone(), orphan.clone()]);
+    let lib = LibraryExport::new(
+        vec![new_group.clone(), child_of_kept.clone()],
+        vec![updated.clone(), orphan.clone()],
+    );
 
     let summary = s.import_library(&lib, true).unwrap();
-    assert_eq!((summary.groups, summary.profiles, summary.orphaned_profiles), (2, 2, 1));
+    assert_eq!(
+        (summary.groups, summary.profiles, summary.orphaned_profiles),
+        (2, 2, 1)
+    );
     assert_eq!(s.list_groups().unwrap().len(), 3);
-    assert_eq!(s.get_group(child_of_kept.id).unwrap().unwrap().parent, Some(keep_group.id));
+    assert_eq!(
+        s.get_group(child_of_kept.id).unwrap().unwrap().parent,
+        Some(keep_group.id)
+    );
     assert_eq!(s.get_profile(keep.id).unwrap().unwrap(), keep);
     let e = s.get_profile(existing.id).unwrap().unwrap();
     assert_eq!(e.name.as_deref(), Some("existing-updated"));
@@ -651,5 +914,8 @@ fn library_import_group_order_independent() {
     child.parent = Some(parent.id);
     let lib = LibraryExport::new(vec![child.clone(), parent.clone()], vec![]);
     s.import_library(&lib, false).unwrap();
-    assert_eq!(s.get_group(child.id).unwrap().unwrap().parent, Some(parent.id));
+    assert_eq!(
+        s.get_group(child.id).unwrap().unwrap().parent,
+        Some(parent.id)
+    );
 }

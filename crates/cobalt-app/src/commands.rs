@@ -154,7 +154,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::RefreshIntelliSense, id: "connection.refresh_intellisense", label: "Refresh IntelliSense Cache", category: Category::Connection, default_key: sc(NONE, Key::F7) },
     CommandInfo { cmd: Command::RunQuery, id: "query.run", label: "Run Query", category: Category::Query, default_key: sc(NONE, Key::F5) },
     CommandInfo { cmd: Command::RunCurrentStatement, id: "query.run_current", label: "Run Current Statement", category: Category::Query, default_key: sc(CTRL, Key::Enter) },
-    CommandInfo { cmd: Command::CancelQuery, id: "query.cancel", label: "Cancel Query", category: Category::Query, default_key: sc(ALT, Key::Pause) },
+    CommandInfo { cmd: Command::CancelQuery, id: "query.cancel", label: "Cancel Query", category: Category::Query, default_key: sc(ALT, Key::C) },
     CommandInfo { cmd: Command::EstimatedPlan, id: "query.estimated_plan", label: "Display Estimated Execution Plan", category: Category::Query, default_key: sc(CTRL, Key::L) },
     CommandInfo { cmd: Command::ToggleActualPlan, id: "query.actual_plan", label: "Include Actual Execution Plan", category: Category::Query, default_key: sc(CTRL, Key::M) },
     CommandInfo { cmd: Command::ParseQuery, id: "query.parse", label: "Parse Query", category: Category::Query, default_key: sc(SHIFT_ALT, Key::P) },

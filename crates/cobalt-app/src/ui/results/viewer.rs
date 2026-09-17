@@ -1,0 +1,187 @@
+//! Cell viewer: a side panel that shows one value in full — pretty JSON, indented XML,
+//! wrapped text, or a hex dump — with copy.
+
+use crate::ui::theme::Theme;
+use cobalt_results::{CellValue, ResultSet};
+use egui::{RichText, Ui};
+use std::sync::Arc;
+
+pub struct ViewerState {
+    pub rs: Arc<ResultSet>,
+    pub row: usize,
+    pub col: usize,
+    pub mode: ViewMode,
+    pub wrap: bool,
+    pub text: String,
+    pub pretty: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ViewMode {
+    Auto,
+    Text,
+    Json,
+    Xml,
+    Hex,
+}
+
+impl ViewerState {
+    pub fn new(rs: Arc<ResultSet>, row: usize, col: usize) -> Self {
+        let value = rs.cell_value(row, col);
+        let (text, pretty, mode) = match &value {
+            CellValue::Null => ("NULL".to_string(), None, ViewMode::Text),
+            CellValue::Text(t) => {
+                let trimmed = t.trim_start();
+                if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                    let pretty = serde_json::from_str::<serde_json::Value>(t).ok().and_then(|v| serde_json::to_string_pretty(&v).ok());
+                    let mode = if pretty.is_some() { ViewMode::Json } else { ViewMode::Text };
+                    (t.clone(), pretty, mode)
+                } else if trimmed.starts_with('<') {
+                    (t.clone(), Some(pretty_xml(t)), ViewMode::Xml)
+                } else {
+                    (t.clone(), None, ViewMode::Text)
+                }
+            }
+            CellValue::Bytes(b) => (hex_dump(b), None, ViewMode::Hex),
+            other => (other.to_json().to_string().trim_matches('"').to_string(), None, ViewMode::Text),
+        };
+        Self { rs, row, col, mode, wrap: true, text, pretty }
+    }
+
+    pub fn shown(&self) -> &str {
+        match (self.mode, &self.pretty) {
+            (ViewMode::Json | ViewMode::Xml | ViewMode::Auto, Some(p)) => p,
+            _ => &self.text,
+        }
+    }
+}
+
+pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> bool {
+    let mut close = false;
+    let col_name = v.rs.columns.get(v.col).map(|c| c.name.clone()).unwrap_or_default();
+    let type_label = v.rs.columns.get(v.col).map(|c| c.type_label()).unwrap_or_default();
+    egui::Frame::new().fill(theme.bg_panel).inner_margin(8.0).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{col_name}")).strong());
+            ui.label(RichText::new(format!("row {}  ·  {type_label}", v.row + 1)).small().color(theme.text_muted));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button(egui_phosphor::regular::X).on_hover_text("Close (Esc)").clicked() {
+                    close = true;
+                }
+                if ui.small_button(egui_phosphor::regular::COPY).on_hover_text("Copy value").clicked() {
+                    ui.ctx().copy_text(v.shown().to_string());
+                }
+                ui.checkbox(&mut v.wrap, "Wrap");
+                for (m, label) in [(ViewMode::Text, "Text"), (ViewMode::Json, "JSON"), (ViewMode::Xml, "XML"), (ViewMode::Hex, "Hex")] {
+                    let enabled = match m {
+                        ViewMode::Json | ViewMode::Xml => v.pretty.is_some(),
+                        ViewMode::Hex => true,
+                        _ => true,
+                    };
+                    if ui.add_enabled_ui(enabled, |ui| ui.selectable_label(v.mode == m, label)).inner.clicked() {
+                        if m == ViewMode::Hex && !matches!(v.rs.cell_value(v.row, v.col), CellValue::Bytes(_)) {
+                            v.text = hex_dump(v.text.as_bytes());
+                        }
+                        v.mode = m;
+                    }
+                }
+            });
+        });
+        ui.separator();
+        let shown_len = v.shown().len();
+        ui.label(RichText::new(format!("{} characters", crate::state::fmt_count(v.shown().chars().count() as u64))).small().color(theme.text_faint));
+        egui::ScrollArea::both().id_salt(("viewer", v.row, v.col)).auto_shrink([false, false]).show(ui, |ui| {
+            let mut text: &str = v.shown();
+            let mut truncated = String::new();
+            if shown_len > 2_000_000 {
+                truncated = format!("{}\n\n… (truncated for display; use Copy for the full value)", &text[..2_000_000]);
+                text = &truncated;
+            }
+            let mut buf = text.to_string();
+            let te = egui::TextEdit::multiline(&mut buf).font(egui::FontId::monospace(13.0)).code_editor().desired_width(if v.wrap { ui.available_width() } else { f32::INFINITY }).frame(egui::Frame::NONE).interactive(true);
+            ui.add(te);
+        });
+    });
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        close = true;
+    }
+    close
+}
+
+pub fn pretty_xml(src: &str) -> String {
+    let mut out = String::with_capacity(src.len() + src.len() / 4);
+    let mut depth: usize = 0;
+    let mut chars = src.trim().char_indices().peekable();
+    let bytes = src.trim();
+    let mut i = 0;
+    let s = bytes;
+    let _ = &mut chars;
+    while i < s.len() {
+        if s[i..].starts_with('<') {
+            let end = s[i..].find('>').map(|e| i + e + 1).unwrap_or(s.len());
+            let tag = &s[i..end];
+            let is_close = tag.starts_with("</");
+            let is_self = tag.ends_with("/>") || tag.starts_with("<?") || tag.starts_with("<!");
+            if is_close {
+                depth = depth.saturating_sub(1);
+            }
+            if !out.is_empty() && !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&"  ".repeat(depth));
+            out.push_str(tag);
+            if !is_close && !is_self {
+                depth += 1;
+            }
+            i = end;
+            // inline text content up to the next tag
+            let next = s[i..].find('<').map(|n| i + n).unwrap_or(s.len());
+            let text = s[i..next].trim();
+            if !text.is_empty() {
+                out.push_str(text);
+                // if followed by a closing tag, keep it on the same line
+                if s[next..].starts_with("</") {
+                    let cend = s[next..].find('>').map(|e| next + e + 1).unwrap_or(s.len());
+                    out.push_str(&s[next..cend]);
+                    depth = depth.saturating_sub(1);
+                    i = cend;
+                    continue;
+                }
+            }
+            i = next;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+pub fn hex_dump(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 4);
+    for (i, chunk) in bytes.chunks(16).enumerate() {
+        out.push_str(&format!("{:08X}  ", i * 16));
+        for (j, b) in chunk.iter().enumerate() {
+            out.push_str(&format!("{b:02X} "));
+            if j == 7 {
+                out.push(' ');
+            }
+        }
+        for _ in chunk.len()..16 {
+            out.push_str("   ");
+        }
+        if chunk.len() <= 8 {
+            out.push(' ');
+        }
+        out.push_str(" |");
+        for b in chunk {
+            out.push(if (0x20..0x7f).contains(b) { *b as char } else { '.' });
+        }
+        out.push_str("|\n");
+        if i > 65536 {
+            out.push_str("… (truncated)\n");
+            break;
+        }
+    }
+    out
+}

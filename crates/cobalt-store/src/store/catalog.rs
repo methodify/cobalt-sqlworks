@@ -8,11 +8,19 @@ use rusqlite::{params, OptionalExtension};
 
 impl Store {
     /// The cached catalog and when it was stored.
-    pub fn get_catalog(&self, profile: ProfileId, database: &str) -> Result<Option<(DatabaseCatalog, DateTime<Utc>)>> {
+    pub fn get_catalog(
+        &self,
+        profile: ProfileId,
+        database: &str,
+    ) -> Result<Option<(DatabaseCatalog, DateTime<Utc>)>> {
         let conn = self.lock()?;
-        let mut stmt = conn.prepare_cached("SELECT json, refreshed_at FROM catalog_cache WHERE profile_id = ?1 AND database = ?2")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT json, refreshed_at FROM catalog_cache WHERE profile_id = ?1 AND database = ?2",
+        )?;
         let row = stmt
-            .query_row(params![profile.to_string(), database], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_row(params![profile.to_string(), database], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
             .optional()?;
         match row {
             None => Ok(None),
@@ -30,7 +38,12 @@ impl Store {
         }
     }
 
-    pub fn put_catalog(&self, profile: ProfileId, database: &str, catalog: &DatabaseCatalog) -> Result<()> {
+    pub fn put_catalog(
+        &self,
+        profile: ProfileId,
+        database: &str,
+        catalog: &DatabaseCatalog,
+    ) -> Result<()> {
         let json = serde_json::to_string(catalog)?;
         let conn = self.lock()?;
         conn.execute(
@@ -45,8 +58,14 @@ impl Store {
     pub fn invalidate_catalog(&self, profile: ProfileId, database: Option<&str>) -> Result<usize> {
         let conn = self.lock()?;
         let n = match database {
-            Some(db) => conn.execute("DELETE FROM catalog_cache WHERE profile_id = ?1 AND database = ?2", params![profile.to_string(), db])?,
-            None => conn.execute("DELETE FROM catalog_cache WHERE profile_id = ?1", params![profile.to_string()])?,
+            Some(db) => conn.execute(
+                "DELETE FROM catalog_cache WHERE profile_id = ?1 AND database = ?2",
+                params![profile.to_string(), db],
+            )?,
+            None => conn.execute(
+                "DELETE FROM catalog_cache WHERE profile_id = ?1",
+                params![profile.to_string()],
+            )?,
         };
         Ok(n)
     }
