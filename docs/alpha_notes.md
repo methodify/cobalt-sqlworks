@@ -66,7 +66,7 @@ If your tenant's conditional access ever rejects the public client, switch the p
 
 ## Known gaps in this alpha
 
-- Windows Integrated auth is implemented (SSPI via the driver) but still untested: SQL Server 2025 Express is installed on this box but its TCP listener is off (enabling it needs an elevated shell — `Tcp\Enabled=1`, `IPAll\TcpPort=1435`, restart `MSSQL$SQLEXPRESS`). First thing to try when you are at the keyboard: New Connection → `localhost,1435` → Windows auth.
+- Windows Integrated auth: verified against SQL Server 2025 Express on this box (`localhost,1435`, profile **express-winauth**) — logs in as `AzureAD\BryonWilliams` via NTLM. Kerberos against a domain-joined server is untested.
 - Object-explorer filter dialog, group-by-schema, freeze columns, transposed view: V1.x.
 - Multi-cursor / folding in the editor: V2.
 - Plan comparison and Plan-Explorer-class analysis: V2.
@@ -83,6 +83,7 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Group/profile with SQL auth, connect, lazy tree | ✅ verified via agent |
 | Entra interactive login to Fabric | ✅ Warehouse and SQL database in Fabric, silent re-auth from the credential store |
 | `az login` credential | implemented; no `az` on the build box |
+| Windows integrated auth | ✅ SQL Server 2025 Express, NTLM |
 | New Query, highlighting, completion, F5, Ctrl+Enter, cancel | ✅ keys verified by injected key events: F5, Ctrl+Enter (current statement), Ctrl+L, Ctrl+M, Alt+C, Ctrl+Shift+C, Ctrl+Shift+P |
 | 5M-row streaming with cap, fetch-all, spill, sort/filter | ✅ 2M rows in ~4 s; spill covered by unit tests |
 | Multiple result sets, PRINT, clickable errors, rows affected | ✅ |
