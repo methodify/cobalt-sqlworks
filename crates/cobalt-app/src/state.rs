@@ -724,6 +724,8 @@ pub struct ExportDialog {
     pub onelake_item: Option<String>,
     /// Table name (Delta) or file name (other formats) inside the lakehouse.
     pub onelake_name: String,
+    /// Schema folder for schema-enabled lakehouses (`Tables/<schema>/<table>`); empty = none.
+    pub onelake_schema: String,
     pub csv_delimiter: String,
     pub csv_headers: bool,
     pub json_lines: bool,

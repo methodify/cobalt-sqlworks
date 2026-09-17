@@ -73,7 +73,9 @@ If your tenant's conditional access ever rejects the public client, switch the p
   Fabric portal*. Pins show at the top and survive restarts.
 - **Save results → Destination: OneLake lakehouse.** Delta tables land in the lakehouse's `Tables/`
   and are queryable from its SQL endpoint right away; Parquet/CSV/Excel/… land in `Files/`. The
-  lakehouse list comes from the Fabric panel. Tested against your `test` lakehouse.
+  lakehouse list comes from the Fabric panel. Schema-enabled lakehouses (like your `test`) get a
+  *Schema* field defaulting to `dbo`, and the table lands in `Tables/<schema>/<table>`. Tested against your
+  `test` lakehouse; the SQL endpoint shows a new table after its sync lag (about two minutes).
 - Registration permissions you added (Workspace.Read.All, Item.Read.All, OneLake.ReadWrite.All under
   Power BI Service) are exactly what these need. If you ever add *Azure Storage → user_impersonation*
   the OneLake write will use that token instead; not required.

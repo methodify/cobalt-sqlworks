@@ -819,6 +819,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
     let mut start = false;
     let mut done = false;
     let running = d.running;
+    let mut picked_lakehouse: Option<String> = None;
     let (_, close) = modal(ctx, theme, "export", 560.0, |ui| {
         ui.heading("Save results as");
         ui.add_space(6.0);
@@ -866,11 +867,41 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                             let wsn = f.state.fabric.workspace(ws).map(|w| w.display_name.clone()).unwrap_or_default();
                             if ui.selectable_label(d.onelake_item.as_deref() == Some(id), format!("{name}  ({wsn})")).clicked() {
                                 d.onelake_item = Some(id.clone());
+                                d.onelake_schema.clear();
+                                picked_lakehouse = Some(id.clone());
                             }
                         }
                     });
                 }
                 ui.end_row();
+                // schema-enabled lakehouse? (the item detail says so via defaultSchema)
+                if is_delta {
+                    if let Some(id) = d.onelake_item.clone() {
+                        match f.state.fabric.details.get(&id) {
+                            Some(Loadable::Loaded(t)) => {
+                                if let Some(default_schema) = &t.default_schema {
+                                    if d.onelake_schema.is_empty() {
+                                        d.onelake_schema = default_schema.clone();
+                                    }
+                                    ui.label("Schema");
+                                    ui.horizontal(|ui| {
+                                        ui.add(egui::TextEdit::singleline(&mut d.onelake_schema).desired_width(140.0));
+                                        ui.label(RichText::new("schema-enabled lakehouse").size(11.0).color(theme.text_muted));
+                                    });
+                                    ui.end_row();
+                                }
+                            }
+                            Some(Loadable::Loading(_)) => {
+                                ui.label("");
+                                ui.label(RichText::new("Checking lakehouse schema support…").size(11.0).color(theme.text_muted));
+                                ui.end_row();
+                            }
+                            _ => {
+                                picked_lakehouse = Some(id);
+                            }
+                        }
+                    }
+                }
                 ui.label(if is_delta { "Table name" } else { "File name" });
                 ui.add(egui::TextEdit::singleline(&mut d.onelake_name).hint_text(if is_delta { "e.g. sales_export" } else { "e.g. sales_export.parquet" }).desired_width(300.0));
                 ui.end_row();
@@ -959,6 +990,9 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
             }
         });
     });
+    if let Some(id) = picked_lakehouse {
+        crate::fabric::load_detail(f.state, f.cx, &id);
+    }
     if start {
         f.state.dialog = Dialog::Export(d);
         ops::start_export(f.state, f.cx);

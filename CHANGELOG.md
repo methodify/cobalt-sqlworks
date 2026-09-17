@@ -9,7 +9,8 @@
   Servers*, copy the connection string, open in the Fabric portal.
 - **Export to OneLake**: the Save-results dialog can target a lakehouse. Delta tables land in
   `Tables/` (queryable from the lakehouse SQL endpoint right away); Parquet, CSV, Excel and the other
-  formats land in `Files/`.
+  formats land in `Files/`. Schema-enabled lakehouses are detected (`defaultSchema`) and Delta
+  tables go under `Tables/<schema>/`, defaulting to the lakehouse's schema.
 - Entra: one refresh token now serves SQL, the Fabric REST API and OneLake once the app
   registration's permissions are consented to (Power BI Service → Workspace.Read.All,
   Item.Read.All, OneLake.ReadWrite.All; optionally Azure Storage → user_impersonation).

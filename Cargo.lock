@@ -1022,9 +1022,9 @@ dependencies = [
 
 [[package]]
 name = "buoyant_kernel_derive"
-version = "1.2.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f22616ba486e89c304e6bf092f573545220da1f3e1399bb594b47698578a588"
+checksum = "d5cdc90bb920438aa9a39089b76f0614183af303f181bf18d05b456a30dd9740"
 dependencies = [
  "proc-macro2",
  "quote",

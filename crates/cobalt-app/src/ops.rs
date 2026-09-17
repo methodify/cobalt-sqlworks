@@ -1169,6 +1169,7 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         destination: 0,
         onelake_item: None,
         onelake_name: String::new(),
+        onelake_schema: String::new(),
         csv_delimiter: cx.settings.export.csv_delimiter.clone(),
         csv_headers: cx.settings.export.csv_include_headers,
         json_lines: cx.settings.export.json_lines,
@@ -1204,7 +1205,14 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             d.result = Some(Err("Sign in to Fabric first (Fabric panel).".into()));
             return;
         };
-        Some((item, name, slot))
+        // default to the lakehouse's schema when it is schema-enabled and none was typed
+        let mut schema = d.onelake_schema.trim().trim_matches('/').to_string();
+        if schema.is_empty() {
+            if let Some(default) = state.fabric.details.get(&item_id).and_then(|d| d.get()).and_then(|t| t.default_schema.clone()) {
+                schema = default;
+            }
+        }
+        Some((item, name, slot, schema))
     } else {
         None
     };
@@ -1248,7 +1256,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
         },
         _ => rs,
     };
-    if let Some((item, name, slot)) = onelake {
+    if let Some((item, name, slot, schema)) = onelake {
         // OneLake: get a storage token on the session runtime, then write from a blocking thread.
         let resolver = cx.resolver.clone();
         let tenant = cx.settings.connections.entra_default_tenant.clone();
@@ -1288,7 +1296,13 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                     }
                 },
             };
-            let relative = if ext2 == "delta" { format!("Tables/{name}") } else { format!("Files/{name}") };
+            // schema-enabled lakehouses keep Delta tables under Tables/<schema>/<table>
+            let relative = if ext2 == "delta" {
+                if schema.is_empty() { format!("Tables/{name}") } else { format!("Tables/{schema}/{name}") }
+            } else {
+                format!("Files/{name}")
+            };
+            let shown = if ext2 == "delta" && !schema.is_empty() { format!("{schema}.{name}") } else { name.clone() };
             let target = match cobalt_export_delta::RemoteTarget::onelake(&ws_id, &lh_id, &relative, &token) {
                 Ok(t) => t,
                 Err(e) => {
@@ -1313,7 +1327,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                     };
                     let opts = cobalt_export_delta::DeltaOptions { mode, partition_columns: delta_partition, table_name: Some(name.clone()), description: None };
                     cobalt_export_delta::write_delta_remote_blocking(&rs2, &target, &opts, &mut progress)
-                        .map(|s| format!("Wrote {} rows to {lh_name}/Tables/{name} in {:.1}s", fmt_count(s.rows as u64), started.elapsed().as_secs_f32()))
+                        .map(|s| format!("Wrote {} rows to {lh_name}/Tables/{shown} in {:.1}s", fmt_count(s.rows as u64), started.elapsed().as_secs_f32()))
                         .map_err(|e| e.to_string())
                 } else {
                     let format = cobalt_export::Format::from_extension(&ext2).unwrap_or(cobalt_export::Format::Csv);

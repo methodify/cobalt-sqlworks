@@ -299,6 +299,7 @@ impl AgentApp for CobaltApp {
                             d.destination = 1;
                             d.onelake_item = Some(id);
                             d.onelake_name = onelake_name;
+                            d.onelake_schema = arg_str(args, "schema").unwrap_or_default();
                         }
                         if let Some(m) = arg_str(args, "delta_mode") {
                             d.delta_mode = match m.as_str() {
