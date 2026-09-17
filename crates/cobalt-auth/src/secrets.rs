@@ -62,26 +62,69 @@ fn map_keyring(e: keyring::Error) -> AuthError {
     }
 }
 
+/// Windows Credential Manager caps a secret blob at 2560 bytes (1280 UTF-16 chars); Entra refresh tokens are
+/// longer. Values above this are split into `key#0`, `key#1`, … with a header in `key`.
+const CHUNK_CHARS: usize = 1000;
+const CHUNK_HEADER: &str = "__cobalt_chunks:";
+
+fn chunk_ref(r: &SecretRef, i: usize) -> SecretRef {
+    SecretRef { key: format!("{}#{i}", r.key) }
+}
+
 impl SecretStore for KeyringStore {
     fn get(&self, r: &SecretRef) -> Result<Option<Secret>> {
-        match Self::entry(r)?.get_password() {
-            Ok(p) => Ok(Some(Secret::new(p))),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(map_keyring(e)),
+        let head = match Self::entry(r)?.get_password() {
+            Ok(p) => p,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(e) => return Err(map_keyring(e)),
+        };
+        if let Some(n) = head.strip_prefix(CHUNK_HEADER).and_then(|n| n.parse::<usize>().ok()) {
+            let mut out = String::new();
+            for i in 0..n {
+                match Self::entry(&chunk_ref(r, i))?.get_password() {
+                    Ok(p) => out.push_str(&p),
+                    Err(keyring::Error::NoEntry) => return Ok(None),
+                    Err(e) => return Err(map_keyring(e)),
+                }
+            }
+            return Ok(Some(Secret::new(out)));
         }
+        Ok(Some(Secret::new(head)))
     }
 
     fn set(&self, r: &SecretRef, s: &Secret) -> Result<()> {
-        Self::entry(r)?
-            .set_password(s.expose())
-            .map_err(map_keyring)
+        let value = s.expose();
+        let chars: Vec<char> = value.chars().collect();
+        if chars.len() <= CHUNK_CHARS {
+            let _ = self.delete_chunks(r);
+            return Self::entry(r)?.set_password(value).map_err(map_keyring);
+        }
+        let chunks: Vec<String> = chars.chunks(CHUNK_CHARS).map(|c| c.iter().collect()).collect();
+        for (i, c) in chunks.iter().enumerate() {
+            Self::entry(&chunk_ref(r, i))?.set_password(c).map_err(map_keyring)?;
+        }
+        Self::entry(r)?.set_password(&format!("{CHUNK_HEADER}{}", chunks.len())).map_err(map_keyring)
     }
 
     fn delete(&self, r: &SecretRef) -> Result<()> {
+        let _ = self.delete_chunks(r);
         match Self::entry(r)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(map_keyring(e)),
         }
+    }
+}
+
+impl KeyringStore {
+    fn delete_chunks(&self, r: &SecretRef) -> Result<()> {
+        if let Ok(head) = Self::entry(r)?.get_password() {
+            if let Some(n) = head.strip_prefix(CHUNK_HEADER).and_then(|n| n.parse::<usize>().ok()) {
+                for i in 0..n {
+                    let _ = Self::entry(&chunk_ref(r, i))?.delete_credential();
+                }
+            }
+        }
+        Ok(())
     }
 }
 

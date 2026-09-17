@@ -186,6 +186,14 @@ impl ConnState {
     pub fn is_connected(&self) -> bool {
         matches!(self, ConnState::Connected { .. })
     }
+
+    /// Engine capabilities of a connected tab; `None` while disconnected.
+    pub fn capabilities(&self) -> Option<&cobalt_core::Capabilities> {
+        match self {
+            ConnState::Connected { engine, .. } => Some(&engine.capabilities),
+            _ => None,
+        }
+    }
     pub fn database(&self) -> Option<&str> {
         match self {
             ConnState::Connected { database, .. } => Some(database),
@@ -593,6 +601,8 @@ pub struct AppState {
     pub settings_patch: Vec<SettingsPatch>,
     pub settings_draft: Option<Settings>,
     pub theme_override: Option<ThemeChoice>,
+    /// Synthetic input from the agent (`press` / `type_text` verbs), injected next frame.
+    pub injected_events: Vec<egui::Event>,
 }
 
 #[derive(Debug, Clone)]
@@ -642,7 +652,7 @@ pub enum Dialog {
     None,
     Connection(Box<ConnectionDialog>),
     Password { profile: ConnectionProfile, password: String, remember: bool, purpose: ConnectPurpose, error: Option<String> },
-    AuthWaiting { profile: ConnectionProfile, purpose: ConnectPurpose, message: String, device: Arc<parking_lot::Mutex<Option<(String, String)>>>, cancel: Arc<std::sync::atomic::AtomicBool> },
+    AuthWaiting { profile: ConnectionProfile, purpose: ConnectPurpose, message: String, device: Arc<parking_lot::Mutex<Option<(String, String)>>>, url: Arc<parking_lot::Mutex<Option<String>>>, cancel: Arc<std::sync::atomic::AtomicBool>, started: Instant },
     Group { group: ServerGroup, is_new: bool },
     ConfirmClose { tab_index: usize },
     ConfirmDeleteProfile { profile: ProfileId },
@@ -737,6 +747,7 @@ impl AppState {
             settings_patch: Vec::new(),
             settings_draft: None,
             theme_override: None,
+            injected_events: Vec::new(),
         }
     }
 

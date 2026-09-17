@@ -26,7 +26,7 @@
 use super::convert::{self, BatchBuilder, MetaColumn};
 use super::{server_message_from_error, server_message_from_info, MssqlConnection, CANCEL_ACK_TIMEOUT};
 use crate::{DriverError, QueryStream, Result, StreamItem};
-use cobalt_core::{ExecOptions, IsolationLevel, PlanMode, ServerMessage};
+use cobalt_core::{Capabilities, ExecOptions, IsolationLevel, PlanMode, ServerMessage};
 use futures_util::{FutureExt, StreamExt};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -82,7 +82,8 @@ pub struct SessionState {
 
 impl SessionState {
     /// The `SET` batch needed to bring the session to `opts`, or `None` when already there.
-    pub fn prelude_for(&self, opts: &ExecOptions) -> Option<String> {
+    /// Options the engine rejects (see [`Capabilities`]) are left out.
+    pub fn prelude_for(&self, opts: &ExecOptions, caps: &Capabilities) -> Option<String> {
         let onoff = |b: bool| if b { "ON" } else { "OFF" };
         let mut parts: Vec<String> = Vec::new();
         if self.nocount != Some(opts.nocount) {
@@ -91,13 +92,13 @@ impl SessionState {
         if self.arithabort != Some(opts.arithabort) {
             parts.push(format!("SET ARITHABORT {}", onoff(opts.arithabort)));
         }
-        if self.xact_abort != Some(opts.xact_abort) {
+        if caps.set_xact_abort && self.xact_abort != Some(opts.xact_abort) {
             parts.push(format!("SET XACT_ABORT {}", onoff(opts.xact_abort)));
         }
-        if self.statistics_io != Some(opts.statistics_io) {
+        if caps.set_statistics && self.statistics_io != Some(opts.statistics_io) {
             parts.push(format!("SET STATISTICS IO {}", onoff(opts.statistics_io)));
         }
-        if self.statistics_time != Some(opts.statistics_time) {
+        if caps.set_statistics && self.statistics_time != Some(opts.statistics_time) {
             parts.push(format!("SET STATISTICS TIME {}", onoff(opts.statistics_time)));
         }
         if let Some(iso) = opts.isolation {
@@ -150,7 +151,7 @@ pub(crate) async fn execute<'a>(conn: &'a mut MssqlConnection, sql: &str, opts: 
 
     let mut initial: VecDeque<StreamItem> = VecDeque::new();
 
-    if let Some(prelude) = conn.session.prelude_for(opts) {
+    if let Some(prelude) = conn.session.prelude_for(opts, &conn.engine.capabilities) {
         match conn.run_silent(&prelude).await {
             Ok(()) => {}
             // Keep executing: the user's batch still runs, but tell them the option wasn't applied.
@@ -459,24 +460,37 @@ impl<'a> Run<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cobalt_core::EngineKind;
 
     #[test]
     fn prelude_only_when_state_differs() {
+        let caps = EngineKind::SqlServer.capabilities();
         let mut state = SessionState::default();
         let opts = ExecOptions::default();
-        let p = state.prelude_for(&opts).unwrap();
+        let p = state.prelude_for(&opts, &caps).unwrap();
         assert!(p.contains("SET NOCOUNT OFF"));
         assert!(p.contains("SET ARITHABORT ON"));
         assert!(!p.contains("ISOLATION"));
         state.apply(&opts);
-        assert_eq!(state.prelude_for(&opts), None);
+        assert_eq!(state.prelude_for(&opts, &caps), None);
 
         let opts2 = ExecOptions { nocount: true, isolation: Some(IsolationLevel::ReadUncommitted), ..opts.clone() };
-        let p = state.prelude_for(&opts2).unwrap();
+        let p = state.prelude_for(&opts2, &caps).unwrap();
         assert_eq!(p, "SET NOCOUNT ON;\nSET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;");
         state.apply(&opts2);
         // isolation None = leave as is
-        assert_eq!(state.prelude_for(&ExecOptions { nocount: true, ..opts }), None);
+        assert_eq!(state.prelude_for(&ExecOptions { nocount: true, ..opts }, &caps), None);
+    }
+
+    #[test]
+    fn prelude_skips_options_the_engine_rejects() {
+        let caps = EngineKind::FabricWarehouse.capabilities();
+        let state = SessionState::default();
+        let p = state.prelude_for(&ExecOptions::default(), &caps).unwrap();
+        assert!(p.contains("SET NOCOUNT OFF"));
+        assert!(p.contains("SET ARITHABORT ON"));
+        assert!(!p.contains("XACT_ABORT"), "{p}");
+        assert!(!p.contains("STATISTICS"), "{p}");
     }
 
     #[test]

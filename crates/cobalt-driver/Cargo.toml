@@ -27,4 +27,6 @@ serde_json.workspace = true
 parking_lot.workspace = true
 
 [dev-dependencies]
+native-tls = "0.2"
+tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

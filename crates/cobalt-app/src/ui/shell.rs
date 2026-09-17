@@ -560,9 +560,10 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             if tool_button(ui, icons::TREE_STRUCTURE, "Est. plan", "Display estimated execution plan (Ctrl+L)", !running).clicked() {
                 cmds.push(Command::EstimatedPlan);
             }
-            let actual = tab.actual_plan;
-            let r = ui.add_enabled(!running, egui::Button::new(RichText::new(format!("{} Actual plan", if actual { icons::CHECK_SQUARE } else { icons::SQUARE })).color(if actual { theme.accent } else { theme.text })).frame(false).min_size(Vec2::new(0.0, 24.0)));
-            if r.on_hover_text("Include actual execution plan (Ctrl+M)").clicked() {
+            let actual_supported = tab.conn.capabilities().map(|c| c.actual_plans).unwrap_or(true);
+            let actual = tab.actual_plan && actual_supported;
+            let r = ui.add_enabled(!running && actual_supported, egui::Button::new(RichText::new(format!("{} Actual plan", if actual { icons::CHECK_SQUARE } else { icons::SQUARE })).color(if actual { theme.accent } else { theme.text })).frame(false).min_size(Vec2::new(0.0, 24.0)));
+            if r.on_hover_text(if actual_supported { "Include actual execution plan (Ctrl+M)" } else { "This engine does not support actual execution plans" }).clicked() {
                 cmds.push(Command::ToggleActualPlan);
             }
             if tool_button(ui, icons::CHECK, "Parse", "Parse (Shift+Alt+P)", !running && connected).clicked() {

@@ -353,6 +353,31 @@ impl AgentApp for CobaltApp {
                 let items: Vec<String> = t.editor.completion.as_ref().map(|c| c.items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
                 ActionResult::with(&json!({"items": items}))
             }
+            "press" => {
+                let Some(name) = arg_str(args, "key") else { return ActionResult::BadArgs("key is required".into()) };
+                let Some(key) = egui::Key::from_name(&name) else { return ActionResult::BadArgs(format!("unknown key {name}")) };
+                let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_bool()).unwrap_or(false);
+                let modifiers = egui::Modifiers { alt: flag("alt"), ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
+                self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+                self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "type_text" => {
+                let text = arg_str(args, "text").unwrap_or_default();
+                self.state.injected_events.push(egui::Event::Text(text));
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "focus_editor" => {
+                if let Some(t) = self.state.active_mut() {
+                    t.editor.request_focus = true;
+                    for s in t.run.iter_mut().flat_map(|r| r.result_sets.iter_mut()) {
+                        s.grid.focused = false;
+                    }
+                }
+                ActionResult::ok()
+            }
             "dismiss_dialog" => {
                 self.state.dialog = crate::state::Dialog::None;
                 ActionResult::ok()

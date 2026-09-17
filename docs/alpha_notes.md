@@ -27,22 +27,46 @@ under service `cobalt-sqlworks`. Spill files go to the temp dir and are cleaned 
 6. **History** (left strip) — every run, searchable; double-click reopens.
 7. **Ctrl+Shift+P** — command palette. **File → Import Azure Data Studio connections**.
 
-## Entra ID / Fabric — ready for you to complete the first sign-in
+## Entra ID / Fabric — verified live (2026-09-17)
 
 Your app registration (`ecec63e7-…`) ships as Cobalt's default client ID (Settings → Connections
-overrides it). A profile named **fabric** pointing at your warehouse endpoint, tenant preset, is
-already in your library. The interactive flow was exercised end to end up to the human step: the
-app opens the loopback listener, launches Chrome to the Microsoft sign-in page, and waits (5 min
-timeout, clean failure message). To finish the test: expand **fabric** in Servers or open a query
-tab on it, complete the login in the browser, then run `SELECT TOP 100 * FROM <your table>`.
-If your tenant's conditional access rejects a public client, switch the profile's auth to
-**device code** or **Azure CLI**. What the registration must have: mobile/desktop platform with
-redirect URI `http://localhost`, "Allow public client flows" = Yes, delegated
-`Azure SQL Database / user_impersonation` (admin consent may be required).
+overrides it). Both of your Fabric profiles connect and run queries through the app:
+
+- **fabric** (Warehouse endpoint `…datawarehouse.fabric.microsoft.com`) — engine detected as
+  *Fabric Warehouse*; tree browses databases → tables → columns/keys/indexes; queries, estimated
+  plans, exports (CSV/Excel/JSON/Parquet/Delta) all work. A `dbo.sales` table with 20,000 rows was
+  created in the `warehouse` database for testing.
+- **…database.fabric.microsoft.com** (SQL database in Fabric) — engine detected as *Fabric SQL
+  database*; `dbo.customers` (1,000 rows), `dbo.orders` (5,000), view `dbo.v_customer_totals` and
+  procedure `dbo.p_top_customers` were created there. Actual plans work on this engine.
+
+The refresh token is stored in Windows Credential Manager (chunked, since Entra refresh tokens
+exceed the 2,560-byte credential limit), so sign-in is silent after the first browser round trip.
+The sign-in wait is 15 minutes with "open browser again" / "copy link" in the dialog.
+
+What it took (all in the vendored driver, see `vendor/tiberius-ng/COBALT-PATCH.md`):
+
+1. **Routing redirects** — Fabric answers the first login with a redirect to
+   `pbipwus16-….pbidedicated.windows.net\<warehouse-id>-dw:1433`. The driver now connects TCP/TLS to
+   the bare gateway host and sends the full routed name (plus port) in the LOGIN7 record, like
+   SqlClient does, instead of treating the `\…` suffix as a SQL Browser instance.
+2. **PRELOGIN TRACEID** — the routed gateway rejects any login whose PRELOGIN lacks a TRACEID with
+   18456 *"Couldn't complete the operation due to a system update"*. tiberius never sent one and
+   encoded it as 20 bytes; MS-TDS (and SqlClient) use 36 (connection GUID + activity GUID +
+   sequence). Cobalt now sends one on every connection. Found by capturing SqlClient's LOGIN7 with a
+   fake TDS server (`cargo run -p cobalt-driver --example tds_capture`) and bisecting.
+3. **Zero-length TRACEID echo** — Azure SQL's gateway echoes the option with no payload; the
+   decoder now honours the option length instead of reading 20 bytes past the end.
+4. **Engine-aware session prelude** — Fabric Warehouse rejects `SET XACT_ABORT` and every
+   `SET STATISTICS …`; those are now capability-gated, and the *Actual plan* toggle is disabled on
+   engines that cannot produce one.
+
+If your tenant's conditional access ever rejects the public client, switch the profile's auth to
+**device code** or **Azure CLI**.
 
 ## Known gaps in this alpha
 
-- Windows Integrated auth is implemented (SSPI via the driver) but untested here (Docker SQL Server = SQL auth only).
+- Windows Integrated auth is implemented (SSPI via the driver) but still untested: SQL Server 2025 Express is installed on this box but its TCP listener is off (enabling it needs an elevated shell — `Tcp\Enabled=1`, `IPAll\TcpPort=1435`, restart `MSSQL$SQLEXPRESS`). First thing to try when you are at the keyboard: New Connection → `localhost,1435` → Windows auth.
 - Object-explorer filter dialog, group-by-schema, freeze columns, transposed view: V1.x.
 - Multi-cursor / folding in the editor: V2.
 - Plan comparison and Plan-Explorer-class analysis: V2.
@@ -57,18 +81,18 @@ redirect URI `http://localhost`, "Allow public client flows" = Yes, delegated
 |---|---|
 | Cold start < 1 s, binary < 40 MB | ~1.7 s to agent-responsive, 46 MB — close, not met; size pass later |
 | Group/profile with SQL auth, connect, lazy tree | ✅ verified via agent |
-| Entra interactive login to Fabric | ⏳ flow verified to the browser; needs you to complete the sign-in |
+| Entra interactive login to Fabric | ✅ Warehouse and SQL database in Fabric, silent re-auth from the credential store |
 | `az login` credential | implemented; no `az` on the build box |
-| New Query, highlighting, completion, F5, Ctrl+Enter, cancel | ✅ (completion + cancel verified; keys need a human) |
+| New Query, highlighting, completion, F5, Ctrl+Enter, cancel | ✅ keys verified by injected key events: F5, Ctrl+Enter (current statement), Ctrl+L, Ctrl+M, Alt+C, Ctrl+Shift+C, Ctrl+Shift+P |
 | 5M-row streaming with cap, fetch-all, spill, sort/filter | ✅ 2M rows in ~4 s; spill covered by unit tests |
 | Multiple result sets, PRINT, clickable errors, rows affected | ✅ |
 | Copy / with headers / Markdown / JSON / INSERT | ✅ Markdown verified in clipboard; others share the builder |
-| Save as CSV/Excel/JSON/XML/Markdown/Parquet/Arrow/Delta | ✅ all produced; round-trips in tests; Delta needs your Fabric read check |
+| Save as CSV/Excel/JSON/XML/Markdown/Parquet/Arrow/Delta | ✅ all produced; round-trips in tests; Delta/Parquet written from Fabric results (`_delta_log` + parquet part) |
 | JSON/XML cell viewer, 1 MB values in full | ✅ |
 | Estimated/actual plan graph, properties, top ops, .sqlplan | ✅ |
 | History records, search, restore closed tab | ✅ |
 | Light/dark complete, follows OS | ✅ |
-| Palette with shortcuts; ADS keys | ✅ palette; keys need a human |
+| Palette with shortcuts; ADS keys | ✅ palette (Ctrl+Shift+P) and keys verified via injected events |
 | Hot exit | ✅ |
-| Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested) |
+| Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |

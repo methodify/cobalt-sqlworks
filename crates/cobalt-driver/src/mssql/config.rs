@@ -103,6 +103,8 @@ pub fn effective_encryption(profile: &ConnectionProfile) -> EncryptionLevel {
 pub fn build_config(profile: &ConnectionProfile, creds: &ResolvedCredentials) -> Result<(Config, ServerSpec)> {
     let spec = parse_server(&profile.server);
     let mut config = Config::new();
+    // PRELOGIN TRACEID: SqlClient always sends one and Fabric's routed warehouse gateway requires it.
+    config.activity_id(tiberius::ActivityId::with_connection_id(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), 1));
     config.host(&spec.host);
     if let Some(port) = effective_port(profile, &spec) {
         config.port(port);

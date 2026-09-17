@@ -54,6 +54,7 @@ pub struct ExportDone {
 struct UiPrompter {
     cancel: Arc<AtomicBool>,
     device: Arc<parking_lot::Mutex<Option<(String, String)>>>,
+    url: Arc<parking_lot::Mutex<Option<String>>>,
     egui: egui::Context,
 }
 
@@ -62,7 +63,9 @@ impl Prompter for UiPrompter {
         Ok(None)
     }
     fn open_browser(&self, url: &str) {
+        *self.url.lock() = Some(url.to_string());
         cobalt_auth::entra::open_in_browser(url);
+        self.egui.request_repaint();
     }
     fn device_code(&self, prompt: &cobalt_auth::entra::DeviceCodePrompt) {
         *self.device.lock() = Some((prompt.user_code.clone(), prompt.verification_uri.clone()));
@@ -300,17 +303,18 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
             }
             let cancel = Arc::new(AtomicBool::new(false));
             let device = Arc::new(parking_lot::Mutex::new(None));
+            let url = Arc::new(parking_lot::Mutex::new(None));
             let message = match &profile.auth {
                 AuthMethod::EntraInteractive { .. } => "Complete the sign-in in your browser…".to_string(),
                 AuthMethod::EntraDeviceCode { .. } => "Requesting a device code…".to_string(),
                 AuthMethod::AzureCli { .. } => "Asking Azure CLI for a token…".to_string(),
                 _ => "Acquiring token…".to_string(),
             };
-            state.dialog = Dialog::AuthWaiting { profile: profile.clone(), purpose: purpose.clone(), message, device: device.clone(), cancel: cancel.clone() };
+            state.dialog = Dialog::AuthWaiting { profile: profile.clone(), purpose: purpose.clone(), message, device: device.clone(), url: url.clone(), cancel: cancel.clone(), started: Instant::now() };
             let resolver = cx.resolver.clone();
             let tx = cx.auth_tx.clone();
             let egui = cx.egui.clone();
-            let prompter = UiPrompter { cancel, device, egui: egui.clone() };
+            let prompter = UiPrompter { cancel, device, url, egui: egui.clone() };
             let p2 = profile.clone();
             cx.session.spawn(async move {
                 let result = resolver.resolve(&p2, &prompter).await.map_err(|e| {
@@ -884,9 +888,11 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     if opts.timeout_secs == 0 {
         opts.timeout_secs = cx.settings.execution.command_timeout_secs;
     }
+    // Engines without SET STATISTICS XML (Fabric Warehouse, Synapse) silently run without a plan.
+    let actual_supported = t.conn.capabilities().map(|c| c.actual_plans).unwrap_or(true);
     opts.plan = match mode {
         RunMode::EstimatedPlan => PlanMode::Estimated,
-        _ if t.actual_plan => PlanMode::Actual,
+        _ if t.actual_plan && actual_supported => PlanMode::Actual,
         _ => PlanMode::None,
     };
     if let Some(p) = &t.profile {

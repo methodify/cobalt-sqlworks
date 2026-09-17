@@ -41,14 +41,31 @@ pub(crate) async fn connect(profile: &ConnectionProfile, creds: &ResolvedCredent
 /// TCP connect (SQL Browser for named instances, multi-subnet failover honoured) + TDS login,
 /// following at most one Azure routing redirect.
 async fn open(mut config: Config) -> Result<TdsClient> {
+    // After a routing redirect (Azure SQL, Synapse, Fabric) the target may look like
+    // `gateway.host\warehouse-id-dw` — connect TCP/TLS to the gateway host and keep the full
+    // name for the LOGIN7 server-name field, as SqlClient does. Never treat it as a named instance.
+    let mut routed: Option<(String, u16)> = None;
     for hop in 0..2 {
-        let tcp = TcpStream::connect_named(&config).await.map_err(|e| map_error(e, ErrorPhase::Connect))?;
+        let tcp = match &routed {
+            Some((gateway, port)) => {
+                let s = TcpStream::connect((gateway.as_str(), *port)).await.map_err(|e| DriverError::Connect(format!("{gateway}:{port}: {e}")))?;
+                let _ = s.set_nodelay(true);
+                s
+            }
+            None => TcpStream::connect_named(&config).await.map_err(|e| map_error(e, ErrorPhase::Connect))?,
+        };
         match tiberius::Client::connect(config.clone(), tcp.compat_write()).await {
             Ok(client) => return Ok(client),
             Err(tiberius::error::Error::Routing { host, port }) if hop == 0 => {
                 tracing::info!("server redirected the connection to {host}:{port}");
-                config.host(host);
+                let gateway = host.split('\\').next().unwrap_or(&host).to_string();
+                config.hostname_in_certificate(gateway.clone());
+                config.host(gateway.clone());
                 config.port(port);
+                // SqlClient sends the routed name verbatim plus the port in LOGIN7; Fabric's
+                // gateway picks the target warehouse out of it.
+                config.login_server_name(format!("{host},{port}"));
+                routed = Some((gateway, port));
             }
             Err(e) => return Err(map_error(e, ErrorPhase::Connect)),
         }

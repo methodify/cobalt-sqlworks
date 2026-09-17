@@ -9,9 +9,9 @@ and light — not SSMS, not a VS Code extension.
 
 ## Status
 
-**Phase: V1 alpha build (2026-09-17).** The app runs end to end on Windows against SQL Server
-(Docker) and builds for Linux in Docker. Entra/Fabric live testing waits on the founder's app
-registration. Design corpus in `docs/` — start with `docs/reading_guide.md`; the spec is
+**Phase: V1 (2026-09-17).** The app runs end to end on Windows against SQL Server (Docker),
+Fabric Warehouse and SQL database in Fabric (Entra sign-in, routing redirects, TRACEID — see
+`vendor/tiberius-ng/COBALT-PATCH.md`), and builds for Linux in Docker. Design corpus in `docs/` — start with `docs/reading_guide.md`; the spec is
 `docs/product_design.md`, the build shape is `docs/architecture.md`, decisions in `docs/decisions/`,
 founder-facing test notes in `docs/alpha_notes.md`.
 

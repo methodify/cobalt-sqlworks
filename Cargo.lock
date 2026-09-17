@@ -1347,6 +1347,7 @@ dependencies = [
  "chrono",
  "cobalt-core",
  "futures-util",
+ "native-tls",
  "parking_lot",
  "rust_decimal",
  "serde",
@@ -1356,6 +1357,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

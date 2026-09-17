@@ -1836,22 +1836,28 @@ mod tests {
 
     // ----- F64 with Money (lines 376-383) -----
 
+    // COBALT-PATCH: money decodes losslessly as `Numeric` (scale 4); an `f64` still encodes.
     #[tokio::test]
     async fn f64_with_varlen_money() {
-        test_round_trip(
-            TypeInfo::VarLenSized(VarLenContext::new(VarLenType::Money, 8, None)),
-            ColumnData::F64(Some(3.5)),
-        )
-        .await;
+        let ti = TypeInfo::VarLenSized(VarLenContext::new(VarLenType::Money, 8, None));
+        let mut buf = BytesMut::new();
+        let mut buf_with_ti = BytesMutWithTypeInfo::new(&mut buf).with_type_info(&ti);
+        ColumnData::F64(Some(3.5)).encode(&mut buf_with_ti).expect("encode must succeed");
+        let reader = &mut buf.into_sql_read_bytes();
+        let nd = ColumnData::decode(reader, &ti).await.expect("decode must succeed");
+        assert_eq!(nd, ColumnData::Numeric(Some(crate::tds::Numeric::new_with_scale(35_000, 4))));
+        reader.read_u8().await.expect_err("decode must consume entire buffer");
     }
 
     #[tokio::test]
     async fn none_f64_with_varlen_money() {
-        test_round_trip(
-            TypeInfo::VarLenSized(VarLenContext::new(VarLenType::Money, 8, None)),
-            ColumnData::F64(None),
-        )
-        .await;
+        let ti = TypeInfo::VarLenSized(VarLenContext::new(VarLenType::Money, 8, None));
+        let mut buf = BytesMut::new();
+        let mut buf_with_ti = BytesMutWithTypeInfo::new(&mut buf).with_type_info(&ti);
+        ColumnData::F64(None).encode(&mut buf_with_ti).expect("encode must succeed");
+        let reader = &mut buf.into_sql_read_bytes();
+        let nd = ColumnData::decode(reader, &ti).await.expect("decode must succeed");
+        assert_eq!(nd, ColumnData::Numeric(None));
     }
 
     // ----- BigChar error paths (lines 426, 430-437) -----
@@ -2029,7 +2035,8 @@ mod tests {
 
         let reader = &mut buf.into_sql_read_bytes();
         let nd = ColumnData::decode(reader, &ti).await.unwrap();
-        assert_eq!(nd, ColumnData::F64(Some(3.5)));
+        // COBALT-PATCH: money decodes losslessly as Numeric (scale 4).
+        assert_eq!(nd, ColumnData::Numeric(Some(Numeric::new_with_scale(35000, 4))));
     }
 
     #[tokio::test]
@@ -2039,7 +2046,7 @@ mod tests {
 
         let reader = &mut buf.into_sql_read_bytes();
         let nd = ColumnData::decode(reader, &ti).await.unwrap();
-        assert_eq!(nd, ColumnData::F64(None));
+        assert_eq!(nd, ColumnData::Numeric(None)); // COBALT-PATCH: money decodes as Numeric
     }
 
     // ----- Numeric rescale on encode (lines 859-879) -----

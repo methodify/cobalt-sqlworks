@@ -6,3 +6,4 @@
 *.log
 /.cobalt-dev/
 /target-linux
+target-vendor/

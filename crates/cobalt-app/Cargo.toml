@@ -62,5 +62,22 @@ once_cell.workspace = true
 egui_kittest.workspace = true
 egui_agent = { workspace = true, features = ["test-harness"] }
 
-[package.metadata.winres]
-ProductName = "Cobalt SQL Works"
+[package.metadata.packager]
+product-name = "Cobalt SQL Works"
+identifier = "dev.cobalt.sqlworks"
+description = "A fast, focused SQL client for SQL Server, Azure SQL and Microsoft Fabric"
+long-description = "Cobalt SQL Works is a free, open-source, cross-platform desktop SQL client — the spiritual successor to Azure Data Studio. Pure Rust + egui."
+authors = ["Bryon Williams"]
+homepage = "https://github.com/methodify/cobalt-sqlworks"
+license-file = "../../LICENSE-MIT"
+category = "DeveloperTool"
+formats = ["nsis", "deb", "appimage"]
+out-dir = "../../dist/packages"
+before-packaging-command = ""
+binaries = [{ path = "cobalt", main = true }]
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+
+[package.metadata.packager.deb]
+depends = ["libxkbcommon0", "libwayland-client0", "libgl1", "libfontconfig1", "libdbus-1-3", "libssl3"]

@@ -9,7 +9,7 @@ use std::time::Duration;
 use url::Url;
 
 /// How long we wait for the user to finish in the browser.
-pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+pub const INTERACTIVE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Build the `/authorize` URL for one request.
 pub(crate) fn authorize_url(

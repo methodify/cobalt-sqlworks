@@ -126,6 +126,8 @@ pub struct QueryStream { /* impl Stream<Item = StreamItem> */ }
 ```
 `mssql` module: tiberius-ng implementation, `tds_to_arrow` (per-column builders keyed by `SqlType`),
 `catalog` queries against `sys.*` / `INFORMATION_SCHEMA` (with edition-specific variants for Fabric),
+`connect` follows one Azure/Fabric routing redirect (TCP/TLS to the bare gateway host, full routed
+name in LOGIN7) and always sends a PRELOGIN TRACEID (required by Fabric's routed gateway),
 `scripting` (Script as Create for tables/views/procs/functions using `OBJECT_DEFINITION` and
 sys.columns/indexes/keys for tables).
 

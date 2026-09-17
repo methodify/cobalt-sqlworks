@@ -235,6 +235,19 @@ impl eframe::App for CobaltApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.logic(&ctx);
+        if !self.state.injected_events.is_empty() {
+            let evs = std::mem::take(&mut self.state.injected_events);
+            ctx.input_mut(|i| {
+                for e in evs {
+                    if let egui::Event::Key { key, pressed: true, modifiers, .. } = &e {
+                        i.keys_down.insert(*key);
+                        i.modifiers = *modifiers;
+                    }
+                    i.events.push(e);
+                }
+            });
+            ctx.request_repaint();
+        }
 
         // keyboard shortcuts (not while a modal dialog or the palette owns the keyboard)
         let mut cmds = Vec::new();

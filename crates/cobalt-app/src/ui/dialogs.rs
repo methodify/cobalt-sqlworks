@@ -67,7 +67,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::Password { profile, password, remember, purpose, error };
             }
         }
-        Dialog::AuthWaiting { profile, purpose, message, device, cancel } => {
+        Dialog::AuthWaiting { profile, purpose, message, device, url, cancel, started } => {
             let mut cancelled = false;
             let (_, close) = modal(ctx, theme, "auth", 420.0, |ui| {
                 ui.heading(format!("Signing in to {}", profile.display_name()));
@@ -76,6 +76,18 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     ui.add(egui::Spinner::new().size(18.0));
                     ui.label(&message);
                 });
+                let secs = started.elapsed().as_secs();
+                ui.label(RichText::new(format!("Waiting {}:{:02} — the sign-in link stays valid for 15 minutes.", secs / 60, secs % 60)).size(11.0).color(theme.text_muted));
+                if let Some(u) = url.lock().clone() {
+                    ui.horizontal(|ui| {
+                        if ui.small_button(format!("{} Open browser again", icons::ARROW_SQUARE_OUT)).clicked() {
+                            cobalt_auth::entra::open_in_browser(&u);
+                        }
+                        if ui.small_button(format!("{} Copy sign-in link", icons::COPY)).clicked() {
+                            ui.ctx().copy_text(u.clone());
+                        }
+                    });
+                }
                 if let Some((code, url)) = device.lock().clone() {
                     ui.add_space(8.0);
                     ui.label("Open this page and enter the code:");
@@ -107,7 +119,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     }
                 }
             } else {
-                f.state.dialog = Dialog::AuthWaiting { profile, purpose, message, device, cancel };
+                f.state.dialog = Dialog::AuthWaiting { profile, purpose, message, device, url, cancel, started };
             }
         }
         Dialog::Group { mut group, is_new } => {

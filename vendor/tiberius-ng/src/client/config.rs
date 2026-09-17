@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use super::AuthMethod;
+use crate::tds::codec::ActivityId;
 use crate::EncryptionLevel;
 use ado_net::*;
 use jdbc::*;
@@ -34,6 +35,11 @@ pub struct Config {
     pub(crate) port: Option<u16>,
     pub(crate) database: Option<String>,
     pub(crate) instance_name: Option<String>,
+    /// COBALT-PATCH: server name to send in LOGIN7 when it must differ from the TCP host
+    /// (routing redirects to `gateway\instance,port` on Azure SQL / Fabric).
+    pub(crate) login_server_name: Option<String>,
+    /// COBALT-PATCH: PRELOGIN TRACEID (connection id + activity id) sent with every connection.
+    pub(crate) activity_id: Option<ActivityId>,
     pub(crate) application_name: Option<String>,
     pub(crate) encryption: EncryptionLevel,
     pub(crate) trust: TrustConfig,
@@ -128,6 +134,8 @@ impl Default for Config {
             port: None,
             database: None,
             instance_name: None,
+            login_server_name: None,
+            activity_id: None,
             application_name: None,
             #[cfg(any(
                 feature = "rustls",
@@ -203,6 +211,24 @@ impl Config {
     /// - Defaults to `1433`.
     pub fn port(&mut self, port: u16) {
         self.port = Some(port);
+    }
+
+    /// COBALT-PATCH: the server name written into the LOGIN7 record, when it must differ
+    /// from the host used for TCP/TLS (routing redirects on Azure SQL / Fabric hand out
+    /// `gateway\instance` names that the gateway parses from the login record).
+    ///
+    /// - Defaults to the value of [`host`].
+    ///
+    /// [`host`]: Config::host
+    pub fn login_server_name(&mut self, name: impl ToString) {
+        self.login_server_name = Some(name.to_string());
+    }
+
+    /// COBALT-PATCH: the PRELOGIN TRACEID (MS-TDS 2.2.6.5) to send. SqlClient always sends
+    /// one, and Microsoft Fabric's routed warehouse gateway rejects logins without it
+    /// (18456 "Couldn't complete the operation due to a system update").
+    pub fn activity_id(&mut self, id: ActivityId) {
+        self.activity_id = Some(id);
     }
 
     /// The database to connect to.

@@ -30,14 +30,15 @@ impl EngineKind {
             if e.contains("lakehouse") || e.contains("endpoint") {
                 return EngineKind::FabricSqlEndpoint;
             }
+            // SQL database in Fabric reports EngineEdition 12 and edition "SQL Azure".
             return match engine_edition {
-                5 => EngineKind::FabricSqlDb,
+                5 | 12 => EngineKind::FabricSqlDb,
                 _ => EngineKind::FabricWarehouse,
             };
         }
         match engine_edition {
             1..=4 => EngineKind::SqlServer,
-            5 => EngineKind::AzureSqlDb,
+            5 | 12 => EngineKind::AzureSqlDb,
             6 => EngineKind::SynapseDedicated,
             8 => EngineKind::AzureSqlMi,
             9 => EngineKind::SqlEdge,
@@ -82,14 +83,16 @@ impl EngineKind {
             sql_login: true,
             temp_tables: true,
             system_databases: true,
+            set_xact_abort: true,
+            set_statistics: true,
         };
         match self {
             SqlServer | SqlEdge | AzureSqlMi | Unknown => full,
             AzureSqlDb => Capabilities { multiple_databases: false, system_databases: false, ..full },
-            SynapseDedicated => Capabilities { actual_plans: false, sequences: false, synonyms: false, triggers: false, multiple_databases: false, system_databases: false, ..full },
-            SynapseServerless => Capabilities { actual_plans: false, procedures: true, sequences: false, table_types: false, triggers: false, transactions: false, system_databases: false, ..full },
-            FabricWarehouse => Capabilities { actual_plans: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: true, sql_login: false, system_databases: false, ..full },
-            FabricSqlEndpoint => Capabilities { actual_plans: false, procedures: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: false, read_only: true, sql_login: false, system_databases: false, ..full },
+            SynapseDedicated => Capabilities { actual_plans: false, sequences: false, synonyms: false, triggers: false, multiple_databases: false, system_databases: false, set_statistics: false, ..full },
+            SynapseServerless => Capabilities { actual_plans: false, procedures: true, sequences: false, table_types: false, triggers: false, transactions: false, system_databases: false, set_statistics: false, ..full },
+            FabricWarehouse => Capabilities { actual_plans: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: true, sql_login: false, system_databases: false, set_xact_abort: false, set_statistics: false, ..full },
+            FabricSqlEndpoint => Capabilities { actual_plans: false, procedures: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: false, read_only: true, sql_login: false, system_databases: false, set_xact_abort: false, set_statistics: false, ..full },
             FabricSqlDb => Capabilities { sql_login: false, multiple_databases: false, system_databases: false, ..full },
         }
     }
@@ -111,6 +114,10 @@ pub struct Capabilities {
     pub sql_login: bool,
     pub temp_tables: bool,
     pub system_databases: bool,
+    /// `SET XACT_ABORT` is accepted (Fabric Warehouse / SQL endpoint reject it).
+    pub set_xact_abort: bool,
+    /// `SET STATISTICS IO/TIME/XML` are accepted (Synapse / Fabric Warehouse reject them).
+    pub set_statistics: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,5 +154,28 @@ impl EngineInfo {
             }
             k => k.label().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edition_mapping_for_fabric_hosts() {
+        assert_eq!(EngineKind::from_edition(12, true, "SQL Azure"), EngineKind::FabricSqlDb);
+        assert_eq!(EngineKind::from_edition(5, true, "SQL Azure"), EngineKind::FabricSqlDb);
+        assert_eq!(EngineKind::from_edition(11, true, "DataWarehouse"), EngineKind::FabricWarehouse);
+        assert_eq!(EngineKind::from_edition(11, true, "Lakehouse SQL Endpoint"), EngineKind::FabricSqlEndpoint);
+        assert_eq!(EngineKind::from_edition(12, false, "SQL Azure"), EngineKind::AzureSqlDb);
+        assert_eq!(EngineKind::from_edition(3, false, "Developer Edition (64-bit)"), EngineKind::SqlServer);
+    }
+
+    #[test]
+    fn fabric_warehouse_rejects_xact_abort_and_statistics() {
+        let c = EngineKind::FabricWarehouse.capabilities();
+        assert!(!c.set_xact_abort && !c.set_statistics && !c.actual_plans && c.estimated_plans);
+        let c = EngineKind::FabricSqlDb.capabilities();
+        assert!(c.set_xact_abort && c.set_statistics && c.actual_plans);
     }
 }

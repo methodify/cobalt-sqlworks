@@ -9,7 +9,7 @@ use crate::{
     tds::{
         codec::{
             self, Encode, LoginMessage, Packet, PacketCodec, PacketHeader, PacketStatus,
-            PreloginMessage, TokenDone,
+            ActivityId, PreloginMessage, TokenDone,
         },
         stream::TokenStream,
         Context, HEADER_BYTES,
@@ -140,6 +140,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 config.encryption,
                 fed_auth_required,
                 config.instance_name.clone(),
+                config.activity_id.clone(),
             )
             .await?;
 
@@ -152,7 +153,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 config.auth,
                 encryption,
                 config.database,
-                config.host,
+                config.login_server_name.or(config.host),
                 config.application_name,
                 config.client_name,
                 config.readonly,
@@ -496,11 +497,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         encryption: EncryptionLevel,
         fed_auth_required: bool,
         instance_name: Option<String>,
+        activity_id: Option<ActivityId>,
     ) -> crate::Result<PreloginMessage> {
         let mut msg = PreloginMessage::new();
         msg.encryption = encryption;
         msg.fed_auth_required = fed_auth_required;
         msg.instance_name = instance_name.clone();
+        msg.activity_id = activity_id;
 
         let id = self.context.next_packet_id();
         self.send(PacketHeader::pre_login(id), msg).await?;

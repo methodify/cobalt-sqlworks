@@ -238,6 +238,7 @@ pub use query::Query;
 pub use result::*;
 pub use row::{Column, ColumnType, QueryIdx, Row};
 pub use sql_browser::SqlBrowser;
+pub use tds::codec::ActivityId;
 pub use tds::{
     codec::{
         AltMetaDataColumn, BaseMetaDataColumn, BulkLoadRequest, ColumnData, ColumnFlag,
