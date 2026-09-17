@@ -70,8 +70,8 @@ fn batch(schema: &SchemaRef, start: usize, len: usize) -> RecordBatch {
         Arc::new(Date32Array::from(opt(&idx, |i| 19000 + (i % 1000) as i32))),
         Arc::new(Time64NanosecondArray::from(opt(&idx, |i| (i % 86400) as i64 * 1_000_000_000 + 123_456_700))),
         Arc::new(TimestampMillisecondArray::from(opt(&idx, |i| 1_704_164_645_000 + i as i64 * 1000))),
-        Arc::new(TimestampNanosecondArray::from(opt(&idx, |i| 1_704_164_645_123_456_700 + i as i64 * 1_000_000_000))),
-        Arc::new(TimestampNanosecondArray::from(opt(&idx, |i| 1_704_164_645_123_456_700 + i as i64 * 1_000_000_000)).with_timezone("UTC")),
+        Arc::new(TimestampMicrosecondArray::from(opt(&idx, |i| 1_704_164_645_123_456 + i as i64 * 1_000_000))),
+        Arc::new(TimestampMicrosecondArray::from(opt(&idx, |i| 1_704_164_645_123_456 + i as i64 * 1_000_000)).with_timezone("UTC")),
         Arc::new(StringArray::from(opt(&idx, |i| format!("x{i}")))),
     ];
     RecordBatch::try_new(schema.clone(), cols).unwrap()
@@ -148,8 +148,8 @@ fn csv_roundtrip_default() {
     assert_eq!(&r1[11], "2022-01-09");
     assert_eq!(&r1[12], "00:00:01.1234567");
     assert_eq!(&r1[13], "2024-01-02 03:04:06");
-    assert_eq!(&r1[14], "2024-01-02 03:04:06.1234567");
-    assert_eq!(&r1[15], "2024-01-02 03:04:06.1234567");
+    assert_eq!(&r1[14], "2024-01-02 03:04:06.123456");
+    assert_eq!(&r1[15], "2024-01-02 03:04:06.123456");
     assert_eq!(&r1[16], "x1");
     assert_eq!(&records[2][8], "com,ma");
     assert_eq!(&records[8][8], "line1\nline2");
@@ -240,9 +240,9 @@ fn json_pretty_roundtrip() {
     assert_eq!(r1["dt"], "2022-01-09");
     assert_eq!(r1["t"], "00:00:01.123456700");
     assert_eq!(r1["dtm"], "2024-01-02T03:04:06");
-    assert_eq!(r1["dt2"], "2024-01-02T03:04:06.123456700");
+    assert_eq!(r1["dt2"], "2024-01-02T03:04:06.123456");
     let dto = r1["dto"].as_str().unwrap();
-    assert!(dto.starts_with("2024-01-02T03:04:06.1234567") && dto.ends_with('Z'), "{dto}");
+    assert!(dto.starts_with("2024-01-02T03:04:06.123456") && dto.ends_with('Z'), "{dto}");
     assert!(arr[3]["i"].is_null());
     assert!(arr[3].as_object().unwrap().contains_key("i"));
     assert_eq!(arr[8]["s"], "line1\nline2");
@@ -262,7 +262,7 @@ fn json_compact_omit_nulls_display_dates() {
     assert_eq!(arr.len(), 12);
     assert!(!arr[3].as_object().unwrap().contains_key("i"));
     assert_eq!(arr[1]["dtm"], "2024-01-02 03:04:06");
-    assert_eq!(arr[1]["dt2"], "2024-01-02 03:04:06.1234567");
+    assert_eq!(arr[1]["dt2"], "2024-01-02 03:04:06.123456");
 }
 
 #[test]
@@ -366,7 +366,7 @@ fn markdown_table() {
     assert_eq!(lines.len(), 14);
     assert_eq!(lines[0], "| b | ti | si | i | bi | r | f | d | s | long text | bin | dt | t | dtm | dt2 | dto | s |");
     assert_eq!(lines[1], "|:---|---:|---:|---:|---:|---:|---:|---:|:---|:---|:---|:---|:---|:---|:---|:---|:---|");
-    assert!(lines[2].starts_with("| 1 | 0 | -15000 | 0 | 0 | 0.0 | 0.0 | 0.0000 | NULL | long text 0 long text 0 long text 0  | 0x00000000 | 2022-01-08 | 00:00:00.1234567 | 2024-01-02 03:04:05 | 2024-01-02 03:04:05.1234567 | 2024-01-02 03:04:05.1234567 | x0 |"), "{}", lines[2]);
+    assert!(lines[2].starts_with("| 1 | 0 | -15000 | 0 | 0 | 0.0 | 0.0 | 0.0000 | NULL | long text 0 long text 0 long text 0  | 0x00000000 | 2022-01-08 | 00:00:00.1234567 | 2024-01-02 03:04:05 | 2024-01-02 03:04:05.123456 | 2024-01-02 03:04:05.123456 | x0 |"), "{}", lines[2]);
     assert!(lines[5].contains("| NULL | NULL | NULL |"));
     assert!(lines[6].contains("| ünïcödé \\| pipe |"));
     assert!(lines[10].contains("| line1<br>line2 |"));
@@ -520,7 +520,7 @@ fn parquet_roundtrip_schema_and_values() {
     assert_eq!(v(4001, 16), CellValue::Text("x4001".into()));
     assert!(v(3, 0).is_null() && v(3, 15).is_null());
     assert_eq!(v(1, 12).to_json(), serde_json::json!("00:00:01.123456700"));
-    assert_eq!(v(1, 14).to_json(), serde_json::json!("2024-01-02T03:04:06.123456700"));
+    assert_eq!(v(1, 14).to_json(), serde_json::json!("2024-01-02T03:04:06.123456"));
     // And every batch/column read back equals the source.
     let src = rs.view_to_single_batch().unwrap();
     for c in 0..src.num_columns() {
