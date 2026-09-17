@@ -52,6 +52,9 @@ pub struct CobaltApp {
     auth_rx: Receiver<AuthDone>,
     export_tx: Sender<ExportDone>,
     export_rx: Receiver<ExportDone>,
+    update_tx: crossbeam_channel::Sender<crate::update::UpdateOutcome>,
+    update_rx: Receiver<crate::update::UpdateOutcome>,
+    update_started: bool,
     last_maintenance: Instant,
     applied_scale: f32,
     applied_theme: Option<bool>,
@@ -98,6 +101,7 @@ impl CobaltApp {
 
         let (auth_tx, auth_rx) = crossbeam_channel::unbounded();
         let (export_tx, export_rx) = crossbeam_channel::unbounded();
+        let (update_tx, update_rx) = crossbeam_channel::unbounded();
         let mut state = AppState::new();
         state.formatter = CellFormatter::from_settings(&settings.results);
         let toasts = egui_notify::Toasts::default().with_anchor(egui_notify::Anchor::BottomRight).with_margin(egui::vec2(12.0, 32.0));
@@ -117,6 +121,9 @@ impl CobaltApp {
             auth_rx,
             export_tx,
             export_rx,
+            update_tx,
+            update_rx,
+            update_started: false,
             last_maintenance: Instant::now(),
             applied_scale: 1.0,
             applied_theme: None,
@@ -174,6 +181,8 @@ impl CobaltApp {
     fn logic(&mut self, ctx: &egui::Context) {
         self.frames += 1;
         let toasts = RefCell::new(Vec::new());
+        let mut update_outcomes: Vec<crate::update::UpdateOutcome> = Vec::new();
+        let mut skip_request: Option<String> = None;
         {
             let cx = make_ctx!(self, ctx, &toasts);
             // session events
@@ -193,6 +202,18 @@ impl CobaltApp {
             while let Ok(done) = self.export_rx.try_recv() {
                 ops::on_export_done(&mut self.state, &cx, done);
             }
+            // update check: once shortly after start-up (if enabled), or on request from Help
+            let startup_due = !self.update_started && self.frames > 120 && self.settings.updates.check_on_startup;
+            if startup_due || self.state.update_check_requested {
+                let manual = self.state.update_check_requested;
+                self.state.update_check_requested = false;
+                self.update_started = true;
+                crate::update::spawn_check(&self.session, self.update_tx.clone(), manual);
+            }
+            while let Ok(outcome) = self.update_rx.try_recv() {
+                update_outcomes.push(outcome);
+            }
+            skip_request = self.state.skip_version_request.take();
             // hot exit
             if self.state.last_hot_exit_save.elapsed() > Duration::from_secs(5) {
                 ops::snapshot_tabs(&mut self.state, &cx, false);
@@ -203,6 +224,29 @@ impl CobaltApp {
             }
         }
         self.flush_toasts(toasts.into_inner());
+        for outcome in update_outcomes {
+            use crate::update::UpdateOutcome::*;
+            match outcome {
+                Available { info, manual } => {
+                    let skipped = self.settings.updates.skipped_version.as_deref() == Some(info.version.as_str());
+                    if manual || !skipped {
+                        self.state.dialog = crate::state::Dialog::UpdateAvailable { version: info.version, url: info.url, notes: info.notes };
+                    }
+                }
+                UpToDate { manual: true } => {
+                    self.toasts.success(format!("You're on the latest version ({}).", crate::update::CURRENT_VERSION)).closable(true);
+                }
+                Failed { error, manual: true } => {
+                    self.toasts.warning(format!("Could not check for updates: {error}")).closable(true);
+                }
+                UpToDate { manual: false } | Failed { manual: false, .. } => {}
+            }
+        }
+        if let Some(v) = skip_request {
+            let mut s = self.settings.clone();
+            s.updates.skipped_version = Some(v);
+            self.apply_settings(ctx, s);
+        }
         // follow the OS theme when set to System
         if self.settings.appearance.theme == ThemeChoice::System {
             let system_dark = ctx.system_theme().map(|t| t == egui::Theme::Dark).unwrap_or(true);

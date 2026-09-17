@@ -446,6 +446,42 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::Error { title, message };
             }
         }
+        Dialog::UpdateAvailable { version, url, notes } => {
+            let mut done = false;
+            let mut skip = false;
+            let (_, close) = modal(ctx, theme, "update", 520.0, |ui| {
+                ui.heading(format!("Cobalt SQL Works {version} is available"));
+                ui.label(RichText::new(format!("You have {}.", crate::update::CURRENT_VERSION)).color(theme.text_muted));
+                if !notes.trim().is_empty() {
+                    ui.add_space(6.0);
+                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                        let shown: String = notes.chars().take(4000).collect();
+                        ui.label(RichText::new(shown).size(12.0));
+                    });
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Open download page").color(egui::Color32::WHITE)).fill(theme.accent)).clicked() {
+                        cobalt_auth::entra::open_in_browser(&url);
+                        done = true;
+                    }
+                    if ui.button("Skip this version").clicked() {
+                        skip = true;
+                        done = true;
+                    }
+                    if ui.button("Later").clicked() {
+                        done = true;
+                    }
+                });
+                false
+            });
+            if skip {
+                f.state.skip_version_request = Some(version.clone());
+            }
+            if !done && !close {
+                f.state.dialog = Dialog::UpdateAvailable { version, url, notes };
+            }
+        }
         Dialog::AdsImport { mut path, summary, error } => {
             let mut import = false;
             let mut done = false;

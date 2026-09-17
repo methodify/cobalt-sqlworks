@@ -143,6 +143,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             });
             ui.menu_button("Help", |ui| {
                 item(ui, &mut cmds, Command::KeyboardShortcuts);
+                item(ui, &mut cmds, Command::CheckForUpdates);
                 item(ui, &mut cmds, Command::About);
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1040,6 +1041,7 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ZoomOut => state.settings_patch.push(SettingsPatch::UiScale((cx.settings.appearance.ui_scale - 0.1).max(0.6))),
         Command::ZoomReset => state.settings_patch.push(SettingsPatch::UiScale(1.0)),
         Command::About => state.about_open = true,
+        Command::CheckForUpdates => state.update_check_requested = true,
         Command::KeyboardShortcuts => state.shortcuts_open = true,
     }
 }

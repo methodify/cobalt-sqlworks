@@ -11,6 +11,7 @@ pub struct Settings {
     pub export: ExportSettings,
     pub connections: ConnectionSettings,
     pub history: HistorySettings,
+    pub updates: UpdateSettings,
     pub advanced: AdvancedSettings,
 }
 
@@ -212,6 +213,20 @@ pub struct HistorySettings {
 impl Default for HistorySettings {
     fn default() -> Self {
         Self { capture: true, retention_days: 90, max_entries: 10_000 }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Ask GitHub for the latest release shortly after start-up (one small anonymous request).
+    pub check_on_startup: bool,
+    /// A version the user chose to skip; the start-up check stays quiet about it.
+    pub skipped_version: Option<String>,
+}
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { check_on_startup: true, skipped_version: None }
     }
 }
 

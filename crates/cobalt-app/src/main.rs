@@ -9,6 +9,7 @@ mod copy;
 mod ops;
 mod session;
 mod state;
+mod update;
 mod ui;
 #[cfg(feature = "agent")]
 mod agent;

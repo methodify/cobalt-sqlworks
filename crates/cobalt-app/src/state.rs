@@ -591,6 +591,10 @@ pub struct AppState {
     pub settings_open: bool,
     pub about_open: bool,
     pub shortcuts_open: bool,
+    /// Help → Check for Updates… was chosen; the app fires the request.
+    pub update_check_requested: bool,
+    /// The update dialog asked to skip this version; the app persists it in settings.
+    pub skip_version_request: Option<String>,
     pub ui_zoom: f32,
     pub focus: Focus,
     pub status_flash: Option<(String, Instant)>,
@@ -664,6 +668,7 @@ pub enum Dialog {
     Rename { tab_index: usize, title: String },
     Error { title: String, message: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
+    UpdateAvailable { version: String, url: String, notes: String },
 }
 
 impl Dialog {
@@ -737,6 +742,8 @@ impl AppState {
             history: HistoryView::default(),
             settings_open: false,
             about_open: false,
+            update_check_requested: false,
+            skip_version_request: None,
             shortcuts_open: false,
             ui_zoom: 1.0,
             focus: Focus::Editor,

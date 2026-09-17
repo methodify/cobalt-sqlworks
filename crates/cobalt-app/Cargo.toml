@@ -40,6 +40,7 @@ egui_agent_macros = { workspace = true, optional = true }
 arrow.workspace = true
 tokio.workspace = true
 crossbeam-channel.workspace = true
+reqwest.workspace = true
 futures-util.workspace = true
 parking_lot.workspace = true
 serde.workspace = true

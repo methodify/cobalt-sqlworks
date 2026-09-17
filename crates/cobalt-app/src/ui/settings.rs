@@ -128,6 +128,17 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.add(egui::DragValue::new(&mut draft.history.max_entries).range(100..=1_000_000).speed(100));
             });
 
+            section(ui, theme, "Updates");
+            ui.checkbox(&mut draft.updates.check_on_startup, "Check for updates at start-up (one anonymous request to GitHub)");
+            if let Some(v) = draft.updates.skipped_version.clone() {
+                ui.horizontal(|ui| {
+                    ui.label(format!("Skipping version {v}"));
+                    if ui.small_button("Stop skipping").clicked() {
+                        draft.updates.skipped_version = None;
+                    }
+                });
+            }
+
             section(ui, theme, "Advanced");
             ui.horizontal(|ui| {
                 ui.label("Result memory budget (MB)");

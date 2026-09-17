@@ -121,6 +121,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         Rename { .. } => "rename",
         Error { .. } => "error",
         AdsImport { .. } => "ads_import",
+        UpdateAvailable { .. } => "update_available",
     }
 }
 
