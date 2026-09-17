@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0 — 2026-09-18
+
+- **Fabric explorer**: a Fabric icon on the left rail (Ctrl+Shift+B). Sign in once with your Entra
+  account (an existing Entra connection is adopted silently), browse every workspace you can reach
+  and its warehouses, lakehouse SQL endpoints, SQL databases and mirrored databases. Double-click
+  opens a connected query tab, no saved connection needed. Pin favourites, search, *Save to
+  Servers*, copy the connection string, open in the Fabric portal.
+- **Export to OneLake**: the Save-results dialog can target a lakehouse. Delta tables land in
+  `Tables/` (queryable from the lakehouse SQL endpoint right away); Parquet, CSV, Excel and the other
+  formats land in `Files/`.
+- Entra: one refresh token now serves SQL, the Fabric REST API and OneLake once the app
+  registration's permissions are consented to (Power BI Service → Workspace.Read.All,
+  Item.Read.All, OneLake.ReadWrite.All; optionally Azure Storage → user_impersonation).
+- Agent verbs: `fabric_state`, `fabric {action}`, `export {lakehouse, name}`.
+
 ## 0.1.1 — 2026-09-18
 
 - Check for updates: Help → Check for Updates…, plus a once-per-start check (Settings → Updates to turn

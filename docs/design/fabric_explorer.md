@@ -1,6 +1,8 @@
 # Fabric Explorer — design story
 
-*Status: proposal, 2026-09-17. Targets a 0.2 release. Builds on the Fabric connectivity that shipped
+*Status: implemented for 0.2.0 (2026-09-18): explorer MVP (§8 step 1) plus the OneLake export target from §7. Remaining items in §7/§8 stay on the backlog.*
+
+*Original proposal, 2026-09-17. Targets a 0.2 release. Builds on the Fabric connectivity that shipped
 in 0.1.0 (Warehouse, SQL analytics endpoint, SQL database in Fabric, Entra sign-in).*
 
 ## 1. The story
