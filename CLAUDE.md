@@ -50,6 +50,9 @@ tests/seed.sql          test database for the Docker SQL Server
   bash -c "apt-get update && apt-get install -y pkg-config libssl-dev libxkbcommon-dev libwayland-dev
   libx11-dev libxcb1-dev libgl1-mesa-dev libfontconfig1-dev libdbus-1-dev cmake clang && cargo build --release -p cobalt-app"`.
 - Windows GPU note: `main.rs` forces `WGPU_BACKEND=dx12` (default enumeration crashes on mixed AMD/NVIDIA boxes).
+- Lockfile pin: `buoyant_kernel_derive` must stay at 1.1.0 (1.2.0 breaks the delta kernel build). Never run
+  `cargo generate-lockfile`; after any `cargo update`, re-pin with
+  `cargo update -p buoyant_kernel_derive --precise 1.1.0` and confirm `cargo metadata --locked` passes.
 
 ## Conventions
 
