@@ -877,13 +877,19 @@ impl AppState {
             Event::Message { tab, run, message, batch: _, batch_start_line } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     let line = if message.line > 0 { Some(batch_start_line + message.line - 1) } else { None };
+                    // Fabric Warehouse tags every statement with an informational "Statement ID / Query
+                    // hash / Distributed request ID" line (15806, 24528). Keep it, but muted and without
+                    // the Msg/Level header so real messages stand out.
+                    let is_fabric_trace = !message.is_error && matches!(message.number, 15806 | 24528);
                     let mut text = String::new();
-                    if let Some(h) = message.headline() {
-                        text.push_str(&h);
-                        text.push('\n');
+                    if !is_fabric_trace {
+                        if let Some(h) = message.headline() {
+                            text.push_str(&h);
+                            text.push('\n');
+                        }
                     }
                     text.push_str(&message.message);
-                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: false, line, at: Instant::now() });
+                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, at: Instant::now() });
                 }
             }
             Event::RowsAffected { tab, run, rows } => {
@@ -927,6 +933,9 @@ impl AppState {
                 if let Some(t) = self.tab_mut(tab) {
                     if let ConnState::Connected { database: d, .. } = &mut t.conn {
                         *d = database.clone();
+                    }
+                    if !t.custom_title {
+                        t.title = format!("SQLQuery_{} · {}", t.untitled_index, database);
                     }
                     out.push(Followup::LoadCatalog(tab, database));
                 }

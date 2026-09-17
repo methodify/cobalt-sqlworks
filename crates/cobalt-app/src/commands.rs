@@ -27,6 +27,7 @@ pub enum Command {
     DisconnectTab,
     ChangeConnection,
     RefreshTree,
+    RefreshDatabases,
     RefreshIntelliSense,
     // query
     RunQuery,
@@ -152,6 +153,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::DisconnectTab, id: "connection.disconnect", label: "Disconnect", category: Category::Connection, default_key: None },
     CommandInfo { cmd: Command::ChangeConnection, id: "connection.change", label: "Change Connection…", category: Category::Connection, default_key: None },
     CommandInfo { cmd: Command::RefreshTree, id: "connection.refresh_tree", label: "Refresh Object Explorer", category: Category::Connection, default_key: None },
+    CommandInfo { cmd: Command::RefreshDatabases, id: "connection.refresh_databases", label: "Refresh Database List", category: Category::Connection, default_key: None },
     CommandInfo { cmd: Command::RefreshIntelliSense, id: "connection.refresh_intellisense", label: "Refresh IntelliSense Cache", category: Category::Connection, default_key: sc(NONE, Key::F7) },
     CommandInfo { cmd: Command::RunQuery, id: "query.run", label: "Run Query", category: Category::Query, default_key: sc(NONE, Key::F5) },
     CommandInfo { cmd: Command::RunCurrentStatement, id: "query.run_current", label: "Run Current Statement", category: Category::Query, default_key: sc(CTRL, Key::Enter) },

@@ -64,9 +64,15 @@ pub async fn tab_actor(
             },
             TabMsg::Cancel | TabMsg::FetchMore { .. } => { /* nothing running */ }
             TabMsg::Run { run, script, opts, start_line } => {
+                let before = conn.current_database().to_string();
                 let lost = run_script(tab, run, &script, &opts, start_line, &mut *conn, &mut rx, &shared).await;
                 if lost {
                     break;
+                }
+                // a `USE` inside the script moved the session; tell the tab
+                let after = conn.current_database().to_string();
+                if after != before {
+                    shared.emit(Event::DatabaseChanged { tab, database: after });
                 }
             }
         }

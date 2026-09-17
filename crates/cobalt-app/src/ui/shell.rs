@@ -544,17 +544,36 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 };
                 ui.separator();
                 ui.label(RichText::new(icons::DATABASE).color(theme.text_muted));
-                let dbs: Vec<String> = tab.databases.get().map(|d| d.iter().filter(|x| !x.is_system || x.name == current).map(|x| x.name.clone()).collect()).unwrap_or_default();
-                if caps.multiple_databases && !dbs.is_empty() {
-                    egui::ComboBox::from_id_salt(("dbcombo", tab.id)).selected_text(&current).width(180.0).show_ui(ui, |ui| {
-                        for d in dbs {
-                            if ui.selectable_label(d == current, &d).clicked() && d != current {
-                                change_db = Some(d);
-                            }
+                let mut dbs: Vec<String> = tab.databases.get().map(|d| d.iter().filter(|x| !x.is_system || x.name == current).map(|x| x.name.clone()).collect()).unwrap_or_default();
+                if !dbs.iter().any(|d| *d == current) && !current.is_empty() {
+                    dbs.insert(0, current.clone());
+                }
+                let load_error = match &tab.databases {
+                    Loadable::Failed(e) => Some(e.clone()),
+                    _ => None,
+                };
+                let loading = tab.databases.is_loading();
+                // Always a switcher when connected: engines without USE reconnect on selection, and a
+                // failed list still shows the current database plus a way to retry.
+                let r = egui::ComboBox::from_id_salt(("dbcombo", tab.id)).selected_text(&current).width(180.0).show_ui(ui, |ui| {
+                    for d in &dbs {
+                        if ui.selectable_label(*d == current, d).clicked() && *d != current {
+                            change_db = Some(d.clone());
                         }
-                    });
-                } else {
-                    ui.label(&current);
+                    }
+                    if !caps.multiple_databases && dbs.len() > 1 {
+                        ui.label(RichText::new("Switching reconnects on this engine").small().weak());
+                    }
+                    ui.separator();
+                    if loading {
+                        ui.label(RichText::new("Loading databases…").small().weak());
+                    } else if ui.selectable_label(false, format!("{} Refresh list", icons::ARROWS_CLOCKWISE)).clicked() {
+                        cmds.push(Command::RefreshDatabases);
+                        ui.close();
+                    }
+                });
+                if let Some(e) = load_error {
+                    r.response.on_hover_text(format!("Could not list databases: {e}\nUse Refresh list to try again."));
                 }
             }
             ui.separator();
@@ -1041,6 +1060,12 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ZoomOut => state.settings_patch.push(SettingsPatch::UiScale((cx.settings.appearance.ui_scale - 0.1).max(0.6))),
         Command::ZoomReset => state.settings_patch.push(SettingsPatch::UiScale(1.0)),
         Command::About => state.about_open = true,
+        Command::RefreshDatabases => {
+            if let Some(i) = idx {
+                let tab = state.tabs[i].id;
+                ops::handle_followups(state, cx, vec![Followup::LoadTabDatabases(tab)]);
+            }
+        }
         Command::CheckForUpdates => state.update_check_requested = true,
         Command::KeyboardShortcuts => state.shortcuts_open = true,
     }

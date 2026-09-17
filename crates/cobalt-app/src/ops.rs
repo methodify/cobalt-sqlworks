@@ -953,7 +953,9 @@ pub fn fetch_more(state: &mut AppState, cx: &Ctx, idx: usize, rows: Option<u64>)
 
 pub fn change_database(state: &mut AppState, cx: &Ctx, idx: usize, db: String) {
     if let Some(t) = state.tabs.get(idx) {
-        if t.conn.is_connected() {
+        // Engines without `USE` (SQL database in Fabric, Azure SQL DB) switch by reconnecting.
+        let can_use = t.conn.capabilities().map(|c| c.multiple_databases).unwrap_or(true);
+        if t.conn.is_connected() && can_use {
             cx.session.send(Command::ChangeDatabase { tab: t.id, database: db });
         } else if let Some(p) = t.profile.clone() {
             let tab = t.id;
