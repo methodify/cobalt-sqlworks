@@ -13,6 +13,22 @@ mod ui;
 #[cfg(feature = "agent")]
 mod agent;
 
+/// The window / taskbar icon, decoded from the bundled 256 px PNG (`assets/icon.svg` rendered).
+fn app_icon() -> egui::IconData {
+    const PNG: &[u8] = include_bytes!("../../../assets/icons/icon_256.png");
+    match image::load_from_memory_with_format(PNG, image::ImageFormat::Png) {
+        Ok(img) => {
+            let rgba = img.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            egui::IconData { rgba: rgba.into_raw(), width, height }
+        }
+        Err(e) => {
+            tracing::warn!("could not decode the bundled app icon: {e}");
+            egui::IconData::default()
+        }
+    }
+}
+
 fn main() -> eframe::Result {
     init_tracing();
     select_gpu_backend();
@@ -20,6 +36,7 @@ fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(cobalt_core::APP_NAME)
+            .with_icon(app_icon())
             .with_inner_size([1400.0, 900.0])
             .with_min_inner_size([800.0, 500.0])
             .with_app_id("cobalt-sqlworks"),

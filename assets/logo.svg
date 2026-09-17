@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 256" width="960" height="256">
+  <!-- Cobalt SQL Works logo: the app mark plus the wordmark. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2F6BFF"/>
+      <stop offset="1" stop-color="#0B2E8A"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D6E2FF"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8FF7FF"/>
+      <stop offset="1" stop-color="#37D2FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- mark -->
+  <g transform="translate(0 0)">
+    <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+    <rect x="8" y="8" width="240" height="240" rx="50" fill="none" stroke="#FFFFFF" stroke-opacity="0.12" stroke-width="2"/>
+    <g transform="translate(128 140)">
+      <path d="M-72 40 a72 26 0 0 0 144 0 v-22 a72 26 0 0 1 -144 0 z" fill="url(#body)"/>
+      <ellipse cx="0" cy="40" rx="72" ry="26" fill="#B9CCFF"/>
+      <path d="M-72 -6 a72 26 0 0 0 144 0 v-22 a72 26 0 0 1 -144 0 z" fill="url(#body)"/>
+      <ellipse cx="0" cy="-6" rx="72" ry="26" fill="#B9CCFF"/>
+      <path d="M-72 -52 a72 26 0 0 0 144 0 v-22 a72 26 0 0 1 -144 0 z" fill="url(#body)"/>
+      <ellipse cx="0" cy="-52" rx="72" ry="26" fill="#EEF3FF"/>
+      <path d="M40 -66 A52 19 0 1 0 40 -38" fill="none" stroke="#0B2E8A" stroke-width="13" stroke-linecap="round"/>
+    </g>
+    <path d="M188 46 l10 -22 l4 18 l18 4 l-22 10 l-4 18 l-10 -18 l-18 -4 z" fill="url(#spark)"/>
+  </g>
+
+  <!-- wordmark -->
+  <g font-family="Segoe UI, Inter, Helvetica Neue, Arial, sans-serif">
+    <text x="300" y="132" font-size="104" font-weight="700" fill="#0B2E8A" letter-spacing="-2">Cobalt</text>
+    <text x="300" y="206" font-size="52" font-weight="500" fill="#2F6BFF" letter-spacing="6">SQL WORKS</text>
+  </g>
+</svg>

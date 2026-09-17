@@ -76,6 +76,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     text = text.color(theme.accent).strong();
                 }
                 let r = ui.add(egui::Button::new(text).frame(false));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("results tab {label}")));
                 if selected {
                     let rect = r.rect;
                     ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, theme.accent));
@@ -283,7 +284,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
             }
         }
         ResultsTab::Messages => {
-            egui::Frame::new().fill(theme.bg_editor).inner_margin(8.0).show(ui, |ui| {
+            let frame = egui::Frame::new().fill(theme.bg_editor).inner_margin(8.0).show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
                 egui::ScrollArea::vertical().id_salt(("messages", tab.id)).auto_shrink([false, false]).stick_to_bottom(run.is_live()).show(ui, |ui| {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(args.settings.appearance.grid_font_size));
@@ -305,7 +306,9 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     }
                 });
             });
-            let resp = ui.interact(ui.min_rect(), egui::Id::new(("messages-ctx", tab.id)), egui::Sense::click());
+            // Only the messages pane itself takes the context-menu click. `ui.min_rect()` would
+            // also cover the Results/Messages tab strip above and swallow its clicks.
+            let resp = ui.interact(frame.response.rect, egui::Id::new(("messages-ctx", tab.id)), egui::Sense::click());
             resp.context_menu(|ui| {
                 if ui.button("Copy all").clicked() {
                     let all: String = run.messages.iter().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");

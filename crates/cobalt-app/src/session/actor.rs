@@ -133,7 +133,12 @@ async fn run_script(
                         Some(TabMsg::Cancel) | Some(TabMsg::Close) | None => {
                             cancel.cancel();
                             cancelled = true;
-                            // keep draining until the driver acknowledges with Done
+                            // Keep draining until the driver acknowledges with Done. If we were
+                            // paused at the row cap the stream arm is disabled by the cap guard,
+                            // so lift the cap (dropping the held remainder) or we would never
+                            // poll the driver again and the run would hang in "Cancelling…".
+                            held = None;
+                            cap = u64::MAX;
                             continue;
                         }
                         Some(TabMsg::FetchMore { rows }) => {
@@ -174,6 +179,9 @@ async fn run_script(
                     current = Some(rs);
                 }
                 StreamItem::Rows(batch) => {
+                    if cancelled {
+                        continue; // rows still in flight after an attention signal are discarded
+                    }
                     if let Some(rs) = &current {
                         let mut batch = batch;
                         let mut n = batch.num_rows() as u64;
@@ -211,7 +219,9 @@ async fn run_script(
                     }
                     if let Some(rs) = current.take() {
                         rs.set_state(RunState::Complete);
-                        shared.emit(Event::ResultSetDone { tab, run, index: rs.index, rows: rows.max(rows_in_set) });
+                        // after a cancel the server's count includes rows we discarded; report what is shown
+                        let rows = if cancelled { rows_in_set } else { rows.max(rows_in_set) };
+                        shared.emit(Event::ResultSetDone { tab, run, index: rs.index, rows });
                         rs_index += 1;
                     }
                 }

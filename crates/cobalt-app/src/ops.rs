@@ -943,6 +943,8 @@ pub fn fetch_more(state: &mut AppState, cx: &Ctx, idx: usize, rows: Option<u64>)
             if r.state == RunViewState::Paused {
                 r.state = RunViewState::Running;
                 r.paused_set = None;
+                // resume the timer from where it was frozen
+                r.started = Instant::now().checked_sub(r.elapsed).unwrap_or_else(Instant::now);
             }
         }
         cx.session.send(Command::FetchMore { tab: t.id, rows });

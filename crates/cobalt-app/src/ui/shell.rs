@@ -621,7 +621,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
                 if let Some(r) = &t.run {
                     ui.separator();
-                    let elapsed = if r.is_live() { r.started.elapsed() } else { r.elapsed };
+                    let elapsed = if r.is_live() && r.state != RunViewState::Paused { r.started.elapsed() } else { r.elapsed };
                     let label = if r.is_live() { format!("{} {}", icons::TIMER, fmt_duration(elapsed)) } else { fmt_duration(elapsed) };
                     ui.label(RichText::new(label).color(if r.is_live() { theme.accent } else { theme.text }));
                     let rows: u64 = r.result_sets.iter().filter(|s| !s.is_plan).map(|s| s.rs.row_count() as u64).sum();

@@ -863,6 +863,8 @@ impl AppState {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.paused_set = Some(index);
                     r.state = RunViewState::Paused;
+                    // freeze the timer while we wait for the user
+                    r.elapsed = r.started.elapsed();
                 }
             }
             Event::Message { tab, run, message, batch: _, batch_start_line } => {
