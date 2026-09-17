@@ -29,6 +29,8 @@ crates/cobalt-export    CSV/TSV/JSON/JSONL/XML/Markdown/Excel/Parquet/Arrow; cob
 crates/cobalt-app       the binary: session actors (tokio), state, ui/, ops, agent verbs
 vendor/tiberius-ng      vendored TDS driver + COBALT-PATCH.md
 assets/                 icon.svg / logo.svg (source of truth) + rendered PNGs and icon.ico (resvg + Pillow)
+site/                   GitHub Pages homepage (static; lists the latest release via the GitHub API)
+.github/workflows/      ci.yml (tests), release.yml (tag v* -> installers + GitHub release), pages.yml (site)
 scripts/                launch.sh, agent-smoke.sh, agent-ui.sh, agent-verify.sh (egui-agent-cli drivers)
 tests/seed.sql          test database for the Docker SQL Server
 ```
