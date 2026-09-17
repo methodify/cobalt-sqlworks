@@ -64,6 +64,13 @@ What it took (all in the vendored driver, see `vendor/tiberius-ng/COBALT-PATCH.m
 If your tenant's conditional access ever rejects the public client, switch the profile's auth to
 **device code** or **Azure CLI**.
 
+## Fixed after your first pass (2026-09-17)
+
+- Connection editor: the **Advanced** section now opens (encrypt mode, trust server certificate, host name in certificate, timeouts, intent).
+- Results/Messages: clicking **Results** after **Messages** works again (the Messages pane was swallowing the tab strip's clicks).
+- Row cap: the timer freezes while "Paused at row cap" and resumes on *Fetch more*; the toolbar **Cancel** (and Alt+C) now ends a paused query, same as *Stop* on the strip.
+- The app has its own icon (window, taskbar, exe, installer): `assets/icon.svg`; wordmark in `assets/logo.svg`.
+
 ## Known gaps in this alpha
 
 - Windows Integrated auth: verified against SQL Server 2025 Express on this box (`localhost,1435`, profile **express-winauth**) — logs in as `AzureAD\BryonWilliams` via NTLM. Kerberos against a domain-joined server is untested.
