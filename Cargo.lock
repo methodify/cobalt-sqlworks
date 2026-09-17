@@ -1857,7 +1857,22 @@ checksum = "2695b91fd02afd5b4726a190fd58019674492d824e30598391390b0307644da8"
 dependencies = [
  "buoyant_kernel",
  "ctor",
+ "deltalake-azure",
  "deltalake-core",
+]
+
+[[package]]
+name = "deltalake-azure"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1b7099351f8d452374d75eda599cd7633a50f4a36ec318532ec6c5d1f9d908d"
+dependencies = [
+ "bytes",
+ "deltalake-core",
+ "object_store",
+ "thiserror 2.0.20",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1887,6 +1902,7 @@ dependencies = [
  "dirs",
  "either",
  "futures",
+ "humantime",
  "indexmap",
  "itertools 0.14.0",
  "num_cpus",

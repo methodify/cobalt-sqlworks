@@ -130,6 +130,17 @@ pub fn on_panel_shown(state: &mut AppState, cx: &Ctx) {
     }
 }
 
+/// Make sure every workspace's items are loaded (the export dialog lists lakehouses from them).
+pub fn ensure_lakehouses_loaded(state: &mut AppState, cx: &Ctx) {
+    on_panel_shown(state, cx);
+    let ws: Vec<String> = state.fabric.workspaces.get().map(|w| w.iter().map(|w| w.id.clone()).collect()).unwrap_or_default();
+    for id in ws {
+        if state.fabric.items.get(&id).map(|l| l.needs_load()).unwrap_or(true) {
+            load_items(state, cx, &id);
+        }
+    }
+}
+
 pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
     match a {
         FabricAction::SignIn => sign_in(state, cx),

@@ -274,7 +274,20 @@ impl AgentApp for CobaltApp {
             "export" => {
                 let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
                 let format = arg_str(args, "format").unwrap_or_else(|| "csv".into());
-                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                // OneLake: {lakehouse: <name or id>, name: <table or file name>} instead of path
+                let lakehouse = arg_str(args, "lakehouse");
+                let onelake_name = arg_str(args, "name").unwrap_or_default();
+                let path = match (arg_str(args, "path"), &lakehouse) {
+                    (Some(p), _) => p,
+                    (None, Some(_)) => String::new(),
+                    (None, None) => return ActionResult::BadArgs("path (or lakehouse + name) is required".into()),
+                };
+                let lakehouse_id = lakehouse.as_ref().map(|n| {
+                    self.state.fabric.items.values().filter_map(|l| l.get()).flatten().find(|i| matches!(i.kind, cobalt_fabric::SqlItemKind::Lakehouse) && (i.display_name.eq_ignore_ascii_case(n) || i.id == *n)).map(|i| i.id.clone())
+                });
+                if let Some(None) = lakehouse_id {
+                    return ActionResult::BadArgs("no such lakehouse (expand its workspace in the Fabric panel first)".into());
+                }
                 let set = arg_usize(args, "set").unwrap_or(0);
                 let fi = ops::FORMAT_LABELS.iter().position(|(_, e)| *e == format).unwrap_or(0);
                 self.with_ctx(egui, |s, cx| {
@@ -282,6 +295,11 @@ impl AgentApp for CobaltApp {
                     if let crate::state::Dialog::Export(d) = &mut s.dialog {
                         d.format_index = fi;
                         d.path = path;
+                        if let Some(Some(id)) = lakehouse_id {
+                            d.destination = 1;
+                            d.onelake_item = Some(id);
+                            d.onelake_name = onelake_name;
+                        }
                         if let Some(m) = arg_str(args, "delta_mode") {
                             d.delta_mode = match m.as_str() {
                                 "overwrite" => 1,

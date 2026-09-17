@@ -18,7 +18,11 @@ use deltalake::operations::create::CreateBuilder;
 use deltalake::protocol::{DeltaOperation, SaveMode};
 use deltalake::writer::{DeltaWriter, RecordBatchWriter};
 use deltalake::{DeltaTable, DeltaTableBuilder, DeltaTableError};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+pub mod remote;
+pub use remote::{register_cloud_handlers, remote_table_exists, upload_file, upload_file_blocking, write_delta_remote, write_delta_remote_blocking, RemoteTarget};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -211,7 +215,7 @@ pub async fn write_delta(rs: &ResultSet, path: &Path, opts: &DeltaOptions, progr
     let schema: SchemaRef = Arc::new(delta_compatible_schema(&rs.schema));
     let kernel_schema: StructType = schema.as_ref().try_into_kernel()?;
 
-    let result = write_inner(rs, &url, opts, is_table, schema, kernel_schema, progress).await;
+    let result = write_inner(rs, &url, None, opts, is_table, schema, kernel_schema, progress).await;
     match result {
         Ok((rows, bytes)) => {
             tracing::info!(?path, rows, bytes, mode = ?opts.mode, "delta export complete");
@@ -228,9 +232,10 @@ pub async fn write_delta(rs: &ResultSet, path: &Path, opts: &DeltaOptions, progr
     }
 }
 
-async fn write_inner(
+pub(crate) async fn write_inner(
     rs: &ResultSet,
     url: &url::Url,
+    storage_options: Option<&HashMap<String, String>>,
     opts: &DeltaOptions,
     is_table: bool,
     schema: SchemaRef,
@@ -238,7 +243,13 @@ async fn write_inner(
     progress: &mut (dyn FnMut(Progress) -> bool + Send),
 ) -> Result<(usize, u64)> {
     let mut table: DeltaTable = match (opts.mode, is_table) {
-        (DeltaMode::Append, true) => DeltaTableBuilder::from_url(url.clone())?.load().await?,
+        (DeltaMode::Append, true) => {
+            let mut b = DeltaTableBuilder::from_url(url.clone())?;
+            if let Some(so) = storage_options {
+                b = b.with_storage_options(so.clone());
+            }
+            b.load().await?
+        }
         (mode, _) => {
             let save_mode = if mode == DeltaMode::Overwrite { SaveMode::Overwrite } else { SaveMode::ErrorIfExists };
             let mut b = CreateBuilder::new()
@@ -246,6 +257,9 @@ async fn write_inner(
                 .with_columns(kernel_schema.fields().cloned())
                 .with_partition_columns(opts.partition_columns.iter().cloned())
                 .with_save_mode(save_mode);
+            if let Some(so) = storage_options {
+                b = b.with_storage_options(so.clone());
+            }
             if let Some(n) = &opts.table_name {
                 b = b.with_table_name(n.clone());
             }

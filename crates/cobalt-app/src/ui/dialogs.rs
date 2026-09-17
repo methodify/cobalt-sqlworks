@@ -838,8 +838,45 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
             }
             ui.end_row();
             let is_delta = FORMAT_LABELS[d.format_index].1 == "delta";
-            ui.label(if is_delta { "Table folder" } else { "File" });
+            ui.label("Destination");
             ui.horizontal(|ui| {
+                ui.selectable_value(&mut d.destination, 0, "Local file");
+                ui.selectable_value(&mut d.destination, 1, format!("{} OneLake lakehouse", icons::CLOUD));
+            });
+            ui.end_row();
+            if d.destination == 1 {
+                let lakehouses: Vec<(String, String, String)> = f.state.fabric.items.iter().flat_map(|(ws, l)| l.get().into_iter().flatten().filter(|i| matches!(i.kind, cobalt_fabric::SqlItemKind::Lakehouse)).map(move |i| (i.id.clone(), i.display_name.clone(), ws.clone()))).collect();
+                ui.label("Lakehouse");
+                if lakehouses.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(match f.state.fabric.status() {
+                            crate::fabric::FabricStatus::Ready => "Loading lakehouses…",
+                            _ => "Sign in to Fabric to list lakehouses.",
+                        }).color(theme.text_muted));
+                        if ui.small_button("Open Fabric panel").clicked() {
+                            f.state.sidebar_visible = true;
+                            f.state.sidebar_view = SidebarView::Fabric;
+                        }
+                    });
+                    crate::fabric::ensure_lakehouses_loaded(f.state, f.cx);
+                } else {
+                    let selected = d.onelake_item.as_ref().and_then(|id| lakehouses.iter().find(|(i, _, _)| i == id)).map(|(_, n, ws)| format!("{n}  ({})", f.state.fabric.workspace(ws).map(|w| w.display_name.clone()).unwrap_or_default())).unwrap_or_else(|| "choose…".into());
+                    egui::ComboBox::from_id_salt("onelake-lh").width(300.0).selected_text(selected).show_ui(ui, |ui| {
+                        for (id, name, ws) in &lakehouses {
+                            let wsn = f.state.fabric.workspace(ws).map(|w| w.display_name.clone()).unwrap_or_default();
+                            if ui.selectable_label(d.onelake_item.as_deref() == Some(id), format!("{name}  ({wsn})")).clicked() {
+                                d.onelake_item = Some(id.clone());
+                            }
+                        }
+                    });
+                }
+                ui.end_row();
+                ui.label(if is_delta { "Table name" } else { "File name" });
+                ui.add(egui::TextEdit::singleline(&mut d.onelake_name).hint_text(if is_delta { "e.g. sales_export" } else { "e.g. sales_export.parquet" }).desired_width(300.0));
+                ui.end_row();
+            }
+            ui.label(if is_delta { "Table folder" } else { "File" });
+            ui.add_enabled_ui(d.destination == 0, |ui| ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut d.path).desired_width(300.0));
                 if ui.button("Browse…").clicked() {
                     let ext = FORMAT_LABELS[d.format_index].1;
@@ -853,7 +890,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                         d.path = p.to_string_lossy().to_string();
                     }
                 }
-            });
+            }));
             ui.end_row();
             ui.label("");
             ui.checkbox(&mut d.selection_only, "Selected cells only");
@@ -913,7 +950,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
             } else if ui.button(if matches!(d.result, Some(Ok(_))) { "Close" } else { "Cancel" }).clicked() {
                 done = true;
             }
-            if let Some(Ok(_)) = &d.result {
+            if let (Some(Ok(_)), 0) = (&d.result, d.destination) {
                 if ui.button("Open folder").clicked() {
                     if let Some(parent) = std::path::Path::new(&d.path).parent() {
                         let _ = open::that(parent);

@@ -1166,6 +1166,9 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         selection_only,
         delta_mode: 0,
         delta_partition: String::new(),
+        destination: 0,
+        onelake_item: None,
+        onelake_name: String::new(),
         csv_delimiter: cx.settings.export.csv_delimiter.clone(),
         csv_headers: cx.settings.export.csv_include_headers,
         json_lines: cx.settings.export.json_lines,
@@ -1183,7 +1186,34 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
     let rs = v.rs.clone();
     let selection = if d.selection_only { Some(v.grid.selection.clone()) } else { None };
     let (_, ext) = FORMAT_LABELS[d.format_index];
-    let path = PathBuf::from(d.path.trim());
+    let onelake = if d.destination == 1 {
+        let Some(item_id) = d.onelake_item.clone() else {
+            d.result = Some(Err("Choose a lakehouse.".into()));
+            return;
+        };
+        let name = d.onelake_name.trim().trim_matches('/').to_string();
+        if name.is_empty() || name.contains(['\\', ':']) {
+            d.result = Some(Err(if ext == "delta" { "Give the table a name." } else { "Give the file a name." }.into()));
+            return;
+        }
+        let Some(item) = state.fabric.item(&item_id).cloned() else {
+            d.result = Some(Err("That lakehouse is no longer listed; refresh the Fabric panel.".into()));
+            return;
+        };
+        let Some(slot) = state.fabric.slot else {
+            d.result = Some(Err("Sign in to Fabric first (Fabric panel).".into()));
+            return;
+        };
+        Some((item, name, slot))
+    } else {
+        None
+    };
+    let path = if onelake.is_some() {
+        // scratch file for non-Delta formats; Delta writes straight to OneLake
+        std::env::temp_dir().join(format!("cobalt-onelake-{}.{}", uuid::Uuid::new_v4(), if ext == "delta" { "delta" } else { &ext }))
+    } else {
+        PathBuf::from(d.path.trim())
+    };
     if path.as_os_str().is_empty() {
         d.result = Some(Err("Choose a file path.".into()));
         return;
@@ -1218,6 +1248,90 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
         },
         _ => rs,
     };
+    if let Some((item, name, slot)) = onelake {
+        // OneLake: get a storage token on the session runtime, then write from a blocking thread.
+        let resolver = cx.resolver.clone();
+        let tenant = cx.settings.connections.entra_default_tenant.clone();
+        let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
+        let egui2 = egui.clone();
+        let tx2 = tx.clone();
+        let (ws_id, lh_id, lh_name) = (item.workspace_id.clone(), item.id.clone(), item.display_name.clone());
+        let fmt2 = fmt.clone();
+        let settings2 = settings.clone();
+        let ext2 = ext.clone();
+        let rs2 = rs.clone();
+        let pc2 = pc.clone();
+        let cancel2 = cancel.clone();
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        let prompter = UiPrompter { cancel: cancel_flag, device: Arc::new(parking_lot::Mutex::new(None)), url: Arc::new(parking_lot::Mutex::new(None)), egui: egui.clone() };
+        cx.session.spawn(async move {
+            // OneLake accepts an Azure Storage token; when the registration lacks that permission
+            // the Fabric API token (with OneLake.ReadWrite.All) works too. Silent first, then the
+            // browser as a last resort.
+            use cobalt_auth::provider::{FABRIC_API_RESOURCE, ONELAKE_RESOURCE};
+            let mut token: Option<String> = None;
+            if let Ok(Some(ts)) = resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant.as_deref()).await {
+                token = Some(ts.access.token.expose().to_string());
+            } else if let Ok(Some(ts)) = resolver.resource_token_silent(slot, FABRIC_API_RESOURCE, tenant.as_deref()).await {
+                if ts.access.scope.split(' ').any(|s| s.contains("OneLake")) {
+                    token = Some(ts.access.token.expose().to_string());
+                }
+            }
+            let token = match token {
+                Some(t) => t,
+                None => match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
+                    Ok(ts) => ts.access.token.expose().to_string(),
+                    Err(e) => {
+                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")) });
+                        egui2.request_repaint();
+                        return;
+                    }
+                },
+            };
+            let relative = if ext2 == "delta" { format!("Tables/{name}") } else { format!("Files/{name}") };
+            let target = match cobalt_export_delta::RemoteTarget::onelake(&ws_id, &lh_id, &relative, &token) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = tx2.send(ExportDone { result: Err(e.to_string()) });
+                    egui2.request_repaint();
+                    return;
+                }
+            };
+            let egui3 = egui2.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let started = Instant::now();
+                let mut progress = |p: cobalt_export::Progress| -> bool {
+                    *pc2.lock() = (p.rows_done, p.rows_total);
+                    egui3.request_repaint();
+                    !cancel2.load(Ordering::Relaxed)
+                };
+                if ext2 == "delta" {
+                    let mode = match delta_mode {
+                        1 => cobalt_export_delta::DeltaMode::Overwrite,
+                        2 => cobalt_export_delta::DeltaMode::Append,
+                        _ => cobalt_export_delta::DeltaMode::Create,
+                    };
+                    let opts = cobalt_export_delta::DeltaOptions { mode, partition_columns: delta_partition, table_name: Some(name.clone()), description: None };
+                    cobalt_export_delta::write_delta_remote_blocking(&rs2, &target, &opts, &mut progress)
+                        .map(|s| format!("Wrote {} rows to {lh_name}/Tables/{name} in {:.1}s", fmt_count(s.rows as u64), started.elapsed().as_secs_f32()))
+                        .map_err(|e| e.to_string())
+                } else {
+                    let format = cobalt_export::Format::from_extension(&ext2).unwrap_or(cobalt_export::Format::Csv);
+                    let opts = cobalt_export::ExportOptions::from_settings(&settings2);
+                    let r = cobalt_export::export_to_file(&rs2, format, &path, &opts, &fmt2, &mut progress).map_err(|e| e.to_string()).and_then(|s| {
+                        cobalt_export_delta::upload_file_blocking(&target, &path).map(|bytes| (s.rows, bytes)).map_err(|e| e.to_string())
+                    });
+                    let _ = std::fs::remove_file(&path);
+                    r.map(|(rows, bytes)| format!("Wrote {} rows ({}) to {lh_name}/Files/{name} in {:.1}s", fmt_count(rows as u64), humansize::format_size(bytes, humansize::DECIMAL), started.elapsed().as_secs_f32()))
+                }
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("export thread failed: {e}")));
+            let _ = tx2.send(ExportDone { result });
+            egui2.request_repaint();
+        });
+        return;
+    }
     std::thread::Builder::new()
         .name("cobalt-export".into())
         .spawn(move || {

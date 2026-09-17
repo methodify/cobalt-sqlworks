@@ -718,6 +718,12 @@ pub struct ExportDialog {
     pub selection_only: bool,
     pub delta_mode: usize,
     pub delta_partition: String,
+    /// 0 = local file/folder, 1 = OneLake lakehouse (Delta table or Files/ upload).
+    pub destination: usize,
+    /// Selected lakehouse item id for OneLake.
+    pub onelake_item: Option<String>,
+    /// Table name (Delta) or file name (other formats) inside the lakehouse.
+    pub onelake_name: String,
     pub csv_delimiter: String,
     pub csv_headers: bool,
     pub json_lines: bool,

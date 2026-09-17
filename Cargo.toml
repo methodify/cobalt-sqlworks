@@ -53,7 +53,7 @@ arrow-array = "58"
 arrow-schema = "58"
 arrow-ipc = "58"
 parquet = { version = "58", default-features = false, features = ["arrow", "snap", "zstd", "lz4"] }
-deltalake = { version = "0.32", default-features = false, features = ["native-tls"] }
+deltalake = { version = "0.32", default-features = false, features = ["native-tls", "azure"] }
 
 # --- db ---
 tiberius = { package = "tiberius-ng", version = "0.13", default-features = false, features = ["tds80", "native-tls", "chrono", "rust_decimal", "winauth", "sql-browser-tokio"] }
