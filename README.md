@@ -3,8 +3,9 @@
 A free, open-source, cross-platform desktop SQL client for SQL Server, Azure SQL, and Microsoft
 Fabric — the spiritual successor to Azure Data Studio. Pure Rust, egui.
 
-**Status:** pre-alpha, under construction. See `docs/product_design.md` for what it is and
-`docs/architecture.md` for how it's built.
+**Status:** v0.1.0 released. Downloads and news at [cobaltsql.org](https://cobaltsql.org); installers on the
+[releases page](https://github.com/methodify/cobalt-sqlworks/releases). See `docs/product_design.md` for what it is,
+`docs/architecture.md` for how it's built, and `docs/alpha_notes.md` for what to try first.
 
 ## Build
 
