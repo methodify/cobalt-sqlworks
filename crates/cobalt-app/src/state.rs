@@ -443,7 +443,7 @@ impl PlanView {
             shown_statement: 0,
             layout: None,
             selected_node: None,
-            zoom: 1.0,
+            zoom: 0.0, // 0 = fit on first show
             pan: egui::Vec2::ZERO,
             show_properties: true,
             show_top_ops: true,

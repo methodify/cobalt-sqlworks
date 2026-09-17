@@ -106,6 +106,7 @@ fn apply_pending(ctx: &egui::Context, tab: &mut EditorTab) {
 pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings) -> EditorOutput {
     let ctx = ui.ctx().clone();
     apply_pending(&ctx, tab);
+    let focus_pending = tab.editor.request_focus;
     let id = editor_id(tab);
     let font = FontId::monospace(settings.appearance.editor_font_size);
     let row_h = ui.fonts_mut(|f| f.row_height(&font));
@@ -190,9 +191,11 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 let output = te.show(ui);
                 let resp = &output.response.response;
                 out.changed = resp.changed();
-                out.focused = resp.has_focus();
+                // egui 0.36 hands back the atom-layout response; ask memory about the text widget itself.
+                out.focused = resp.has_focus() || ui.ctx().memory(|m| m.has_focus(id));
                 if tab.editor.request_focus {
-                    resp.request_focus();
+                    ui.ctx().memory_mut(|m| m.request_focus(id));
+                    out.focused = true;
                     tab.editor.request_focus = false;
                 }
                 let text = tab.text.as_str();
@@ -263,7 +266,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                             open_completion(tab, out.cursor_byte, anchor, before == Some('.'));
                         }
                     }
-                } else if tab.editor.completion.is_some() && !out.focused {
+                } else if tab.editor.completion.is_some() && !out.focused && !focus_pending {
                     tab.editor.completion = None;
                 }
                 if let Some(anchor) = tab.editor.completion.as_ref().map(|p| p.anchor) {

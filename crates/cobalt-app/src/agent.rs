@@ -336,6 +336,23 @@ impl AgentApp for CobaltApp {
                 v.grid.scroll_to = Some((row, col));
                 ActionResult::ok()
             }
+            "open_path" => {
+                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
+                ActionResult::with(&json!({"tab": self.state.active_tab}))
+            }
+            "complete" => {
+                let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
+                if let Some(text) = arg_str(args, "append") {
+                    t.text.push_str(&text);
+                }
+                let cursor = t.text.len();
+                t.editor.cursor = t.text.chars().count();
+                t.editor.pending_edit = Some(crate::state::PendingEdit::SetCursor(t.editor.cursor));
+                crate::ui::editor::open_completion(t, cursor, egui::pos2(460.0, 120.0), true);
+                let items: Vec<String> = t.editor.completion.as_ref().map(|c| c.items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
+                ActionResult::with(&json!({"items": items}))
+            }
             "dismiss_dialog" => {
                 self.state.dialog = crate::state::Dialog::None;
                 ActionResult::ok()
