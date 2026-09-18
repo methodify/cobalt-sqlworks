@@ -204,6 +204,15 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
     if !expanded {
         return;
     }
+    profile_children(ui, lib, theme, p, depth + 1, actions);
+}
+
+/// The database subtree of a connected profile (shared with the Fabric explorer, which draws its
+/// own header row). Pushes nothing when the profile is not connected yet.
+pub fn profile_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, depth: usize, actions: &mut Vec<TreeAction>) {
+    let node = lib.servers.entry(p.id).or_default();
+    let connected = node.creds.is_some();
+    let loading = node.databases.is_loading();
     match &node.databases {
         Loadable::NotLoaded | Loadable::Loading(_) => {
             if !connected && !loading {
@@ -212,14 +221,14 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
         }
         Loadable::Failed(e) => {
             let msg = format!("{} {}", icons::WARNING, e.lines().next().unwrap_or(""));
-            tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "err", kind: "error" });
+            tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "err", kind: "error" });
         }
         Loadable::Loaded(dbs) => {
             let show_sys = node.show_system_dbs;
             let dbs: Vec<DatabaseInfo> = dbs.iter().filter(|d| show_sys || !d.is_system).cloned().collect();
             let engine = node.engine.clone();
             for db in dbs {
-                database_node(ui, lib, theme, p, &db, engine.as_ref(), depth + 1, actions);
+                database_node(ui, lib, theme, p, &db, engine.as_ref(), depth, actions);
             }
         }
     }

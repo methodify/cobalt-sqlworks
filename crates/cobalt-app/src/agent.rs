@@ -409,6 +409,9 @@ impl AgentApp for CobaltApp {
                     "slot": f.slot.map(|s| s.to_string()),
                     "workspaces": ws,
                     "pins": f.pins.iter().map(|p| json!({"item_id": p.item_id, "name": p.display_name, "workspace": p.workspace_name})).collect::<Vec<_>>(),
+                    "recent": f.recent.iter().map(|p| json!({"item_id": p.item_id, "name": p.display_name, "workspace": p.workspace_name})).collect::<Vec<_>>(),
+                    "capacities": f.capacities.values().map(|c| json!({"id": c.id, "name": c.display_name, "sku": c.sku, "region": c.region})).collect::<Vec<_>>(),
+                    "expanded_items": f.expanded_items.iter().cloned().collect::<Vec<_>>(),
                 }))
             }
             "fabric" => {
@@ -426,13 +429,15 @@ impl AgentApp for CobaltApp {
                     "sign_out" => FA::SignOut,
                     "refresh" => FA::Refresh,
                     "expand" => match arg_str(args, "workspace").and_then(|n| find_ws(&n)) { Some(id) => FA::ToggleWorkspace(id), None => return ActionResult::BadArgs("no such workspace".into()) },
-                    "open" | "pin" | "save" | "copy" | "portal" => {
+                    "open" | "pin" | "save" | "copy" | "portal" | "explore" | "export_here" => {
                         let Some(id) = arg_str(args, "item").and_then(|n| find_item(&n)) else { return ActionResult::BadArgs("no such item (expand its workspace first)".into()) };
                         match act.as_str() {
                             "open" => FA::Open { item_id: id },
                             "pin" => FA::TogglePin { item_id: id },
                             "save" => FA::SaveToServers { item_id: id },
                             "copy" => FA::CopyConnectionString { item_id: id },
+                            "explore" => FA::ToggleItem { item_id: id },
+                            "export_here" => FA::ExportHere { item_id: id },
                             _ => FA::OpenInPortal { item_id: id },
                         }
                     }

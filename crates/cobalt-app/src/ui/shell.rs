@@ -220,7 +220,7 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
         }
         SidebarView::Fabric => {
             crate::fabric::on_panel_shown(f.state, f.cx);
-            let actions = crate::ui::fabric::show(ui, &mut f.state.fabric, theme);
+            let actions = crate::ui::fabric::show(ui, f.state, theme);
             for a in actions {
                 crate::fabric::action(f.state, f.cx, a);
             }

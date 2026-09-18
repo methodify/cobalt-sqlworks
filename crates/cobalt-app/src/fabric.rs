@@ -7,7 +7,8 @@ use crate::state::{AppState, ConnectPurpose, Dialog, Loadable, SidebarView, Toas
 use cobalt_auth::provider::FABRIC_API_RESOURCE;
 use cobalt_auth::EntraAccount;
 use cobalt_core::*;
-use cobalt_fabric::{FabricClient, FabricError, SqlItem, SqlItemKind, SqlTarget, Workspace};
+use cobalt_fabric::{Capacity, FabricClient, FabricError, SqlItem, SqlItemKind, SqlTarget, Workspace};
+use crate::ui::servers::TreeAction;
 use cobalt_store::FabricPin;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicBool;
@@ -38,6 +39,14 @@ pub struct FabricState {
     pub details: HashMap<String, Loadable<SqlTarget>>,
     pub expanded: HashSet<String>,
     pub pins: Vec<FabricPin>,
+    pub recent: Vec<FabricPin>,
+    pub capacities: HashMap<String, Capacity>,
+    /// Items whose inline object explorer is open.
+    pub expanded_items: HashSet<String>,
+    /// Item ids waiting for their detail before the explorer opens.
+    pub expand_after_detail: HashSet<String>,
+    /// SQL-endpoint items waiting for a sibling's detail to learn the workspace host.
+    pub endpoint_after_detail: HashMap<String, Vec<String>>,
     pub search: String,
     pub last_refresh: Option<Instant>,
     pub loaded_once: bool,
@@ -60,6 +69,20 @@ impl FabricState {
     pub fn is_pinned(&self, item_id: &str) -> bool {
         self.pins.iter().any(|p| p.item_id == item_id)
     }
+    /// The SQL analytics endpoint item that belongs to a SQL database (same name, same workspace).
+    pub fn endpoint_child(&self, db: &SqlItem) -> Option<&SqlItem> {
+        self.items.get(&db.workspace_id).and_then(|l| l.get()).and_then(|v| v.iter().find(|i| i.kind == SqlItemKind::SqlEndpoint && i.display_name == db.display_name))
+    }
+    /// The datawarehouse host shared by a workspace's SQL endpoints, from any loaded detail.
+    pub fn workspace_endpoint_host(&self, workspace_id: &str) -> Option<String> {
+        self.items.get(workspace_id).and_then(|l| l.get()).and_then(|v| {
+            v.iter().filter(|i| matches!(i.kind, SqlItemKind::Lakehouse | SqlItemKind::Warehouse | SqlItemKind::MirroredDatabase | SqlItemKind::MirroredWarehouse)).find_map(|i| self.details.get(&i.id).and_then(|d| d.get()).map(|t| t.server.clone()))
+        })
+    }
+    /// Profile id of an item's inline explorer, when it has been created.
+    pub fn explorer_profile(&self, item_id: &str) -> ProfileId {
+        ephemeral_id(item_id)
+    }
 }
 
 /// Results from the background tasks.
@@ -71,6 +94,7 @@ pub enum FabricEvent {
     Account(EntraAccount),
     Items { workspace_id: String, result: Result<Vec<SqlItem>, String> },
     Detail { item_id: String, result: Result<SqlTarget, String> },
+    Capacities(Vec<Capacity>),
 }
 
 /// What the panel asks for.
@@ -86,6 +110,12 @@ pub enum FabricAction {
     CopyConnectionString { item_id: String },
     OpenInPortal { item_id: String },
     Search(String),
+    /// Toggle the inline object explorer under an item.
+    ToggleItem { item_id: String },
+    /// Open the export dialog for the active tab's results with this lakehouse preselected.
+    ExportHere { item_id: String },
+    /// An action from the inline object explorer.
+    Tree(TreeAction),
 }
 
 fn fabric_error_text(e: &FabricError) -> String {
@@ -110,6 +140,7 @@ pub fn on_panel_shown(state: &mut AppState, cx: &Ctx) {
     }
     state.fabric.loaded_once = true;
     state.fabric.pins = cx.store.fabric_pins().unwrap_or_default();
+    state.fabric.recent = cx.store.fabric_recent(6).unwrap_or_default();
     state.fabric.slot = cx.store.get_kv::<String>(KV_ACCOUNT_SLOT).ok().flatten().and_then(|s| ProfileId::parse(&s));
     let mut stale = true;
     if let Ok(Some((json, fetched))) = cx.store.fabric_cache_get(CACHE_WORKSPACES) {
@@ -199,6 +230,67 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             }
         }
         FabricAction::Search(s) => state.fabric.search = s,
+        FabricAction::ToggleItem { item_id } => {
+            if state.fabric.expanded_items.remove(&item_id) {
+                return;
+            }
+            state.fabric.expanded_items.insert(item_id.clone());
+            match state.fabric.details.get(&item_id).and_then(|d| d.get()).cloned() {
+                Some(target) => ensure_item_explorer(state, cx, &item_id, target),
+                None => {
+                    state.fabric.expand_after_detail.insert(item_id.clone());
+                    load_detail(state, cx, &item_id);
+                }
+            }
+        }
+        FabricAction::ExportHere { item_id } => export_here(state, cx, &item_id),
+        FabricAction::Tree(a) => ops::tree_action(state, cx, a),
+    }
+}
+
+/// Make the inline explorer's profile exist and connected (metadata connection), like expanding a
+/// server in the Servers tree.
+fn ensure_item_explorer(state: &mut AppState, cx: &Ctx, item_id: &str, target: SqlTarget) {
+    if !target.is_ready() {
+        cx.toast(ToastKind::Warning, "The SQL endpoint is still provisioning.");
+        state.fabric.expanded_items.remove(item_id);
+        return;
+    }
+    let Some(profile) = ephemeral_profile(state, cx, item_id, &target) else { return };
+    let id = profile.id;
+    if state.library.profile(id).is_none() {
+        state.library.ephemeral.push(profile);
+    }
+    let node = state.library.server(id);
+    node.expanded = true;
+    let connected = node.creds.is_some();
+    let needs = node.databases.needs_load();
+    if !connected {
+        ops::tree_action(state, cx, TreeAction::ConnectServer(id));
+    } else if needs {
+        ops::tree_action(state, cx, TreeAction::RefreshServer(id));
+    }
+}
+
+fn export_here(state: &mut AppState, cx: &Ctx, item_id: &str) {
+    let Some(idx) = state.active_tab else {
+        cx.toast(ToastKind::Warning, "Run a query first, then export its results here.");
+        return;
+    };
+    let has_results = state.tabs[idx].run.as_ref().map(|r| r.result_sets.iter().any(|s| !s.is_plan)).unwrap_or(false);
+    if !has_results {
+        cx.toast(ToastKind::Warning, "The active tab has no results to export yet.");
+        return;
+    }
+    load_detail(state, cx, item_id);
+    ops::open_export_dialog(state, cx, idx, 0, false);
+    if let Dialog::Export(d) = &mut state.dialog {
+        d.destination = 1;
+        d.onelake_item = Some(item_id.to_string());
+        d.onelake_schema.clear();
+        if let Some(i) = ops::FORMAT_LABELS.iter().position(|(_, e)| *e == "delta") {
+            d.format_index = i;
+        }
     }
 }
 
@@ -326,6 +418,26 @@ pub fn load_workspaces(state: &mut AppState, cx: &Ctx) {
     });
 }
 
+/// Capacity names/SKUs; silently skipped when the registration lacks `Capacity.Read.All`.
+pub fn load_capacities(state: &mut AppState, cx: &Ctx) {
+    let Some(slot) = state.fabric.slot else { return };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    cx.session.spawn(async move {
+        if let Ok((tok, _)) = token(&resolver, slot, tenant.as_deref()).await {
+            match FabricClient::new(tok).list_capacities().await {
+                Ok(caps) => {
+                    let _ = tx.send(FabricEvent::Capacities(caps));
+                    egui.request_repaint();
+                }
+                Err(e) => tracing::info!(error = %e, "capacity names unavailable (Capacity.Read.All not granted?)"),
+            }
+        }
+    });
+}
+
 pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
     let Some(slot) = state.fabric.slot else { return };
     state.fabric.items.insert(workspace_id.to_string(), Loadable::Loading(cx.session.new_request()));
@@ -348,6 +460,27 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
 pub fn load_detail(state: &mut AppState, cx: &Ctx, item_id: &str) {
     let Some(slot) = state.fabric.slot else { return };
     let Some(item) = state.fabric.item(item_id).cloned() else { return };
+    if item.kind == SqlItemKind::SqlEndpoint {
+        // The endpoint item carries no properties; its host is the workspace's shared
+        // datawarehouse host and its database is the item's name.
+        if let Some(host) = state.fabric.workspace_endpoint_host(&item.workspace_id) {
+            let target = SqlTarget { server: host, database: item.display_name.clone(), provisioning: None, onelake_tables_path: None, default_schema: None, collation: None };
+            on_event(state, cx, FabricEvent::Detail { item_id: item_id.to_string(), result: Ok(target) });
+        } else {
+            let sibling = state.fabric.items.get(&item.workspace_id).and_then(|l| l.get()).and_then(|v| v.iter().find(|i| matches!(i.kind, SqlItemKind::Lakehouse | SqlItemKind::Warehouse | SqlItemKind::MirroredDatabase)).map(|i| i.id.clone()));
+            match sibling {
+                Some(sid) => {
+                    state.fabric.endpoint_after_detail.entry(sid.clone()).or_default().push(item_id.to_string());
+                    state.fabric.details.insert(item_id.to_string(), Loadable::Loading(cx.session.new_request()));
+                    load_detail(state, cx, &sid);
+                }
+                None => {
+                    state.fabric.details.insert(item_id.to_string(), Loadable::Failed("no SQL endpoint host known for this workspace".into()));
+                }
+            }
+        }
+        return;
+    }
     if state.fabric.details.get(item_id).map(|d| d.is_loading()).unwrap_or(false) {
         return;
     }
@@ -391,6 +524,9 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 state.fabric.account = Some(a);
             }
         }
+        FabricEvent::Capacities(caps) => {
+            state.fabric.capacities = caps.into_iter().map(|c| (c.id.clone(), c)).collect();
+        }
         FabricEvent::NeedSignIn => {
             state.fabric.status = Some(FabricStatus::SignedOut);
             state.fabric.workspaces = Loadable::NotLoaded;
@@ -417,6 +553,7 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                     load_items(state, cx, &w);
                 }
                 state.fabric.pins = cx.store.fabric_pins().unwrap_or_default();
+                load_capacities(state, cx);
             }
             Err(e) => {
                 if !matches!(state.fabric.workspaces, Loadable::Loaded(_)) {
@@ -434,6 +571,15 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
         FabricEvent::Detail { item_id, result } => match result {
             Ok(target) => {
                 state.fabric.details.insert(item_id.clone(), Loadable::Loaded(target.clone()));
+                if let Some(endpoints) = state.fabric.endpoint_after_detail.remove(&item_id) {
+                    for ep in endpoints {
+                        state.fabric.details.remove(&ep);
+                        load_detail(state, cx, &ep);
+                    }
+                }
+                if state.fabric.expand_after_detail.remove(&item_id) {
+                    ensure_item_explorer(state, cx, &item_id, target.clone());
+                }
                 if state.fabric.open_after_detail.remove(&item_id) {
                     open_item(state, cx, &item_id, target.clone());
                 }
@@ -444,6 +590,8 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             Err(e) => {
                 state.fabric.open_after_detail.remove(&item_id);
                 state.fabric.save_after_detail.remove(&item_id);
+                state.fabric.expand_after_detail.remove(&item_id);
+                state.fabric.expanded_items.remove(&item_id);
                 state.fabric.details.insert(item_id, Loadable::Failed(e.clone()));
                 cx.toast(ToastKind::Error, e);
             }
@@ -474,7 +622,8 @@ fn ephemeral_profile(state: &AppState, cx: &Ctx, item_id: &str, target: &SqlTarg
     p.id = ephemeral_id(item_id);
     p.port = port;
     p.database = Some(target.database.clone());
-    p.name = Some(if ws_name.is_empty() { item.display_name.clone() } else { format!("{} · {}", item.display_name, ws_name) });
+    let label = if item.kind == SqlItemKind::SqlEndpoint { format!("{} (SQL endpoint)", item.display_name) } else { item.display_name.clone() };
+    p.name = Some(if ws_name.is_empty() { label } else { format!("{label} · {ws_name}") });
     // share the account's refresh token with the ephemeral profile id
     if let Some(slot) = state.fabric.slot {
         let from = cobalt_auth::CredentialResolver::refresh_token_ref(&slot);
@@ -497,6 +646,11 @@ fn open_item(state: &mut AppState, cx: &Ctx, item_id: &str, target: SqlTarget) {
     state.library.ephemeral.retain(|p| p.id != id);
     state.library.ephemeral.push(profile);
     ops::new_query_tab(state, cx, Some(id), db, None, false);
+    if let Some(item) = state.fabric.item(item_id).cloned() {
+        let ws_name = state.fabric.workspace(&item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default();
+        let _ = cx.store.fabric_touch_recent(&FabricPin { workspace_id: item.workspace_id.clone(), item_id: item.id.clone(), item_kind: format!("{:?}", item.kind), display_name: item.display_name.clone(), workspace_name: ws_name, position: 0 });
+        state.fabric.recent = cx.store.fabric_recent(6).unwrap_or_default();
+    }
 }
 
 fn toggle_pin(state: &mut AppState, cx: &Ctx, item_id: &str) {

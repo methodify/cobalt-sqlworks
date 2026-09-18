@@ -97,6 +97,11 @@ impl FabricClient {
         Ok(ws)
     }
 
+    /// Capacities the principal can see (admin or contributor). Requires `Capacity.Read.All`.
+    pub async fn list_capacities(&self) -> Result<Vec<Capacity>> {
+        self.get_all_pages(&format!("{}/capacities", self.base)).await
+    }
+
     /// SQL-capable items in a workspace (one unfiltered listing, filtered locally).
     pub async fn list_sql_items(&self, workspace_id: &str) -> Result<Vec<SqlItem>> {
         let items: Vec<WireItem> = self.get_all_pages(&format!("{}/workspaces/{workspace_id}/items", self.base)).await?;

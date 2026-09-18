@@ -49,6 +49,28 @@ impl Store {
         Ok(())
     }
 
+    /// Record that an item was opened (keeps the newest 30).
+    pub fn fabric_touch_recent(&self, pin: &FabricPin) -> Result<()> {
+        let conn = self.lock()?;
+        conn.execute(
+            "INSERT INTO fabric_recent (item_id, workspace_id, item_kind, display_name, workspace_name, opened_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(item_id) DO UPDATE SET opened_at = excluded.opened_at, display_name = excluded.display_name, workspace_name = excluded.workspace_name",
+            params![pin.item_id, pin.workspace_id, pin.item_kind, pin.display_name, pin.workspace_name, fmt_ts(&Utc::now())],
+        )?;
+        conn.execute("DELETE FROM fabric_recent WHERE item_id NOT IN (SELECT item_id FROM fabric_recent ORDER BY opened_at DESC LIMIT 30)", [])?;
+        Ok(())
+    }
+
+    /// Most recently opened items, newest first.
+    pub fn fabric_recent(&self, limit: usize) -> Result<Vec<FabricPin>> {
+        let conn = self.lock()?;
+        let mut st = conn.prepare("SELECT workspace_id, item_id, item_kind, display_name, workspace_name FROM fabric_recent ORDER BY opened_at DESC LIMIT ?1")?;
+        let rows = st.query_map(params![limit as i64], |r| {
+            Ok(FabricPin { workspace_id: r.get(0)?, item_id: r.get(1)?, item_kind: r.get(2)?, display_name: r.get(3)?, workspace_name: r.get(4)?, position: 0 })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Cached REST payload under `key` (e.g. `workspaces`, `items:<ws>`, `detail:<item>`).
     pub fn fabric_cache_get(&self, key: &str) -> Result<Option<(String, DateTime<Utc>)>> {
         let conn = self.lock()?;
@@ -98,6 +120,19 @@ mod tests {
         // pinning again is idempotent
         s.fabric_pin(&FabricPin { item_id: "i2".into(), ..p.clone() }).unwrap();
         assert_eq!(s.fabric_pins().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn recent_keeps_newest_first() {
+        let s = Store::open_in_memory().unwrap();
+        let p = FabricPin { workspace_id: "w".into(), item_id: "a".into(), item_kind: "Warehouse".into(), display_name: "A".into(), workspace_name: "W".into(), position: 0 };
+        s.fabric_touch_recent(&p).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.fabric_touch_recent(&FabricPin { item_id: "b".into(), display_name: "B".into(), ..p.clone() }).unwrap();
+        assert_eq!(s.fabric_recent(10).unwrap().iter().map(|p| p.item_id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        s.fabric_touch_recent(&p).unwrap();
+        assert_eq!(s.fabric_recent(1).unwrap()[0].item_id, "a");
     }
 
     #[test]

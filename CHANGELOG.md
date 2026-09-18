@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1 — unreleased
+
+- Fabric explorer: chevron on an item opens an **inline object explorer** (databases → tables →
+  columns/keys/indexes, same tree as Servers) without leaving the panel.
+- Fabric explorer: **Recent** section (last six items you opened) above Pinned.
+- Fabric explorer: a SQL database's **SQL analytics endpoint** appears as a child row and opens
+  against the workspace's warehouse host.
+- Fabric explorer: capacity SKU next to the region when the registration grants
+  `Capacity.Read.All` (silently skipped otherwise).
+- Lakehouse context menu: **Export results here…** opens Save-results with that lakehouse
+  preselected (Delta, schema pre-filled).
+
 ## 0.2.0 — 2026-09-18
 
 - **Fabric explorer**: a Fabric icon on the left rail (Ctrl+Shift+B). Sign in once with your Entra

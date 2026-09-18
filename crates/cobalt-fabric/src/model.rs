@@ -29,6 +29,21 @@ pub enum WorkspaceKind {
     Other,
 }
 
+/// A capacity (needs `Capacity.Read.All`; absent from the registration → the call fails
+/// gracefully and workspaces show only their region).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capacity {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(default)]
+    pub sku: String,
+    #[serde(default)]
+    pub region: String,
+    #[serde(default)]
+    pub state: String,
+}
+
 /// Fabric item types Cobalt can open a SQL connection to. Every other `ItemType` is skipped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SqlItemKind {
