@@ -425,32 +425,42 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
     let avail = ui.available_rect_before_wrap();
     let tab = &mut f.state.tabs[idx];
     let results_visible = tab.results_visible && tab.run.is_some();
+    // "Maximize this result set" gives the results pane the whole tab: the editor is hidden until
+    // the user restores (same button, context menu, or Escape from the grid).
+    let maximized = results_visible && tab.run.as_ref().map(|r| r.maximized.is_some()).unwrap_or(false);
     let frac = tab.results_fraction.clamp(0.1, 0.92);
     let sep_h = 6.0;
-    let editor_h = if results_visible { (avail.height() * (1.0 - frac) - sep_h / 2.0).max(60.0) } else { avail.height() };
+    let editor_h = if maximized { 0.0 } else if results_visible { (avail.height() * (1.0 - frac) - sep_h / 2.0).max(60.0) } else { avail.height() };
     let editor_rect = egui::Rect::from_min_size(avail.min, Vec2::new(avail.width(), editor_h));
-    let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
-    ed_ui.set_clip_rect(editor_rect);
-    let out = editor::show(&mut ed_ui, tab, theme, f.cx.settings);
-    if out.focused {
-        f.state.focus = Focus::Editor;
-        for rs in tab.run.iter_mut().flat_map(|r| r.result_sets.iter_mut()) {
-            rs.grid.focused = false;
+    if !maximized {
+        let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ed_ui.set_clip_rect(editor_rect);
+        let out = editor::show(&mut ed_ui, tab, theme, f.cx.settings);
+        if out.focused {
+            f.state.focus = Focus::Editor;
+            for rs in tab.run.iter_mut().flat_map(|r| r.result_sets.iter_mut()) {
+                rs.grid.focused = false;
+            }
         }
     }
     if results_visible {
-        // separator
-        let sep_rect = egui::Rect::from_min_size(egui::pos2(avail.left(), editor_rect.bottom()), Vec2::new(avail.width(), sep_h));
-        let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
-        ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
-        if sep.hovered() || sep.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-        }
-        if sep.dragged() {
-            let dy = sep.drag_delta().y;
-            let new_editor_h = (editor_h + dy).clamp(60.0, avail.height() - 80.0);
-            tab.results_fraction = 1.0 - (new_editor_h + sep_h / 2.0) / avail.height();
-        }
+        let sep_rect = if maximized {
+            egui::Rect::from_min_size(avail.min, Vec2::new(avail.width(), 0.0))
+        } else {
+            // separator
+            let sep_rect = egui::Rect::from_min_size(egui::pos2(avail.left(), editor_rect.bottom()), Vec2::new(avail.width(), sep_h));
+            let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
+            ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
+            if sep.hovered() || sep.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            }
+            if sep.dragged() {
+                let dy = sep.drag_delta().y;
+                let new_editor_h = (editor_h + dy).clamp(60.0, avail.height() - 80.0);
+                tab.results_fraction = 1.0 - (new_editor_h + sep_h / 2.0) / avail.height();
+            }
+            sep_rect
+        };
         let res_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), sep_rect.bottom()), avail.max);
         let mut res_ui = ui.new_child(egui::UiBuilder::new().max_rect(res_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         res_ui.set_clip_rect(res_rect);

@@ -285,6 +285,25 @@ impl CobaltApp {
 }
 
 impl eframe::App for CobaltApp {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if let Some(step) = self.state.injected_pointer.pop_front() {
+            // widgets read Shift/Ctrl from the frame's modifier state, which egui derives from
+            // ModifiersChanged events rather than from the button event itself
+            let (mods, released) = match step.iter().find(|e| matches!(e, egui::Event::PointerButton { .. })) {
+                Some(egui::Event::PointerButton { modifiers, pressed, .. }) => (Some(*modifiers), !*pressed),
+                _ => (None, false),
+            };
+            if let Some(m) = mods {
+                raw_input.events.push(egui::Event::ModifiersChanged(m));
+            }
+            raw_input.events.extend(step);
+            if released {
+                raw_input.events.push(egui::Event::ModifiersChanged(egui::Modifiers::default()));
+            }
+            ctx.request_repaint();
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.logic(&ctx);

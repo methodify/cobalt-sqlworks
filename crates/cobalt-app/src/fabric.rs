@@ -154,10 +154,27 @@ pub fn on_panel_shown(state: &mut AppState, cx: &Ctx) {
         if stale || !matches!(state.fabric.workspaces, Loadable::Loaded(_)) {
             load_workspaces(state, cx);
         }
+        load_items_for_pins(state, cx);
     } else {
         // no account yet: try any Entra profile silently before asking the user
         state.fabric.status = Some(FabricStatus::SignedOut);
         try_silent_adopt(state, cx);
+    }
+}
+
+/// Load the items of every workspace holding a pinned or recent item, so those rows resolve (and
+/// open) without the user expanding their workspace first. No-op for workspaces already loading.
+fn load_items_for_pins(state: &mut AppState, cx: &Ctx) {
+    let mut ids: Vec<String> = Vec::new();
+    for p in state.fabric.pins.iter().chain(state.fabric.recent.iter()) {
+        let known = state.fabric.workspace(&p.workspace_id).is_some();
+        let needs = state.fabric.items.get(&p.workspace_id).map(|l| l.needs_load()).unwrap_or(true);
+        if known && needs && !ids.contains(&p.workspace_id) {
+            ids.push(p.workspace_id.clone());
+        }
+    }
+    for id in ids {
+        load_items(state, cx, &id);
     }
 }
 
@@ -547,12 +564,13 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 state.fabric.workspaces = Loadable::Loaded(ws);
                 state.fabric.status = Some(FabricStatus::Ready);
                 state.fabric.last_refresh = Some(Instant::now());
+                state.fabric.pins = cx.store.fabric_pins().unwrap_or_default();
                 // refresh items of workspaces already open
                 let open: Vec<String> = state.fabric.expanded.iter().cloned().collect();
                 for w in open {
                     load_items(state, cx, &w);
                 }
-                state.fabric.pins = cx.store.fabric_pins().unwrap_or_default();
+                load_items_for_pins(state, cx);
                 load_capacities(state, cx);
             }
             Err(e) => {

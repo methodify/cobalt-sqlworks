@@ -479,6 +479,9 @@ pub struct GridState {
     pub focused: bool,
     pub frozen_cols: usize,
     pub transposed: bool,
+    /// A primary-button press started on a cell and the button is still down: pointer movement
+    /// over other cells extends the selection from the anchor.
+    pub drag_select: bool,
 }
 
 impl Default for GridState {
@@ -498,6 +501,7 @@ impl Default for GridState {
             focused: false,
             frozen_cols: 0,
             transposed: false,
+            drag_select: false,
         }
     }
 }
@@ -549,6 +553,9 @@ impl Selection {
 
 pub struct FilterPopup {
     pub column: usize,
+    /// Screen position to open at (under the column's funnel); applied on the first frame only.
+    pub pos: egui::Pos2,
+    pub placed: bool,
     pub search: String,
     pub values: Vec<(Arc<str>, usize)>,
     pub truncated: bool,
@@ -611,6 +618,9 @@ pub struct AppState {
     pub theme_override: Option<ThemeChoice>,
     /// Synthetic input from the agent (`press` / `type_text` verbs), injected next frame.
     pub injected_events: Vec<egui::Event>,
+    /// Agent-injected pointer input, one frame per entry. Fed through eframe's `raw_input_hook`
+    /// so egui sees it before `begin_pass` (hover, press, drag all work like a real mouse).
+    pub injected_pointer: std::collections::VecDeque<Vec<egui::Event>>,
 }
 
 #[derive(Debug, Clone)]
@@ -768,6 +778,7 @@ impl AppState {
             settings_draft: None,
             theme_override: None,
             injected_events: Vec::new(),
+            injected_pointer: std::collections::VecDeque::new(),
         }
     }
 

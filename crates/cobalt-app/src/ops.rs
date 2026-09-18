@@ -18,6 +18,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Fabric cache key (survives cache clears: `pref:` prefix) holding the last lakehouse exported to.
+const LAST_LAKEHOUSE_KEY: &str = "pref:last_lakehouse";
+
 /// Immutable services handed to UI code alongside `&mut AppState`.
 pub struct Ctx<'a> {
     pub session: &'a SessionManager,
@@ -1167,7 +1170,7 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         delta_mode: 0,
         delta_partition: String::new(),
         destination: 0,
-        onelake_item: None,
+        onelake_item: cx.store.fabric_cache_get(LAST_LAKEHOUSE_KEY).ok().flatten().map(|(v, _)| v).filter(|v| !v.is_empty()),
         onelake_name: String::new(),
         onelake_schema: String::new(),
         csv_delimiter: cx.settings.export.csv_delimiter.clone(),
@@ -1205,6 +1208,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             d.result = Some(Err("Sign in to Fabric first (Fabric panel).".into()));
             return;
         };
+        let _ = cx.store.fabric_cache_put(LAST_LAKEHOUSE_KEY, &item.id);
         // default to the lakehouse's schema when it is schema-enabled and none was typed
         let mut schema = d.onelake_schema.trim().trim_matches('/').to_string();
         if schema.is_empty() {

@@ -121,7 +121,7 @@ impl TableDelegate for Delegate<'_> {
         painter.text(funnel_rect.center(), Align2::CENTER_CENTER, egui_phosphor::regular::FUNNEL, FontId::proportional(13.0), funnel_color);
         funnel_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("filter {}", info.name)));
         if funnel_resp.clicked() {
-            self.funnel_click = Some((col, funnel_rect.left_bottom()));
+            self.funnel_click = Some((col, Pos2::new(rect.left(), rect.bottom() + 2.0)));
         }
         let head_resp = ui.interact(Rect::from_min_max(rect.min, Pos2::new(funnel_rect.left(), rect.max.y)), ui.id().with(("head", col)), Sense::click());
         head_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("column {}", info.name)));
@@ -198,18 +198,15 @@ impl TableDelegate for Delegate<'_> {
             return; // clipped duplicate visit (see header_cell_ui)
         }
         let resp = ui.interact(rect, ui.id().with(("cell", row, col)), Sense::click_and_drag());
-        if resp.clicked() || resp.drag_started() {
+        // Selection is press-driven, not click-driven: the press picks the cell (or extends with
+        // Shift) and, while the button stays down, whichever cell the pointer is over extends the
+        // range. egui stops reporting `hovered`/`dragged` on other widgets once a drag has begun
+        // on one cell, so range selection has to go by geometry (`contains_pointer`).
+        let (primary_pressed, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
+        if primary_pressed && resp.contains_pointer() {
             let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
             self.click = Some((row, col, shift, ctrl));
-        }
-        if resp.dragged() {
-            if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
-                if rect.contains(pos) {
-                    self.drag_to = Some((row, col));
-                }
-            }
-        }
-        if resp.hovered() && ui.input(|i| i.pointer.primary_down()) && self.grid.anchor.is_some() {
+        } else if self.grid.drag_select && primary_down && resp.contains_pointer() {
             self.drag_to = Some((row, col));
         }
         if resp.double_clicked() {
@@ -424,11 +421,14 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
             delegate.grid.selection = Selection::Cells { r0: row, c0: col, r1: row, c1: col };
             delegate.grid.anchor = Some((row, col));
         }
-    }
-    if let Some((row, col)) = delegate.drag_to {
+        delegate.grid.drag_select = true;
+    } else if let Some((row, col)) = delegate.drag_to {
         if delegate.grid.anchor.is_some() {
             extend_selection(delegate.grid, row, col);
         }
+    }
+    if delegate.grid.drag_select && !ui.input(|i| i.pointer.primary_down()) {
+        delegate.grid.drag_select = false;
     }
     if let Some((row, shift)) = delegate.gutter_click {
         match (&delegate.grid.selection, shift) {
@@ -466,9 +466,8 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
             Some(ColumnFilter { op: FilterOp::In(set), .. }) => values.iter().filter(|(v, _)| set.contains(&**v)).map(|(v, _)| v.clone()).collect(),
             _ => values.iter().map(|(v, _)| v.clone()).collect(),
         };
-        delegate.grid.filter_popup = Some(FilterPopup { column: col, search: String::new(), values, truncated, checked, condition_op: 0, condition_value: String::new(), condition_value2: String::new() });
+        delegate.grid.filter_popup = Some(FilterPopup { column: col, pos, placed: false, search: String::new(), values, truncated, checked, condition_op: 0, condition_value: String::new(), condition_value2: String::new() });
         delegate.grid.focused = true;
-        let _ = pos;
     }
     if let Some((r, c)) = delegate.double_click {
         delegate.actions.push(GridAction::OpenViewer(r, c));
@@ -499,13 +498,19 @@ fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<Resul
     let col = popup.column;
     let name = rs.columns.get(col).map(|c| c.name.clone()).unwrap_or_default();
     let id = egui::Id::new(("filter-popup", rs.index, col));
-    egui::Window::new(format!("Filter: {name}"))
+    let mut window = egui::Window::new(format!("Filter: {name}"))
         .id(id)
         .collapsible(false)
         .resizable(true)
         .default_width(300.0)
-        .default_height(420.0)
-        .show(ui.ctx(), |ui| {
+        .default_height(420.0);
+    if !popup.placed {
+        // open under the column header (egui keeps the window on screen); afterwards the user may
+        // drag it wherever they like
+        window = window.current_pos(popup.pos);
+        popup.placed = true;
+    }
+    window.show(ui.ctx(), |ui| {
             ui.horizontal(|ui| {
                 ui.label("Condition");
                 egui::ComboBox::from_id_salt(id.with("op")).selected_text(CONDITION_OPS[popup.condition_op]).show_ui(ui, |ui| {

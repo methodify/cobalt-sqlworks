@@ -108,8 +108,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                 if tab.results_tab == ResultsTab::Results {
                     if let Some(&set) = data_sets.first() {
                         let set = run.result_sets.iter().position(|s| !s.is_plan && s.grid.focused).unwrap_or(set);
-                        if icon_button(ui, icons::ARROWS_OUT, "Maximize / restore this result set", true).clicked() {
-                            run.maximized = if run.maximized == Some(set) { None } else { Some(set) };
+                        let is_max = run.maximized.is_some();
+                        let r = icon_button(ui, if is_max { icons::ARROWS_IN } else { icons::ARROWS_OUT }, if is_max { "Restore the editor" } else { "Maximize this result set (hides the editor)" }, true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if is_max { "restore results" } else { "maximize results" }));
+                        if r.clicked() {
+                            run.maximized = if is_max { None } else { Some(set) };
                         }
                         if icon_button(ui, icons::FLOPPY_DISK, "Save results as…", true).clicked() {
                             actions.push(ResultsAction::Export { set, selection_only: false });
@@ -160,7 +163,12 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             let rs = &run.result_sets[set].rs;
                             ui.horizontal(|ui| {
                                 ui.add_space(6.0);
-                                ui.label(RichText::new(format!("Result {}  ·  {} rows", set + 1, crate::state::fmt_count(rs.row_count() as u64))).size(11.0).color(theme.text_muted));
+                                let rows_label = if rs.visible_count() != rs.row_count() {
+                                    format!("{} of {} rows", crate::state::fmt_count(rs.visible_count() as u64), crate::state::fmt_count(rs.row_count() as u64))
+                                } else {
+                                    format!("{} rows", crate::state::fmt_count(rs.row_count() as u64))
+                                };
+                                ui.label(RichText::new(format!("Result {}  ·  {rows_label}", set + 1)).size(11.0).color(theme.text_muted));
                             });
                         }
                         let view = &mut run.result_sets[set];
@@ -197,6 +205,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                 GridAction::Copy => actions.push(ResultsAction::Copy { set, kind: CopyKind::Tsv }),
                                 GridAction::CopyWithHeaders => actions.push(ResultsAction::Copy { set, kind: CopyKind::TsvWithHeaders }),
                             }
+                        }
+                        // Escape in a maximized grid brings the editor back
+                        let restore = view.grid.focused && view.grid.filter_popup.is_none() && view.grid.find.is_none() && view.grid.viewer.is_none() && ui.input(|i| i.key_pressed(egui::Key::Escape));
+                        if restore && run.maximized.is_some() {
+                            run.maximized = None;
                         }
                         // context menu
                         let ctx_id = egui::Id::new(("grid-ctx", tab.id, set));
@@ -243,6 +256,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                         close = true;
                                     }
                                     ui.separator();
+                                    // filter every column the selection spans to the selected values
+                                    let sel_filter = filter_to_selection(&view.grid, &view.rs, args.fmt);
+                                    if ui.add_enabled(sel_filter.is_some(), egui::Button::new("Filter to selected values")).on_hover_text("Keep only rows whose values in the selected columns match the selected cells").clicked() {
+                                        if let Some(spec) = sel_filter {
+                                            actions.push(ResultsAction::ApplyView { set, spec });
+                                        }
+                                        close = true;
+                                    }
                                     if ui.button("Clear filters and sorts").clicked() {
                                         actions.push(ResultsAction::ApplyView { set, spec: cobalt_results::ViewSpec::default() });
                                         close = true;
@@ -410,4 +431,25 @@ pub fn state_color(theme: &Theme, state: &RunState) -> Color32 {
         RunState::Cancelled => theme.warning,
         RunState::Error { .. } => theme.error,
     }
+}
+
+/// A view spec that adds an `In` filter per column spanned by the grid selection, whose set is the
+/// selected cells' display values in that column (existing filters on those columns are replaced,
+/// other filters and sorts are kept). `None` when nothing useful is selected.
+fn filter_to_selection(grid: &crate::state::GridState, rs: &std::sync::Arc<cobalt_results::ResultSet>, fmt: &cobalt_results::CellFormatter) -> Option<cobalt_results::ViewSpec> {
+    use cobalt_results::{ColumnFilter, FilterOp};
+    if !matches!(grid.selection, Selection::Cells { .. } | Selection::Rows { .. }) {
+        return None;
+    }
+    let (rows, cols) = grid.selection.resolve(rs.visible_count(), rs.column_count())?;
+    if rows.end() - rows.start() >= 10_000 {
+        return None;
+    }
+    let mut spec = grid.view.clone();
+    for c in cols {
+        let set: std::collections::HashSet<String> = rows.clone().map(|r| rs.cell_text(r, c, fmt).to_string()).collect();
+        spec.filters.retain(|f| f.column != c);
+        spec.filters.push(ColumnFilter { column: c, op: FilterOp::In(set) });
+    }
+    Some(spec)
 }

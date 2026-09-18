@@ -9,6 +9,7 @@
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
 //! - `results {set?, offset?, limit?}` → rows of the active tab as JSON, `messages`
 //! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
+//! - `pointer {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?}` → real mouse input in screenshot pixels
 
 use crate::app::CobaltApp;
 use crate::commands::{Command, COMMANDS};
@@ -389,6 +390,47 @@ impl AgentApp for CobaltApp {
                         _ => {}
                     }
                 }
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "pointer" => {
+                // {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?} in screenshot pixels.
+                // Each step lands in its own frame via raw_input_hook, so egui treats it like a real mouse.
+                let act = arg_str(args, "action").unwrap_or_else(|| "click".into());
+                let num = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_f64());
+                let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_bool()).unwrap_or(false);
+                let (Some(x), Some(y)) = (num("x"), num("y")) else { return ActionResult::BadArgs("x and y are required".into()) };
+                let ppp = egui.pixels_per_point();
+                let at = |x: f64, y: f64| egui::pos2(x as f32 / ppp, y as f32 / ppp);
+                let modifiers = egui::Modifiers { alt: false, ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
+                let button = if act == "rclick" { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
+                let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton { pos, button, pressed, modifiers };
+                let mut steps: Vec<Vec<egui::Event>> = vec![vec![egui::Event::PointerMoved(at(x, y))]];
+                match act.as_str() {
+                    "move" => {}
+                    "click" | "rclick" => {
+                        steps.push(vec![press(at(x, y), true)]);
+                        steps.push(vec![press(at(x, y), false)]);
+                    }
+                    "dblclick" => {
+                        for _ in 0..2 {
+                            steps.push(vec![press(at(x, y), true)]);
+                            steps.push(vec![press(at(x, y), false)]);
+                        }
+                    }
+                    "drag" => {
+                        let (Some(x2), Some(y2)) = (num("x2"), num("y2")) else { return ActionResult::BadArgs("x2 and y2 are required for drag".into()) };
+                        steps.push(vec![press(at(x, y), true)]);
+                        let n = 8;
+                        for i in 1..=n {
+                            let t = i as f64 / n as f64;
+                            steps.push(vec![egui::Event::PointerMoved(at(x + (x2 - x) * t, y + (y2 - y) * t))]);
+                        }
+                        steps.push(vec![press(at(x2, y2), false)]);
+                    }
+                    _ => return ActionResult::BadArgs("unknown pointer action".into()),
+                }
+                self.state.injected_pointer.extend(steps);
                 egui.request_repaint();
                 ActionResult::ok()
             }

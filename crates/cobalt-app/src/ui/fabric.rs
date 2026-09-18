@@ -197,8 +197,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                                 for it in matching_items {
                                     let pinned = state.fabric.is_pinned(&it.id);
                                     item_row(ui, state, theme, &it.id, &it.display_name, Some(it.kind), None, pinned, true, &mut actions, 1, true);
-                                    // a SQL database's analytics endpoint lives under it
-                                    if it.kind == SqlItemKind::SqlDatabase {
+                                    // a SQL database's analytics endpoint lives under it (shown with its contents)
+                                    if it.kind == SqlItemKind::SqlDatabase && state.fabric.expanded_items.contains(&it.id) {
                                         if let Some(ep) = state.fabric.endpoint_child(&it).cloned() {
                                             let ep_pinned = state.fabric.is_pinned(&ep.id);
                                             item_row(ui, state, theme, &ep.id, "SQL analytics endpoint", Some(SqlItemKind::SqlEndpoint), None, ep_pinned, true, &mut actions, 2, true);

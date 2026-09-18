@@ -1,11 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.2.2 — 2026-09-18
 
+- Results grid: **click-and-drag selects a range** again. Pressing a cell selects it at once and
+  dragging extends from it; previously a press flashed a range from the old cell, then collapsed to
+  a single cell and ignored the drag. Shift+click extends as before.
+- Results grid: the column **filter popup opens beside its column header** instead of the window's
+  top-left corner (and stays where you drag it afterwards).
+- Results: **Maximize** now gives the result set the whole tab by hiding the editor; the same button,
+  the grid context menu, or Escape in the grid restores it. Before, with one result set it did nothing.
+- Results grid: new context-menu action **Filter to selected values** — every column the selection
+  spans gets an "in (…)" filter of the selected cells' values (other filters and sorts are kept).
+- Results: a filtered result set's header reads "n of m rows".
 - Fabric explorer: expanding an item now shows **that item's database** (Tables, Views,
   Programmability, Schemas…) directly. Previously the inline explorer treated the item like a
   server and listed every database on the workspace's shared SQL endpoint, duplicating the
   workspace's own item list one level down. "Refresh objects" added to the item context menu.
+- Fabric explorer: a SQL database's analytics-endpoint child row appears when the database is
+  expanded, rather than always.
+- Fabric explorer: pinned and recent items resolve on sign-in (their workspaces' items load
+  eagerly) instead of reading "not found" until you expand the workspace.
+- Export to OneLake: the dialog **remembers the last lakehouse** you exported to.
+- Dev: `pointer` agent verb (click / right-click / double-click / drag in screenshot pixels) fed
+  through eframe's raw-input hook, so agent runs can exercise real mouse interaction.
 
 ## 0.2.1 — 2026-09-18
 

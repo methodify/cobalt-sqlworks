@@ -94,8 +94,10 @@ impl Store {
         Ok(())
     }
 
+    /// Drop cached REST payloads. Keys under `pref:` are small user preferences (e.g. the last
+    /// lakehouse exported to) and survive.
     pub fn fabric_cache_clear(&self) -> Result<()> {
-        self.lock()?.execute("DELETE FROM fabric_cache", [])?;
+        self.lock()?.execute("DELETE FROM fabric_cache WHERE key NOT LIKE 'pref:%'", [])?;
         Ok(())
     }
 }
@@ -144,7 +146,9 @@ mod tests {
         let (v, ts) = s.fabric_cache_get("workspaces").unwrap().unwrap();
         assert_eq!(v, "[2]");
         assert!((Utc::now() - ts).num_seconds() < 5);
+        s.fabric_cache_put("pref:last_lakehouse", "lh1").unwrap();
         s.fabric_cache_clear().unwrap();
         assert!(s.fabric_cache_get("workspaces").unwrap().is_none());
+        assert_eq!(s.fabric_cache_get("pref:last_lakehouse").unwrap().unwrap().0, "lh1");
     }
 }
