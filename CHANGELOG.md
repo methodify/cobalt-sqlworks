@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 — unreleased
+## 0.2.1 — 2026-09-18
 
 - Fabric explorer: chevron on an item opens an **inline object explorer** (databases → tables →
   columns/keys/indexes, same tree as Servers) without leaving the panel.
