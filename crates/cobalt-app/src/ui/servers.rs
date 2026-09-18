@@ -268,9 +268,18 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
     if !expanded {
         return;
     }
+    database_children(ui, lib, theme, p, db, engine, depth + 1, actions);
+}
+
+/// The folders under one database (Tables, Views, Programmability, …) rendered at `depth`, without
+/// the database row itself. Used by the Servers tree under an expanded database row and by the
+/// Fabric panel, where an item *is* a database on the workspace endpoint and gets no extra row.
+pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, engine: Option<&EngineInfo>, depth: usize, actions: &mut Vec<TreeAction>) {
+    let node = lib.servers.entry(p.id).or_default();
+    let dbn = node.db_nodes.entry(db.name.clone()).or_default();
     if let Loadable::Failed(e) = &dbn.objects {
         let msg = e.lines().next().unwrap_or("").to_string();
-        tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "dberr", kind: "error" });
+        tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, id_salt: "dberr", kind: "error" });
         return;
     }
     let caps = engine.map(|e| e.capabilities).unwrap_or(EngineKind::SqlServer.capabilities());
@@ -295,13 +304,13 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
     if let Loadable::Loaded(objs) = &dbn.objects {
         if objs.len() > 40 {
             ui.horizontal(|ui| {
-                ui.add_space(14.0 * (depth + 1) as f32 + 4.0);
+                ui.add_space(14.0 * depth as f32 + 4.0);
                 ui.add(egui::TextEdit::singleline(&mut dbn.filter).hint_text("Filter objects").desired_width(200.0));
             });
         }
     }
     for folder in folders {
-        folder_node(ui, dbn, theme, p, db, folder, depth + 1, actions);
+        folder_node(ui, dbn, theme, p, db, folder, depth, actions);
     }
 }
 

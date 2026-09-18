@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fabric explorer: expanding an item now shows **that item's database** (Tables, Views,
+  Programmability, Schemas…) directly. Previously the inline explorer treated the item like a
+  server and listed every database on the workspace's shared SQL endpoint, duplicating the
+  workspace's own item list one level down. "Refresh objects" added to the item context menu.
+
 ## 0.2.1 — 2026-09-18
 
 - Fabric explorer: chevron on an item opens an **inline object explorer** (databases → tables →

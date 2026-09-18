@@ -130,7 +130,10 @@ Workspaces                                            [search] [↻]
 - Row actions (double-click / Enter / context menu):
   - **Open query** — new tab connected to the item (default).
   - **Expand** — chevron on an item expands its object explorer *inline*, reusing the Servers tree
-    code (databases → tables → columns). Same node types, same a11y labels.
+    code. An item is treated as a **database node, not a server**: the workspace's shared SQL
+    endpoint lists every SQL-capable item in `sys.databases`, so expanding an item shows *that
+    item's* database (Tables / Views / Programmability / Schemas) directly, never the endpoint's
+    database list. Same node types, same a11y labels.
   - **Pin / Unpin**.
   - **Save to Servers…** — opens the connection editor prefilled (server, database, Entra auth
     with the account hint, name = "Finance / Sales_DW", color by workspace).

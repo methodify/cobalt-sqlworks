@@ -1,9 +1,10 @@
 //! The Fabric explorer panel: sign-in state, recent and pinned items, workspaces → SQL-capable
 //! items, each expandable into an inline object explorer (the Servers tree's database subtree).
 
-use crate::fabric::{FabricAction, FabricState, FabricStatus};
+use crate::fabric::{FabricAction, FabricStatus};
 use crate::state::{AppState, Loadable};
-use crate::ui::servers;
+use crate::ui::servers::{self, TreeAction};
+use cobalt_core::catalog::DatabaseInfo;
 use crate::ui::theme::Theme;
 use cobalt_fabric::{SqlItem, SqlItemKind, WorkspaceKind};
 use cobalt_store::FabricPin;
@@ -317,6 +318,16 @@ fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, nam
             actions.push(FabricAction::ToggleItem { item_id: item_id.to_string() });
             ui.close();
         }
+        if expanded {
+            let pid = state.fabric.explorer_profile(item_id);
+            let db = state.library.profile(pid).and_then(|p| p.database.clone());
+            if let Some(database) = db {
+                if ui.button("Refresh objects").clicked() {
+                    actions.push(FabricAction::Tree(TreeAction::RefreshDatabase { profile: pid, database }));
+                    ui.close();
+                }
+            }
+        }
         if ui.button(if pinned { "Unpin" } else { "Pin" }).clicked() {
             actions.push(FabricAction::TogglePin { item_id: item_id.to_string() });
             ui.close();
@@ -341,23 +352,43 @@ fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, nam
     });
     resp.on_hover_text("Double-click: open a query · chevron: explore objects · right-click: more");
 
-    // inline object explorer
+    // inline object explorer: an item *is* one database on the workspace's shared SQL endpoint,
+    // so expanding it shows that database's folders directly (never the endpoint's database list).
     if expanded {
         let pid = state.fabric.explorer_profile(item_id);
         match state.library.profile(pid).cloned() {
             Some(profile) => {
-                let loading = state.library.servers.get(&pid).map(|n| n.databases.is_loading() || (n.creds.is_none() && n.expanded)).unwrap_or(true);
-                let has_dbs = state.library.servers.get(&pid).map(|n| matches!(n.databases, Loadable::Loaded(_) | Loadable::Failed(_))).unwrap_or(false);
-                if loading && !has_dbs {
+                let db_name = profile.database.clone().unwrap_or_default();
+                let node = state.library.server(pid);
+                let connected = node.creds.is_some();
+                let connect_error = match (&node.databases, connected) {
+                    (Loadable::Failed(e), false) => Some(e.lines().next().unwrap_or("").to_string()),
+                    _ => None,
+                };
+                if let Some(err) = connect_error {
+                    ui.horizontal(|ui| {
+                        ui.add_space(x + 36.0 - ui.min_rect().left());
+                        ui.label(RichText::new(icons::WARNING).size(12.0).color(theme.error));
+                        ui.label(RichText::new(err).size(12.0).color(theme.error));
+                    });
+                } else if !connected {
                     ui.horizontal(|ui| {
                         ui.add_space(x + 36.0 - ui.min_rect().left());
                         ui.spinner();
                         ui.label(RichText::new("Connecting…").size(12.0).color(theme.text_muted));
                     });
+                } else {
+                    let mut tree_actions = Vec::new();
+                    let engine = node.engine.clone();
+                    let dbn = node.db_nodes.entry(db_name.clone()).or_default();
+                    dbn.expanded = true;
+                    if dbn.objects.needs_load() {
+                        tree_actions.push(TreeAction::ExpandDatabase { profile: pid, database: db_name.clone() });
+                    }
+                    let db = DatabaseInfo { name: db_name, is_system: false, state: "ONLINE".into(), is_read_only: false };
+                    servers::database_children(ui, &mut state.library, theme, &profile, &db, engine.as_ref(), depth + 1, &mut tree_actions);
+                    actions.extend(tree_actions.into_iter().map(FabricAction::Tree));
                 }
-                let mut tree_actions = Vec::new();
-                servers::profile_children(ui, &mut state.library, theme, &profile, depth + 1, &mut tree_actions);
-                actions.extend(tree_actions.into_iter().map(FabricAction::Tree));
             }
             None => {
                 ui.horizontal(|ui| {
