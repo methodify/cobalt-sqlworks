@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- macOS: the app bundle is now ad-hoc code-signed and the dmg built with `hdiutil`. Apple Silicon
+  refused the unsigned 0.2.2 bundle as "damaged"; it now shows the standard unidentified-developer
+  prompt (right-click → Open) until the app is notarized. The fixed dmg was re-uploaded to v0.2.2.
+
 ## 0.2.2 — 2026-09-18
 
 - Results grid: **click-and-drag selects a range** again. Pressing a cell selects it at once and

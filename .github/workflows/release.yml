@@ -119,11 +119,23 @@ jobs:
         run: cargo binstall -y cargo-packager
       - name: Build
         run: cargo build --release -p cobalt-app --locked
-      - name: Package (dmg)
+      - name: Package (app bundle, ad-hoc signed, dmg)
+        # No Apple Developer ID yet. Apple Silicon refuses to launch an app bundle without a
+        # signature ("damaged and can't be opened"), so seal the bundle with an ad-hoc signature:
+        # macOS then shows the usual "unidentified developer" prompt instead (right-click > Open).
         run: |
-          cargo packager --release --formats dmg -p cobalt-app
+          set -euo pipefail
+          cargo packager --release --formats app -p cobalt-app
+          app="$(ls -d dist/packages/*.app | head -1)"
+          echo "bundle: $app"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
           v="${{ needs.check-version.outputs.version }}"
-          mv dist/packages/*.dmg "dist/packages/cobalt-sqlworks-$v-macos-aarch64.dmg"
+          staging="$(mktemp -d)"
+          cp -R "$app" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "Cobalt SQL Works" -srcfolder "$staging" -ov -format UDZO "dist/packages/cobalt-sqlworks-$v-macos-aarch64.dmg"
+          rm -rf "$app"
           ls -la dist/packages
       - uses: actions/upload-artifact@v4
         with:
