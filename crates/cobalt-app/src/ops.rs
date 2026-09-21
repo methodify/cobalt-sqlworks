@@ -53,6 +53,81 @@ pub struct AuthDone {
 
 pub struct ExportDone {
     pub result: Result<String, String>,
+    /// Set for run-to-export: the tab whose run fed the export (the message lands in its Messages).
+    pub tab: Option<TabId>,
+}
+
+/// Rows each result set keeps in the grid while a run streams to an export target.
+pub const RUN_EXPORT_PREVIEW_ROWS: u64 = 1_000;
+
+/// A run-to-export target resolved from the Run to File dialog; carried on the tab until the run
+/// starts (`execute`), which is also after a reconnect or a read-only-guard confirmation.
+pub struct ExportJob {
+    pub ext: String,
+    pub path: String,
+    pub delta_mode: usize,
+    pub delta_partition: Vec<String>,
+    pub settings: ExportSettings,
+    pub fmt: cobalt_results::CellFormatter,
+    pub onelake: Option<OneLakeJob>,
+}
+
+pub struct OneLakeJob {
+    pub item: cobalt_fabric::SqlItem,
+    pub name: String,
+    pub schema: String,
+    pub slot: ProfileId,
+    pub tenant: Option<String>,
+    pub hint: Option<String>,
+}
+
+impl ExportJob {
+    /// Human-readable target for the results header and messages.
+    pub fn display_target(&self) -> String {
+        match &self.onelake {
+            Some(o) if self.ext == "delta" => {
+                let shown = if o.schema.is_empty() { o.name.clone() } else { format!("{}.{}", o.schema, o.name) };
+                format!("{}/Tables/{shown}", o.item.display_name)
+            }
+            Some(o) => format!("{}/Files/{}", o.item.display_name, o.name),
+            None => self.path.clone(),
+        }
+    }
+
+    /// Local path for result set `index`: the second set and on get a `_2`, `_3`… suffix.
+    fn local_path(&self, index: usize) -> PathBuf {
+        let p = PathBuf::from(&self.path);
+        if index == 0 {
+            return p;
+        }
+        let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        let mut name = format!("{stem}_{}", index + 1);
+        if let Some(e) = p.extension() {
+            name.push('.');
+            name.push_str(&e.to_string_lossy());
+        }
+        let out = p.with_file_name(name);
+        // keep the separator style the user typed
+        if self.path.contains('/') && !self.path.contains('\\') {
+            PathBuf::from(out.to_string_lossy().replace('\\', "/"))
+        } else {
+            out
+        }
+    }
+
+    fn onelake_name(&self, index: usize) -> String {
+        let base = self.onelake.as_ref().map(|o| o.name.clone()).unwrap_or_default();
+        if index == 0 { base } else { format!("{base}_{}", index + 1) }
+    }
+
+    fn delta_options(&self, table_name: Option<String>) -> cobalt_export_delta::DeltaOptions {
+        let mode = match self.delta_mode {
+            1 => cobalt_export_delta::DeltaMode::Overwrite,
+            2 => cobalt_export_delta::DeltaMode::Append,
+            _ => cobalt_export_delta::DeltaMode::Create,
+        };
+        cobalt_export_delta::DeltaOptions { mode, partition_columns: self.delta_partition.clone(), table_name, description: None }
+    }
 }
 
 pub(crate) struct UiPrompter {
@@ -915,10 +990,15 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     execute(state, cx, idx, script, opts, start_line);
 }
 
-pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, opts: ExecOptions, start_line: u32) {
+pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut opts: ExecOptions, start_line: u32) {
     let Some(t) = state.tabs.get_mut(idx) else { return };
+    let job = t.pending_export.take();
+    if job.is_some() {
+        opts.plan = PlanMode::None; // plans have no place in a file
+    }
     let run_id = cx.session.new_run();
     let mut view = RunView::new(run_id, opts.plan);
+    view.export_target = job.as_ref().map(|j| j.display_target());
     // history
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(t.profile.as_ref().map(|p| p.display_name()).unwrap_or_default(), script.clone());
@@ -931,7 +1011,9 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, opts:
     t.results_visible = true;
     t.results_tab = if opts.plan == PlanMode::Estimated { ResultsTab::Plan } else { ResultsTab::Results };
     t.pending_run = None;
-    cx.session.send(Command::Run { tab: t.id, run: run_id, script, opts, start_line });
+    let tab_id = t.id;
+    let sink = job.map(|j| spawn_run_export(state, cx, tab_id, *j));
+    cx.session.send(Command::Run { tab: tab_id, run: run_id, script, opts, start_line, sink });
     state.history.loaded = false;
 }
 
@@ -1060,6 +1142,12 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
                 v.grid.viewer = Some((row, col));
             }
         }
+        ResultsAction::OpenRecord { set, row, col } => {
+            if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
+                v.grid.viewer = Some((row, col));
+                v.grid.viewer_record = true;
+            }
+        }
         ResultsAction::JumpToLine(line) => {
             if let Some(t) = state.tabs.get_mut(idx) {
                 let byte = t.text.split_inclusive('\n').take(line.saturating_sub(1) as usize).map(|l| l.len()).sum::<usize>();
@@ -1180,7 +1268,282 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         progress: None,
         result: None,
         cancel: Arc::new(AtomicBool::new(false)),
+        run_mode: None,
     }));
+}
+
+/// "Run to File…": the export dialog in run mode for the tab's script (selection or all).
+pub fn open_run_to_file(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
+    if state.tabs.get(idx).map(|t| t.is_running()).unwrap_or(true) {
+        cx.toast(ToastKind::Warning, "A query is already running in this tab.");
+        return;
+    }
+    open_export_dialog(state, cx, idx, 0, false);
+    if let Dialog::Export(d) = &mut state.dialog {
+        d.run_mode = Some(mode);
+    }
+}
+
+/// Validate the Run to File dialog, stash the target on the tab and start the run.
+pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Export(d) = &mut state.dialog else { return };
+    let Some(mode) = d.run_mode else { return };
+    let idx = d.tab_index;
+    let Some(t) = state.tabs.get(idx) else { return };
+    if t.is_running() {
+        d.result = Some(Err("A query is already running in this tab.".into()));
+        return;
+    }
+    let (_, ext) = FORMAT_LABELS[d.format_index];
+    let mut settings = cx.settings.export.clone();
+    settings.csv_delimiter = d.csv_delimiter.clone();
+    settings.csv_include_headers = d.csv_headers;
+    settings.json_lines = d.json_lines;
+    let onelake = if d.destination == 1 {
+        let Some(item_id) = d.onelake_item.clone() else {
+            d.result = Some(Err("Choose a lakehouse.".into()));
+            return;
+        };
+        let name = d.onelake_name.trim().trim_matches('/').to_string();
+        if name.is_empty() || name.contains(['\\', ':']) {
+            d.result = Some(Err(if ext == "delta" { "Give the table a name." } else { "Give the file a name." }.into()));
+            return;
+        }
+        let Some(item) = state.fabric.item(&item_id).cloned() else {
+            d.result = Some(Err("That lakehouse is no longer listed; refresh the Fabric panel.".into()));
+            return;
+        };
+        let Some(slot) = state.fabric.slot else {
+            d.result = Some(Err("Sign in to Fabric first (Fabric panel).".into()));
+            return;
+        };
+        let _ = cx.store.fabric_cache_put(LAST_LAKEHOUSE_KEY, &item.id);
+        let mut schema = d.onelake_schema.trim().trim_matches('/').to_string();
+        if schema.is_empty() {
+            if let Some(default) = state.fabric.details.get(&item_id).and_then(|d| d.get()).and_then(|t| t.default_schema.clone()) {
+                schema = default;
+            }
+        }
+        Some(OneLakeJob { item, name, schema, slot, tenant: cx.settings.connections.entra_default_tenant.clone(), hint: state.fabric.account.as_ref().map(|a| a.username.clone()) })
+    } else {
+        if d.path.trim().is_empty() {
+            d.result = Some(Err("Choose a file path.".into()));
+            return;
+        }
+        None
+    };
+    let job = ExportJob {
+        ext: ext.to_string(),
+        path: d.path.trim().to_string(),
+        delta_mode: d.delta_mode,
+        delta_partition: d.delta_partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        settings,
+        fmt: state.formatter.clone().with_max_chars(0),
+        onelake,
+    };
+    if job.onelake.is_none() {
+        if let Some(parent) = std::path::Path::new(&job.path).parent() {
+            state.settings_patch.push(SettingsPatch::LastExportDir(parent.to_string_lossy().to_string()));
+        }
+    }
+    state.tabs[idx].pending_export = Some(Box::new(job));
+    state.dialog = Dialog::None;
+    run(state, cx, idx, mode);
+    // nothing to run (empty script)? don't leave the target armed for the next plain run
+    if state.tabs[idx].run.as_ref().map(|r| !r.is_live()).unwrap_or(true) && state.tabs[idx].pending_run.is_none() && !matches!(state.dialog, Dialog::ConfirmWrite { .. }) {
+        if state.tabs[idx].pending_export.take().is_some() {
+            cx.toast(ToastKind::Warning, "Nothing to run.");
+        }
+    }
+}
+
+/// OneLake accepts an Azure Storage token; when the registration lacks that permission the Fabric
+/// API token (with OneLake.ReadWrite.All) works too. Silent first, then the browser as a last resort.
+async fn onelake_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenant: Option<String>, hint: Option<String>, prompter: UiPrompter) -> Result<String, String> {
+    use cobalt_auth::provider::{FABRIC_API_RESOURCE, ONELAKE_RESOURCE};
+    if let Ok(Some(ts)) = resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant.as_deref()).await {
+        return Ok(ts.access.token.expose().to_string());
+    }
+    if let Ok(Some(ts)) = resolver.resource_token_silent(slot, FABRIC_API_RESOURCE, tenant.as_deref()).await {
+        if ts.access.scope.split(' ').any(|s| s.contains("OneLake")) {
+            return Ok(ts.access.token.expose().to_string());
+        }
+    }
+    match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
+        Ok(ts) => Ok(ts.access.token.expose().to_string()),
+        Err(e) => Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")),
+    }
+}
+
+/// Start the export thread for a run-to-export and return the sink the session actor feeds.
+fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) -> crate::session::RunSink {
+    use crate::session::{RunSink, SinkMsg};
+    let (tx, rx) = std::sync::mpsc::sync_channel::<SinkMsg>(8);
+    let mut rx = rx;
+    let progress_cell = Arc::new(parking_lot::Mutex::new((0usize, 0usize)));
+    state.export_progress = Some(progress_cell.clone());
+    let egui = cx.egui.clone();
+    let done_tx = cx.export_tx.clone();
+    // OneLake needs a token: fetch it on the session runtime while the query starts
+    let token_rx = job.onelake.as_ref().map(|o| {
+        let (ttx, trx) = tokio::sync::oneshot::channel::<Result<String, String>>();
+        let prompter = UiPrompter { cancel: Arc::new(AtomicBool::new(false)), device: Arc::new(parking_lot::Mutex::new(None)), url: Arc::new(parking_lot::Mutex::new(None)), egui: egui.clone() };
+        let resolver = cx.resolver.clone();
+        let (slot, tenant, hint) = (o.slot, o.tenant.clone(), o.hint.clone());
+        cx.session.spawn(async move {
+            let _ = ttx.send(onelake_token(resolver, slot, tenant, hint, prompter).await);
+        });
+        trx
+    });
+    std::thread::Builder::new()
+        .name("cobalt-run-export".into())
+        .spawn(move || {
+            // whatever happens (including a panic in a writer), the run must learn the outcome
+            struct DoneGuard {
+                tx: Sender<ExportDone>,
+                tab: TabId,
+                egui: egui::Context,
+                result: Option<Result<String, String>>,
+            }
+            impl Drop for DoneGuard {
+                fn drop(&mut self) {
+                    let result = self.result.take().unwrap_or_else(|| Err("the export thread stopped unexpectedly".into()));
+                    let _ = self.tx.send(ExportDone { result, tab: Some(self.tab) });
+                    self.egui.request_repaint();
+                }
+            }
+            let mut guard = DoneGuard { tx: done_tx, tab, egui: egui.clone(), result: None };
+            let started = Instant::now();
+            let token = match token_rx {
+                Some(trx) => match trx.blocking_recv() {
+                    Ok(Ok(t)) => Some(t),
+                    Ok(Err(e)) => {
+                        guard.result = Some(Err(e));
+                        return;
+                    }
+                    Err(_) => {
+                        guard.result = Some(Err("OneLake sign-in did not complete.".into()));
+                        return;
+                    }
+                },
+                None => None,
+            };
+            let egui2 = egui.clone();
+            let pc = progress_cell.clone();
+            let mut progress = move |p: cobalt_export::Progress| -> bool {
+                *pc.lock() = (p.rows_done, p.rows_total);
+                egui2.request_repaint();
+                true
+            };
+            let mut lines: Vec<String> = Vec::new();
+            let mut error: Option<String> = None;
+            let mut sets = 0usize;
+            loop {
+                match rx.recv().ok() {
+                    Some(SinkMsg::SetStart { index, columns, schema }) => {
+                        sets += 1;
+                        match run_export_set(&job, token.as_deref(), index, columns, schema, &mut rx, &mut progress) {
+                            Ok(line) => lines.push(line),
+                            Err(e) => {
+                                error = Some(e);
+                                break;
+                            }
+                        }
+                    }
+                    Some(SinkMsg::Failed(m)) => {
+                        error = Some(m);
+                        break;
+                    }
+                    Some(SinkMsg::RunEnd) | None => break,
+                    Some(SinkMsg::Batch(_)) | Some(SinkMsg::SetEnd) => {}
+                }
+            }
+            // dropping `rx` here tells the actor to stop streaming if it is still running
+            drop(rx);
+            let _ = sets;
+            let result = match error {
+                None if lines.is_empty() => Err("The query produced no result set to export.".into()),
+                None => Ok(if lines.len() == 1 { lines.remove(0) } else { format!("{} ({:.1}s total)", lines.join("; "), started.elapsed().as_secs_f32()) }),
+                Some(e) if e == "cancelled" && lines.is_empty() => Err("Export cancelled; the partial output was removed.".into()),
+                Some(e) if e == "cancelled" => Err(format!("Export cancelled; the partial output was removed. Earlier result sets were written: {}", lines.join("; "))),
+                Some(e) if lines.is_empty() => Err(e),
+                Some(e) => Err(format!("{e} — earlier result sets were written: {}", lines.join("; "))),
+            };
+            guard.result = Some(result);
+        })
+        .ok();
+    RunSink { tx, preview_rows: RUN_EXPORT_PREVIEW_ROWS }
+}
+
+/// Write one streamed result set to the job's target (blocking; called on the export thread).
+fn run_export_set(
+    job: &ExportJob,
+    token: Option<&str>,
+    index: usize,
+    columns: Vec<ColumnInfo>,
+    schema: arrow::datatypes::SchemaRef,
+    rx: &mut std::sync::mpsc::Receiver<crate::session::SinkMsg>,
+    progress: &mut (dyn FnMut(cobalt_export::Progress) -> bool + Send),
+) -> Result<String, String> {
+    use crate::session::SinkMsg;
+    use cobalt_export::{Source, StreamItem, StreamSource};
+    let started = Instant::now();
+    let rx: &mut std::sync::mpsc::Receiver<SinkMsg> = rx; // a unique borrow moves into the closure (Receiver is Send, not Sync)
+    let source = Source::Stream(StreamSource::new(columns, schema, move || match rx.recv().ok() {
+        Some(SinkMsg::Batch(b)) => StreamItem::Batch(b),
+        Some(SinkMsg::SetEnd) => StreamItem::End,
+        Some(SinkMsg::Failed(m)) => StreamItem::Failed(m),
+        Some(SinkMsg::RunEnd) | None => StreamItem::Failed("the query ended before the result set was complete".into()),
+        Some(SinkMsg::SetStart { .. }) => StreamItem::Failed("unexpected result set boundary".into()),
+    }));
+    let ext = job.ext.as_str();
+    let size = |b: u64| humansize::format_size(b, humansize::DECIMAL);
+    match &job.onelake {
+        None => {
+            let path = job.local_path(index);
+            if ext == "delta" {
+                let opts = job.delta_options(None);
+                cobalt_export_delta::write_delta_source_blocking(&source, &path, &opts, progress)
+                    .map(|s| format!("Wrote {} rows to Delta table {} in {:.1}s", fmt_count(s.rows as u64), path.display(), started.elapsed().as_secs_f32()))
+                    .map_err(|e| e.to_string())
+            } else {
+                let format = cobalt_export::Format::from_extension(ext).unwrap_or(cobalt_export::Format::Csv);
+                let opts = cobalt_export::ExportOptions::from_settings(&job.settings);
+                cobalt_export::export_source_to_file(&source, format, &path, &opts, &job.fmt, progress)
+                    .map(|s| format!("Wrote {} rows ({}) to {} in {:.1}s", fmt_count(s.rows as u64), size(s.bytes), path.display(), started.elapsed().as_secs_f32()))
+                    .map_err(|e| e.to_string())
+            }
+        }
+        Some(o) => {
+            let token = token.ok_or_else(|| "no OneLake token".to_string())?;
+            let name = job.onelake_name(index);
+            let relative = if ext == "delta" {
+                if o.schema.is_empty() { format!("Tables/{name}") } else { format!("Tables/{}/{name}", o.schema) }
+            } else {
+                format!("Files/{name}")
+            };
+            let shown = if ext == "delta" && !o.schema.is_empty() { format!("{}.{name}", o.schema) } else { name.clone() };
+            let target = cobalt_export_delta::RemoteTarget::onelake(&o.item.workspace_id, &o.item.id, &relative, token).map_err(|e| e.to_string())?;
+            let lh_name = o.item.display_name.clone();
+            if ext == "delta" {
+                let opts = job.delta_options(Some(name.clone()));
+                cobalt_export_delta::write_delta_remote_source_blocking(&source, &target, &opts, progress)
+                    .map(|s| format!("Wrote {} rows to {lh_name}/Tables/{shown} in {:.1}s", fmt_count(s.rows as u64), started.elapsed().as_secs_f32()))
+                    .map_err(|e| e.to_string())
+            } else {
+                // stream to a local temp file, then upload it as one object
+                let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+                let path = std::env::temp_dir().join(format!("cobalt-onelake-{}-{nanos}.{ext}", std::process::id()));
+                let format = cobalt_export::Format::from_extension(ext).unwrap_or(cobalt_export::Format::Csv);
+                let opts = cobalt_export::ExportOptions::from_settings(&job.settings);
+                let r = cobalt_export::export_source_to_file(&source, format, &path, &opts, &job.fmt, progress).map_err(|e| e.to_string()).and_then(|s| {
+                    cobalt_export_delta::upload_file_blocking(&target, &path).map(|bytes| (s.rows, bytes)).map_err(|e| e.to_string())
+                });
+                let _ = std::fs::remove_file(&path);
+                r.map(|(rows, bytes)| format!("Wrote {} rows ({}) to {lh_name}/Files/{name} in {:.1}s", fmt_count(rows as u64), size(bytes), started.elapsed().as_secs_f32()))
+            }
+        }
+    }
 }
 
 pub fn start_export(state: &mut AppState, cx: &Ctx) {
@@ -1294,7 +1657,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 None => match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
                     Ok(ts) => ts.access.token.expose().to_string(),
                     Err(e) => {
-                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")) });
+                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")), tab: None });
                         egui2.request_repaint();
                         return;
                     }
@@ -1310,7 +1673,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             let target = match cobalt_export_delta::RemoteTarget::onelake(&ws_id, &lh_id, &relative, &token) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx2.send(ExportDone { result: Err(e.to_string()) });
+                    let _ = tx2.send(ExportDone { result: Err(e.to_string()), tab: None });
                     egui2.request_repaint();
                     return;
                 }
@@ -1345,7 +1708,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             })
             .await
             .unwrap_or_else(|e| Err(format!("export thread failed: {e}")));
-            let _ = tx2.send(ExportDone { result });
+            let _ = tx2.send(ExportDone { result, tab: None });
             egui2.request_repaint();
         });
         return;
@@ -1372,7 +1735,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 let opts = cobalt_export::ExportOptions::from_settings(&settings);
                 cobalt_export::export_to_file(&rs, format, &path, &opts, &fmt, &mut progress).map(|s| format!("Wrote {} rows ({}) to {} in {:.1}s", fmt_count(s.rows as u64), humansize::format_size(s.bytes, humansize::DECIMAL), path.display(), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
             };
-            let _ = tx.send(ExportDone { result });
+            let _ = tx.send(ExportDone { result, tab: None });
             egui.request_repaint();
         })
         .ok();
@@ -1392,6 +1755,21 @@ fn subset(rs: &Arc<cobalt_results::ResultSet>, sel: &Selection) -> Result<Arc<co
 
 pub fn on_export_done(state: &mut AppState, cx: &Ctx, done: ExportDone) {
     state.export_progress = None;
+    if let Some(tab) = done.tab {
+        // run-to-export: the outcome belongs to the run, not to a dialog
+        if let Some(r) = state.tab_mut(tab).and_then(|t| t.run.as_mut()) {
+            let (text, is_error) = match &done.result {
+                Ok(m) => (m.clone(), false),
+                Err(e) => (format!("Export failed: {e}"), true),
+            };
+            r.messages.push(MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now() });
+        }
+        match done.result {
+            Ok(m) => cx.toast(ToastKind::Success, m),
+            Err(e) => cx.toast(ToastKind::Error, e),
+        }
+        return;
+    }
     if let Dialog::Export(d) = &mut state.dialog {
         d.running = false;
         d.progress = None;
@@ -1446,6 +1824,31 @@ pub fn import_ads(state: &mut AppState, cx: &Ctx, path: &str) -> Result<String, 
     let summary = cx.store.import_library(&import.library, true).map_err(|e| e.to_string())?;
     load_library(state, cx);
     Ok(format!("Imported {} group{} and {} connection{}{}", summary.groups, if summary.groups == 1 { "" } else { "s" }, summary.profiles, if summary.profiles == 1 { "" } else { "s" }, if import.skipped.is_empty() { String::new() } else { format!("; skipped {} non-SQL Server connection(s)", import.skipped.len()) }))
+}
+
+/// Write every group and connection (never passwords or secrets) to a JSON file.
+pub fn export_connections(state: &mut AppState, cx: &Ctx, path: &std::path::Path) {
+    let _ = state;
+    let result = cx.store.export_library().and_then(|l| l.to_json().map(|j| (l.profiles.len(), j))).map_err(|e| e.to_string()).and_then(|(n, json)| std::fs::write(path, json).map(|_| n).map_err(|e| e.to_string()));
+    match result {
+        Ok(n) => cx.toast(ToastKind::Success, format!("Exported {n} connection{} to {} (passwords are never included).", if n == 1 { "" } else { "s" }, path.display())),
+        Err(e) => cx.toast(ToastKind::Error, format!("Export failed: {e}")),
+    }
+}
+
+/// Merge groups and connections from a JSON file written by Export Connections.
+pub fn import_connections(state: &mut AppState, cx: &Ctx, path: &std::path::Path) {
+    let result = std::fs::read_to_string(path)
+        .map_err(|e| e.to_string())
+        .and_then(|json| cobalt_store::LibraryExport::from_json(&json).map_err(|e| e.to_string()))
+        .and_then(|lib| cx.store.import_library(&lib, true).map_err(|e| e.to_string()));
+    match result {
+        Ok(summary) => {
+            load_library(state, cx);
+            cx.toast(ToastKind::Success, format!("Imported {} group{} and {} connection{}. Passwords are not carried over; you will be asked on first connect.", summary.groups, if summary.groups == 1 { "" } else { "s" }, summary.profiles, if summary.profiles == 1 { "" } else { "s" }));
+        }
+        Err(e) => cx.toast(ToastKind::Error, format!("Import failed: {e}")),
+    }
 }
 
 pub fn maintenance(state: &mut AppState, cx: &Ctx) {

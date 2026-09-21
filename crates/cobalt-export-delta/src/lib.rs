@@ -10,7 +10,7 @@
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cobalt_results::ResultSet;
-pub use cobalt_export::{ExportStats, Progress};
+pub use cobalt_export::{ExportStats, Progress, Source};
 use deltalake::kernel::engine::arrow_conversion::TryIntoKernel;
 use deltalake::kernel::transaction::CommitBuilder;
 use deltalake::kernel::{Action, StructType};
@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub mod remote;
-pub use remote::{register_cloud_handlers, remote_table_exists, upload_file, upload_file_blocking, write_delta_remote, write_delta_remote_blocking, RemoteTarget};
+pub use remote::{register_cloud_handlers, remote_table_exists, upload_file, upload_file_blocking, write_delta_remote, write_delta_remote_blocking, RemoteTarget, write_delta_remote_source, write_delta_remote_source_blocking};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -80,6 +80,8 @@ pub enum DeltaError {
     Arrow(#[from] arrow::error::ArrowError),
     #[error("result set error: {0}")]
     Results(#[from] cobalt_results::ResultError),
+    #[error("{0}")]
+    Export(#[from] cobalt_export::ExportError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("a Delta table already exists at {0}")]
@@ -200,22 +202,28 @@ fn table_bytes(table: &DeltaTable) -> u64 {
 /// `progress` is polled before the first batch and after every batch; returning `false` cancels.
 /// A cancelled `Create` removes the directory it created; cancelled `Append`/`Overwrite` commit nothing.
 pub async fn write_delta(rs: &ResultSet, path: &Path, opts: &DeltaOptions, progress: &mut (dyn FnMut(Progress) -> bool + Send)) -> Result<ExportStats> {
+    write_delta_source(&Source::Set(rs), path, opts, progress).await
+}
+
+/// [`write_delta`] over any [`Source`], including a live stream from a running query.
+pub async fn write_delta_source(source: &Source<'_>, path: &Path, opts: &DeltaOptions, progress: &mut (dyn FnMut(Progress) -> bool + Send)) -> Result<ExportStats> {
     let started = Instant::now();
     let existed_before = path.exists();
     let is_table = has_delta_log(path);
     if opts.mode == DeltaMode::Create && is_table {
         return Err(DeltaError::Exists(path.to_path_buf()));
     }
+    let src_schema = source.schema();
     for p in &opts.partition_columns {
-        if !rs.schema.fields().iter().any(|f| f.name() == p) {
+        if !src_schema.fields().iter().any(|f| f.name() == p) {
             return Err(DeltaError::UnknownPartitionColumn(p.clone()));
         }
     }
     let url = table_url(path)?;
-    let schema: SchemaRef = Arc::new(delta_compatible_schema(&rs.schema));
+    let schema: SchemaRef = Arc::new(delta_compatible_schema(&src_schema));
     let kernel_schema: StructType = schema.as_ref().try_into_kernel()?;
 
-    let result = write_inner(rs, &url, None, opts, is_table, schema, kernel_schema, progress).await;
+    let result = write_inner(source, &url, None, opts, is_table, schema, kernel_schema, progress).await;
     match result {
         Ok((rows, bytes)) => {
             tracing::info!(?path, rows, bytes, mode = ?opts.mode, "delta export complete");
@@ -233,7 +241,7 @@ pub async fn write_delta(rs: &ResultSet, path: &Path, opts: &DeltaOptions, progr
 }
 
 pub(crate) async fn write_inner(
-    rs: &ResultSet,
+    source: &Source<'_>,
     url: &url::Url,
     storage_options: Option<&HashMap<String, String>>,
     opts: &DeltaOptions,
@@ -273,14 +281,14 @@ pub(crate) async fn write_inner(
     let partition_cols: Vec<String> = table.snapshot()?.metadata().partition_columns().to_vec();
 
     let mut writer = RecordBatchWriter::for_table(&table)?;
-    let total = rs.visible_count();
+    let total = source.total_rows().unwrap_or(0);
     let mut done = 0usize;
     if !progress(Progress { rows_done: 0, rows_total: total, bytes_written: 0 }) {
         return Err(DeltaError::Cancelled);
     }
     let mut adds: Vec<Action> = Vec::new();
     let mut flushed_bytes: u64 = 0;
-    for batch in rs.view_batches(DELTA_BATCH_ROWS) {
+    for batch in source.batches(DELTA_BATCH_ROWS) {
         let batch = batch?;
         let batch = cast_batch(&batch)?;
         let batch = RecordBatch::try_new(schema.clone(), batch.columns().to_vec())?;
@@ -319,8 +327,12 @@ pub(crate) async fn write_inner(
 
 /// Blocking wrapper: spins a current-thread tokio runtime (for callers already on a blocking thread).
 pub fn write_delta_blocking(rs: &ResultSet, path: &Path, opts: &DeltaOptions, progress: &mut (dyn FnMut(Progress) -> bool + Send)) -> Result<ExportStats> {
+    write_delta_source_blocking(&Source::Set(rs), path, opts, progress)
+}
+
+pub fn write_delta_source_blocking(source: &Source<'_>, path: &Path, opts: &DeltaOptions, progress: &mut (dyn FnMut(Progress) -> bool + Send)) -> Result<ExportStats> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    rt.block_on(write_delta(rs, path, opts, progress))
+    rt.block_on(write_delta_source(source, path, opts, progress))
 }
 
 #[cfg(test)]

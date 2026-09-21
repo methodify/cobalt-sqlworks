@@ -1,10 +1,23 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-21
 
+- **Run to File** (Query menu, toolbar, Ctrl+Shift+F5): run a query straight into a file or a
+  OneLake lakehouse without filling the grid. Every result set streams from the wire to the
+  target as it arrives (CSV, TSV, JSON, JSON Lines, XML, Markdown, Excel, Parquet, Arrow, Delta;
+  local file or lakehouse Delta table / Files upload), with back-pressure so memory stays flat.
+  The grid keeps a 1,000-row preview of each set, the status bar shows rows written, the outcome
+  lands in Messages, and cancelling the query discards the partial output. A second result set
+  gets a `_2` suffix, and so on.
+- Results grid: **View row as record** (context menu) opens the viewer in Record mode — every
+  column of the row as name/value lines with previous/next row, copy the row as JSON, and click a
+  value to open it. The cell viewer has a Record toggle too. Made for wide Fabric tables.
+- File menu: **Export Connections…** / **Import Connections…** — the connection library as JSON
+  (groups and connections; never passwords or secrets), merged on import.
 - macOS: the app bundle is now ad-hoc code-signed and the dmg built with `hdiutil`. Apple Silicon
   refused the unsigned 0.2.2 bundle as "damaged"; it now shows the standard unidentified-developer
   prompt (right-click → Open) until the app is notarized. The fixed dmg was re-uploaded to v0.2.2.
+- Dev: `run_to_export` and `library` agent verbs.
 
 ## 0.2.2 — 2026-09-18
 

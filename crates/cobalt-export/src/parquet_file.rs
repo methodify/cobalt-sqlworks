@@ -15,13 +15,13 @@ pub(crate) const CREATED_BY: &str = "Cobalt SQL Works";
 pub(crate) const SQL_TYPES_KEY: &str = "cobalt.sql_types";
 
 /// Column SQL types as schema-level metadata so readers (and our own importer) can recover them.
-pub(crate) fn schema_with_metadata(ctx: &Ctx<'_>) -> Arc<Schema> {
-    let mut md = ctx.rs.schema.metadata().clone();
+pub(crate) fn schema_with_metadata(ctx: &Ctx<'_, '_>) -> Arc<Schema> {
+    let mut md = ctx.schema.metadata().clone();
     md.insert(SQL_TYPES_KEY.into(), ctx.sql_types_json());
-    Arc::new(Schema::new_with_metadata(ctx.rs.schema.fields().clone(), md))
+    Arc::new(Schema::new_with_metadata(ctx.schema.fields().clone(), md))
 }
 
-pub(crate) fn write<W: Write + Send>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write + Send>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.parquet;
     let compression = match o.compression {
         Compression::None => PqCompression::UNCOMPRESSED,

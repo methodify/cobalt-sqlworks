@@ -4,6 +4,26 @@ use cobalt_results::ResultSet;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Run-to-export: every result set's batches go to this channel (a blocking export thread on the
+/// other end) instead of the grid, which keeps only the first `preview_rows` of each set. The
+/// channel is bounded, so a slow writer back-pressures the query; a dropped receiver cancels it.
+/// A std channel on purpose: the writer pulls from inside its own tokio runtime (delta-rs), where
+/// tokio's blocking receive would panic.
+#[derive(Debug)]
+pub struct RunSink {
+    pub tx: std::sync::mpsc::SyncSender<SinkMsg>,
+    pub preview_rows: u64,
+}
+
+pub enum SinkMsg {
+    SetStart { index: usize, columns: Vec<ColumnInfo>, schema: arrow::datatypes::SchemaRef },
+    Batch(arrow::array::RecordBatch),
+    SetEnd,
+    /// The run failed or was cancelled; anything written for the current set is discarded.
+    Failed(String),
+    RunEnd,
+}
+
 /// UI → session runtime.
 #[derive(Debug)]
 pub enum Command {
@@ -13,7 +33,7 @@ pub enum Command {
     Disconnect { tab: TabId },
     /// Execute a whole script (split into GO batches by the actor).
     /// `start_line` maps batch line numbers back to the editor (1-based line of the selection start).
-    Run { tab: TabId, run: RunId, script: String, opts: ExecOptions, start_line: u32 },
+    Run { tab: TabId, run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel { tab: TabId },
     /// Resume a paused (row-capped) result set. `None` = fetch everything.
     FetchMore { tab: TabId, rows: Option<u64> },

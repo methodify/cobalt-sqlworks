@@ -5,7 +5,7 @@ use crate::{Ctx, Encoding, LineEnding, Progress, Result};
 use csv::{QuoteStyle, Terminator, WriterBuilder};
 use std::io::Write;
 
-pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool, delimiter: u8) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool, delimiter: u8) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.csv;
     let fmt = ctx.fmt.clone().with_null_text(&o.null_as);
     let mut builder = WriterBuilder::new();
@@ -42,7 +42,7 @@ pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn Fn
 
     if o.include_headers {
         let mut w = builder.from_writer(Vec::new());
-        w.write_record(ctx.rs.columns.iter().map(|c| c.name.as_str()))?;
+        w.write_record(ctx.columns.iter().map(|c| c.name.as_str()))?;
         emit(w.into_inner().map_err(|e| e.into_error())?, sink)?;
     }
 

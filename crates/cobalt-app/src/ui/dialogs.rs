@@ -820,8 +820,12 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
     let mut done = false;
     let running = d.running;
     let mut picked_lakehouse: Option<String> = None;
+    let run_to_file = d.run_mode.is_some();
     let (_, close) = modal(ctx, theme, "export", 560.0, |ui| {
-        ui.heading("Save results as");
+        ui.heading(if run_to_file { "Run to file" } else { "Save results as" });
+        if run_to_file {
+            ui.label(RichText::new(format!("The query streams straight to the target as it runs; the grid keeps a {}-row preview of each result set.", fmt_count(ops::RUN_EXPORT_PREVIEW_ROWS))).size(12.0).color(theme.text_muted));
+        }
         ui.add_space(6.0);
         egui::Grid::new("export-grid").num_columns(2).spacing([10.0, 8.0]).min_col_width(110.0).show(ui, |ui| {
             ui.label("Format");
@@ -923,9 +927,11 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                 }
             }));
             ui.end_row();
-            ui.label("");
-            ui.checkbox(&mut d.selection_only, "Selected cells only");
-            ui.end_row();
+            if !run_to_file {
+                ui.label("");
+                ui.checkbox(&mut d.selection_only, "Selected cells only");
+                ui.end_row();
+            }
             match FORMAT_LABELS[d.format_index].1 {
                 "csv" | "tsv" => {
                     ui.label("Delimiter");
@@ -957,7 +963,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
         });
         if let Some(p) = &f.state.export_progress {
             let (done_rows, total) = *p.lock();
-            ui.add(egui::ProgressBar::new(if total == 0 { 0.0 } else { done_rows as f32 / total as f32 }).text(format!("{} / {}", fmt_count(done_rows as u64), fmt_count(total as u64))));
+            ui.add(egui::ProgressBar::new(if total == 0 { 0.0 } else { done_rows as f32 / total as f32 }).text(if total == 0 { format!("{} rows", fmt_count(done_rows as u64)) } else { format!("{} / {}", fmt_count(done_rows as u64), fmt_count(total as u64)) }));
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         match &d.result {
@@ -971,7 +977,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if primary_button(ui, theme, "Export", !running).clicked() {
+            if primary_button(ui, theme, if run_to_file { "Run and export" } else { "Export" }, !running).clicked() {
                 start = true;
             }
             if running {
@@ -995,7 +1001,11 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
     }
     if start {
         f.state.dialog = Dialog::Export(d);
-        ops::start_export(f.state, f.cx);
+        if run_to_file {
+            ops::start_run_export(f.state, f.cx);
+        } else {
+            ops::start_export(f.state, f.cx);
+        }
     } else if done || (close && !running) {
         // closed
     } else {

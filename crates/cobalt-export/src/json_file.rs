@@ -6,10 +6,10 @@ use cobalt_results::CellValue;
 use serde_json::{Map, Value};
 use std::io::Write;
 
-pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool, lines: bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool, lines: bool) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.json;
     let names = ctx.names();
-    let temporal: Vec<bool> = ctx.rs.columns.iter().map(|c| c.sql_type.is_temporal()).collect();
+    let temporal: Vec<bool> = ctx.columns.iter().map(|c| c.sql_type.is_temporal()).collect();
     let pretty = o.pretty && !lines;
     let mut first = true;
     if !lines {
@@ -18,7 +18,7 @@ pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn Fn
     let rows = ctx.for_each_batch(progress, |batch: &RecordBatch| {
         // Display text for temporal columns when the caller doesn't want ISO.
         let display: Vec<Option<std::sync::Arc<Vec<std::sync::Arc<str>>>>> = (0..batch.num_columns())
-            .map(|c| if !o.dates_as_iso && temporal[c] { Some(ctx.fmt.format_column(batch.column(c), &ctx.rs.columns[c])) } else { None })
+            .map(|c| if !o.dates_as_iso && temporal[c] { Some(ctx.fmt.format_column(batch.column(c), &ctx.columns[c])) } else { None })
             .collect();
         let mut buf = Vec::with_capacity(batch.num_rows() * names.len() * 16);
         for r in 0..batch.num_rows() {

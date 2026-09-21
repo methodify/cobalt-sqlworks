@@ -29,9 +29,9 @@ pub fn xml_name(name: &str) -> String {
     out
 }
 
-pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.xml;
-    let names = dedupe_names(ctx.rs.columns.iter().map(|c| c.name.as_str()));
+    let names = dedupe_names(ctx.columns.iter().map(|c| c.name.as_str()));
     let names: Vec<String> = dedupe_names(names.iter().map(|n| xml_name(n)).collect::<Vec<_>>().iter().map(String::as_str));
     let root = xml_name(&o.root_element);
     let row_el = xml_name(&o.row_element);
@@ -45,7 +45,7 @@ pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn Fn
         let mut buf = w.into_inner();
         buf.extend_from_slice(nl);
         if o.include_schema_comment {
-            let cols: Vec<String> = ctx.rs.columns.iter().map(|c| format!("{} {}", c.name, c.sql_type)).collect();
+            let cols: Vec<String> = ctx.columns.iter().map(|c| format!("{} {}", c.name, c.sql_type)).collect();
             let mut w = Writer::new(Vec::new());
             w.write_event(Event::Comment(BytesText::new(&format!(" columns: {} ", cols.join(", ").replace("--", "- -")))))?;
             buf.extend_from_slice(&w.into_inner());

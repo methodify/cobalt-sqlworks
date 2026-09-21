@@ -236,6 +236,8 @@ pub struct EditorTab {
     pub untitled_index: usize,
     /// Run again once the (re)connect completes.
     pub pending_run: Option<RunMode>,
+    /// Run-to-export target consumed by the next `execute` (set by the Run to File dialog).
+    pub pending_export: Option<Box<crate::ops::ExportJob>>,
     pub snapshot_hash: u64,
 }
 
@@ -273,6 +275,7 @@ impl EditorTab {
             last_snapshot: Instant::now(),
             untitled_index,
             pending_run: None,
+            pending_export: None,
             snapshot_hash: hash_text(""),
         }
     }
@@ -379,6 +382,8 @@ pub struct RunView {
     pub maximized: Option<usize>,
     pub history_id: Option<i64>,
     pub plan_mode: PlanMode,
+    /// Run-to-export: where the rows went (the grids hold previews only).
+    pub export_target: Option<String>,
 }
 
 impl RunView {
@@ -399,6 +404,7 @@ impl RunView {
             maximized: None,
             history_id: None,
             plan_mode,
+            export_target: None,
         }
     }
     pub fn is_live(&self) -> bool {
@@ -482,6 +488,8 @@ pub struct GridState {
     /// A primary-button press started on a cell and the button is still down: pointer movement
     /// over other cells extends the selection from the anchor.
     pub drag_select: bool,
+    /// Open the viewer in record mode next time it is created (set by "View row as record").
+    pub viewer_record: bool,
 }
 
 impl Default for GridState {
@@ -502,6 +510,7 @@ impl Default for GridState {
             frozen_cols: 0,
             transposed: false,
             drag_select: false,
+            viewer_record: false,
         }
     }
 }
@@ -743,6 +752,8 @@ pub struct ExportDialog {
     pub progress: Option<(usize, usize)>,
     pub result: Option<Result<String, String>>,
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
+    /// `Some` = "Run to file": the query runs and streams straight to the target.
+    pub run_mode: Option<RunMode>,
 }
 
 impl AppState {

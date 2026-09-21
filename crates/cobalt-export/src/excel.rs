@@ -46,20 +46,23 @@ impl Formats {
 
 /// Write the workbook straight to `path` (rust_xlsxwriter needs a seekable target). Returns
 /// (rows, warnings); the byte count is taken from the file afterwards.
-pub(crate) fn write_file(ctx: &Ctx<'_>, path: &Path, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write_file(ctx: &Ctx<'_, '_>, path: &Path, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.excel;
-    let rows_total = ctx.rs.visible_count();
-    if rows_total + 1 > EXCEL_MAX_ROWS {
-        return Err(ExportError::TooManyRows { rows: rows_total, limit: EXCEL_MAX_ROWS - 1 });
+    // A stream's length is unknown up front: the row loop enforces the sheet limit as it goes.
+    let rows_total = ctx.source.total_rows();
+    if let Some(n) = rows_total {
+        if n + 1 > EXCEL_MAX_ROWS {
+            return Err(ExportError::TooManyRows { rows: n, limit: EXCEL_MAX_ROWS - 1 });
+        }
     }
-    let ncols = ctx.rs.columns.len();
+    let ncols = ctx.columns.len();
     let formats = Formats::new();
     let mut workbook = Workbook::new();
     let sheet: &mut Worksheet = workbook.add_worksheet_with_constant_memory();
     sheet.set_name(sanitize_sheet_name(&o.sheet_name))?;
 
     // Header row.
-    for (c, col) in ctx.rs.columns.iter().enumerate() {
+    for (c, col) in ctx.columns.iter().enumerate() {
         if o.bold_header {
             sheet.write_string_with_format(0, c as u16, &col.name, &formats.header)?;
         } else {
@@ -70,30 +73,36 @@ pub(crate) fn write_file(ctx: &Ctx<'_>, path: &Path, progress: &mut dyn FnMut(Pr
         sheet.set_freeze_panes(1, 0)?;
     }
     if o.autofilter && ncols > 0 {
-        sheet.autofilter(0, 0, rows_total as u32, (ncols - 1) as u16)?;
-    }
-
-    // Column widths from the header and a sample of rows (autofit() needs stored cells, which
-    // constant-memory mode does not keep).
-    if o.autofit && ncols > 0 {
-        let mut widths: Vec<f64> = ctx.rs.columns.iter().map(|c| c.name.chars().count().max(4) as f64).collect();
-        for r in 0..rows_total.min(WIDTH_SAMPLE_ROWS) {
-            for (c, w) in widths.iter_mut().enumerate() {
-                let n = ctx.rs.cell_text(r, c, &ctx.fmt).chars().count() as f64;
-                if n > *w {
-                    *w = n;
-                }
-            }
-        }
-        for (c, w) in widths.iter().enumerate() {
-            sheet.set_column_width(c as u16, (w * 1.1 + 1.0).min(MAX_COL_WIDTH))?;
-        }
+        // constant-memory mode needs the filter range before the header row is flushed
+        sheet.autofilter(0, 0, rows_total.unwrap_or(EXCEL_MAX_ROWS - 1) as u32, (ncols - 1) as u16)?;
     }
 
     let mut truncated = 0usize;
     let mut out_of_range_dates = 0usize;
     let mut row_no: u32 = 1;
+    let mut widths_done = !(o.autofit && ncols > 0);
     let rows = ctx.for_each_batch(progress, |batch| {
+        if row_no as usize + batch.num_rows() > EXCEL_MAX_ROWS {
+            return Err(ExportError::TooManyRows { rows: row_no as usize + batch.num_rows() - 1, limit: EXCEL_MAX_ROWS - 1 });
+        }
+        // Column widths from the header and a sample of the first batch (autofit() needs stored
+        // cells, which constant-memory mode does not keep).
+        if !widths_done {
+            widths_done = true;
+            let sample = ctx.format_batch(batch, &ctx.fmt);
+            let mut widths: Vec<f64> = ctx.columns.iter().map(|c| c.name.chars().count().max(4) as f64).collect();
+            for r in 0..batch.num_rows().min(WIDTH_SAMPLE_ROWS) {
+                for (c, w) in widths.iter_mut().enumerate() {
+                    let n = sample[c][r].chars().count() as f64;
+                    if n > *w {
+                        *w = n;
+                    }
+                }
+            }
+            for (c, w) in widths.iter().enumerate() {
+                sheet.set_column_width(c as u16, (w * 1.1 + 1.0).min(MAX_COL_WIDTH))?;
+            }
+        }
         let text = if o.native_types { None } else { Some(ctx.format_batch(batch, &ctx.fmt)) };
         for r in 0..batch.num_rows() {
             for c in 0..ncols {

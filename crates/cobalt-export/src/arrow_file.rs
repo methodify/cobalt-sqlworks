@@ -6,7 +6,7 @@ use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::ipc::CompressionType;
 use std::io::Write;
 
-pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     let compression = ctx.opts.arrow.compression.map(|c| match c {
         IpcCompression::Lz4 => CompressionType::LZ4_FRAME,
         IpcCompression::Zstd => CompressionType::ZSTD,

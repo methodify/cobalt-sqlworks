@@ -42,12 +42,12 @@ pub fn header_lines(columns: &[ColumnInfo], align_numbers_right: bool, escape_pi
     s
 }
 
-pub(crate) fn write<W: Write>(ctx: &Ctx<'_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+pub(crate) fn write<W: Write>(ctx: &Ctx<'_, '_>, sink: &mut W, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     let o = &ctx.opts.markdown;
     let fmt = ctx.fmt.clone().with_null_text(&o.null_as);
     let nl = "\n";
     if o.include_headers {
-        sink.write_all(header_lines(&ctx.rs.columns, o.align_numbers_right, o.escape_pipes, nl).as_bytes())?;
+        sink.write_all(header_lines(ctx.columns, o.align_numbers_right, o.escape_pipes, nl).as_bytes())?;
     }
     let rows = ctx.for_each_batch(progress, |batch| {
         let cols = ctx.format_batch(batch, &fmt);

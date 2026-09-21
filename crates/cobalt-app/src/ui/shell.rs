@@ -79,6 +79,8 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ReopenClosedTab);
                 ui.separator();
                 item(ui, &mut cmds, Command::ImportAdsSettings);
+                item(ui, &mut cmds, Command::ImportConnections);
+                item(ui, &mut cmds, Command::ExportConnections);
                 ui.separator();
                 item(ui, &mut cmds, Command::Quit);
             });
@@ -97,6 +99,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             ui.menu_button("Query", |ui| {
                 item(ui, &mut cmds, Command::RunQuery);
                 item(ui, &mut cmds, Command::RunCurrentStatement);
+                item(ui, &mut cmds, Command::RunToFile);
                 item(ui, &mut cmds, Command::CancelQuery);
                 ui.separator();
                 item(ui, &mut cmds, Command::EstimatedPlan);
@@ -490,16 +493,30 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         if let Some((set, row, col)) = viewer_req {
             let rs = tab.run.as_ref().unwrap().result_sets[set].rs.clone();
             let id = egui::Id::new(("viewer", tab.id));
+            use crate::ui::results::viewer::ViewerOutcome;
+            let want_record = std::mem::take(&mut tab.run.as_mut().unwrap().result_sets[set].grid.viewer_record);
             let mut vs: ViewerState = ui.ctx().memory(|m| m.data.get_temp::<std::sync::Arc<parking_lot::Mutex<Option<ViewerState>>>>(id)).and_then(|m| m.lock().take()).filter(|v| Arc::ptr_eq(&v.rs, &rs) && v.row == row && v.col == col).unwrap_or_else(|| ViewerState::new(rs.clone(), row, col));
+            if want_record {
+                vs.record = true;
+            }
             let mut open = true;
-            let mut close = false;
-            egui::Window::new("Cell value").id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), |ui| {
-                close = crate::ui::results::viewer::show(ui, theme, &mut vs);
+            let mut outcome = ViewerOutcome::Open;
+            egui::Window::new(if vs.record { "Record" } else { "Cell value" }).id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), |ui| {
+                outcome = crate::ui::results::viewer::show(ui, theme, &mut vs);
             });
-            if !open || close {
-                tab.run.as_mut().unwrap().result_sets[set].grid.viewer = None;
-            } else {
-                ui.ctx().memory_mut(|m| m.data.insert_temp(id, std::sync::Arc::new(parking_lot::Mutex::new(Some(vs)))));
+            let grid = &mut tab.run.as_mut().unwrap().result_sets[set].grid;
+            match outcome {
+                _ if !open => grid.viewer = None,
+                ViewerOutcome::Close => grid.viewer = None,
+                ViewerOutcome::Goto { row, col, record } => {
+                    let mut next = ViewerState::new(rs.clone(), row, col);
+                    next.record = record;
+                    grid.viewer = Some((row, col));
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, std::sync::Arc::new(parking_lot::Mutex::new(Some(next)))));
+                }
+                ViewerOutcome::Open => {
+                    ui.ctx().memory_mut(|m| m.data.insert_temp(id, std::sync::Arc::new(parking_lot::Mutex::new(Some(vs)))));
+                }
             }
         }
     }
@@ -521,6 +538,9 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             }
             if tool_button(ui, icons::STOP, "Cancel", "Cancel (Alt+Break)", running).clicked() {
                 cmds.push(Command::CancelQuery);
+            }
+            if tool_button(ui, icons::EXPORT, "Run to file", &format!("Run the query straight into a file or lakehouse, without filling the grid ({})", f.keymap.shortcut_text(ui.ctx(), Command::RunToFile)), !running).clicked() {
+                cmds.push(Command::RunToFile);
             }
             ui.separator();
             match &tab.conn {
@@ -707,7 +727,8 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 if let Some(p) = &f.state.export_progress {
                     let (done, total) = *p.lock();
                     ui.separator();
-                    ui.label(RichText::new(format!("{} Exporting {} / {}", icons::EXPORT, fmt_count(done as u64), fmt_count(total as u64))).color(theme.accent));
+                    let text = if total == 0 { format!("{} Exporting {} rows", icons::EXPORT, fmt_count(done as u64)) } else { format!("{} Exporting {} / {}", icons::EXPORT, fmt_count(done as u64), fmt_count(total as u64)) };
+                    ui.label(RichText::new(text).color(theme.accent));
                 }
             });
         });
@@ -772,6 +793,16 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             let path = cobalt_store::default_ads_settings_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
             state.dialog = Dialog::AdsImport { path, summary: None, error: None };
         }
+        Command::ExportConnections => {
+            if let Some(p) = rfd::FileDialog::new().add_filter("JSON", &["json"]).set_file_name("cobalt-connections.json").save_file() {
+                ops::export_connections(state, cx, &p);
+            }
+        }
+        Command::ImportConnections => {
+            if let Some(p) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                ops::import_connections(state, cx, &p);
+            }
+        }
         Command::Quit => cx.egui.send_viewport_cmd(egui::ViewportCommand::Close),
         Command::NewConnection => ops::open_connection_dialog(state, cx, None, None, None),
         Command::ConnectTab => {
@@ -823,6 +854,11 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::RunCurrentStatement => {
             if let Some(i) = idx {
                 ops::run(state, cx, i, RunMode::Current);
+            }
+        }
+        Command::RunToFile => {
+            if let Some(i) = idx {
+                ops::open_run_to_file(state, cx, i, RunMode::All);
             }
         }
         Command::CancelQuery => {

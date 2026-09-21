@@ -137,7 +137,7 @@ async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
                     shared.emit(Event::Disconnected { tab });
                 }
             }
-            Command::Run { tab, run, script, opts, start_line } => route_tab(&tabs, &shared, tab, actor::TabMsg::Run { run, script, opts, start_line }),
+            Command::Run { tab, run, script, opts, start_line, sink } => route_tab(&tabs, &shared, tab, actor::TabMsg::Run { run, script, opts, start_line, sink }),
             Command::Cancel { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Cancel),
             Command::FetchMore { tab, rows } => route_tab(&tabs, &shared, tab, actor::TabMsg::FetchMore { rows }),
             Command::ChangeDatabase { tab, database } => route_tab(&tabs, &shared, tab, actor::TabMsg::ChangeDatabase { database }),

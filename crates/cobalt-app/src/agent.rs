@@ -9,6 +9,8 @@
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
 //! - `results {set?, offset?, limit?}` → rows of the active tab as JSON, `messages`
 //! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
+//! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
+//! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `pointer {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?}` → real mouse input in screenshot pixels
 
 use crate::app::CobaltApp;
@@ -272,7 +274,8 @@ impl AgentApp for CobaltApp {
                     .collect();
                 ActionResult::with(&json!(plans))
             }
-            "export" => {
+            "export" | "run_to_export" => {
+                let run_to_file = action.name() == "run_to_export";
                 let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
                 let format = arg_str(args, "format").unwrap_or_else(|| "csv".into());
                 // OneLake: {lakehouse: <name or id>, name: <table or file name>} instead of path
@@ -309,8 +312,15 @@ impl AgentApp for CobaltApp {
                                 _ => 0,
                             };
                         }
+                        if run_to_file {
+                            d.run_mode = Some(RunMode::All);
+                        }
                     }
-                    ops::start_export(s, cx);
+                    if run_to_file {
+                        ops::start_run_export(s, cx);
+                    } else {
+                        ops::start_export(s, cx);
+                    }
                 });
                 ActionResult::ok()
             }
@@ -432,6 +442,18 @@ impl AgentApp for CobaltApp {
                 }
                 self.state.injected_pointer.extend(steps);
                 egui.request_repaint();
+                ActionResult::ok()
+            }
+            "library" => {
+                // {action: export|import, path}
+                let act = arg_str(args, "action").unwrap_or_default();
+                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                let p = std::path::PathBuf::from(path);
+                match act.as_str() {
+                    "export" => self.with_ctx(egui, |s, cx| ops::export_connections(s, cx, &p)),
+                    "import" => self.with_ctx(egui, |s, cx| ops::import_connections(s, cx, &p)),
+                    _ => return ActionResult::BadArgs("action must be export or import".into()),
+                }
                 ActionResult::ok()
             }
             "type_text" => {

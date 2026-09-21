@@ -23,6 +23,8 @@ pub enum ResultsAction {
     Export { set: usize, selection_only: bool },
     ApplyView { set: usize, spec: cobalt_results::ViewSpec },
     OpenViewer { set: usize, row: usize, col: usize },
+    /// The viewer in record mode for one row (every column, one per line).
+    OpenRecord { set: usize, row: usize, col: usize },
     JumpToLine(u32),
     Summarize { set: usize },
     PopOut { set: usize },
@@ -157,9 +159,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     for (k, &set) in shown.iter().enumerate() {
                         let paused = run.paused_set == Some(set);
                         let bar_h = if paused { 30.0 } else { 0.0 };
-                        let header_h = if n > 1 { 20.0 } else { 0.0 };
+                        let show_header = n > 1 || run.export_target.is_some();
+                        let header_h = if show_header { 20.0 } else { 0.0 };
                         let grid_h = (each - bar_h - header_h - if k + 1 < n { 6.0 } else { 0.0 }).max(80.0);
-                        if n > 1 {
+                        if show_header {
                             let rs = &run.result_sets[set].rs;
                             ui.horizontal(|ui| {
                                 ui.add_space(6.0);
@@ -167,6 +170,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     format!("{} of {} rows", crate::state::fmt_count(rs.visible_count() as u64), crate::state::fmt_count(rs.row_count() as u64))
                                 } else {
                                     format!("{} rows", crate::state::fmt_count(rs.row_count() as u64))
+                                };
+                                let rows_label = match &run.export_target {
+                                    Some(target) => format!("preview of the first {} rows  ·  {} {target}", crate::state::fmt_count(rs.row_count() as u64), if run.is_live() { "streaming to" } else { "exported to" }),
+                                    None => rows_label,
                                 };
                                 ui.label(RichText::new(format!("Result {}  ·  {rows_label}", set + 1)).size(11.0).color(theme.text_muted));
                             });
@@ -243,6 +250,12 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     if ui.button("Open cell in viewer").clicked() {
                                         if let Some((r, c)) = view.grid.anchor {
                                             actions.push(ResultsAction::OpenViewer { set, row: r, col: c });
+                                        }
+                                        close = true;
+                                    }
+                                    if ui.button("View row as record").on_hover_text("Every column of this row, one per line — handy for wide tables").clicked() {
+                                        if let Some((r, c)) = view.grid.anchor {
+                                            actions.push(ResultsAction::OpenRecord { set, row: r, col: c });
                                         }
                                         close = true;
                                     }

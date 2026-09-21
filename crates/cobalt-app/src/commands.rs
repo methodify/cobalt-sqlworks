@@ -20,6 +20,8 @@ pub enum Command {
     NextTab,
     PrevTab,
     ImportAdsSettings,
+    ImportConnections,
+    ExportConnections,
     Quit,
     // connections
     NewConnection,
@@ -32,6 +34,7 @@ pub enum Command {
     // query
     RunQuery,
     RunCurrentStatement,
+    RunToFile,
     CancelQuery,
     EstimatedPlan,
     ToggleActualPlan,
@@ -148,6 +151,8 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::NextTab, id: "file.next_tab", label: "Next Tab", category: Category::File, default_key: sc(CTRL, Key::Tab) },
     CommandInfo { cmd: Command::PrevTab, id: "file.prev_tab", label: "Previous Tab", category: Category::File, default_key: sc(CTRL_SHIFT, Key::Tab) },
     CommandInfo { cmd: Command::ImportAdsSettings, id: "file.import_ads", label: "Import Azure Data Studio Connections…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::ImportConnections, id: "file.import_connections", label: "Import Connections…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::ExportConnections, id: "file.export_connections", label: "Export Connections…", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::Quit, id: "file.quit", label: "Quit", category: Category::File, default_key: sc(CTRL, Key::Q) },
     CommandInfo { cmd: Command::NewConnection, id: "connection.new", label: "New Connection…", category: Category::Connection, default_key: sc(CTRL_SHIFT, Key::N) },
     CommandInfo { cmd: Command::ConnectTab, id: "connection.connect", label: "Connect", category: Category::Connection, default_key: None },
@@ -158,6 +163,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::RefreshIntelliSense, id: "connection.refresh_intellisense", label: "Refresh IntelliSense Cache", category: Category::Connection, default_key: sc(NONE, Key::F7) },
     CommandInfo { cmd: Command::RunQuery, id: "query.run", label: "Run Query", category: Category::Query, default_key: sc(NONE, Key::F5) },
     CommandInfo { cmd: Command::RunCurrentStatement, id: "query.run_current", label: "Run Current Statement", category: Category::Query, default_key: sc(CTRL, Key::Enter) },
+    CommandInfo { cmd: Command::RunToFile, id: "query.run_to_file", label: "Run to File…", category: Category::Query, default_key: sc(CTRL_SHIFT, Key::F5) },
     CommandInfo { cmd: Command::CancelQuery, id: "query.cancel", label: "Cancel Query", category: Category::Query, default_key: sc(ALT, Key::C) },
     CommandInfo { cmd: Command::EstimatedPlan, id: "query.estimated_plan", label: "Display Estimated Execution Plan", category: Category::Query, default_key: sc(CTRL, Key::L) },
     CommandInfo { cmd: Command::ToggleActualPlan, id: "query.actual_plan", label: "Include Actual Execution Plan", category: Category::Query, default_key: sc(CTRL, Key::M) },

@@ -17,7 +17,9 @@ mod markdown;
 mod parquet_file;
 mod xml_file;
 
-use cobalt_core::ExportSettings;
+use arrow::array::RecordBatch;
+use arrow::datatypes::SchemaRef;
+use cobalt_core::{ColumnInfo, ExportSettings};
 use cobalt_results::{CellFormatter, ResultSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -33,6 +35,101 @@ pub const EXCEL_MAX_ROWS: usize = 1_048_576;
 
 /// The ISO-ish datetime format every exporter uses regardless of the grid's display setting.
 pub const EXPORT_DATETIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S%.f";
+
+// ---------------------------------------------------------------------------------------------
+// Source: where the rows come from
+// ---------------------------------------------------------------------------------------------
+
+/// One item pulled from a [`StreamSource`].
+#[derive(Debug)]
+pub enum StreamItem {
+    Batch(RecordBatch),
+    /// The producer finished this result set cleanly.
+    End,
+    /// The producer failed (query error, cancel): the export aborts and cleans up after itself.
+    Failed(String),
+}
+
+/// Rows still arriving from the server (run-to-export). `pull` blocks until the next item; the
+/// exporter drives it exactly once per batch, in order, so the producer's channel is the only buffer.
+pub struct StreamSource<'a> {
+    pub columns: Vec<ColumnInfo>,
+    pub schema: SchemaRef,
+    pull: std::sync::Mutex<Box<dyn FnMut() -> StreamItem + Send + 'a>>,
+}
+
+impl<'a> StreamSource<'a> {
+    pub fn new(columns: Vec<ColumnInfo>, schema: SchemaRef, pull: impl FnMut() -> StreamItem + Send + 'a) -> Self {
+        Self { columns, schema, pull: std::sync::Mutex::new(Box::new(pull)) }
+    }
+}
+
+/// Where an exporter reads rows from.
+pub enum Source<'a> {
+    /// A materialised result set: its visible rows, in view order.
+    Set(&'a ResultSet),
+    /// Batches arriving live from a running query.
+    Stream(StreamSource<'a>),
+}
+
+impl<'a> Source<'a> {
+    pub fn columns(&self) -> &[ColumnInfo] {
+        match self {
+            Source::Set(rs) => &rs.columns,
+            Source::Stream(s) => &s.columns,
+        }
+    }
+
+    pub fn schema(&self) -> SchemaRef {
+        match self {
+            Source::Set(rs) => rs.schema.clone(),
+            Source::Stream(s) => s.schema.clone(),
+        }
+    }
+
+    /// Row count when known up front (`None` for a stream).
+    pub fn total_rows(&self) -> Option<usize> {
+        match self {
+            Source::Set(rs) => Some(rs.visible_count()),
+            Source::Stream(_) => None,
+        }
+    }
+
+    /// The batches, in order. A stream ends at [`StreamItem::End`] and yields an error for
+    /// [`StreamItem::Failed`].
+    pub fn batches(&self, batch_rows: usize) -> Box<dyn Iterator<Item = Result<RecordBatch>> + '_> {
+        match self {
+            Source::Set(rs) => Box::new(rs.view_batches(batch_rows).map(|r| r.map_err(ExportError::from))),
+            Source::Stream(s) => Box::new(StreamIter { src: s, done: false }),
+        }
+    }
+}
+
+struct StreamIter<'s, 'a> {
+    src: &'s StreamSource<'a>,
+    done: bool,
+}
+
+impl Iterator for StreamIter<'_, '_> {
+    type Item = Result<RecordBatch>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let item = (self.src.pull.lock().unwrap_or_else(|p| p.into_inner()))();
+        match item {
+            StreamItem::Batch(b) => Some(Ok(b)),
+            StreamItem::End => {
+                self.done = true;
+                None
+            }
+            StreamItem::Failed(m) => {
+                self.done = true;
+                Some(Err(ExportError::Source(m)))
+            }
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------------------------
 // Format
@@ -374,6 +471,9 @@ pub enum ExportError {
     Cancelled,
     #[error("{0}")]
     Unsupported(String),
+    /// The row producer failed (query error or cancel) part-way through a stream.
+    #[error("{0}")]
+    Source(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExportError>;
@@ -394,12 +494,25 @@ pub fn export_to_file(
     fmt: &CellFormatter,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<ExportStats> {
+    export_source_to_file(&Source::Set(rs), format, path, opts, fmt, progress)
+}
+
+/// [`export_to_file`] over any [`Source`], including a live stream from a running query.
+pub fn export_source_to_file(
+    source: &Source<'_>,
+    format: Format,
+    path: &Path,
+    opts: &ExportOptions,
+    fmt: &CellFormatter,
+    progress: &mut dyn FnMut(Progress) -> bool,
+) -> Result<ExportStats> {
     let started = Instant::now();
     if format == Format::Excel {
-        let rows = rs.visible_count();
-        let limit = opts.excel.max_rows_warn.min(EXCEL_MAX_ROWS - 1);
-        if rows > limit {
-            return Err(ExportError::TooManyRows { rows, limit });
+        if let Some(rows) = source.total_rows() {
+            let limit = opts.excel.max_rows_warn.min(EXCEL_MAX_ROWS - 1);
+            if rows > limit {
+                return Err(ExportError::TooManyRows { rows, limit });
+            }
         }
     }
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
@@ -407,7 +520,7 @@ pub fn export_to_file(
     let tmp = temp_path(path);
     let result = (|| -> Result<(usize, u64, Vec<String>)> {
         let counter = Arc::new(AtomicU64::new(0));
-        let ctx = Ctx { rs, opts, fmt: export_formatter(fmt), bytes: counter.clone() };
+        let ctx = Ctx { source, columns: source.columns(), schema: source.schema(), opts, fmt: export_formatter(fmt), bytes: counter.clone() };
         if format == Format::Excel {
             // rust_xlsxwriter needs a seekable target; it writes the file itself.
             let (rows, warnings) = excel::write_file(&ctx, &tmp, progress)?;
@@ -448,13 +561,25 @@ pub fn export_to_writer<W: Write + Send>(
     fmt: &CellFormatter,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<ExportStats> {
+    export_source_to_writer(&Source::Set(rs), format, writer, opts, fmt, progress)
+}
+
+/// [`export_to_writer`] over any [`Source`].
+pub fn export_source_to_writer<W: Write + Send>(
+    source: &Source<'_>,
+    format: Format,
+    writer: W,
+    opts: &ExportOptions,
+    fmt: &CellFormatter,
+    progress: &mut dyn FnMut(Progress) -> bool,
+) -> Result<ExportStats> {
     if format == Format::Excel {
         return Err(ExportError::Unsupported("Excel export needs a seekable file; use export_to_file".into()));
     }
     let started = Instant::now();
     let counter = Arc::new(AtomicU64::new(0));
     let mut sink = CountingWriter::new(writer, counter.clone());
-    let ctx = Ctx { rs, opts, fmt: export_formatter(fmt), bytes: counter };
+    let ctx = Ctx { source, columns: source.columns(), schema: source.schema(), opts, fmt: export_formatter(fmt), bytes: counter };
     let (rows, warnings) = write_any(&ctx, format, &mut sink, progress)?;
     sink.flush()?;
     Ok(ExportStats { rows, bytes: ctx.bytes.load(Ordering::Relaxed), elapsed: started.elapsed(), path: PathBuf::new(), warnings })
@@ -466,7 +591,7 @@ pub fn export_formatter(fmt: &CellFormatter) -> CellFormatter {
     fmt.clone().with_max_chars(0).with_datetime_format(EXPORT_DATETIME_FORMAT)
 }
 
-fn write_any<W: Write + Send>(ctx: &Ctx<'_>, format: Format, sink: &mut CountingWriter<W>, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
+fn write_any<W: Write + Send>(ctx: &Ctx<'_, '_>, format: Format, sink: &mut CountingWriter<W>, progress: &mut dyn FnMut(Progress) -> bool) -> Result<(usize, Vec<String>)> {
     match format {
         Format::Csv => delimited::write(ctx, sink, progress, ctx.opts.csv.delimiter),
         Format::Tsv => delimited::write(ctx, sink, progress, b'\t'),
@@ -491,28 +616,30 @@ fn temp_path(path: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------------------------
 
 /// Everything a format writer needs.
-pub(crate) struct Ctx<'a> {
-    pub rs: &'a ResultSet,
+pub(crate) struct Ctx<'a, 's> {
+    pub source: &'a Source<'s>,
+    pub columns: &'a [ColumnInfo],
+    pub schema: SchemaRef,
     pub opts: &'a ExportOptions,
     pub fmt: CellFormatter,
     pub bytes: Arc<AtomicU64>,
 }
 
-impl Ctx<'_> {
-    /// Unique column names as used for JSON keys / XML names (`rs.schema` already de-duplicates).
+impl Ctx<'_, '_> {
+    /// Unique column names as used for JSON keys / XML names (the schema already de-duplicates).
     pub fn names(&self) -> Vec<String> {
-        self.rs.schema.fields().iter().map(|f| f.name().clone()).collect()
+        self.schema.fields().iter().map(|f| f.name().clone()).collect()
     }
 
-    /// Drive `f` over every visible batch, reporting progress after each; `Cancelled` when the
-    /// callback returns false.
+    /// Drive `f` over every batch, reporting progress after each; `Cancelled` when the callback
+    /// returns false. `rows_total` is 0 while streaming (unknown).
     pub fn for_each_batch(&self, progress: &mut dyn FnMut(Progress) -> bool, mut f: impl FnMut(&arrow::array::RecordBatch) -> Result<()>) -> Result<usize> {
-        let total = self.rs.visible_count();
+        let total = self.source.total_rows().unwrap_or(0);
         let mut done = 0usize;
         if !progress(Progress { rows_done: 0, rows_total: total, bytes_written: 0 }) {
             return Err(ExportError::Cancelled);
         }
-        for batch in self.rs.view_batches(EXPORT_BATCH_ROWS) {
+        for batch in self.source.batches(EXPORT_BATCH_ROWS) {
             let batch = batch?;
             f(&batch)?;
             done += batch.num_rows();
@@ -525,12 +652,12 @@ impl Ctx<'_> {
 
     /// Formatted text for every column of a batch.
     pub fn format_batch(&self, batch: &arrow::array::RecordBatch, fmt: &CellFormatter) -> Vec<Arc<Vec<Arc<str>>>> {
-        (0..batch.num_columns()).map(|c| fmt.format_column(batch.column(c), &self.rs.columns[c])).collect()
+        (0..batch.num_columns()).map(|c| fmt.format_column(batch.column(c), &self.columns[c])).collect()
     }
 
     /// SQL type names, one per column, as JSON (`["int","nvarchar(50)"]`) for file metadata.
     pub fn sql_types_json(&self) -> String {
-        serde_json::to_string(&self.rs.columns.iter().map(|c| c.sql_type.to_string()).collect::<Vec<_>>()).unwrap_or_default()
+        serde_json::to_string(&self.columns.iter().map(|c| c.sql_type.to_string()).collect::<Vec<_>>()).unwrap_or_default()
     }
 }
 

@@ -1,5 +1,6 @@
 //! Cell viewer: a side panel that shows one value in full — pretty JSON, indented XML,
-//! wrapped text, or a hex dump — with copy.
+//! wrapped text, or a hex dump — with copy. Its **Record** mode shows every column of the row
+//! as name/value pairs (wide Fabric tables), with previous/next row navigation.
 
 use crate::ui::theme::Theme;
 use cobalt_results::{CellValue, ResultSet};
@@ -14,6 +15,17 @@ pub struct ViewerState {
     pub wrap: bool,
     pub text: String,
     pub pretty: Option<String>,
+    /// Record mode: the whole row, one column per line.
+    pub record: bool,
+}
+
+/// What the viewer wants the host to do after a frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViewerOutcome {
+    Open,
+    Close,
+    /// Move to another cell (row navigation in record mode, or a value picked from the record).
+    Goto { row: usize, col: usize, record: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,7 +57,16 @@ impl ViewerState {
             CellValue::Bytes(b) => (hex_dump(b), None, ViewMode::Hex),
             other => (other.to_json().to_string().trim_matches('"').to_string(), None, ViewMode::Text),
         };
-        Self { rs, row, col, mode, wrap: true, text, pretty }
+        Self { rs, row, col, mode, wrap: true, text, pretty, record: false }
+    }
+
+    /// The row as a JSON object (column name → value).
+    pub fn row_json(&self) -> String {
+        let mut obj = serde_json::Map::new();
+        for (c, col) in self.rs.columns.iter().enumerate() {
+            obj.insert(col.name.clone(), self.rs.cell_value(self.row, c).to_json());
+        }
+        serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_default()
     }
 
     pub fn shown(&self) -> &str {
@@ -56,39 +77,66 @@ impl ViewerState {
     }
 }
 
-pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> bool {
-    let mut close = false;
+pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> ViewerOutcome {
+    let mut out = ViewerOutcome::Open;
     let col_name = v.rs.columns.get(v.col).map(|c| c.name.clone()).unwrap_or_default();
     let type_label = v.rs.columns.get(v.col).map(|c| c.type_label()).unwrap_or_default();
+    let nrows = v.rs.visible_count();
     egui::Frame::new().fill(theme.bg_panel).inner_margin(8.0).show(ui, |ui| {
         ui.set_min_size(ui.available_size());
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{col_name}")).strong());
-            ui.label(RichText::new(format!("row {}  ·  {type_label}", v.row + 1)).small().color(theme.text_muted));
+            if v.record {
+                ui.label(RichText::new(format!("Row {}", v.row + 1)).strong());
+                ui.label(RichText::new(format!("of {}", crate::state::fmt_count(nrows as u64))).small().color(theme.text_muted));
+                let prev = ui.add_enabled(v.row > 0, egui::Button::new(egui_phosphor::regular::CARET_LEFT).small());
+                prev.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "record previous row"));
+                if prev.on_hover_text("Previous row").clicked() {
+                    out = ViewerOutcome::Goto { row: v.row - 1, col: v.col, record: true };
+                }
+                let next = ui.add_enabled(v.row + 1 < nrows, egui::Button::new(egui_phosphor::regular::CARET_RIGHT).small());
+                next.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "record next row"));
+                if next.on_hover_text("Next row").clicked() {
+                    out = ViewerOutcome::Goto { row: v.row + 1, col: v.col, record: true };
+                }
+            } else {
+                ui.label(RichText::new(format!("{col_name}")).strong());
+                ui.label(RichText::new(format!("row {}  ·  {type_label}", v.row + 1)).small().color(theme.text_muted));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(egui_phosphor::regular::X).on_hover_text("Close (Esc)").clicked() {
-                    close = true;
+                    out = ViewerOutcome::Close;
                 }
-                if ui.small_button(egui_phosphor::regular::COPY).on_hover_text("Copy value").clicked() {
-                    ui.ctx().copy_text(v.shown().to_string());
+                if ui.small_button(egui_phosphor::regular::COPY).on_hover_text(if v.record { "Copy row as JSON" } else { "Copy value" }).clicked() {
+                    ui.ctx().copy_text(if v.record { v.row_json() } else { v.shown().to_string() });
                 }
-                ui.checkbox(&mut v.wrap, "Wrap");
-                for (m, label) in [(ViewMode::Text, "Text"), (ViewMode::Json, "JSON"), (ViewMode::Xml, "XML"), (ViewMode::Hex, "Hex")] {
-                    let enabled = match m {
-                        ViewMode::Json | ViewMode::Xml => v.pretty.is_some(),
-                        ViewMode::Hex => true,
-                        _ => true,
-                    };
-                    if ui.add_enabled_ui(enabled, |ui| ui.selectable_label(v.mode == m, label)).inner.clicked() {
-                        if m == ViewMode::Hex && !matches!(v.rs.cell_value(v.row, v.col), CellValue::Bytes(_)) {
-                            v.text = hex_dump(v.text.as_bytes());
+                let rec = ui.selectable_label(v.record, "Record");
+                rec.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "viewer record mode"));
+                if rec.on_hover_text("Every column of this row, one per line").clicked() {
+                    v.record = !v.record;
+                }
+                if !v.record {
+                    ui.checkbox(&mut v.wrap, "Wrap");
+                    for (m, label) in [(ViewMode::Text, "Text"), (ViewMode::Json, "JSON"), (ViewMode::Xml, "XML"), (ViewMode::Hex, "Hex")] {
+                        let enabled = match m {
+                            ViewMode::Json | ViewMode::Xml => v.pretty.is_some(),
+                            ViewMode::Hex => true,
+                            _ => true,
+                        };
+                        if ui.add_enabled_ui(enabled, |ui| ui.selectable_label(v.mode == m, label)).inner.clicked() {
+                            if m == ViewMode::Hex && !matches!(v.rs.cell_value(v.row, v.col), CellValue::Bytes(_)) {
+                                v.text = hex_dump(v.text.as_bytes());
+                            }
+                            v.mode = m;
                         }
-                        v.mode = m;
                     }
                 }
             });
         });
         ui.separator();
+        if v.record {
+            record_body(ui, theme, v, &mut out);
+            return;
+        }
         let shown_len = v.shown().len();
         ui.label(RichText::new(format!("{} characters", crate::state::fmt_count(v.shown().chars().count() as u64))).small().color(theme.text_faint));
         egui::ScrollArea::both().id_salt(("viewer", v.row, v.col)).auto_shrink([false, false]).show(ui, |ui| {
@@ -104,9 +152,40 @@ pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> bool {
         });
     });
     if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-        close = true;
+        out = ViewerOutcome::Close;
     }
-    close
+    out
+}
+
+/// Record mode body: one line per column (name + type, value). Clicking a value opens it.
+fn record_body(ui: &mut Ui, theme: &Theme, v: &ViewerState, out: &mut ViewerOutcome) {
+    const MAX_CHARS: usize = 300;
+    egui::ScrollArea::vertical().id_salt(("record", v.row)).auto_shrink([false, false]).show(ui, |ui| {
+        egui::Grid::new(("record-grid", v.row)).num_columns(2).striped(true).spacing([14.0, 4.0]).min_col_width(140.0).show(ui, |ui| {
+            for (c, col) in v.rs.columns.iter().enumerate() {
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(&col.name).strong());
+                    ui.label(RichText::new(col.type_label()).small().color(theme.text_faint));
+                });
+                let value = v.rs.cell_value(v.row, c);
+                let (text, is_null) = match &value {
+                    CellValue::Null => ("NULL".to_string(), true),
+                    CellValue::Text(t) => (t.clone(), false),
+                    CellValue::Bytes(b) => (format!("0x{}{} ({} bytes)", b.iter().take(16).map(|x| format!("{x:02x}")).collect::<String>(), if b.len() > 16 { "…" } else { "" }, b.len()), false),
+                    other => (other.to_json().to_string().trim_matches('"').to_string(), false),
+                };
+                let one_line: String = text.replace(['\r', '\n'], " ");
+                let shown = if one_line.chars().count() > MAX_CHARS { format!("{}…", one_line.chars().take(MAX_CHARS).collect::<String>()) } else { one_line };
+                let label = egui::Label::new(RichText::new(shown).monospace().color(if is_null { theme.null_text } else { theme.text })).sense(egui::Sense::click()).truncate();
+                let r = ui.add(label);
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("record value {}", col.name)));
+                if r.on_hover_text("Open this value").clicked() {
+                    *out = ViewerOutcome::Goto { row: v.row, col: c, record: false };
+                }
+                ui.end_row();
+            }
+        });
+    });
 }
 
 pub fn pretty_xml(src: &str) -> String {

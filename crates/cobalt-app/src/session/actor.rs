@@ -1,6 +1,6 @@
 //! Per-tab and per-profile connection actors.
 
-use super::{Event, MetadataRequest, MetadataResponse, Shared};
+use super::{Event, MetadataRequest, MetadataResponse, RunSink, Shared, SinkMsg};
 use cobalt_core::*;
 use cobalt_driver::{split_batches, Connection, DriverError, StreamItem};
 use cobalt_results::{ResultSet, RunState};
@@ -10,7 +10,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 pub enum TabMsg {
-    Run { run: RunId, script: String, opts: ExecOptions, start_line: u32 },
+    Run { run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel,
     FetchMore { rows: Option<u64> },
     ChangeDatabase { database: String },
@@ -63,9 +63,9 @@ pub async fn tab_actor(
                 Err(e) => shared.emit(Event::DatabaseChangeFailed { tab, error: e.to_string() }),
             },
             TabMsg::Cancel | TabMsg::FetchMore { .. } => { /* nothing running */ }
-            TabMsg::Run { run, script, opts, start_line } => {
+            TabMsg::Run { run, script, opts, start_line, sink } => {
                 let before = conn.current_database().to_string();
-                let lost = run_script(tab, run, &script, &opts, start_line, &mut *conn, &mut rx, &shared).await;
+                let lost = run_script(tab, run, &script, &opts, start_line, sink, &mut *conn, &mut rx, &shared).await;
                 if lost {
                     break;
                 }
@@ -81,6 +81,31 @@ pub async fn tab_actor(
     shared.emit(Event::Disconnected { tab });
 }
 
+/// Hand a message to the run-to-export sink, staying responsive to Cancel/Close while the writer
+/// is busy. `false` means the export side is gone or the user cancelled: abort the query.
+async fn sink_push(sink: &RunSink, msg: SinkMsg, rx: &mut mpsc::UnboundedReceiver<TabMsg>) -> bool {
+    use std::sync::mpsc::TrySendError;
+    let mut msg = msg;
+    loop {
+        match sink.tx.try_send(msg) {
+            Ok(()) => return true,
+            Err(TrySendError::Disconnected(_)) => return false,
+            Err(TrySendError::Full(m)) => {
+                msg = m;
+                // the writer is busy: wait a moment, but let Cancel/Close through
+                tokio::select! {
+                    biased;
+                    m = rx.recv() => match m {
+                        Some(TabMsg::Cancel) | Some(TabMsg::Close) | None => return false,
+                        _ => continue,
+                    },
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(5)) => continue,
+                }
+            }
+        }
+    }
+}
+
 /// Runs every batch of `script`. Returns true if the connection is unusable afterwards.
 async fn run_script(
     tab: TabId,
@@ -88,6 +113,7 @@ async fn run_script(
     script: &str,
     opts: &ExecOptions,
     start_line: u32,
+    sink: Option<RunSink>,
     conn: &mut dyn Connection,
     rx: &mut mpsc::UnboundedReceiver<TabMsg>,
     shared: &Shared,
@@ -125,7 +151,8 @@ async fn run_script(
 
         let mut current: Option<Arc<ResultSet>> = None;
         let mut rows_in_set = 0u64;
-        let mut cap = if opts.row_cap == 0 { u64::MAX } else { opts.row_cap };
+        // run-to-export never pauses at the row cap: the file gets everything
+        let mut cap = if sink.is_some() || opts.row_cap == 0 { u64::MAX } else { opts.row_cap };
         let mut batch_error: Option<ServerMessage> = None;
         let mut last_repaint = Instant::now();
         // rows received past the cap, appended when the user asks for more
@@ -180,8 +207,14 @@ async fn run_script(
                 StreamItem::ResultSetStart { columns } => {
                     let rs = ResultSet::new(rs_index, columns, shared.budget.clone(), shared.spill_dir.clone());
                     rows_in_set = 0;
-                    cap = if opts.row_cap == 0 { u64::MAX } else { opts.row_cap };
+                    cap = if sink.is_some() || opts.row_cap == 0 { u64::MAX } else { opts.row_cap };
                     shared.emit(Event::ResultSetStarted { tab, run, rs: rs.clone() });
+                    if let Some(s) = &sink {
+                        if !sink_push(s, SinkMsg::SetStart { index: rs.index, columns: rs.columns.clone(), schema: rs.schema.clone() }, rx).await && !cancelled {
+                            cancel.cancel();
+                            cancelled = true;
+                        }
+                    }
                     current = Some(rs);
                 }
                 StreamItem::Rows(batch) => {
@@ -191,6 +224,28 @@ async fn run_script(
                     if let Some(rs) = &current {
                         let mut batch = batch;
                         let mut n = batch.num_rows() as u64;
+                        if let Some(s) = &sink {
+                            // run-to-export: the sink gets every row; the grid keeps a preview
+                            if !sink_push(s, SinkMsg::Batch(batch.clone()), rx).await {
+                                cancel.cancel();
+                                cancelled = true;
+                                continue;
+                            }
+                            let room = s.preview_rows.saturating_sub(rows_in_set);
+                            if room > 0 {
+                                let take = room.min(n) as usize;
+                                if let Err(e) = rs.append(batch.slice(0, take)) {
+                                    tracing::error!(error = %e, "preview append failed");
+                                }
+                            }
+                            rows_in_set += n;
+                            total_rows += n;
+                            if last_repaint.elapsed().as_millis() >= 33 {
+                                (shared.repaint)();
+                                last_repaint = Instant::now();
+                            }
+                            continue;
+                        }
                         if rows_in_set + n > cap {
                             let take = cap.saturating_sub(rows_in_set);
                             held = Some(batch.slice(take as usize, (n - take) as usize));
@@ -214,6 +269,12 @@ async fn run_script(
                     }
                 }
                 StreamItem::ResultSetEnd { rows } => {
+                    if let (Some(s), Some(_)) = (&sink, &current) {
+                        if !sink_push(s, if cancelled { SinkMsg::Failed("cancelled".into()) } else { SinkMsg::SetEnd }, rx).await && !cancelled {
+                            cancel.cancel();
+                            cancelled = true;
+                        }
+                    }
                     if let Some(h) = held.take() {
                         // the server finished while we were capped: keep the remainder appended so nothing is lost
                         if let Some(rs) = &current {
@@ -235,6 +296,11 @@ async fn run_script(
                 StreamItem::Message(m) => shared.emit(Event::Message { tab, run, message: m, batch: bi, batch_start_line: batch_line }),
                 StreamItem::Done { error, cancelled: c } => {
                     if let Some(rs) = current.take() {
+                        if let Some(s) = &sink {
+                            // the set ended without a clean ResultSetEnd: the writer must discard it
+                            let why = if c || cancelled { "cancelled".to_string() } else { error.as_ref().map(|e| e.message.clone()).unwrap_or_else(|| "the query ended unexpectedly".into()) };
+                            let _ = sink_push(s, SinkMsg::Failed(why), rx).await;
+                        }
                         rs.set_state(if c { RunState::Cancelled } else if error.is_some() { RunState::Error { message: error.as_ref().map(|e| e.message.clone()).unwrap_or_default() } } else { RunState::Complete });
                         shared.emit(Event::ResultSetDone { tab, run, index: rs.index, rows: rows_in_set });
                         rs_index += 1;
@@ -260,6 +326,10 @@ async fn run_script(
                 break 'batches;
             }
         }
+    }
+    if let Some(s) = &sink {
+        let end = if cancelled { SinkMsg::Failed("cancelled".into()) } else if failed { SinkMsg::Failed("the query failed".into()) } else { SinkMsg::RunEnd };
+        let _ = sink_push(s, end, rx).await;
     }
     shared.emit(Event::RunDone { tab, run, cancelled, failed, elapsed: started.elapsed(), total_rows });
     false

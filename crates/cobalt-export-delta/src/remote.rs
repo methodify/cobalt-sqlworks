@@ -55,27 +55,37 @@ pub async fn remote_table_exists(target: &RemoteTarget) -> Result<bool> {
 
 /// Write the visible rows of `rs` as a Delta table at the remote target.
 pub async fn write_delta_remote(rs: &cobalt_results::ResultSet, target: &RemoteTarget, opts: &DeltaOptions, progress: &mut (dyn FnMut(crate::Progress) -> bool + Send)) -> Result<crate::ExportStats> {
+    write_delta_remote_source(&cobalt_export::Source::Set(rs), target, opts, progress).await
+}
+
+/// [`write_delta_remote`] over any [`cobalt_export::Source`], including a live query stream.
+pub async fn write_delta_remote_source(source: &cobalt_export::Source<'_>, target: &RemoteTarget, opts: &DeltaOptions, progress: &mut (dyn FnMut(crate::Progress) -> bool + Send)) -> Result<crate::ExportStats> {
     register_cloud_handlers();
     let started = std::time::Instant::now();
     let is_table = remote_table_exists(target).await?;
     if opts.mode == crate::DeltaMode::Create && is_table {
         return Err(DeltaError::Exists(std::path::PathBuf::from(target.display())));
     }
+    let src_schema = source.schema();
     for p in &opts.partition_columns {
-        if !rs.schema.fields().iter().any(|f| f.name() == p) {
+        if !src_schema.fields().iter().any(|f| f.name() == p) {
             return Err(DeltaError::UnknownPartitionColumn(p.clone()));
         }
     }
-    let schema: arrow::datatypes::SchemaRef = std::sync::Arc::new(crate::delta_compatible_schema(&rs.schema));
+    let schema: arrow::datatypes::SchemaRef = std::sync::Arc::new(crate::delta_compatible_schema(&src_schema));
     let kernel_schema: deltalake::kernel::StructType = deltalake::kernel::engine::arrow_conversion::TryIntoKernel::try_into_kernel(schema.as_ref())?;
-    let (rows, bytes) = crate::write_inner(rs, &target.url, Some(&target.storage_options), opts, is_table, schema, kernel_schema, progress).await?;
+    let (rows, bytes) = crate::write_inner(source, &target.url, Some(&target.storage_options), opts, is_table, schema, kernel_schema, progress).await?;
     tracing::info!(target = %target.display(), rows, bytes, mode = ?opts.mode, "remote delta export complete");
     Ok(crate::ExportStats { rows, bytes, elapsed: started.elapsed(), path: std::path::PathBuf::from(target.display()), warnings: Vec::new() })
 }
 
 pub fn write_delta_remote_blocking(rs: &cobalt_results::ResultSet, target: &RemoteTarget, opts: &DeltaOptions, progress: &mut (dyn FnMut(crate::Progress) -> bool + Send)) -> Result<crate::ExportStats> {
+    write_delta_remote_source_blocking(&cobalt_export::Source::Set(rs), target, opts, progress)
+}
+
+pub fn write_delta_remote_source_blocking(source: &cobalt_export::Source<'_>, target: &RemoteTarget, opts: &DeltaOptions, progress: &mut (dyn FnMut(crate::Progress) -> bool + Send)) -> Result<crate::ExportStats> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| DeltaError::Io(e))?;
-    rt.block_on(write_delta_remote(rs, target, opts, progress))
+    rt.block_on(write_delta_remote_source(source, target, opts, progress))
 }
 
 /// Upload a local file (e.g. a Parquet file just written) to the remote target as one object.
