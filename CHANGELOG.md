@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.1 — 2026-09-21
+
+- Object explorer: **Describe on hover** — hover a table, view or table type to see its columns
+  with types and nullability (identity columns highlighted). Columns load on first hover and are
+  cached on the node.
+- **Go to Object** (Ctrl+Shift+O, or `#` in the command palette): fuzzy-find any table, view or
+  procedure the app knows about — catalogs of connected tabs plus whatever the Servers tree has
+  expanded — and open it (SELECT TOP 1000, or a script for procedures) in one keystroke.
+- **Command-line launch**: `cobalt file.sql other.sqlplan -S <connection> -d <database>`. Files
+  open in tabs; `-S` matching a saved connection (name or server) opens a query tab on it, an
+  unknown server opens the connection editor pre-filled. The installers register `.sql` and
+  `.sqlplan` so double-clicking a file opens it in Cobalt.
+- Read-only guard: connections with the guard now show a **lock badge** on the tab title and the
+  Servers row, not only in the toolbar.
+- Save results / Run to File: the dialog **remembers the last format** you chose (as well as the
+  folder), and the completion message in Messages has an **Open folder** button for local targets.
+
 ## 0.3.0 — 2026-09-21
 
 - **Run to File** (Query menu, toolbar, Ctrl+Shift+F5): run a query straight into a file or a

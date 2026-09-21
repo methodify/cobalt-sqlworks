@@ -291,6 +291,9 @@ impl EditorTab {
     }
     pub fn display_title(&self) -> String {
         let mut t = self.title.clone();
+        if self.profile.as_ref().map(|p| p.read_only_guard).unwrap_or(false) {
+            t = format!("{} {t}", egui_phosphor::regular::LOCK_SIMPLE);
+        }
         if self.is_dirty() {
             t.push_str(" •");
         }
@@ -430,6 +433,8 @@ pub struct MessageLine {
     /// Editor line to jump to when clicked.
     pub line: Option<u32>,
     pub at: Instant,
+    /// A file this message is about (an export target): offers "Open folder".
+    pub path: Option<PathBuf>,
 }
 
 pub struct PlanView {
@@ -635,6 +640,8 @@ pub struct AppState {
 #[derive(Debug, Clone)]
 pub enum SettingsPatch {
     LastExportDir(String),
+    /// Extension of the last export format chosen (`csv`, `parquet`, `delta`…).
+    LastExportFormat(String),
     Theme(ThemeChoice),
     UiScale(f32),
 }
@@ -842,7 +849,7 @@ impl AppState {
                     if let Some(r) = &mut t.run {
                         if r.is_live() {
                             r.state = RunViewState::Failed;
-                            r.messages.push(MessageLine { text: "Connection closed.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now() });
+                            r.messages.push(MessageLine { text: "Connection closed.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
                         }
                     }
                 }
@@ -851,7 +858,7 @@ impl AppState {
                 if let Some(t) = self.tab_mut(tab) {
                     if let Some(r) = &mut t.run {
                         r.state = RunViewState::Failed;
-                        r.messages.push(MessageLine { text: "Not connected.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now() });
+                        r.messages.push(MessageLine { text: "Not connected.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
                     }
                     t.conn = ConnState::Disconnected;
                 }
@@ -867,7 +874,7 @@ impl AppState {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.current_batch = batch;
                     if r.batches > 1 || batch > 0 {
-                        r.messages.push(MessageLine { text: format!("Started executing batch {} at line {}", batch + 1, start_line), is_error: false, is_batch_header: true, line: Some(start_line), at: Instant::now() });
+                        r.messages.push(MessageLine { text: format!("Started executing batch {} at line {}", batch + 1, start_line), is_error: false, is_batch_header: true, line: Some(start_line), at: Instant::now(), path: None });
                     }
                 }
             }
@@ -890,7 +897,7 @@ impl AppState {
                                 }
                             }
                         } else {
-                            r.messages.push(MessageLine { text: format!("({} row{} returned)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now() });
+                            r.messages.push(MessageLine { text: format!("({} row{} returned)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
                         }
                     }
                     if r.paused_set == Some(index) {
@@ -924,13 +931,13 @@ impl AppState {
                         }
                     }
                     text.push_str(&message.message);
-                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, at: Instant::now() });
+                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, at: Instant::now(), path: None });
                 }
             }
             Event::RowsAffected { tab, run, rows } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.rows_affected.push(rows);
-                    r.messages.push(MessageLine { text: format!("({} row{} affected)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now() });
+                    r.messages.push(MessageLine { text: format!("({} row{} affected)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
                 }
             }
             Event::BatchDone { tab, run, batch: _, error: _, elapsed: _ } => {
@@ -953,7 +960,7 @@ impl AppState {
                     } else {
                         format!("Total execution time: {}", fmt_duration(elapsed))
                     };
-                    r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, at: Instant::now() });
+                    r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
                     let history_id = r.history_id;
                     let has_error = r.has_error();
                     out.push(Followup::FinishHistory { history_id, elapsed, rows: total_rows, cancelled, failed: failed || has_error, error: r.messages.iter().find(|m| m.is_error).map(|m| m.text.clone()) });

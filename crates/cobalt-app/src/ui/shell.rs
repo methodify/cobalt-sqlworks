@@ -47,6 +47,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             palette::PaletteItem::Open(id, db) => {
                 ops::new_query_tab(f.state, f.cx, Some(id), Some(db), None, false);
             }
+            palette::PaletteItem::Object(profile, obj) => {
+                use cobalt_core::ObjectKind;
+                let action = match obj.kind {
+                    ObjectKind::Table | ObjectKind::View | ObjectKind::Synonym | ObjectKind::TableFunction => crate::ui::servers::TreeAction::SelectTop { profile, obj },
+                    ObjectKind::Procedure => crate::ui::servers::TreeAction::Script { profile, obj, kind: cobalt_driver::ScriptKind::Execute },
+                    _ => crate::ui::servers::TreeAction::Script { profile, obj, kind: cobalt_driver::ScriptKind::Create },
+                };
+                ops::tree_action(f.state, f.cx, action);
+            }
         }
     }
     crate::ui::dialogs::show(ctx, f);
@@ -1094,6 +1103,11 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::CommandPalette => {
             state.palette_open = !state.palette_open;
             state.palette_query.clear();
+            state.palette_selected = 0;
+        }
+        Command::FindObject => {
+            state.palette_open = true;
+            state.palette_query = "#".into();
             state.palette_selected = 0;
         }
         Command::ToggleSidebar => state.sidebar_visible = !state.sidebar_visible,

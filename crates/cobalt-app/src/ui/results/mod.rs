@@ -331,6 +331,17 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                 actions.push(ResultsAction::JumpToLine(line));
                             }
                             r.on_hover_text(format!("Go to line {line}"));
+                        } else if let Some(path) = &m.path {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(text);
+                                let b = ui.small_button(format!("{} Open folder", icons::FOLDER_OPEN));
+                                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "open export folder"));
+                                if b.clicked() {
+                                    if let Some(parent) = path.parent() {
+                                        let _ = open::that(parent);
+                                    }
+                                }
+                            });
                         } else {
                             ui.label(text);
                         }

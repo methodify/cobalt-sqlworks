@@ -62,6 +62,8 @@ pub struct CobaltApp {
     applied_scale: f32,
     applied_theme: Option<bool>,
     frames: u64,
+    /// Command-line request, applied on the first frame.
+    launch: Option<ops::LaunchArgs>,
 }
 
 impl CobaltApp {
@@ -134,6 +136,7 @@ impl CobaltApp {
             applied_scale: 1.0,
             applied_theme: None,
             frames: 0,
+            launch: ops::LaunchArgs::parse(std::env::args().skip(1)),
         };
         app.applied_scale = app.settings.appearance.ui_scale;
         app.applied_theme = Some(app.theme.is_dark());
@@ -191,6 +194,10 @@ impl CobaltApp {
         let mut skip_request: Option<String> = None;
         {
             let cx = make_ctx!(self, ctx, &toasts);
+            // command-line launch (files to open, -S server -d database), once the UI exists
+            if let Some(launch) = self.launch.take() {
+                ops::apply_launch(&mut self.state, &cx, launch);
+            }
             // session events
             let events = self.session.drain();
             let mut followups = Vec::new();
@@ -276,6 +283,7 @@ impl CobaltApp {
         for p in patches {
             match p {
                 SettingsPatch::LastExportDir(d) => s.export.last_dir = Some(d),
+                SettingsPatch::LastExportFormat(f) => s.export.last_format = Some(f),
                 SettingsPatch::Theme(t) => s.appearance.theme = t,
                 SettingsPatch::UiScale(z) => s.appearance.ui_scale = z,
             }

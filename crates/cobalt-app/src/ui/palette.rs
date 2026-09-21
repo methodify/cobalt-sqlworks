@@ -4,7 +4,7 @@ use crate::commands::{Command, Keymap, COMMANDS};
 use crate::state::AppState;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::key_chip;
-use cobalt_core::ProfileId;
+use cobalt_core::{ObjectRef, ProfileId};
 use egui::{Key, RichText, Ui, Vec2};
 
 #[derive(Clone, Debug)]
@@ -12,6 +12,43 @@ pub enum PaletteItem {
     Command(Command),
     Connect(ProfileId),
     Open(ProfileId, String),
+    /// A table/view/procedure known to the catalog cache (Go to Object).
+    Object(ProfileId, ObjectRef),
+}
+
+/// Every object the app currently knows about: catalogs loaded for completion on connected tabs,
+/// plus whatever the Servers tree has expanded. De-duplicated per (connection, database, object).
+fn known_objects(state: &AppState) -> Vec<(ProfileId, ObjectRef)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    let mut push = |pid: ProfileId, o: &ObjectRef| {
+        let key = (pid, o.database.to_ascii_lowercase(), o.schema.to_ascii_lowercase(), o.name.to_ascii_lowercase());
+        if seen.insert(key) {
+            out.push((pid, o.clone()));
+        }
+    };
+    for t in &state.tabs {
+        if let (Some(p), Some(cat)) = (&t.profile, &t.catalog) {
+            for o in &cat.objects {
+                push(p.id, o);
+            }
+        }
+    }
+    for (pid, node) in &state.library.servers {
+        for dbn in node.db_nodes.values() {
+            if let Some(objs) = dbn.objects.get() {
+                for o in objs {
+                    push(*pid, o);
+                }
+            }
+            if let Some(cat) = dbn.catalog.get() {
+                for o in &cat.objects {
+                    push(*pid, o);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
@@ -50,18 +87,30 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, keymap: &Keymap) -
     let mut chosen = None;
     let mut close = false;
     let query = state.palette_query.clone();
-    // build list
+    // `#name` = Go to Object: search the catalog cache instead of commands
+    let object_mode = query.starts_with('#');
     let mut items: Vec<(i32, PaletteItem, String, String)> = Vec::new();
-    for c in COMMANDS {
-        let text = format!("{}: {}", c.category.label(), c.label);
-        if let Some(s) = fuzzy_score(&query, &text) {
-            items.push((s, PaletteItem::Command(c.cmd), text, keymap.shortcut_text(ui.ctx(), c.cmd)));
+    if object_mode {
+        let q = query[1..].trim().to_string();
+        for (pid, o) in known_objects(state) {
+            let text = format!("{}.{}", o.schema, o.name);
+            if let Some(s) = fuzzy_score(&q, &text) {
+                let who = state.library.profile(pid).map(|p| p.display_name()).unwrap_or_default();
+                items.push((s, PaletteItem::Object(pid, o.clone()), text, format!("{} · {} · {who}", o.kind.label(), o.database)));
+            }
         }
-    }
-    for p in &state.library.profiles {
-        let text = format!("Connect: {}", p.display_name());
-        if let Some(s) = fuzzy_score(&query, &text) {
-            items.push((s - 1, PaletteItem::Connect(p.id), text, p.server.clone()));
+    } else {
+        for c in COMMANDS {
+            let text = format!("{}: {}", c.category.label(), c.label);
+            if let Some(s) = fuzzy_score(&query, &text) {
+                items.push((s, PaletteItem::Command(c.cmd), text, keymap.shortcut_text(ui.ctx(), c.cmd)));
+            }
+        }
+        for p in &state.library.profiles {
+            let text = format!("Connect: {}", p.display_name());
+            if let Some(s) = fuzzy_score(&query, &text) {
+                items.push((s - 1, PaletteItem::Connect(p.id), text, p.server.clone()));
+            }
         }
     }
     items.sort_by(|a, b| b.0.cmp(&a.0).then(a.2.cmp(&b.2)));
@@ -91,7 +140,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, keymap: &Keymap) -
     egui::Area::new(egui::Id::new("palette")).order(egui::Order::Foreground).fixed_pos(egui::pos2(screen.center().x - width / 2.0, screen.top() + 80.0)).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).inner_margin(8.0).shadow(egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(90) }).show(ui, |ui| {
             ui.set_width(width);
-            let r = ui.add(egui::TextEdit::singleline(&mut state.palette_query).hint_text("Type a command or connection name…").desired_width(f32::INFINITY).font(egui::FontId::proportional(16.0)).id(egui::Id::new("palette-input")));
+            let r = ui.add(egui::TextEdit::singleline(&mut state.palette_query).hint_text("Type a command or connection name… (# to find a table, view or procedure)").desired_width(f32::INFINITY).font(egui::FontId::proportional(16.0)).id(egui::Id::new("palette-input")));
             r.request_focus();
             if r.changed() {
                 state.palette_selected = 0;
@@ -122,7 +171,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, keymap: &Keymap) -
                     }
                 }
                 if items.is_empty() {
-                    ui.label(RichText::new("No matches").color(theme.text_faint));
+                    ui.label(RichText::new(if object_mode { "No matching objects. Connect a tab or expand a database in Servers so its objects are known." } else { "No matches" }).color(theme.text_faint));
                 }
             });
         });

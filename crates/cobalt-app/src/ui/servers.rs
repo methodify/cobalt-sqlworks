@@ -131,7 +131,14 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
     let node = lib.servers.entry(p.id).or_default();
     let connected = node.creds.is_some();
     let loading = node.databases.is_loading();
-    let detail = node.engine.as_ref().map(|e| e.short_label());
+    let detail = {
+        let engine = node.engine.as_ref().map(|e| e.short_label());
+        match (p.read_only_guard, engine) {
+            (true, Some(e)) => Some(format!("{} read-only · {e}", icons::LOCK_SIMPLE)),
+            (true, None) => Some(format!("{} read-only", icons::LOCK_SIMPLE)),
+            (false, e) => e,
+        }
+    };
     let icon = if p.looks_like_fabric() { icons::CLOUD } else if p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
@@ -386,6 +393,45 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     }
 }
 
+/// The hover card for a table-like object: name, kind, and its columns (name · type · nullability).
+fn describe_ui(ui: &mut Ui, theme: &Theme, obj: &ObjectRef, cols: Option<&Loadable<Vec<ColumnInfo>>>) {
+    ui.set_max_width(460.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(obj.qualified()).strong());
+        ui.label(RichText::new(obj.kind.label()).small().color(theme.text_muted));
+    });
+    match cols {
+        Some(Loadable::Loaded(cols)) => {
+            ui.label(RichText::new(format!("{} column{}", cols.len(), if cols.len() == 1 { "" } else { "s" })).small().color(theme.text_faint));
+            egui::Grid::new(("describe", &obj.database, &obj.schema, &obj.name)).num_columns(3).spacing([12.0, 2.0]).show(ui, |ui| {
+                for c in cols.iter().take(60) {
+                    let mut name = RichText::new(&c.name).monospace();
+                    if c.is_identity {
+                        name = name.color(theme.accent);
+                    }
+                    ui.label(name);
+                    ui.label(RichText::new(c.sql_type.to_string()).monospace().color(theme.text_muted));
+                    ui.label(RichText::new(if c.nullable { "null" } else { "not null" }).small().color(theme.text_faint));
+                    ui.end_row();
+                }
+            });
+            if cols.len() > 60 {
+                ui.label(RichText::new(format!("… and {} more (expand Columns)", cols.len() - 60)).small().color(theme.text_faint));
+            }
+        }
+        Some(Loadable::Failed(e)) => {
+            ui.colored_label(theme.error, e.lines().next().unwrap_or(""));
+        }
+        _ => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new("Loading columns…").small().color(theme.text_muted));
+            });
+        }
+    }
+    ui.label(RichText::new("Double-click: SELECT TOP 1000 · drag into the editor").small().color(theme.text_faint));
+}
+
 fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfile, obj: &ObjectRef, depth: usize, actions: &mut Vec<TreeAction>) {
     let oid = obj.object_id.unwrap_or(0);
     let expandable = matches!(obj.kind, ObjectKind::Table | ObjectKind::View | ObjectKind::Procedure | ObjectKind::TableFunction | ObjectKind::ScalarFunction | ObjectKind::TableType);
@@ -409,6 +455,14 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     if r.response.drag_started() {
         // drag into editor: keep it simple — copy name to a drag payload
         r.response.dnd_set_drag_payload(obj.bracketed());
+    }
+    // Describe on hover: columns and types, fetched on first hover and cached on the node.
+    if matches!(obj.kind, ObjectKind::Table | ObjectKind::View | ObjectKind::TableType | ObjectKind::TableFunction) && r.response.contains_pointer() {
+        if !dbn.columns.contains_key(&oid) {
+            actions.push(TreeAction::LoadObjectChildren { profile: p.id, obj: obj.clone(), sub: SubFolder::Columns });
+        }
+        let cols = dbn.columns.get(&oid);
+        r.response.clone().on_hover_ui(|ui| describe_ui(ui, theme, obj, cols));
     }
     r.response.context_menu(|ui| {
         match obj.kind {

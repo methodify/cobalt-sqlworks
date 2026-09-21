@@ -141,6 +141,9 @@ pub struct ExportSettings {
     pub delta_mode: String,
     pub open_after_save: bool,
     pub last_dir: Option<String>,
+    /// Extension of the format chosen last time (`csv`, `parquet`, `delta`…).
+    #[serde(default)]
+    pub last_format: Option<String>,
 }
 impl Default for ExportSettings {
     fn default() -> Self {
@@ -163,6 +166,7 @@ impl Default for ExportSettings {
             delta_mode: "create".into(),
             open_after_save: false,
             last_dir: None,
+            last_format: None,
         }
     }
 }

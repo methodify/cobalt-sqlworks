@@ -82,6 +82,10 @@ formats = ["nsis", "deb", "appimage"]
 out-dir = "../../dist/packages"
 before-packaging-command = ""
 binaries = [{ path = "cobalt", main = true }]
+file-associations = [
+    { extensions = ["sql"], description = "SQL script", mime-type = "application/sql" },
+    { extensions = ["sqlplan"], description = "SQL Server execution plan", mime-type = "application/xml" },
+]
 icons = ["../../assets/icon.ico", "../../assets/icons/32x32.png", "../../assets/icons/128x128.png", "../../assets/icons/128x128@2x.png", "../../assets/icons/icon_256.png"]
 
 [package.metadata.packager.nsis]

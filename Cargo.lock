@@ -1257,7 +1257,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cobalt-app"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1307,7 +1307,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-auth"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "azure_core",
  "azure_identity",
@@ -1332,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow-schema",
  "chrono",
@@ -1344,7 +1344,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-driver"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1367,7 +1367,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1387,7 +1387,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export-delta"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "chrono",
@@ -1406,7 +1406,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-fabric"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "reqwest 0.12.28",
  "serde",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-plan"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cobalt-core",
  "quick-xml 0.42.0",
@@ -1429,7 +1429,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-results"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-sql"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "cobalt-core",
  "once_cell",
@@ -1460,7 +1460,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-store"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "cobalt-core",

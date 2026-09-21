@@ -55,6 +55,82 @@ pub struct ExportDone {
     pub result: Result<String, String>,
     /// Set for run-to-export: the tab whose run fed the export (the message lands in its Messages).
     pub tab: Option<TabId>,
+    /// Local output (first result set) so the message can offer "Open folder".
+    pub path: Option<PathBuf>,
+}
+
+/// What the command line asked for: `cobalt [file.sql|plan.sqlplan]… [-S server] [-d database]`.
+#[derive(Debug, Default, Clone)]
+pub struct LaunchArgs {
+    pub files: Vec<PathBuf>,
+    pub server: Option<String>,
+    pub database: Option<String>,
+}
+
+impl LaunchArgs {
+    /// `None` when nothing was asked for.
+    pub fn parse(args: impl Iterator<Item = String>) -> Option<Self> {
+        let mut out = LaunchArgs::default();
+        let mut args = args.peekable();
+        while let Some(a) = args.next() {
+            match a.as_str() {
+                "-S" | "--server" => out.server = args.next(),
+                "-d" | "-D" | "--database" => out.database = args.next(),
+                s if s.starts_with("-S") && s.len() > 2 => out.server = Some(s[2..].to_string()),
+                s if (s.starts_with("-d") || s.starts_with("-D")) && s.len() > 2 => out.database = Some(s[2..].to_string()),
+                s if s.starts_with('-') => tracing::warn!(arg = s, "unknown command-line option ignored"),
+                s => out.files.push(PathBuf::from(s.strip_prefix("file://").unwrap_or(s))),
+            }
+        }
+        if out.files.is_empty() && out.server.is_none() && out.database.is_none() { None } else { Some(out) }
+    }
+}
+
+/// Open the files and/or connection the command line asked for. A `-S` that matches a saved
+/// connection (name or server) opens a query tab on it; otherwise the connection editor opens
+/// pre-filled so one click saves and connects.
+pub fn apply_launch(state: &mut AppState, cx: &Ctx, launch: LaunchArgs) {
+    let mut opened_tab: Option<usize> = None;
+    if let Some(server) = &launch.server {
+        let want = server.trim().to_ascii_lowercase();
+        let found = state.library.profiles.iter().find(|p| p.server.eq_ignore_ascii_case(&want) || p.display_name().eq_ignore_ascii_case(&want) || p.name.as_deref().map(|n| n.eq_ignore_ascii_case(&want)).unwrap_or(false)).map(|p| p.id);
+        match found {
+            Some(id) => {
+                let idx = new_query_tab(state, cx, Some(id), launch.database.clone(), None, false);
+                opened_tab = Some(idx);
+            }
+            None => {
+                open_connection_dialog(state, cx, None, None, None);
+                if let Dialog::Connection(d) = &mut state.dialog {
+                    d.profile.server = server.clone();
+                    d.profile.database = launch.database.clone();
+                }
+            }
+        }
+    }
+    for path in &launch.files {
+        match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("sqlplan") => open_plan_file(state, cx, path.clone()),
+            _ => {
+                if let (Some(idx), true) = (opened_tab.take(), state.tabs.get(opened_tab.unwrap_or(usize::MAX)).map(|t| t.text.trim().is_empty()).unwrap_or(false)) {
+                    // put the first file into the tab that -S just opened
+                    match std::fs::read_to_string(path) {
+                        Ok(text) => {
+                            let t = &mut state.tabs[idx];
+                            t.text = text;
+                            t.file_path = Some(path.clone());
+                            t.title = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "query".into());
+                            t.custom_title = true;
+                            t.mark_saved();
+                        }
+                        Err(e) => cx.toast(ToastKind::Error, format!("Could not open {}: {e}", path.display())),
+                    }
+                } else {
+                    open_file(state, cx, Some(path.clone()));
+                }
+            }
+        }
+    }
 }
 
 /// Rows each result set keeps in the grid while a run streams to an export target.
@@ -1248,11 +1324,13 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
     let Some(t) = state.tabs.get(idx) else { return };
     let base = t.title.split(" · ").next().unwrap_or("results").replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_");
     let dir = cx.settings.export.last_dir.clone().or_else(|| directories::UserDirs::new().and_then(|u| u.download_dir().map(|d| d.to_string_lossy().to_string()))).unwrap_or_default();
-    let path = std::path::Path::new(&dir).join(format!("{base}.csv")).to_string_lossy().to_string();
+    let format_index = cx.settings.export.last_format.as_deref().and_then(|f| FORMAT_LABELS.iter().position(|(_, e)| *e == f)).unwrap_or(0);
+    let ext = FORMAT_LABELS[format_index].1;
+    let path = std::path::Path::new(&dir).join(if ext == "delta" { base.clone() } else { format!("{base}.{ext}") }).to_string_lossy().to_string();
     state.dialog = Dialog::Export(Box::new(ExportDialog {
         tab_index: idx,
         set_index: set,
-        format_index: 0,
+        format_index,
         path,
         selection_only,
         delta_mode: 0,
@@ -1332,6 +1410,7 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
         }
         None
     };
+    state.settings_patch.push(SettingsPatch::LastExportFormat(ext.to_string()));
     let job = ExportJob {
         ext: ext.to_string(),
         path: d.path.trim().to_string(),
@@ -1404,15 +1483,17 @@ fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) 
                 tab: TabId,
                 egui: egui::Context,
                 result: Option<Result<String, String>>,
+                path: Option<PathBuf>,
             }
             impl Drop for DoneGuard {
                 fn drop(&mut self) {
                     let result = self.result.take().unwrap_or_else(|| Err("the export thread stopped unexpectedly".into()));
-                    let _ = self.tx.send(ExportDone { result, tab: Some(self.tab) });
+                    let _ = self.tx.send(ExportDone { result, tab: Some(self.tab), path: self.path.take() });
                     self.egui.request_repaint();
                 }
             }
-            let mut guard = DoneGuard { tx: done_tx, tab, egui: egui.clone(), result: None };
+            let local_path = if job.onelake.is_none() { Some(job.local_path(0)) } else { None };
+            let mut guard = DoneGuard { tx: done_tx, tab, egui: egui.clone(), result: None, path: local_path };
             let started = Instant::now();
             let token = match token_rx {
                 Some(trx) => match trx.blocking_recv() {
@@ -1593,6 +1674,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
         d.result = Some(Err("Choose a file path.".into()));
         return;
     }
+    state.settings_patch.push(SettingsPatch::LastExportFormat(ext.to_string()));
     d.running = true;
     d.result = None;
     d.progress = Some((0, rs.visible_count()));
@@ -1657,7 +1739,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 None => match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
                     Ok(ts) => ts.access.token.expose().to_string(),
                     Err(e) => {
-                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")), tab: None });
+                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")), tab: None, path: None });
                         egui2.request_repaint();
                         return;
                     }
@@ -1673,7 +1755,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             let target = match cobalt_export_delta::RemoteTarget::onelake(&ws_id, &lh_id, &relative, &token) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx2.send(ExportDone { result: Err(e.to_string()), tab: None });
+                    let _ = tx2.send(ExportDone { result: Err(e.to_string()), tab: None, path: None });
                     egui2.request_repaint();
                     return;
                 }
@@ -1708,7 +1790,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
             })
             .await
             .unwrap_or_else(|e| Err(format!("export thread failed: {e}")));
-            let _ = tx2.send(ExportDone { result, tab: None });
+            let _ = tx2.send(ExportDone { result, tab: None, path: None });
             egui2.request_repaint();
         });
         return;
@@ -1735,7 +1817,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 let opts = cobalt_export::ExportOptions::from_settings(&settings);
                 cobalt_export::export_to_file(&rs, format, &path, &opts, &fmt, &mut progress).map(|s| format!("Wrote {} rows ({}) to {} in {:.1}s", fmt_count(s.rows as u64), humansize::format_size(s.bytes, humansize::DECIMAL), path.display(), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
             };
-            let _ = tx.send(ExportDone { result, tab: None });
+            let _ = tx.send(ExportDone { result, tab: None, path: None });
             egui.request_repaint();
         })
         .ok();
@@ -1762,7 +1844,8 @@ pub fn on_export_done(state: &mut AppState, cx: &Ctx, done: ExportDone) {
                 Ok(m) => (m.clone(), false),
                 Err(e) => (format!("Export failed: {e}"), true),
             };
-            r.messages.push(MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now() });
+            let path = if is_error { None } else { done.path.clone() };
+            r.messages.push(MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path });
         }
         match done.result {
             Ok(m) => cx.toast(ToastKind::Success, m),
@@ -1865,5 +1948,35 @@ pub fn script_kind_label(k: ScriptKind) -> &'static str {
         ScriptKind::Drop => "DROP",
         ScriptKind::Select => "SELECT",
         ScriptKind::Execute => "EXECUTE",
+    }
+}
+
+#[cfg(test)]
+mod launch_tests {
+    use super::LaunchArgs;
+
+    fn parse(s: &str) -> Option<LaunchArgs> {
+        LaunchArgs::parse(s.split_whitespace().map(str::to_string))
+    }
+
+    #[test]
+    fn nothing_asked() {
+        assert!(parse("").is_none());
+    }
+
+    #[test]
+    fn files_and_connection() {
+        let l = parse("a.sql b.sqlplan -S local -d cobalt_test").unwrap();
+        assert_eq!(l.files.len(), 2);
+        assert_eq!(l.server.as_deref(), Some("local"));
+        assert_eq!(l.database.as_deref(), Some("cobalt_test"));
+    }
+
+    #[test]
+    fn sqlcmd_style_glued_flags_and_file_urls() {
+        let l = parse("-Smyserver -Dmydb file:///tmp/x.sql --bogus").unwrap();
+        assert_eq!(l.server.as_deref(), Some("myserver"));
+        assert_eq!(l.database.as_deref(), Some("mydb"));
+        assert_eq!(l.files[0].to_string_lossy(), "/tmp/x.sql");
     }
 }

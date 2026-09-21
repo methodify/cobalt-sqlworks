@@ -31,6 +31,7 @@ pub enum Command {
     RefreshTree,
     RefreshDatabases,
     RefreshIntelliSense,
+    FindObject,
     // query
     RunQuery,
     RunCurrentStatement,
@@ -160,6 +161,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::ChangeConnection, id: "connection.change", label: "Change Connection…", category: Category::Connection, default_key: None },
     CommandInfo { cmd: Command::RefreshTree, id: "connection.refresh_tree", label: "Refresh Object Explorer", category: Category::Connection, default_key: None },
     CommandInfo { cmd: Command::RefreshDatabases, id: "connection.refresh_databases", label: "Refresh Database List", category: Category::Connection, default_key: None },
+    CommandInfo { cmd: Command::FindObject, id: "connection.find_object", label: "Go to Object…", category: Category::Connection, default_key: sc(CTRL_SHIFT, Key::O) },
     CommandInfo { cmd: Command::RefreshIntelliSense, id: "connection.refresh_intellisense", label: "Refresh IntelliSense Cache", category: Category::Connection, default_key: sc(NONE, Key::F7) },
     CommandInfo { cmd: Command::RunQuery, id: "query.run", label: "Run Query", category: Category::Query, default_key: sc(NONE, Key::F5) },
     CommandInfo { cmd: Command::RunCurrentStatement, id: "query.run_current", label: "Run Current Statement", category: Category::Query, default_key: sc(CTRL, Key::Enter) },
