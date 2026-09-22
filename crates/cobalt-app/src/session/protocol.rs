@@ -35,6 +35,9 @@ pub enum Command {
     /// `start_line` maps batch line numbers back to the editor (1-based line of the selection start).
     Run { tab: TabId, run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel { tab: TabId },
+    /// Import Data: bulk-load Arrow batches (arriving on `rx` from a reader thread) into `table` on
+    /// the tab's connection, creating it first when `create_sql` is given. One transaction.
+    Import { tab: TabId, table: String, create_sql: Option<String>, columns: Vec<ColumnInfo>, rx: std::sync::mpsc::Receiver<std::result::Result<arrow::array::RecordBatch, String>>, cancel: Arc<std::sync::atomic::AtomicBool> },
     /// Resume a paused (row-capped) result set. `None` = fetch everything.
     FetchMore { tab: TabId, rows: Option<u64> },
     ChangeDatabase { tab: TabId, database: String },
@@ -79,6 +82,10 @@ pub enum Event {
     RunDone { tab: TabId, run: RunId, cancelled: bool, failed: bool, elapsed: Duration, total_rows: u64 },
     DatabaseChanged { tab: TabId, database: String },
     DatabaseChangeFailed { tab: TabId, error: String },
+    ImportStarted { tab: TabId },
+    ImportProgress { tab: TabId, rows: u64 },
+    /// Rows loaded and elapsed, or the error (after ROLLBACK).
+    ImportDone { tab: TabId, result: Result<(u64, Duration), String> },
     Pong { tab: TabId, ok: bool },
     Metadata { req: RequestId, profile: ProfileId, result: Result<MetadataResponse, String> },
 }

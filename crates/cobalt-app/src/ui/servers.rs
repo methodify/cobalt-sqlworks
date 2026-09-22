@@ -29,6 +29,8 @@ pub enum TreeAction {
     InsertIntoEditor(String),
     MoveProfile { profile: ProfileId, group: Option<GroupId> },
     ToggleSystemDbs(ProfileId),
+    /// Import a flat file into a new or existing table of this database.
+    ImportFile { profile: ProfileId, database: String },
 }
 
 pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>) -> Vec<TreeAction> {
@@ -265,6 +267,10 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
         }
         if ui.button("Refresh").clicked() {
             actions.push(TreeAction::RefreshDatabase { profile: p.id, database: db.name.clone() });
+            ui.close();
+        }
+        if ui.button(format!("{} Import data from file…", icons::UPLOAD_SIMPLE)).clicked() {
+            actions.push(TreeAction::ImportFile { profile: p.id, database: db.name.clone() });
             ui.close();
         }
         if ui.button("Copy name").clicked() {

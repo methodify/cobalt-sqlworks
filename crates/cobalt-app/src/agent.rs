@@ -11,6 +11,7 @@
 //! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
 //! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
+//! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}` → Import Data on the active tab; `import_start`, `import_state`
 //! - `pointer {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?}` → real mouse input in screenshot pixels
 
 use crate::app::CobaltApp;
@@ -120,6 +121,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
         ConfirmWrite { .. } => "confirm_write",
         Export(_) => "export",
+        Import(_) => "import",
         ChangeConnection { .. } => "change_connection",
         ExecOptions { .. } => "exec_options",
         Rename { .. } => "rename",
@@ -471,6 +473,60 @@ impl AgentApp for CobaltApp {
                 self.state.injected_pointer.extend(steps);
                 egui.request_repaint();
                 ActionResult::ok()
+            }
+            "import" => {
+                // {path, table, schema?, existing?: bool, delimiter?, header?: bool, types?: {col: "sql type"}, exclude?: [col]}
+                let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                let table = arg_str(args, "table");
+                let schema = arg_str(args, "schema");
+                let existing = args.and_then(|a| a.get("existing")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let delimiter = arg_str(args, "delimiter");
+                let header = args.and_then(|a| a.get("header")).and_then(|v| v.as_bool());
+                let types: Vec<(String, String)> = args.and_then(|a| a.get("types")).and_then(|v| v.as_object()).map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()).unwrap_or_default();
+                let exclude: Vec<String> = args.and_then(|a| a.get("exclude")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                let start_now = !existing; // existing mode needs the table's columns first
+                self.with_ctx(egui, |s, cx| {
+                    ops::open_import_dialog(s, cx, i, Some(std::path::PathBuf::from(&path)));
+                    if let crate::state::Dialog::Import(d) = &mut s.dialog {
+                        if let Some(t) = table { d.table_name = t; }
+                        if let Some(sc) = schema { d.schema_name = sc; }
+                        let mut re = false;
+                        if let Some(dl) = delimiter { d.delimiter = dl; re = true; }
+                        if let Some(h) = header { d.has_header = h; re = true; }
+                        if re { ops::inspect_import(d); }
+                        for (k, v) in &types {
+                            if let Some(c) = d.columns.iter_mut().find(|c| c.name.eq_ignore_ascii_case(k)) { c.sql_type = v.clone(); }
+                        }
+                        for k in &exclude {
+                            if let Some(c) = d.columns.iter_mut().find(|c| c.name.eq_ignore_ascii_case(k)) { c.include = false; }
+                        }
+                        d.existing = existing;
+                    }
+                    if existing {
+                        ops::import_request_existing_columns(s, cx);
+                    } else if start_now {
+                        ops::start_import(s, cx);
+                    }
+                });
+                ActionResult::ok()
+            }
+            "import_start" => {
+                self.with_ctx(egui, |s, cx| ops::start_import(s, cx));
+                ActionResult::ok()
+            }
+            "import_state" => {
+                let v = match &self.state.dialog {
+                    crate::state::Dialog::Import(d) => json!({
+                        "open": true, "running": d.running, "rows_done": d.rows_done, "path": d.path, "table": format!("{}.{}", d.schema_name, d.table_name), "existing": d.existing,
+                        "columns": d.columns.iter().map(|c| json!({"name": c.name, "sql_type": c.sql_type, "nullable": c.nullable, "include": c.include, "source": c.source})).collect::<Vec<_>>(),
+                        "row_estimate": d.inspection.as_ref().and_then(|i| i.row_estimate), "format": d.inspection.as_ref().map(|i| i.format.label()),
+                        "existing_columns": match &d.existing_columns { crate::state::Loadable::Loaded(c) => c.len() as i64, crate::state::Loadable::Loading(_) => -1, _ => 0 },
+                        "result": d.result.as_ref().map(|r| match r { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }), "inspect_error": d.inspect_error,
+                    }),
+                    _ => json!({"open": false}),
+                };
+                ActionResult::with(&v)
             }
             "library" => {
                 // {action: export|import, path}

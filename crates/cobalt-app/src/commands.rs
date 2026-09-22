@@ -22,6 +22,7 @@ pub enum Command {
     ImportAdsSettings,
     ImportConnections,
     ExportConnections,
+    ImportFile,
     Quit,
     // connections
     NewConnection,
@@ -154,6 +155,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::ImportAdsSettings, id: "file.import_ads", label: "Import Azure Data Studio Connections…", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::ImportConnections, id: "file.import_connections", label: "Import Connections…", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::ExportConnections, id: "file.export_connections", label: "Export Connections…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::ImportFile, id: "file.import_data", label: "Import Data from File…", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::Quit, id: "file.quit", label: "Quit", category: Category::File, default_key: sc(CTRL, Key::Q) },
     CommandInfo { cmd: Command::NewConnection, id: "connection.new", label: "New Connection…", category: Category::Connection, default_key: sc(CTRL_SHIFT, Key::N) },
     CommandInfo { cmd: Command::ConnectTab, id: "connection.connect", label: "Connect", category: Category::Connection, default_key: None },

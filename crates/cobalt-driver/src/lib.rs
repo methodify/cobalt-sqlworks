@@ -139,6 +139,20 @@ pub trait Connection: Send {
         let _ = (obj, key, column);
         Err(DriverError::Unsupported("fetch_cell"))
     }
+    /// Bulk-load Arrow batches into `table` (`columns` in batch order; batches are cast to each
+    /// column's SQL type). Batches arrive on `rx` until it closes. `progress(rows_so_far)`
+    /// returning false stops the load with `Cancelled`. Wrap the call in a transaction: rows already
+    /// sent are otherwise committed by the server.
+    async fn bulk_insert(
+        &mut self,
+        table: &str,
+        columns: &[ColumnInfo],
+        rx: std::sync::mpsc::Receiver<std::result::Result<RecordBatch, String>>,
+        progress: &mut (dyn FnMut(u64) -> bool + Send),
+    ) -> Result<u64> {
+        let _ = (table, columns, rx, progress);
+        Err(DriverError::Unsupported("bulk_insert"))
+    }
 }
 
 /// Split a script into batches on `GO` lines (`GO`, `go`, `GO 3`), ignoring `GO` inside

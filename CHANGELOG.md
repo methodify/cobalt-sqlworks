@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Import Data from File** (File menu; a database's context menu in Servers): CSV/TSV/delimited
+  text, Parquet and Arrow IPC into a new or an existing table. The file's shape is inferred
+  (delimiter, header, column types) with a preview; every column's SQL type and nullability can be
+  edited before loading; existing tables take their types from the server. Rows stream from the
+  file through the tab's connection as a TDS bulk insert inside one transaction, with progress and
+  Cancel (rollback). Measured: 50,000 mixed-type rows in 0.2 s locally.
+- Editor: **per-batch timings in the gutter** after a run (red for a batch that failed), shown
+  while the text is unchanged.
+- Plan tab: a **warning badge** counts warnings and missing indexes; the plan header can insert
+  the suggested CREATE INDEX at the cursor.
+- Connection editor: paste an ADO.NET / SqlClient **connection string** and Apply to fill the
+  fields (server, port, database, auth, encryption, options). The Server field no longer steals
+  focus every frame.
+- Results grid: **Exclude this value / Exclude selected values** next to Filter to selected values.
+- History: a one-click **Run** button on every entry.
 - **Fast software rendering for GPU-less machines (VMs, RDP)**. Without a GPU the only Direct3D
   adapter is Windows' WARP, which drew a frame in ~280 ms (3–4 fps). Cobalt now picks its renderer
   at start-up: a GPU → wgpu as before; no GPU plus a Mesa llvmpipe `opengl32.dll` next to

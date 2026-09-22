@@ -168,6 +168,8 @@ pub enum MetaPurpose {
     Catalog { tab: TabId, database: String },
     /// Script as … → open a new tab with the text.
     ScriptToTab { title: String, profile: ProfileId, database: String, run: bool },
+    /// Columns of the target table for Import Data (existing-table mode).
+    ImportColumns,
     /// Databases list for a tab's dropdown.
     TabDatabases { tab: TabId },
 }
@@ -238,6 +240,8 @@ pub struct EditorTab {
     pub pending_run: Option<RunMode>,
     /// Run-to-export target consumed by the next `execute` (set by the Run to File dialog).
     pub pending_export: Option<Box<crate::ops::ExportJob>>,
+    /// Open the Import Data dialog once this tab's connection is up (tree: "Import data from file…").
+    pub pending_import: bool,
     pub snapshot_hash: u64,
 }
 
@@ -276,6 +280,7 @@ impl EditorTab {
             untitled_index,
             pending_run: None,
             pending_export: None,
+            pending_import: false,
             snapshot_hash: hash_text(""),
         }
     }
@@ -699,6 +704,7 @@ pub enum Dialog {
     ConfirmDeleteGroup { group: GroupId },
     ConfirmWrite { tab_index: usize, statement_preview: String, script: String, opts: ExecOptions, start_line: u32 },
     Export(Box<ExportDialog>),
+    Import(Box<ImportDialog>),
     ChangeConnection { tab_index: usize },
     ExecOptions { tab_index: usize, opts: ExecOptions },
     Rename { tab_index: usize, title: String },
@@ -745,6 +751,39 @@ pub struct ConnectionDialog {
     pub recent: Vec<ConnectionProfile>,
     pub group_index: usize,
     pub color_index: Option<usize>,
+}
+
+/// One column of a file being imported, as the user may edit it.
+#[derive(Clone, Debug)]
+pub struct ImportColumnEdit {
+    pub name: String,
+    pub sql_type: String,
+    pub nullable: bool,
+    pub include: bool,
+    /// The file's own type, for the hint column.
+    pub source: String,
+}
+
+pub struct ImportDialog {
+    pub tab_index: usize,
+    pub path: String,
+    /// CSV options (ignored for Parquet / Arrow).
+    pub delimiter: String,
+    pub has_header: bool,
+    pub inspection: Option<cobalt_import::Inspection>,
+    pub inspect_error: Option<String>,
+    pub columns: Vec<ImportColumnEdit>,
+    pub schema_name: String,
+    pub table_name: String,
+    /// Append to an existing table (types come from the table) instead of creating one.
+    pub existing: bool,
+    pub existing_columns: Loadable<Vec<ColumnInfo>>,
+    pub want_existing_columns: bool,
+    pub running: bool,
+    pub rows_done: u64,
+    pub started: Option<Instant>,
+    pub result: Option<Result<String, String>>,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct ExportDialog {
@@ -1003,6 +1042,44 @@ impl AppState {
                 }
             }
             Event::DatabaseChangeFailed { tab: _, error } => out.push(Followup::Toast(ToastKind::Error, error)),
+            Event::ImportStarted { tab: _ } => {
+                if let Dialog::Import(d) = &mut self.dialog {
+                    d.running = true;
+                    d.rows_done = 0;
+                    d.started = Some(Instant::now());
+                }
+            }
+            Event::ImportProgress { tab: _, rows } => {
+                if let Dialog::Import(d) = &mut self.dialog {
+                    d.rows_done = rows;
+                }
+            }
+            Event::ImportDone { tab, result } => {
+                let target = if let Dialog::Import(d) = &self.dialog { Some(format!("[{}].[{}]", d.schema_name, d.table_name)) } else { None };
+                let msg = match &result {
+                    Ok((rows, el)) => Ok(format!("Imported {} rows into {} in {:.1}s", fmt_count(*rows), target.clone().unwrap_or_default(), el.as_secs_f32())),
+                    Err(e) if e == "cancelled" => Err("Import cancelled; the transaction was rolled back.".to_string()),
+                    Err(e) => Err(format!("Import failed (rolled back): {e}")),
+                };
+                if let Dialog::Import(d) = &mut self.dialog {
+                    d.running = false;
+                    d.result = Some(msg.clone());
+                    if let Ok((rows, _)) = &result {
+                        d.rows_done = *rows;
+                    }
+                }
+                match &msg {
+                    Ok(m) => out.push(Followup::Toast(ToastKind::Success, m.clone())),
+                    Err(e) => out.push(Followup::Toast(ToastKind::Error, e.clone())),
+                }
+                if result.is_ok() {
+                    if let Some(t) = self.tab_mut(tab) {
+                        if let (Some(p), Some(db)) = (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string)) {
+                            out.push(Followup::RefreshDatabase { profile: p, database: db });
+                        }
+                    }
+                }
+            }
             Event::Pong { tab, ok } => {
                 if !ok {
                     if let Some(t) = self.tab_mut(tab) {
@@ -1088,6 +1165,18 @@ impl AppState {
                     };
                 }
             }
+            MetaPurpose::ImportColumns => {
+                if let Dialog::Import(d) = &mut self.dialog {
+                    match result {
+                        Ok(R::Columns(cols)) => {
+                            d.apply_existing_columns(&cols);
+                            d.existing_columns = Loadable::Loaded(cols);
+                        }
+                        Err(e) => d.existing_columns = Loadable::Failed(e),
+                        _ => d.existing_columns = Loadable::Failed("unexpected".into()),
+                    }
+                }
+            }
         }
         out
     }
@@ -1102,6 +1191,26 @@ pub enum Followup {
     CacheCatalog { profile: ProfileId, database: String, catalog: Arc<DatabaseCatalog> },
     OpenScriptTab { title: String, sql: String, profile: ProfileId, database: String, run: bool },
     Toast(ToastKind, String),
+    /// Reload a database's objects in the Servers tree (after an import created a table).
+    RefreshDatabase { profile: ProfileId, database: String },
+}
+
+impl ImportDialog {
+    /// Existing-table mode: take names, types and nullability from the table; file columns that
+    /// the table does not have are switched off, table columns missing from the file are noted.
+    pub fn apply_existing_columns(&mut self, cols: &[ColumnInfo]) {
+        for c in &mut self.columns {
+            match cols.iter().find(|t| t.name.eq_ignore_ascii_case(&c.name)) {
+                Some(t) => {
+                    c.name = t.name.clone();
+                    c.sql_type = t.sql_type.to_string();
+                    c.nullable = t.nullable;
+                    c.include = !t.is_computed && !t.is_identity;
+                }
+                None => c.include = false,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

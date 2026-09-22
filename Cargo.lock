@@ -1268,6 +1268,7 @@ dependencies = [
  "cobalt-export",
  "cobalt-export-delta",
  "cobalt-fabric",
+ "cobalt-import",
  "cobalt-plan",
  "cobalt-results",
  "cobalt-sql",
@@ -1415,6 +1416,18 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cobalt-import"
+version = "0.3.1"
+dependencies = [
+ "arrow",
+ "cobalt-core",
+ "parquet",
+ "tempfile",
+ "thiserror 2.0.20",
  "tracing",
 ]
 

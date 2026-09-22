@@ -11,6 +11,7 @@
 //! * [`convert`] — `COLMETADATA`/rows → `ColumnInfo` / Arrow `RecordBatch`
 //! * [`catalog`] — `sys.*` reads, [`script`] — "Script as …"
 
+mod bulk;
 mod catalog;
 mod config;
 mod connect;
@@ -221,6 +222,16 @@ impl Connection for MssqlConnection {
 
     async fn execute<'a>(&'a mut self, sql: &str, opts: &ExecOptions) -> Result<QueryStream<'a>> {
         exec::execute(self, sql, opts).await
+    }
+
+    async fn bulk_insert(
+        &mut self,
+        table: &str,
+        columns: &[ColumnInfo],
+        rx: std::sync::mpsc::Receiver<std::result::Result<RecordBatch, String>>,
+        progress: &mut (dyn FnMut(u64) -> bool + Send),
+    ) -> Result<u64> {
+        bulk::bulk_insert(self, table, columns, rx, progress).await
     }
 
     fn cancel_handle(&self) -> CancelHandle {

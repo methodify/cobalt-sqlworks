@@ -139,6 +139,7 @@ async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
             }
             Command::Run { tab, run, script, opts, start_line, sink } => route_tab(&tabs, &shared, tab, actor::TabMsg::Run { run, script, opts, start_line, sink }),
             Command::Cancel { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Cancel),
+            Command::Import { tab, table, create_sql, columns, rx, cancel } => route_tab(&tabs, &shared, tab, actor::TabMsg::Import { table, create_sql, columns, rx, cancel }),
             Command::FetchMore { tab, rows } => route_tab(&tabs, &shared, tab, actor::TabMsg::FetchMore { rows }),
             Command::ChangeDatabase { tab, database } => route_tab(&tabs, &shared, tab, actor::TabMsg::ChangeDatabase { database }),
             Command::Ping { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Ping),

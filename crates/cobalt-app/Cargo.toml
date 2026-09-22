@@ -26,6 +26,7 @@ cobalt-sql.workspace = true
 cobalt-results.workspace = true
 cobalt-export.workspace = true
 cobalt-export-delta.workspace = true
+cobalt-import.workspace = true
 cobalt-plan.workspace = true
 cobalt-fabric.workspace = true
 

@@ -91,6 +91,8 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ImportConnections);
                 item(ui, &mut cmds, Command::ExportConnections);
                 ui.separator();
+                item(ui, &mut cmds, Command::ImportFile);
+                ui.separator();
                 item(ui, &mut cmds, Command::Quit);
             });
             ui.menu_button("Edit", |ui| {
@@ -814,6 +816,11 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ImportConnections => {
             if let Some(p) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
                 ops::import_connections(state, cx, &p);
+            }
+        }
+        Command::ImportFile => {
+            if let Some(i) = idx {
+                ops::open_import_dialog(state, cx, i, None);
             }
         }
         Command::Quit => cx.egui.send_viewport_cmd(egui::ViewportCommand::Close),

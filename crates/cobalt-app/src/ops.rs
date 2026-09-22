@@ -758,6 +758,17 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             state.flash("Copied");
         }
         TreeAction::InsertIntoEditor(s) => insert_at_cursor(state, &s),
+        TreeAction::ImportFile { profile, database } => {
+            // a tab on that database; the dialog opens once it is connected
+            let idx = new_query_tab(state, cx, Some(profile), Some(database), None, false);
+            if let Some(t) = state.tabs.get_mut(idx) {
+                if t.conn.is_connected() {
+                    open_import_dialog(state, cx, idx, None);
+                } else {
+                    t.pending_import = true;
+                }
+            }
+        }
         TreeAction::MoveProfile { profile, group } => move_profile(state, cx, profile, group),
     }
 }
@@ -1164,6 +1175,9 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                         if let Some(mode) = state.tabs[idx].pending_run.take() {
                             run(state, cx, idx, mode);
                         }
+                        if std::mem::take(&mut state.tabs[idx].pending_import) {
+                            open_import_dialog(state, cx, idx, None);
+                        }
                     }
                 }
             }
@@ -1202,7 +1216,201 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                 new_query_tab(state, cx, Some(profile), Some(database), Some((title, sql)), run_after);
             }
             Followup::Toast(kind, msg) => cx.toast(kind, msg),
+            Followup::RefreshDatabase { profile, database } => {
+                // only when the tree already shows that database (otherwise nothing to refresh)
+                let shown = state.library.servers.get(&profile).map(|n| n.creds.is_some() && n.db_nodes.contains_key(&database)).unwrap_or(false);
+                if shown {
+                    tree_action(state, cx, TreeAction::RefreshDatabase { profile, database });
+                }
+            }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Import Data (flat file → table)
+// ---------------------------------------------------------------------------------------------
+
+/// Open the Import Data dialog for a connected tab. Without `path`, ask for the file first.
+pub fn open_import_dialog(state: &mut AppState, cx: &Ctx, idx: usize, path: Option<PathBuf>) {
+    let Some(t) = state.tabs.get(idx) else { return };
+    if !t.conn.is_connected() {
+        cx.toast(ToastKind::Warning, "Connect this tab first: the file is loaded through the tab's connection.");
+        return;
+    }
+    let path = match path {
+        Some(p) => p,
+        None => match rfd::FileDialog::new().add_filter("Data files", &["csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "ipc"]).add_filter("All files", &["*"]).pick_file() {
+            Some(p) => p,
+            None => return,
+        },
+    };
+    let mut d = ImportDialog {
+        tab_index: idx,
+        path: path.to_string_lossy().to_string(),
+        delimiter: String::new(),
+        has_header: true,
+        inspection: None,
+        inspect_error: None,
+        columns: Vec::new(),
+        schema_name: "dbo".into(),
+        table_name: cobalt_import::table_name_from(&path),
+        existing: false,
+        existing_columns: Loadable::NotLoaded,
+        want_existing_columns: false,
+        running: false,
+        rows_done: 0,
+        started: None,
+        result: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+    };
+    inspect_import(&mut d);
+    state.dialog = Dialog::Import(Box::new(d));
+}
+
+fn import_format(d: &ImportDialog) -> cobalt_import::FileFormat {
+    let sniffed = cobalt_import::FileFormat::sniff(std::path::Path::new(&d.path));
+    match sniffed {
+        cobalt_import::FileFormat::Csv { delimiter, .. } => {
+            let delim = match d.delimiter.trim() {
+                "" => delimiter,
+                "\\t" | "tab" => b'\t',
+                s => s.bytes().next().unwrap_or(delimiter),
+            };
+            cobalt_import::FileFormat::Csv { delimiter: delim, has_header: d.has_header }
+        }
+        other => other,
+    }
+}
+
+/// (Re)read the file's shape into the dialog.
+pub fn inspect_import(d: &mut ImportDialog) {
+    let format = import_format(d);
+    if let cobalt_import::FileFormat::Csv { delimiter, .. } = &format {
+        if d.delimiter.trim().is_empty() {
+            d.delimiter = if *delimiter == b'\t' { "\\t".into() } else { (*delimiter as char).to_string() };
+        }
+    }
+    match cobalt_import::inspect(std::path::Path::new(&d.path), &format, 1000, 12) {
+        Ok(ins) => {
+            d.columns = ins.columns.iter().map(|c| ImportColumnEdit { name: c.name.clone(), sql_type: c.sql_type.to_string(), nullable: c.nullable, include: true, source: format!("{:?}", c.arrow) }).collect();
+            d.inspection = Some(ins);
+            d.inspect_error = None;
+            if d.existing {
+                d.want_existing_columns = true;
+            }
+        }
+        Err(e) => {
+            d.inspection = None;
+            d.inspect_error = Some(e.to_string());
+        }
+    }
+}
+
+/// Existing-table mode: fetch the target table's columns through the tab's connection.
+pub fn import_request_existing_columns(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Import(d) = &mut state.dialog else { return };
+    d.want_existing_columns = false;
+    let Some(t) = state.tabs.get(d.tab_index) else { return };
+    let (Some(p), Some(db)) = (t.profile.clone(), t.conn.database().map(str::to_string)) else { return };
+    let obj = ObjectRef { database: db, schema: d.schema_name.trim().to_string(), name: d.table_name.trim().to_string(), kind: ObjectKind::Table, object_id: None };
+    match request_meta(state, cx, p.id, MetadataRequest::ListColumns { obj }, MetaPurpose::ImportColumns) {
+        Some(r) => {
+            if let Dialog::Import(d) = &mut state.dialog {
+                d.existing_columns = Loadable::Loading(r);
+            }
+        }
+        None => {
+            if let Dialog::Import(d) = &mut state.dialog {
+                d.existing_columns = Loadable::Failed("the tree connection for this server is not open; expand it in Servers and try again".into());
+            }
+        }
+    }
+}
+
+/// Validate the dialog, start the reader thread and hand the import to the tab's session actor.
+pub fn start_import(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Import(d) = &mut state.dialog else { return };
+    let Some(ins) = d.inspection.clone() else {
+        d.result = Some(Err("Nothing to import: the file could not be read.".into()));
+        return;
+    };
+    let schema_name = d.schema_name.trim().to_string();
+    let table_name = d.table_name.trim().to_string();
+    if schema_name.is_empty() || table_name.is_empty() {
+        d.result = Some(Err("Give the target table a schema and a name.".into()));
+        return;
+    }
+    let mut columns: Vec<ColumnInfo> = Vec::new();
+    let mut indexes: Vec<usize> = Vec::new();
+    for (i, c) in d.columns.iter().enumerate() {
+        if !c.include {
+            continue;
+        }
+        let name = c.name.trim().to_string();
+        if name.is_empty() {
+            d.result = Some(Err(format!("Column {} has no name.", i + 1)));
+            return;
+        }
+        let Some(ty) = cobalt_import::parse_sql_type(&c.sql_type) else {
+            d.result = Some(Err(format!("Column {name}: type \"{}\" is not recognised (try int, bigint, nvarchar(100), decimal(18,2), date, datetime2, bit…).", c.sql_type)));
+            return;
+        };
+        columns.push(ColumnInfo::new(name, ty, c.nullable, columns.len()));
+        indexes.push(i);
+    }
+    if columns.is_empty() {
+        d.result = Some(Err("Include at least one column.".into()));
+        return;
+    }
+    let Some(t) = state.tabs.get(d.tab_index) else { return };
+    if !t.conn.is_connected() {
+        d.result = Some(Err("The tab is not connected.".into()));
+        return;
+    }
+    let tab_id = t.id;
+    let create_sql = if d.existing { None } else { Some(cobalt_import::create_table_sql(&schema_name, &table_name, &columns.iter().map(|c| (c.name.clone(), c.sql_type.clone(), c.nullable)).collect::<Vec<_>>())) };
+    let table = format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]"));
+    let format = import_format(d);
+    let path = PathBuf::from(d.path.trim());
+    let schema = ins.schema.clone();
+    d.running = true;
+    d.result = None;
+    d.rows_done = 0;
+    d.started = Some(Instant::now());
+    let cancel = d.cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+    // reader thread: file → Arrow batches → bounded channel → session actor
+    let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<arrow::array::RecordBatch, String>>(4);
+    let cancel2 = cancel.clone();
+    std::thread::Builder::new()
+        .name("cobalt-import-reader".into())
+        .spawn(move || {
+            let iter = match cobalt_import::open_batches(&path, &format, schema, cobalt_import::BATCH_ROWS) {
+                Ok(it) => it,
+                Err(e) => {
+                    let _ = tx.send(Err(e.to_string()));
+                    return;
+                }
+            };
+            for b in iter {
+                if cancel2.load(Ordering::Relaxed) {
+                    break;
+                }
+                let item = b.and_then(|b| cobalt_import::project(&b, &indexes)).map_err(|e| e.to_string());
+                let stop = item.is_err();
+                if tx.send(item).is_err() || stop {
+                    break;
+                }
+            }
+        })
+        .ok();
+    cx.session.send(Command::Import { tab: tab_id, table, create_sql, columns, rx, cancel });
+}
+
+pub fn cancel_import(state: &mut AppState) {
+    if let Dialog::Import(d) = &state.dialog {
+        d.cancel.store(true, Ordering::Relaxed);
     }
 }
 

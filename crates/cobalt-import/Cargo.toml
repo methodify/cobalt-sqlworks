@@ -1,0 +1,16 @@
+[package]
+name = "cobalt-import"
+description = "Flat-file readers for Import Data: CSV/TSV, Parquet, Arrow IPC → Arrow batches, schema inference, SQL DDL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+arrow = { workspace = true, features = ["csv"] }
+parquet.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

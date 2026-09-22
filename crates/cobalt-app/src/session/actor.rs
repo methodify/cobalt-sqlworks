@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 pub enum TabMsg {
     Run { run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel,
+    Import { table: String, create_sql: Option<String>, columns: Vec<ColumnInfo>, rx: std::sync::mpsc::Receiver<std::result::Result<arrow::array::RecordBatch, String>>, cancel: Arc<std::sync::atomic::AtomicBool> },
     FetchMore { rows: Option<u64> },
     ChangeDatabase { database: String },
     Ping,
@@ -63,6 +64,12 @@ pub async fn tab_actor(
                 Err(e) => shared.emit(Event::DatabaseChangeFailed { tab, error: e.to_string() }),
             },
             TabMsg::Cancel | TabMsg::FetchMore { .. } => { /* nothing running */ }
+            TabMsg::Import { table, create_sql, columns, rx, cancel } => {
+                let lost = run_import(tab, &table, create_sql.as_deref(), &columns, rx, cancel, &mut *conn, &shared).await;
+                if lost {
+                    break;
+                }
+            }
             TabMsg::Run { run, script, opts, start_line, sink } => {
                 let before = conn.current_database().to_string();
                 let lost = run_script(tab, run, &script, &opts, start_line, sink, &mut *conn, &mut rx, &shared).await;
@@ -79,6 +86,75 @@ pub async fn tab_actor(
     }
     let _ = conn.close().await;
     shared.emit(Event::Disconnected { tab });
+}
+
+/// Run one statement and drain its response; a server error becomes `Err`.
+async fn run_simple(conn: &mut dyn Connection, sql: &str) -> Result<(), DriverError> {
+    let mut stream = conn.execute(sql, &ExecOptions::default()).await?;
+    let mut err: Option<ServerMessage> = None;
+    while let Some(item) = stream.next().await {
+        if let StreamItem::Done { error: Some(e), .. } = item {
+            err = Some(e);
+        }
+    }
+    match err {
+        Some(e) => Err(DriverError::Server(e)),
+        None => Ok(()),
+    }
+}
+
+/// Import Data: optional CREATE TABLE, then BEGIN TRAN → bulk insert → COMMIT (ROLLBACK on any
+/// failure or cancel). Returns true if the connection is unusable afterwards.
+async fn run_import(
+    tab: TabId,
+    table: &str,
+    create_sql: Option<&str>,
+    columns: &[ColumnInfo],
+    rx: std::sync::mpsc::Receiver<std::result::Result<arrow::array::RecordBatch, String>>,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+    conn: &mut dyn Connection,
+    shared: &Shared,
+) -> bool {
+    use std::sync::atomic::Ordering;
+    shared.emit(Event::ImportStarted { tab });
+    let started = Instant::now();
+    let mut lost = false;
+    let result: Result<u64, String> = async {
+        if let Some(sql) = create_sql {
+            run_simple(conn, sql).await.map_err(|e| format!("CREATE TABLE failed: {e}"))?;
+        }
+        run_simple(conn, "BEGIN TRANSACTION").await.map_err(|e| e.to_string())?;
+        let mut last = Instant::now();
+        let emit = shared.clone();
+        let mut progress = move |rows: u64| -> bool {
+            if last.elapsed().as_millis() >= 200 {
+                emit.emit(Event::ImportProgress { tab, rows });
+                last = Instant::now();
+            }
+            !cancel.load(Ordering::Relaxed)
+        };
+        let loaded = conn.bulk_insert(table, columns, rx, &mut progress).await;
+        match loaded {
+            Ok(n) => {
+                run_simple(conn, "COMMIT TRANSACTION").await.map_err(|e| format!("COMMIT failed: {e}"))?;
+                Ok(n)
+            }
+            Err(e) => {
+                if matches!(e, DriverError::Disconnected(_)) {
+                    lost = true;
+                } else if let Err(rb) = run_simple(conn, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await {
+                    tracing::warn!(error = %rb, "rollback after failed import");
+                }
+                Err(match e {
+                    DriverError::Cancelled => "cancelled".to_string(),
+                    other => other.to_string(),
+                })
+            }
+        }
+    }
+    .await;
+    shared.emit(Event::ImportDone { tab, result: result.map(|n| (n, started.elapsed())) });
+    lost
 }
 
 /// Hand a message to the run-to-export sink, staying responsive to Cancel/Close while the writer

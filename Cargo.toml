@@ -9,6 +9,7 @@ members = [
     "crates/cobalt-results",
     "crates/cobalt-export",
     "crates/cobalt-export-delta",
+    "crates/cobalt-import",
     "crates/cobalt-plan",
     "crates/cobalt-fabric",
     "crates/cobalt-app",
@@ -32,6 +33,7 @@ cobalt-sql = { path = "crates/cobalt-sql" }
 cobalt-results = { path = "crates/cobalt-results" }
 cobalt-export = { path = "crates/cobalt-export" }
 cobalt-export-delta = { path = "crates/cobalt-export-delta" }
+cobalt-import = { path = "crates/cobalt-import" }
 cobalt-fabric = { path = "crates/cobalt-fabric" }
 cobalt-plan = { path = "crates/cobalt-plan" }
 
@@ -48,7 +50,7 @@ egui_agent = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0", 
 egui_agent_macros = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0" }
 
 # --- data: arrow pinned to what deltalake 0.32 requires ---
-arrow = { version = "58", features = ["ipc", "prettyprint"] }
+arrow = { version = "58", features = ["ipc", "prettyprint", "csv"] }
 arrow-array = "58"
 arrow-schema = "58"
 arrow-ipc = "58"

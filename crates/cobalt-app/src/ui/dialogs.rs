@@ -287,6 +287,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
             }
         }
         Dialog::Export(d) => export_dialog(ctx, f, d),
+        Dialog::Import(d) => import_dialog(ctx, f, d),
         Dialog::ChangeConnection { tab_index } => {
             let mut pick: Option<ProfileId> = None;
             let mut new_conn = false;
@@ -848,6 +849,206 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
             if !close {
                 f.state.dialog = Dialog::Connection(d);
             }
+        }
+    }
+}
+
+fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog>) {
+    let theme = f.theme;
+    let mut start = false;
+    let mut done = false;
+    let mut reinspect = false;
+    let running = d.running;
+    let (_, close) = modal(ctx, theme, "import", 760.0, |ui| {
+        ui.heading("Import data from file");
+        ui.label(RichText::new("The file streams through this tab's connection as a bulk insert, in one transaction.").size(12.0).color(theme.text_muted));
+        ui.add_space(6.0);
+        egui::Grid::new("import-grid").num_columns(2).spacing([10.0, 6.0]).min_col_width(90.0).show(ui, |ui| {
+            ui.label("File");
+            ui.horizontal(|ui| {
+                let r = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.path).desired_width(460.0));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import path"));
+                if r.lost_focus() {
+                    reinspect = true;
+                }
+                if ui.add_enabled(!running, egui::Button::new("Browse…")).clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Data files", &["csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "ipc"]).add_filter("All files", &["*"]).pick_file() {
+                        d.path = p.to_string_lossy().to_string();
+                        d.delimiter.clear();
+                        d.table_name = cobalt_import::table_name_from(&p);
+                        reinspect = true;
+                    }
+                }
+            });
+            ui.end_row();
+            let format_label = d.inspection.as_ref().map(|i| i.format.label()).unwrap_or_else(|| "?".into());
+            let is_csv = d.inspection.as_ref().map(|i| matches!(i.format, cobalt_import::FileFormat::Csv { .. })).unwrap_or(true);
+            ui.label("Format");
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format_label).strong());
+                if is_csv {
+                    ui.add_space(12.0);
+                    ui.label("Delimiter");
+                    let r = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.delimiter).desired_width(36.0).hint_text(","));
+                    if r.lost_focus() {
+                        reinspect = true;
+                    }
+                    if ui.add_enabled(!running, egui::Checkbox::new(&mut d.has_header, "First row is the header")).changed() {
+                        reinspect = true;
+                    }
+                }
+                if let Some(ins) = &d.inspection {
+                    let size = humansize::format_size(ins.file_bytes, humansize::DECIMAL);
+                    let rows = ins.row_estimate.map(|n| format!("{}{} rows", if ins.estimate_is_exact { "" } else { "≈ " }, fmt_count(n))).unwrap_or_default();
+                    ui.label(RichText::new(format!("{size}{}{rows}", if rows.is_empty() { "" } else { " · " })).size(11.0).color(theme.text_faint));
+                }
+            });
+            ui.end_row();
+            ui.label("Target table");
+            ui.horizontal(|ui| {
+                let r1 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.schema_name).desired_width(90.0).hint_text("dbo"));
+                r1.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import schema"));
+                ui.label(".");
+                let r2 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.table_name).desired_width(220.0).hint_text("table"));
+                r2.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import table"));
+                ui.add_space(10.0);
+                let was = d.existing;
+                if ui.add_enabled(!running, egui::RadioButton::new(!d.existing, "Create new table")).clicked() {
+                    d.existing = false;
+                }
+                let r = ui.add_enabled(!running, egui::RadioButton::new(d.existing, "Append to existing table"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import existing table"));
+                if r.clicked() {
+                    d.existing = true;
+                }
+                if d.existing && (!was || (r1.lost_focus() || r2.lost_focus())) {
+                    d.want_existing_columns = true;
+                }
+                if !d.existing && was {
+                    // back to a new table: restore the file's suggested types
+                    reinspect = true;
+                }
+            });
+            ui.end_row();
+        });
+        if d.existing {
+            match &d.existing_columns {
+                Loadable::Loading(_) => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Reading the table's columns…").size(11.0).color(theme.text_muted));
+                    });
+                }
+                Loadable::Failed(e) => {
+                    ui.colored_label(theme.error, format!("Could not read the table: {e}"));
+                }
+                Loadable::Loaded(cols) => {
+                    let missing: Vec<&str> = cols.iter().filter(|t| !t.is_computed && !t.is_identity && !t.nullable && !d.columns.iter().any(|c| c.include && c.name.eq_ignore_ascii_case(&t.name))).map(|t| t.name.as_str()).collect();
+                    if !missing.is_empty() {
+                        ui.colored_label(theme.warning, format!("Table columns not in the file and NOT NULL: {} — the load will fail unless they have defaults.", missing.join(", ")));
+                    }
+                }
+                Loadable::NotLoaded => {}
+            }
+        }
+        if let Some(e) = &d.inspect_error {
+            ui.colored_label(theme.error, format!("Could not read the file: {e}"));
+        }
+        ui.add_space(4.0);
+        // columns
+        ui.label(RichText::new("Columns").strong());
+        egui::ScrollArea::vertical().id_salt("import-cols").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
+            egui::Grid::new("import-columns").num_columns(5).spacing([10.0, 3.0]).striped(true).show(ui, |ui| {
+                ui.label(RichText::new("").small());
+                ui.label(RichText::new("Column").small().color(theme.text_muted));
+                ui.label(RichText::new("SQL type").small().color(theme.text_muted));
+                ui.label(RichText::new("Nullable").small().color(theme.text_muted));
+                ui.label(RichText::new("In the file").small().color(theme.text_muted));
+                ui.end_row();
+                let lock_types = d.existing;
+                for (i, c) in d.columns.iter_mut().enumerate() {
+                    ui.add_enabled(!running, egui::Checkbox::without_text(&mut c.include));
+                    let r = ui.add_enabled_ui(!running && !lock_types, |ui| ui.add_sized([200.0, 20.0], egui::TextEdit::singleline(&mut c.name))).inner;
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("import column {i}")));
+                    let r = ui.add_enabled_ui(!running && !lock_types, |ui| ui.add_sized([170.0, 20.0], egui::TextEdit::singleline(&mut c.sql_type).font(egui::FontId::monospace(12.0)))).inner;
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("import type {i}")));
+                    ui.add_enabled(!running && !lock_types, egui::Checkbox::without_text(&mut c.nullable));
+                    ui.label(RichText::new(&c.source).size(11.0).color(theme.text_faint));
+                    ui.end_row();
+                }
+            });
+        });
+        // preview
+        if let Some(ins) = &d.inspection {
+            if !ins.preview.is_empty() {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("Preview (first {} rows)", ins.preview.len())).strong());
+                egui::ScrollArea::horizontal().id_salt("import-preview").max_height(150.0).show(ui, |ui| {
+                    egui::Grid::new("import-preview-grid").striped(true).spacing([12.0, 2.0]).show(ui, |ui| {
+                        for c in &d.columns {
+                            ui.label(RichText::new(&c.name).small().strong());
+                        }
+                        ui.end_row();
+                        for row in &ins.preview {
+                            for v in row {
+                                let shown: String = if v.chars().count() > 40 { format!("{}…", v.chars().take(40).collect::<String>()) } else { v.clone() };
+                                ui.label(RichText::new(shown).monospace().size(11.0));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+        }
+        ui.add_space(6.0);
+        if running || d.result.is_some() {
+            let total = d.inspection.as_ref().and_then(|i| i.row_estimate).unwrap_or(0);
+            let frac = if total > 0 { (d.rows_done as f32 / total as f32).min(1.0) } else { 0.0 };
+            let elapsed = d.started.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
+            let text = if running { format!("{} rows · {elapsed:.0}s", fmt_count(d.rows_done)) } else { format!("{} rows", fmt_count(d.rows_done)) };
+            ui.add(egui::ProgressBar::new(if running { frac } else { 1.0 }).text(text));
+            if running {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+            }
+        }
+        match &d.result {
+            Some(Ok(m)) => {
+                ui.colored_label(theme.success, m);
+            }
+            Some(Err(e)) => {
+                ui.colored_label(theme.error, e);
+            }
+            None => {}
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let can = !running && d.inspection.is_some() && !matches!(d.result, Some(Ok(_)));
+            let b = primary_button(ui, theme, "Import", can);
+            if b.clicked() {
+                start = true;
+            }
+            if running {
+                if ui.button("Cancel import").clicked() {
+                    d.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else if ui.button(if matches!(d.result, Some(Ok(_))) { "Close" } else { "Cancel" }).clicked() {
+                done = true;
+            }
+        });
+    });
+    if start {
+        f.state.dialog = Dialog::Import(d);
+        ops::start_import(f.state, f.cx);
+    } else if done || (close && !running) {
+        // closed
+    } else {
+        if reinspect && !running {
+            ops::inspect_import(&mut d);
+        }
+        let want = d.want_existing_columns && d.existing;
+        f.state.dialog = Dialog::Import(d);
+        if want {
+            ops::import_request_existing_columns(f.state, f.cx);
         }
     }
 }

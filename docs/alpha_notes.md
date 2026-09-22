@@ -146,3 +146,17 @@ Overrides: Settings → Advanced → Renderer, or `COBALT_RENDERER=wgpu|opengl`.
 dev build: `COBALT_PERF=1` logs fps and frame cost every 2 s; the agent verbs `perf`, `spin {ms}`
 and `viewport {w,h}` measure the real maximum frame rate; `COBALT_ADAPTER=<name substring>` forces an
 adapter (`basic render` = WARP) to reproduce the VM locally.
+
+## Import Data from File
+
+File → Import Data from File… (or right-click a database in Servers → Import data from file…).
+The file is read on a background thread (`cobalt-import`: CSV/TSV via arrow-csv with schema
+inference, Parquet, Arrow IPC) and streamed as Arrow batches to the tab's session actor, which
+runs `CREATE TABLE` (new-table mode), `BEGIN TRANSACTION`, a TDS bulk insert
+(`Connection::bulk_insert`, `mssql/bulk.rs`: batches are cast to each column's SQL type, then
+encoded row by row), and `COMMIT` — or `ROLLBACK` on any error or Cancel. Types and nullability
+are editable per column; existing-table mode reads the table's columns and locks them.
+
+Known limits: one file per import, no column reordering or transforms, geography/hierarchyid/sql_variant
+targets are not supported, and CSV row counts in the progress bar are estimates.
+Agent: `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}`, `import_state`.
