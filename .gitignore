@@ -9,3 +9,4 @@
 target-vendor/
 /BACKLOG.md
 SIGNING.md
+/crates/cobalt-app/mesa/

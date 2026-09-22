@@ -137,10 +137,14 @@ Cobalt therefore picks its renderer at start-up (`advanced.renderer = "auto"`):
 - no GPU and a Mesa `opengl32.dll` next to `cobalt.exe` → OpenGL via that DLL (fast software);
 - no GPU and no Mesa DLL → wgpu on WARP, with a warning toast and a status-bar badge.
 
-Getting a Mesa DLL: any Mesa llvmpipe build works, e.g. the `opengl32.dll` from
-<https://github.com/pal1000/mesa-dist-win> (x64, release), or the `opengl32sw.dll` that Qt-based
-apps ship (rename it to `opengl32.dll`). Some antivirus engines flag the mesa-dist-win archives as
-unwanted software; they are false positives, but it is why the installer does not bundle Mesa yet.
+Since 0.4.0 the Windows installer and zip ship that DLL: Mesa llvmpipe 26.2.3 built as a single
+statically linked `opengl32.dll` by <https://github.com/mmozeiko/build-mesa> (MIT + Apache-2.0
+with LLVM exception; `MESA-LICENSE.rst` and `LLVM-LICENSE.txt` sit next to the exe). The release
+workflow pins the archive URL and SHA256 and hashes the DLL. It is also published on its own as
+`cobalt-software-rendering-<version>-windows-x86_64.zip`. Any other Mesa llvmpipe build works too
+(mesa-dist-win needs `GALLIUM_DRIVER=llvmpipe` on machines that have a D3D12 device, because its
+megadriver prefers GLon12; Defender flags mesa-dist-win's archives, a known false positive on the
+archives rather than the DLLs).
 
 Overrides: Settings → Advanced → Renderer, or `COBALT_RENDERER=wgpu|opengl`. Diagnostics with the
 dev build: `COBALT_PERF=1` logs fps and frame cost every 2 s; the agent verbs `perf`, `spin {ms}`

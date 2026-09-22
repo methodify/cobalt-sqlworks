@@ -86,6 +86,9 @@ formats = ["nsis", "deb", "appimage"]
 out-dir = "../../dist/packages"
 before-packaging-command = ""
 binaries = [{ path = "cobalt", main = true }]
+# Windows: the release workflow stages Mesa llvmpipe's opengl32.dll + its licences here (see
+# release.yml "Fetch Mesa"); an empty glob elsewhere adds nothing.
+resources = ["mesa/*"]
 file-associations = [
     { extensions = ["sql"], description = "SQL script", mime-type = "application/sql" },
     { extensions = ["sqlplan"], description = "SQL Server execution plan", mime-type = "application/xml" },

@@ -47,9 +47,36 @@ jobs:
         run: cargo binstall -y cargo-packager
       - name: Build
         run: cargo build --release -p cobalt-app --locked
+      # Mesa llvmpipe as a single opengl32.dll (mmozeiko/build-mesa: llvmpipe statically linked,
+      # MSVC, static CRT). Cobalt loads it only when the machine has no GPU (see gpu.rs).
+      # Pinned by URL and SHA256; the DLL itself is hashed too.
+      - name: Fetch Mesa llvmpipe (software rendering fallback)
+        shell: pwsh
+        env:
+          MESA_URL: https://github.com/mmozeiko/build-mesa/releases/download/26.2.3/mesa-llvmpipe-x64-26.2.3.7z
+          MESA_7Z_SHA256: bd0d817fbf33a7ec41aa770841eb83cc609f7c67fef7c8b56fde901a5b80a8ee
+          MESA_DLL_SHA256: 9f780ba157adba208d15596a78095b326ce684724c711a766548457c6f629de3
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force mesa-dl, crates/cobalt-app/mesa | Out-Null
+          curl.exe -fsSL -o mesa-dl/mesa.7z $env:MESA_URL
+          $h = (Get-FileHash mesa-dl/mesa.7z -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $env:MESA_7Z_SHA256) { throw "Mesa archive hash mismatch: $h" }
+          7z e -y -omesa-dl/x mesa-dl/mesa.7z opengl32.dll | Out-Null
+          $d = (Get-FileHash mesa-dl/x/opengl32.dll -Algorithm SHA256).Hash.ToLower()
+          if ($d -ne $env:MESA_DLL_SHA256) { throw "Mesa DLL hash mismatch: $d" }
+          Copy-Item mesa-dl/x/opengl32.dll crates/cobalt-app/mesa/opengl32.dll
+          Copy-Item third_party/mesa/MESA-LICENSE.rst, third_party/mesa/LLVM-LICENSE.txt crates/cobalt-app/mesa/
+          Get-ChildItem crates/cobalt-app/mesa
+      - name: Defender scan of the bundled DLL (smoke)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          if (Test-Path $mp) { & $mp -Scan -ScanType 3 -File (Resolve-Path crates/cobalt-app/mesa/opengl32.dll) } else { "MpCmdRun not available on this runner" }
       - name: Package (NSIS installer)
         run: cargo packager --release --formats nsis -p cobalt-app
-      - name: Portable zip
+      - name: Portable zip + software-rendering zip
         shell: pwsh
         run: |
           $v = "${{ needs.check-version.outputs.version }}"
@@ -57,7 +84,13 @@ jobs:
           Copy-Item target/release/cobalt.exe stage/cobalt-windows-x86_64.exe
           Copy-Item docs/alpha_notes.md stage/ALPHA_NOTES.md
           Copy-Item LICENSE-MIT, LICENSE-APACHE stage/
+          Copy-Item crates/cobalt-app/mesa/* stage/
           Compress-Archive -Force -Path stage/* -DestinationPath "dist/packages/cobalt-sqlworks-$v-windows-x86_64.zip"
+          # the fallback renderer on its own, for people who already have Cobalt installed
+          New-Item -ItemType Directory -Force stage-sw | Out-Null
+          Copy-Item crates/cobalt-app/mesa/* stage-sw/
+          Set-Content -Encoding utf8 stage-sw/README.txt "Cobalt SQL Works - software rendering fallback (Mesa llvmpipe 26.2.3, single opengl32.dll from https://github.com/mmozeiko/build-mesa).`r`nPut opengl32.dll next to cobalt.exe. Cobalt uses it only when the machine has no GPU (VMs, RDP). Licences: MESA-LICENSE.rst, LLVM-LICENSE.txt."
+          Compress-Archive -Force -Path stage-sw/* -DestinationPath "dist/packages/cobalt-software-rendering-$v-windows-x86_64.zip"
           Get-ChildItem dist/packages
       - uses: actions/upload-artifact@v4
         with:
