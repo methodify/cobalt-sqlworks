@@ -574,13 +574,51 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                 egui::Grid::new("conn-grid").num_columns(2).spacing([10.0, 7.0]).min_col_width(120.0).show(ui, |ui| {
                     ui.label("Server");
                     let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text("host, host,port, host\\instance, or Fabric endpoint").desired_width(300.0));
-                    if d.is_new && d.profile.server.is_empty() {
+                    // focus Server once when a new dialog opens (not every frame: that would keep
+                    // stealing focus from the other fields, e.g. the connection-string box)
+                    if d.is_new && !d.focus_done {
                         r.request_focus();
+                        d.focus_done = true;
                     }
                     ui.end_row();
                     ui.label("Port");
                     ui.add(egui::TextEdit::singleline(&mut d.port_text).hint_text("1433").desired_width(80.0));
                     ui.end_row();
+                    ui.label("Connection string").on_hover_text("Paste an ADO.NET / SqlClient connection string and click Apply to fill the fields above");
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.conn_string).hint_text("Server=…;Database=…;User ID=…;Password=…").desired_width(230.0));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "connection string"));
+                        let apply = ui.add_enabled(!d.conn_string.trim().is_empty(), egui::Button::new("Apply"));
+                        apply.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "apply connection string"));
+                        if apply.clicked() {
+                            match d.profile.apply_connection_string(&d.conn_string) {
+                                Ok(secrets) => {
+                                    d.auth_index = ops::auth_index_of(&d.profile.auth);
+                                    d.port_text = d.profile.port.map(|p| p.to_string()).unwrap_or_default();
+                                    if let Some(pw) = secrets.password {
+                                        d.password = pw;
+                                    }
+                                    if let Some(sec) = secrets.client_secret {
+                                        d.sp_secret = sec;
+                                    }
+                                    match &d.profile.auth {
+                                        AuthMethod::EntraInteractive { account_hint, .. } => d.account_hint = account_hint.clone().unwrap_or_default(),
+                                        AuthMethod::EntraServicePrincipal { client_id, .. } => d.sp_client_id = client_id.clone(),
+                                        _ => {}
+                                    }
+                                    d.conn_string_note = Some(if secrets.ignored.is_empty() { "Applied.".to_string() } else { format!("Applied; ignored: {}", secrets.ignored.join(", ")) });
+                                    d.error = None;
+                                }
+                                Err(e) => d.conn_string_note = Some(e),
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    if let Some(n) = &d.conn_string_note {
+                        ui.label("");
+                        ui.label(RichText::new(n).size(11.0).color(theme.text_muted));
+                        ui.end_row();
+                    }
                     ui.label("Authentication");
                     egui::ComboBox::from_id_salt("auth").width(300.0).selected_text(AUTH_LABELS[d.auth_index]).show_ui(ui, |ui| {
                         for (i, l) in AUTH_LABELS.iter().enumerate() {

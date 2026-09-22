@@ -103,6 +103,19 @@ fn apply_pending(ctx: &egui::Context, tab: &mut EditorTab) {
 }
 
 /// Draw the editor into the available space. Returns cursor/selection info.
+/// "12 ms", "1.3 s", "2m 05s" — compact, for the gutter.
+fn fmt_batch_time(d: std::time::Duration) -> String {
+    let ms = d.as_secs_f64() * 1000.0;
+    if ms < 1000.0 {
+        format!("{ms:.0} ms")
+    } else if ms < 60_000.0 {
+        format!("{:.1} s", ms / 1000.0)
+    } else {
+        let s = d.as_secs();
+        format!("{}m {:02}s", s / 60, s % 60)
+    }
+}
+
 pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings) -> EditorOutput {
     let ctx = ui.ctx().clone();
     apply_pending(&ctx, tab);
@@ -167,8 +180,18 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
             ui.set_min_height(avail.y);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
+                // per-batch timings from the last run, shown while the text is unchanged
+                let timings: Vec<(u32, String, bool)> = match &tab.run {
+                    Some(r) if !r.batch_times.is_empty() && r.script_hash == crate::state::hash_text(&tab.text) => r
+                        .batch_times
+                        .iter()
+                        .filter_map(|(line, el, err)| el.map(|d| (*line, fmt_batch_time(d), *err)))
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                let gutter_w = GUTTER_W + if timings.is_empty() { 0.0 } else { 48.0 };
                 // gutter placeholder; painted after the galley is known
-                let (gutter_rect, _) = ui.allocate_exact_size(Vec2::new(GUTTER_W, avail.y.max(row_h)), Sense::hover());
+                let (gutter_rect, _) = ui.allocate_exact_size(Vec2::new(gutter_w, avail.y.max(row_h)), Sense::hover());
                 let gutter_painter = ui.painter().clone();
                 let bg_idx = ui.painter().add(Shape::Noop);
 
@@ -238,7 +261,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 }
 
                 // gutter: line numbers
-                gutter_painter.rect_filled(Rect::from_min_size(gutter_rect.min, Vec2::new(GUTTER_W, galley.size().y.max(avail.y) + 8.0)), 0.0, theme.bg_sidebar);
+                gutter_painter.rect_filled(Rect::from_min_size(gutter_rect.min, Vec2::new(gutter_w, galley.size().y.max(avail.y) + 8.0)), 0.0, theme.bg_sidebar);
                 gutter_painter.line_segment([Pos2::new(gutter_rect.right(), gutter_rect.top()), Pos2::new(gutter_rect.right(), gutter_rect.top() + galley.size().y.max(avail.y) + 8.0)], Stroke::new(1.0, theme.border));
                 let mut line_no = 1usize;
                 let cur_line = tab.editor.line;
@@ -249,6 +272,10 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                         let y = gpos.y + row.rect().center().y;
                         let color = if line_no == cur_line { theme.text } else { theme.text_faint };
                         gutter_painter.text(Pos2::new(gutter_rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, line_no.to_string(), small.clone(), color);
+                        if let Some((_, label, err)) = timings.iter().find(|(l, _, _)| *l as usize == line_no) {
+                            let tiny = FontId::proportional((settings.appearance.editor_font_size - 3.0).max(8.0));
+                            gutter_painter.text(Pos2::new(gutter_rect.left() + 4.0, y), egui::Align2::LEFT_CENTER, label, tiny, if *err { theme.error } else { theme.success });
+                        }
                     }
                     new_line = row.ends_with_newline;
                     if new_line {

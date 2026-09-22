@@ -287,6 +287,9 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
         sp_client_id,
         sp_secret: String::new(),
         show_advanced: false,
+        conn_string: String::new(),
+        conn_string_note: None,
+        focus_done: false,
         error: None,
         testing: false,
         test_result: None,
@@ -1075,6 +1078,7 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
     let run_id = cx.session.new_run();
     let mut view = RunView::new(run_id, opts.plan);
     view.export_target = job.as_ref().map(|j| j.display_target());
+    view.script_hash = hash_text(&t.text);
     // history
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(t.profile.as_ref().map(|p| p.display_name()).unwrap_or_default(), script.clone());

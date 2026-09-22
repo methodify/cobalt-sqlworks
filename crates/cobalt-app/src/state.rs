@@ -387,6 +387,10 @@ pub struct RunView {
     pub plan_mode: PlanMode,
     /// Run-to-export: where the rows went (the grids hold previews only).
     pub export_target: Option<String>,
+    /// Per batch: (editor line the batch starts on, elapsed once done, ended in error). Drawn in
+    /// the editor gutter while the editor text still matches `script_hash`.
+    pub batch_times: Vec<(u32, Option<Duration>, bool)>,
+    pub script_hash: u64,
 }
 
 impl RunView {
@@ -408,6 +412,8 @@ impl RunView {
             history_id: None,
             plan_mode,
             export_target: None,
+            batch_times: Vec::new(),
+            script_hash: 0,
         }
     }
     pub fn is_live(&self) -> bool {
@@ -727,6 +733,11 @@ pub struct ConnectionDialog {
     pub sp_secret: String,
     pub port_text: String,
     pub show_advanced: bool,
+    /// "From connection string" box: pasted text, applied on demand.
+    pub conn_string: String,
+    pub conn_string_note: Option<String>,
+    /// The Server field took focus once when the dialog opened.
+    pub focus_done: bool,
     pub error: Option<(String, Option<String>)>,
     pub testing: bool,
     pub test_result: Option<Result<String, String>>,
@@ -873,6 +884,10 @@ impl AppState {
             Event::BatchStarted { tab, run, batch, start_line } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.current_batch = batch;
+                    if r.batch_times.len() <= batch {
+                        r.batch_times.resize(batch + 1, (start_line, None, false));
+                    }
+                    r.batch_times[batch] = (start_line, None, false);
                     if r.batches > 1 || batch > 0 {
                         r.messages.push(MessageLine { text: format!("Started executing batch {} at line {}", batch + 1, start_line), is_error: false, is_batch_header: true, line: Some(start_line), at: Instant::now(), path: None });
                     }
@@ -940,8 +955,13 @@ impl AppState {
                     r.messages.push(MessageLine { text: format!("({} row{} affected)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
                 }
             }
-            Event::BatchDone { tab, run, batch: _, error: _, elapsed: _ } => {
-                let _ = self.run_mut(tab, run);
+            Event::BatchDone { tab, run, batch, error, elapsed } => {
+                if let Some(r) = self.run_mut(tab, run) {
+                    if let Some(t) = r.batch_times.get_mut(batch) {
+                        t.1 = Some(elapsed);
+                        t.2 = error.is_some();
+                    }
+                }
             }
             Event::RunDone { tab, run, cancelled, failed, elapsed, total_rows } => {
                 if let Some(r) = self.run_mut(tab, run) {

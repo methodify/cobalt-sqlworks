@@ -193,6 +193,10 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                     if ui.small_button("Copy CREATE INDEX").clicked() {
                         ui.ctx().copy_text(mi.create_index_sql());
                     }
+                    if ui.small_button("Insert into editor").on_hover_text("Append the CREATE INDEX statement at the cursor").clicked() {
+                        let c = tab.editor.cursor;
+                        tab.editor.pending_edit = Some(crate::state::PendingEdit::Replace { start: c, end: c, text: format!("\n{}\n", mi.create_index_sql()), cursor_after: None });
+                    }
                 });
             }
             for w in &stmt.warnings {

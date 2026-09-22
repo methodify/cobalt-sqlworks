@@ -93,6 +93,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<HistoryActi
                         }
                         ui.label(RichText::new(meta).size(10.5).color(theme.text_faint));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let run = ui.add(egui::Button::new(RichText::new(icons::PLAY).size(12.0).color(theme.accent)).frame(false));
+                            run.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "history run"));
+                            if run.on_hover_text("Open in a new tab and run").clicked() {
+                                actions.push(HistoryAction::Run(e.id));
+                            }
                             let star = if e.starred { icons::STAR } else { icons::STAR };
                             if ui.add(egui::Button::new(RichText::new(star).size(12.0).color(if e.starred { theme.warning } else { theme.text_faint })).frame(false)).clicked() {
                                 actions.push(HistoryAction::Star(e.id, !e.starred));

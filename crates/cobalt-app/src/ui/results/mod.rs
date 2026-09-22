@@ -71,7 +71,15 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     ResultsTab::Messages => run.messages.iter().filter(|m| m.is_error).count(),
                     ResultsTab::Plan => run.plans.len(),
                 };
-                let label_text = if t == ResultsTab::Messages && count > 0 { format!("{label} ({count} error{})", if count == 1 { "" } else { "s" }) } else if t == ResultsTab::Results && count > 1 { format!("{label} ({count})") } else { label.to_string() };
+                let plan_flags: usize = if t == ResultsTab::Plan {
+                    run.plans.iter().filter_map(|p| p.parsed.as_ref()).map(|p| p.all_statements().iter().map(|s| s.warnings.len() + s.missing_indexes.len() + s.nodes.iter().map(|n| n.warnings.len()).sum::<usize>()).sum::<usize>()).sum()
+                } else {
+                    0
+                };
+                let mut label_text = if t == ResultsTab::Messages && count > 0 { format!("{label} ({count} error{})", if count == 1 { "" } else { "s" }) } else if t == ResultsTab::Results && count > 1 { format!("{label} ({count})") } else { label.to_string() };
+                if plan_flags > 0 {
+                    label_text.push_str(&format!("  {} {plan_flags}", icons::WARNING));
+                }
                 let _ = text;
                 let mut text = RichText::new(label_text).size(13.0);
                 if selected {
@@ -270,9 +278,17 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     }
                                     ui.separator();
                                     // filter every column the selection spans to the selected values
+                                    let single = matches!(view.grid.selection, Selection::Cells { r0, c0, r1, c1 } if r0 == r1 && c0 == c1);
                                     let sel_filter = filter_to_selection(&view.grid, &view.rs, args.fmt);
-                                    if ui.add_enabled(sel_filter.is_some(), egui::Button::new("Filter to selected values")).on_hover_text("Keep only rows whose values in the selected columns match the selected cells").clicked() {
+                                    if ui.add_enabled(sel_filter.is_some(), egui::Button::new(if single { "Filter to this value" } else { "Filter to selected values" })).on_hover_text("Keep only rows whose values in the selected columns match the selected cells").clicked() {
                                         if let Some(spec) = sel_filter {
+                                            actions.push(ResultsAction::ApplyView { set, spec });
+                                        }
+                                        close = true;
+                                    }
+                                    let excl_filter = exclude_selection(&view.grid, &view.rs, args.fmt);
+                                    if ui.add_enabled(excl_filter.is_some(), egui::Button::new(if single { "Exclude this value" } else { "Exclude selected values" })).on_hover_text("Hide rows whose values in the selected columns match the selected cells").clicked() {
+                                        if let Some(spec) = excl_filter {
                                             actions.push(ResultsAction::ApplyView { set, spec });
                                         }
                                         close = true;
@@ -455,6 +471,33 @@ pub fn state_color(theme: &Theme, state: &RunState) -> Color32 {
         RunState::Cancelled => theme.warning,
         RunState::Error { .. } => theme.error,
     }
+}
+
+/// A view spec that hides the selected values: one `NotEquals` filter per distinct selected value
+/// per spanned column (at most 50 values per column), keeping existing filters and sorts.
+fn exclude_selection(grid: &crate::state::GridState, rs: &std::sync::Arc<cobalt_results::ResultSet>, fmt: &cobalt_results::CellFormatter) -> Option<cobalt_results::ViewSpec> {
+    use cobalt_results::{ColumnFilter, FilterOp};
+    if !matches!(grid.selection, Selection::Cells { .. } | Selection::Rows { .. }) {
+        return None;
+    }
+    let (rows, cols) = grid.selection.resolve(rs.visible_count(), rs.column_count())?;
+    if rows.end() - rows.start() >= 10_000 {
+        return None;
+    }
+    let mut spec = grid.view.clone();
+    for c in cols {
+        let mut seen = std::collections::HashSet::new();
+        for r in rows.clone() {
+            let v = rs.cell_text(r, c, fmt).to_string();
+            if seen.insert(v.clone()) {
+                if seen.len() > 50 {
+                    return None;
+                }
+                spec.filters.push(ColumnFilter { column: c, op: FilterOp::NotEquals(v) });
+            }
+        }
+    }
+    Some(spec)
 }
 
 /// A view spec that adds an `In` filter per column spanned by the grid selection, whose set is the

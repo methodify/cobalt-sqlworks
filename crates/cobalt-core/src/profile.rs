@@ -89,6 +89,147 @@ pub enum AuthMethod {
     },
 }
 
+/// Secrets found in a pasted connection string (never stored on the profile).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ConnStringSecrets {
+    pub password: Option<String>,
+    pub client_secret: Option<String>,
+    /// Keys we did not understand, for a note to the user.
+    pub ignored: Vec<String>,
+}
+
+impl ConnectionProfile {
+    /// Fill this profile from an ADO.NET / SqlClient connection string
+    /// (`Server=…;Database=…;User ID=…;Password=…;Encrypt=…`). Unknown keys are reported, not
+    /// fatal. Returns the secrets found so the caller can put them in the keychain.
+    pub fn apply_connection_string(&mut self, s: &str) -> Result<ConnStringSecrets, String> {
+        let mut out = ConnStringSecrets::default();
+        let mut user: Option<String> = None;
+        let mut auth: Option<String> = None;
+        let mut integrated = false;
+        let mut seen = 0;
+        for part in split_conn_string(s) {
+            let Some((k, v)) = part.split_once('=') else {
+                if !part.trim().is_empty() {
+                    out.ignored.push(part.trim().to_string());
+                }
+                continue;
+            };
+            seen += 1;
+            let key = k.trim().to_ascii_lowercase();
+            let val = unquote(v.trim());
+            match key.as_str() {
+                "server" | "data source" | "address" | "addr" | "network address" => {
+                    let mut host = val.trim_start_matches("tcp:").trim().to_string();
+                    if let Some((h, p)) = host.rsplit_once(',') {
+                        if let Ok(port) = p.trim().parse::<u16>() {
+                            self.port = Some(port);
+                            host = h.trim().to_string();
+                        }
+                    }
+                    self.server = host;
+                }
+                "initial catalog" | "database" => self.database = if val.is_empty() { None } else { Some(val) },
+                "user id" | "uid" | "user" | "user name" => user = Some(val),
+                "password" | "pwd" => out.password = Some(val),
+                "integrated security" | "trusted_connection" => integrated = matches!(val.to_ascii_lowercase().as_str(), "true" | "yes" | "sspi"),
+                "authentication" => auth = Some(val.to_ascii_lowercase()),
+                "encrypt" => {
+                    self.options.encrypt = match val.to_ascii_lowercase().as_str() {
+                        "strict" => Encrypt::Strict,
+                        "false" | "no" | "optional" => Encrypt::Optional,
+                        _ => Encrypt::Mandatory,
+                    }
+                }
+                "trustservercertificate" | "trust server certificate" => self.options.trust_server_certificate = matches!(val.to_ascii_lowercase().as_str(), "true" | "yes"),
+                "hostnameincertificate" | "host name in certificate" => self.options.host_name_in_certificate = if val.is_empty() { None } else { Some(val) },
+                "application name" | "app" => self.options.application_name = val,
+                "connect timeout" | "connection timeout" | "timeout" => {
+                    if let Ok(n) = val.parse() {
+                        self.options.connect_timeout_secs = n;
+                    }
+                }
+                "command timeout" => {
+                    if let Ok(n) = val.parse() {
+                        self.options.command_timeout_secs = n;
+                    }
+                }
+                "applicationintent" | "application intent" => self.options.application_intent = if val.eq_ignore_ascii_case("readonly") { ApplicationIntent::ReadOnly } else { ApplicationIntent::ReadWrite },
+                "multipleactiveresultsets" | "multiple active result sets" => self.options.mars = matches!(val.to_ascii_lowercase().as_str(), "true" | "yes"),
+                "packet size" => self.options.packet_size = val.parse().ok(),
+                "persist security info" | "pooling" | "min pool size" | "max pool size" | "connection lifetime" | "load balance timeout" | "workstation id" | "failover partner" | "attachdbfilename" | "type system version" | "multisubnetfailover" | "column encryption setting" | "enlist" | "current language" | "language" | "replication" | "transaction binding" | "user instance" | "context connection" | "network library" | "net" => {}
+                other => out.ignored.push(other.to_string()),
+            }
+        }
+        if seen == 0 {
+            return Err("That does not look like a connection string (expected key=value pairs separated by semicolons).".into());
+        }
+        if self.server.trim().is_empty() {
+            return Err("The connection string has no Server / Data Source.".into());
+        }
+        // authentication
+        self.auth = match auth.as_deref() {
+            Some(a) if a.contains("service principal") => {
+                out.client_secret = out.password.take();
+                AuthMethod::EntraServicePrincipal { tenant: String::new(), client_id: user.clone().unwrap_or_default(), secret: None }
+            }
+            Some(a) if a.contains("device code") => AuthMethod::EntraDeviceCode { tenant: None },
+            Some(a) if a.contains("active directory") || a.contains("activedirectory") => {
+                out.password = None; // password flows are not supported; use the browser with the account hint
+                AuthMethod::EntraInteractive { tenant: None, account_hint: user.clone().filter(|u| !u.is_empty()) }
+            }
+            _ if integrated => AuthMethod::WindowsIntegrated,
+            _ => AuthMethod::SqlLogin { user: user.unwrap_or_default(), password: None },
+        };
+        Ok(out)
+    }
+}
+
+/// Split on `;` outside quotes and `{}` braces.
+fn split_conn_string(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut brace = 0usize;
+    for c in s.chars() {
+        match c {
+            '"' | '\'' if brace == 0 => {
+                match quote {
+                    Some(q) if q == c => quote = None,
+                    None => quote = Some(c),
+                    _ => {}
+                }
+                cur.push(c);
+            }
+            '{' if quote.is_none() => {
+                brace += 1;
+                cur.push(c);
+            }
+            '}' if quote.is_none() && brace > 0 => {
+                brace -= 1;
+                cur.push(c);
+            }
+            ';' if quote.is_none() && brace == 0 => {
+                parts.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur);
+    }
+    parts
+}
+
+fn unquote(v: &str) -> String {
+    let v = v.trim();
+    if (v.starts_with('"') && v.ends_with('"') && v.len() >= 2) || (v.starts_with('\'') && v.ends_with('\'') && v.len() >= 2) || (v.starts_with('{') && v.ends_with('}') && v.len() >= 2) {
+        v[1..v.len() - 1].to_string()
+    } else {
+        v.to_string()
+    }
+}
+
 impl AuthMethod {
     pub fn label(&self) -> &'static str {
         match self {
@@ -250,5 +391,49 @@ mod tests {
     fn fabric_detection() {
         let p = ConnectionProfile::new("abc-xyz.datawarehouse.fabric.microsoft.com", AuthMethod::EntraInteractive { tenant: None, account_hint: None });
         assert!(p.looks_like_fabric() && p.looks_like_azure());
+    }
+}
+
+#[cfg(test)]
+mod conn_string_tests {
+    use super::*;
+
+    #[test]
+    fn sql_login_with_port_and_options() {
+        let mut p = ConnectionProfile::new("", AuthMethod::WindowsIntegrated);
+        let s = p.apply_connection_string("Server=tcp:db.example.com,1533;Initial Catalog=Sales;User ID=app;Password=\"p;w=1\";Encrypt=True;TrustServerCertificate=true;Application Name=x;Connect Timeout=45;ApplicationIntent=ReadOnly;Bogus=1").unwrap();
+        assert_eq!(p.server, "db.example.com");
+        assert_eq!(p.port, Some(1533));
+        assert_eq!(p.database.as_deref(), Some("Sales"));
+        assert!(matches!(&p.auth, AuthMethod::SqlLogin { user, .. } if user == "app"));
+        assert_eq!(s.password.as_deref(), Some("p;w=1"));
+        assert_eq!(p.options.encrypt, Encrypt::Mandatory);
+        assert!(p.options.trust_server_certificate);
+        assert_eq!(p.options.connect_timeout_secs, 45);
+        assert_eq!(p.options.application_intent, ApplicationIntent::ReadOnly);
+        assert_eq!(s.ignored, vec!["bogus".to_string()]);
+    }
+
+    #[test]
+    fn entra_and_integrated() {
+        let mut p = ConnectionProfile::new("", AuthMethod::WindowsIntegrated);
+        p.apply_connection_string("Data Source=x.datawarehouse.fabric.microsoft.com;Authentication=Active Directory Interactive;User ID=me@corp.com;Encrypt=Strict").unwrap();
+        assert!(matches!(&p.auth, AuthMethod::EntraInteractive { account_hint: Some(h), .. } if h == "me@corp.com"));
+        assert_eq!(p.options.encrypt, Encrypt::Strict);
+        let mut q = ConnectionProfile::new("", AuthMethod::WindowsIntegrated);
+        q.apply_connection_string("Server=.\\SQLEXPRESS;Database=master;Integrated Security=SSPI").unwrap();
+        assert_eq!(q.server, ".\\SQLEXPRESS");
+        assert!(matches!(q.auth, AuthMethod::WindowsIntegrated));
+        let mut sp = ConnectionProfile::new("", AuthMethod::WindowsIntegrated);
+        let s = sp.apply_connection_string("Server=s;Authentication=Active Directory Service Principal;User Id=client-guid;Password=sec").unwrap();
+        assert!(matches!(&sp.auth, AuthMethod::EntraServicePrincipal { client_id, .. } if client_id == "client-guid"));
+        assert_eq!(s.client_secret.as_deref(), Some("sec"));
+        assert!(s.password.is_none());
+    }
+
+    #[test]
+    fn rejects_garbage() {
+        let mut p = ConnectionProfile::new("", AuthMethod::WindowsIntegrated);
+        assert!(p.apply_connection_string("hello world").is_err());
     }
 }
