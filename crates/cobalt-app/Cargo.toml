@@ -54,6 +54,9 @@ anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# turns the eframe / egui-wgpu profiling scopes into tracing spans (COBALT_SPANS=1 prints their durations)
+profiling = { version = "1", features = ["profile-with-tracing"] }
+pollster = "0.4"
 tracing-appender.workspace = true
 directories.workspace = true
 rfd.workspace = true

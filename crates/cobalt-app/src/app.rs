@@ -64,6 +64,67 @@ pub struct CobaltApp {
     frames: u64,
     /// Command-line request, applied on the first frame.
     launch: Option<ops::LaunchArgs>,
+    pub perf: PerfStats,
+    /// Diagnostics: request a repaint every frame until this instant (the `spin` agent verb), so
+    /// the measured fps is the renderer's real maximum.
+    pub spin_until: Option<Instant>,
+}
+
+/// Frame-rate and per-frame CPU cost over a rolling 2-second window (for the `perf` agent verb
+/// and the `COBALT_PERF=1` log line): the first thing to look at when the app feels slow.
+#[derive(Debug, Default, Clone)]
+pub struct PerfStats {
+    window_start: Option<Instant>,
+    frames: u32,
+    cpu_sum: f32,
+    cpu_max: f32,
+    /// Last completed window: (frames per second, mean frame CPU ms, max frame CPU ms).
+    pub last: (f32, f32, f32),
+    /// Mean wall-clock ms between consecutive frames (only frames < 500 ms apart count), i.e.
+    /// what the user feels: CPU work + rasterization + presentation.
+    pub last_wall_ms: f32,
+    pub total_frames: u64,
+    prev_frame: Option<Instant>,
+    wall_sum: f32,
+    wall_n: u32,
+}
+
+impl PerfStats {
+    fn frame(&mut self, cpu_secs: Option<f32>) {
+        let now = Instant::now();
+        let start = *self.window_start.get_or_insert(now);
+        self.frames += 1;
+        self.total_frames += 1;
+        if let Some(c) = cpu_secs {
+            self.cpu_sum += c;
+            self.cpu_max = self.cpu_max.max(c);
+        }
+        if let Some(prev) = self.prev_frame {
+            let dt = now.duration_since(prev).as_secs_f32();
+            if dt < 0.5 {
+                self.wall_sum += dt;
+                self.wall_n += 1;
+            }
+        }
+        self.prev_frame = Some(now);
+        let elapsed = now.duration_since(start).as_secs_f32();
+        if elapsed >= 2.0 {
+            let fps = self.frames as f32 / elapsed;
+            let mean_ms = if self.frames > 0 { self.cpu_sum / self.frames as f32 * 1000.0 } else { 0.0 };
+            let wall_ms = if self.wall_n > 0 { self.wall_sum / self.wall_n as f32 * 1000.0 } else { 0.0 };
+            self.last = (fps, mean_ms, self.cpu_max * 1000.0);
+            self.last_wall_ms = wall_ms;
+            if std::env::var_os("COBALT_PERF").is_some() {
+                tracing::info!(fps = format!("{fps:.1}"), mean_frame_ms = format!("{mean_ms:.2}"), max_frame_ms = format!("{:.2}", self.cpu_max * 1000.0), wall_ms = format!("{wall_ms:.1}"), adapter = crate::gpu::adapter_label().unwrap_or("?"), "perf");
+            }
+            self.window_start = Some(now);
+            self.frames = 0;
+            self.cpu_sum = 0.0;
+            self.cpu_max = 0.0;
+            self.wall_sum = 0.0;
+            self.wall_n = 0;
+        }
+    }
 }
 
 impl CobaltApp {
@@ -82,6 +143,11 @@ impl CobaltApp {
         });
         let resolver = Arc::new(CredentialResolver::new(secrets.clone(), cobalt_auth::entra::EntraConfig::from_settings(&settings.connections)));
         let budget = Arc::new(MemoryBudget::new(settings.advanced.memory_budget_bytes as usize));
+        if let Some(gl) = &cc.gl {
+            use eframe::glow::HasContext;
+            let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+            crate::gpu::note_gl(&renderer, &version);
+        }
         let egui_ctx = cc.egui_ctx.clone();
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || egui_ctx.request_repaint());
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
@@ -137,6 +203,8 @@ impl CobaltApp {
             applied_theme: None,
             frames: 0,
             launch: ops::LaunchArgs::parse(std::env::args().skip(1)),
+            perf: PerfStats::default(),
+            spin_until: None,
         };
         app.applied_scale = app.settings.appearance.ui_scale;
         app.applied_theme = Some(app.theme.is_dark());
@@ -151,6 +219,9 @@ impl CobaltApp {
         }
         if app.state.tabs.is_empty() {
             app.state.new_tab();
+        }
+        if crate::gpu::warp_without_mesa() {
+            app.flush_toasts(vec![(ToastKind::Warning, format!("No GPU found: drawing falls back to Windows' slow software rasterizer. Put Mesa's {} next to cobalt.exe for a much faster one (Help → Running without a GPU).", crate::gpu::MESA_DLL))]);
         }
         app
     }
@@ -312,8 +383,16 @@ impl eframe::App for CobaltApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.perf.frame(frame.info().cpu_usage);
         let ctx = ui.ctx().clone();
+        if let Some(until) = self.spin_until {
+            if Instant::now() < until {
+                ctx.request_repaint();
+            } else {
+                self.spin_until = None;
+            }
+        }
         self.logic(&ctx);
         if !self.state.injected_events.is_empty() {
             let evs = std::mem::take(&mut self.state.injected_events);
@@ -406,7 +485,7 @@ impl eframe::App for CobaltApp {
         }
     }
 
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         let egui = egui::Context::default();
         let toasts = RefCell::new(Vec::new());
         let cx = make_ctx!(self, &egui, &toasts);

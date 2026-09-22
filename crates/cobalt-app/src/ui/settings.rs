@@ -155,6 +155,18 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     }
                 });
             });
+            ui.horizontal(|ui| {
+                ui.label("Renderer");
+                let choices: [(&str, &str); 3] = [("auto", "Auto (GPU; Mesa OpenGL when there is no GPU)"), ("wgpu-only", "GPU only (wgpu, WARP without a GPU)"), ("opengl", "OpenGL (Mesa llvmpipe if present next to the exe)")];
+                let current = if draft.advanced.renderer == "wgpu" { "auto" } else { draft.advanced.renderer.as_str() };
+                let label = choices.iter().find(|(k, _)| *k == current).map(|(_, l)| *l).unwrap_or("Auto");
+                egui::ComboBox::from_id_salt("renderer").width(360.0).selected_text(label).show_ui(ui, |ui| {
+                    for (k, l) in choices {
+                        ui.selectable_value(&mut draft.advanced.renderer, k.to_string(), l);
+                    }
+                });
+            });
+            ui.label(RichText::new(format!("Renderer changes apply at the next start. Now: {}{}", crate::gpu::adapter_label().unwrap_or("?"), if crate::gpu::is_software() { " · software rendering" } else { "" })).size(11.0).color(theme.text_faint));
             ui.label(RichText::new(paths_info).size(11.0).color(theme.text_faint));
         });
         ui.separator();

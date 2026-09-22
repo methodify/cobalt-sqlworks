@@ -241,10 +241,12 @@ pub struct AdvancedSettings {
     pub memory_budget_bytes: u64,
     pub temp_dir: Option<String>,
     pub log_level: String,
+    /// `auto` (GPU via wgpu; Mesa OpenGL when there is no GPU), `wgpu-only`, or `opengl`.
+    /// Legacy value `wgpu` behaves like `auto`. Takes effect at the next start.
     pub renderer: String,
 }
 impl Default for AdvancedSettings {
     fn default() -> Self {
-        Self { memory_budget_bytes: 1024 * 1024 * 1024, temp_dir: None, log_level: "info".into(), renderer: "wgpu".into() }
+        Self { memory_budget_bytes: 1024 * 1024 * 1024, temp_dir: None, log_level: "info".into(), renderer: "auto".into() }
     }
 }

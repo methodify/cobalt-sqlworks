@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Fast software rendering for GPU-less machines (VMs, RDP)**. Without a GPU the only Direct3D
+  adapter is Windows' WARP, which drew a frame in ~280 ms (3–4 fps). Cobalt now picks its renderer
+  at start-up: a GPU → wgpu as before; no GPU plus a Mesa llvmpipe `opengl32.dll` next to
+  `cobalt.exe` → OpenGL through Mesa (~5 ms a frame, measured); no GPU and no Mesa → WARP with a
+  warning toast and a status-bar badge. Settings → Advanced → Renderer overrides the choice
+  (`COBALT_RENDERER` too). See docs/alpha_notes.md → Running without a GPU.
+- Adapter selection now prefers discrete > integrated > virtual > CPU explicitly and logs the pick.
+- Dev: `COBALT_PERF=1` frame stats, `perf` / `spin` / `viewport` agent verbs, `COBALT_ADAPTER` and
+  `COBALT_SPANS` diagnostics.
+
 ## 0.3.1 — 2026-09-21
 
 - Object explorer: **Describe on hover** — hover a table, view or table type to see its columns

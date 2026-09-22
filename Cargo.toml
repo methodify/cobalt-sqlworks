@@ -37,14 +37,14 @@ cobalt-plan = { path = "crates/cobalt-plan" }
 
 # --- UI (all must track the same egui) ---
 egui = "0.36"
-eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "persistence", "accesskit", "wayland", "x11"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "glow", "persistence", "accesskit", "wayland", "x11"] }
 egui_extras = { version = "0.36", features = ["svg", "image"] }
 egui_table = "0.10"
 egui_dock = "0.21"
 egui-notify = "0.23"
 egui-phosphor = "0.14"
 egui_kittest = "0.36"
-egui_agent = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0", default-features = false, features = ["eframe", "uds", "pipe", "accesskit-introspection", "screenshot"] }
+egui_agent = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0", default-features = false, features = ["eframe", "glow", "uds", "pipe", "accesskit-introspection", "screenshot"] }
 egui_agent_macros = { git = "https://github.com/methodify/egui_agent", tag = "v0.3.0" }
 
 # --- data: arrow pinned to what deltalake 0.32 requires ---

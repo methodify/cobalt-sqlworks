@@ -726,6 +726,10 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(t) = f.state.active() {
                     ui.label(RichText::new("MSSQL").color(theme.text_muted));
+                    if crate::gpu::is_software() {
+                        ui.separator();
+                        ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
+                    }
                     ui.separator();
                     ui.label(format!("Ln {}, Col {}", t.editor.line, t.editor.col));
                     ui.separator();

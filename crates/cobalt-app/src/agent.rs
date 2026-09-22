@@ -145,6 +145,34 @@ impl AgentApp for CobaltApp {
         let args = action.args();
         match action.name() {
             "state" => ActionResult::with(&self.state_json()),
+            "viewport" => {
+                // {w, h} in logical points: resize the window (perf experiments)
+                let num = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_f64());
+                let (Some(w), Some(h)) = (num("w"), num("h")) else { return ActionResult::BadArgs("w and h are required".into()) };
+                egui.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w as f32, h as f32)));
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "spin" => {
+                // {ms}: repaint continuously for that long, then read `perf` for the real frame rate
+                let ms = args.and_then(|a| a.get("ms")).and_then(|v| v.as_u64()).unwrap_or(3000);
+                self.spin_until = Some(std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "perf" => {
+                // last 2-second window: frames per second, mean / max frame CPU ms, adapter in use
+                let (fps, mean_ms, max_ms) = self.perf.last;
+                ActionResult::with(&json!({
+                    "fps": fps,
+                    "mean_frame_ms": mean_ms,
+                    "max_frame_ms": max_ms,
+                    "wall_ms": self.perf.last_wall_ms,
+                    "total_frames": self.perf.total_frames,
+                    "adapter": crate::gpu::adapter_label(),
+                    "software": crate::gpu::is_software(),
+                }))
+            }
             "add_profile" => {
                 let Some(server) = arg_str(args, "server") else { return ActionResult::BadArgs("server is required".into()) };
                 let user = arg_str(args, "user").unwrap_or_default();

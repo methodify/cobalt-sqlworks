@@ -7,6 +7,7 @@ mod app;
 mod commands;
 mod copy;
 mod fabric;
+mod gpu;
 mod ops;
 mod session;
 mod state;
@@ -34,15 +35,44 @@ fn app_icon() -> egui::IconData {
 fn main() -> eframe::Result {
     init_tracing();
     select_gpu_backend();
+    // the renderer must be chosen before the window exists; settings are loaded again by the app
+    let renderer_setting = cobalt_store::AppPaths::new().map(|p| cobalt_store::load_settings(&p.settings_file()).advanced.renderer).unwrap_or_else(|_| "auto".into());
+    let renderer = gpu::choose_renderer(&renderer_setting);
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(cobalt_core::APP_NAME)
             .with_icon(app_icon())
-            .with_inner_size([1400.0, 900.0])
+            .with_inner_size(std::env::var("COBALT_WINDOW").ok().and_then(|s| { let (w, h) = s.split_once('x')?; Some([w.parse().ok()?, h.parse().ok()?]) }).unwrap_or([1400.0, 900.0]))
             .with_min_inner_size([800.0, 500.0])
             .with_app_id("cobalt-sqlworks"),
         persist_window: true,
+        wgpu_options: {
+            // pick the adapter ourselves: best GPU, or WARP with a warning (see gpu.rs)
+            let mut o = eframe::egui_wgpu::WgpuConfiguration::default();
+            if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut o.wgpu_setup {
+                c.native_adapter_selector = Some(gpu::selector());
+            }
+            // diagnostics knobs (undocumented): COBALT_PRESENT=fifo|immediate|mailbox|autovsync|autonovsync,
+            // COBALT_LATENCY=<frames>
+            if let Ok(p) = std::env::var("COBALT_PRESENT") {
+                use eframe::egui_wgpu::wgpu::PresentMode as P;
+                o.surface.present_mode = match p.to_ascii_lowercase().as_str() {
+                    "fifo" => P::Fifo,
+                    "immediate" => P::Immediate,
+                    "mailbox" => P::Mailbox,
+                    "autonovsync" => P::AutoNoVsync,
+                    _ => P::AutoVsync,
+                };
+            }
+            if let Some(n) = std::env::var("COBALT_LATENCY").ok().and_then(|s| s.parse::<u32>().ok()) {
+                o.surface.desired_maximum_frame_latency = Some(n);
+            }
+            o
+        },
+        renderer,
+        // COBALT_DITHER=0 turns off egui's per-pixel dithering (a fragment-shader cost that matters on WARP)
+        dithering: std::env::var("COBALT_DITHER").map(|v| v != "0").unwrap_or(true),
         ..Default::default()
     };
 
@@ -108,5 +138,8 @@ fn select_gpu_backend() {
 fn init_tracing() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
     let filter = EnvFilter::try_from_env("COBALT_LOG").unwrap_or_else(|_| EnvFilter::new("info,wgpu=warn,naga=warn,egui_wgpu=warn"));
-    tracing_subscriber::registry().with(filter).with(fmt::layer().with_target(false)).init();
+    // COBALT_SPANS=1: print span close events (durations) — used with `COBALT_LOG=…,eframe=trace,egui_wgpu=trace`
+    // to see where a frame's time goes inside the renderer.
+    let spans = if std::env::var_os("COBALT_SPANS").is_some() { fmt::format::FmtSpan::CLOSE } else { fmt::format::FmtSpan::NONE };
+    tracing_subscriber::registry().with(filter).with(fmt::layer().with_target(true).with_span_events(spans)).init();
 }

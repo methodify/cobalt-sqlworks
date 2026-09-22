@@ -124,3 +124,25 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Hot exit | ✅ |
 | Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |
+
+## Running without a GPU (VMs, RDP)
+
+Measured 2026-09-22 on a 1600×900 window: Microsoft's WARP software rasterizer (the only Direct3D
+adapter on a GPU-less VM) draws an egui frame in ~280 ms — about 3.5 fps, "dog slow" over RDP.
+Mesa's llvmpipe through OpenGL draws the same frame in ~5 ms on the same machine.
+
+Cobalt therefore picks its renderer at start-up (`advanced.renderer = "auto"`):
+
+- a real GPU → wgpu (Direct3D 12 / Metal / Vulkan), as before;
+- no GPU and a Mesa `opengl32.dll` next to `cobalt.exe` → OpenGL via that DLL (fast software);
+- no GPU and no Mesa DLL → wgpu on WARP, with a warning toast and a status-bar badge.
+
+Getting a Mesa DLL: any Mesa llvmpipe build works, e.g. the `opengl32.dll` from
+<https://github.com/pal1000/mesa-dist-win> (x64, release), or the `opengl32sw.dll` that Qt-based
+apps ship (rename it to `opengl32.dll`). Some antivirus engines flag the mesa-dist-win archives as
+unwanted software; they are false positives, but it is why the installer does not bundle Mesa yet.
+
+Overrides: Settings → Advanced → Renderer, or `COBALT_RENDERER=wgpu|opengl`. Diagnostics with the
+dev build: `COBALT_PERF=1` logs fps and frame cost every 2 s; the agent verbs `perf`, `spin {ms}`
+and `viewport {w,h}` measure the real maximum frame rate; `COBALT_ADAPTER=<name substring>` forces an
+adapter (`basic render` = WARP) to reproduce the VM locally.
