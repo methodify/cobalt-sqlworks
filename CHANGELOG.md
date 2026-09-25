@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — 2026-09-24
 
 - **Sessions survive long idle stretches.** Leaving a tab open for hours (a Fabric or Azure
   gateway, or a NAT, drops the idle TCP session) used to end in a run that spun, then failed with
