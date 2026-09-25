@@ -61,6 +61,7 @@ deltalake = { version = "0.32", default-features = false, features = ["native-tl
 tiberius = { package = "tiberius-ng", version = "0.13", default-features = false, features = ["tds80", "native-tls", "chrono", "rust_decimal", "winauth", "sql-browser-tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "fs"] }
 tokio-util = { version = "0.7", features = ["compat"] }
+socket2 = "0.6"
 futures-util = "0.3"
 async-trait = "0.1"
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }

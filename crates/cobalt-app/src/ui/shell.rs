@@ -831,7 +831,7 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                 match t.profile.clone() {
                     Some(p) => {
                         let tab = t.id;
-                        let db = t.conn.database().map(str::to_string);
+                        let db = t.reconnect_database();
                         ops::begin_connect(state, cx, p, ConnectPurpose::Tab { tab, database: db });
                     }
                     None => state.dialog = Dialog::ChangeConnection { tab_index: i },

@@ -120,6 +120,11 @@ pub trait Connection: Send {
     async fn change_database(&mut self, database: &str) -> Result<()>;
     async fn ping(&mut self) -> Result<()>;
     async fn close(&mut self) -> Result<()>;
+    /// False once a transport or protocol failure has poisoned the session (every further call
+    /// would fail with `Disconnected`), or after `close()`.
+    fn is_usable(&self) -> bool {
+        true
+    }
 
     // ----- catalog -----
     async fn list_databases(&mut self) -> Result<Vec<DatabaseInfo>>;

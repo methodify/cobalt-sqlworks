@@ -13,6 +13,8 @@
 //! Server errors after the batch started never surface as `Err`: they end the stream with
 //! `Done { error }`. `Done.error` repeats the first error message so the UI can mark the run as
 //! failed; the messages pane should render the `Message` items and not append `Done.error` again.
+//! Transport failures and timeouts follow the same shape: a `Message` describing what happened,
+//! then `Done { error }`.
 //!
 //! Cancellation: [`CancelSignal`] is shared with every `CancelHandle`; the stream `select!`s on
 //! it (and on the deadline) while waiting for the next token, sends a TDS attention through
@@ -286,6 +288,10 @@ impl<'a> Run<'a> {
                 if self.error.is_none() {
                     self.error = Some(m.clone());
                 }
+                if m.class >= 20 {
+                    // severity 20+ terminates the session: SQL Server closes the connection after it
+                    self.conn.broken.get_or_insert_with(|| format!("the server ended the session: {}", m.message));
+                }
                 self.pending.push_back(StreamItem::Message(m));
             }
             ReceivedToken::EnvChange(TokenEnvChange::Database(new, _)) => self.conn.database = new,
@@ -433,6 +439,9 @@ impl<'a> Run<'a> {
                 false,
             ),
         };
+        if let Some(m) = &error {
+            self.pending.push_back(StreamItem::Message(m.clone()));
+        }
         self.pending.push_back(StreamItem::Done { error, cancelled });
         self.finished = true;
     }
@@ -446,12 +455,13 @@ impl<'a> Run<'a> {
             number: 0,
             state: 0,
             class: 20,
-            message: err.to_string(),
+            message: format!("A transport-level error occurred while receiving results from the server ({err}). The connection is closed."),
             server: None,
             procedure: None,
             line: 0,
             is_error: true,
         };
+        self.pending.push_back(StreamItem::Message(msg.clone()));
         self.pending.push_back(StreamItem::Done { error: Some(msg), cancelled: false });
         self.finished = true;
     }

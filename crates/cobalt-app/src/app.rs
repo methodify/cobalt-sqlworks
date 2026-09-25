@@ -151,7 +151,7 @@ impl CobaltApp {
         let egui_ctx = cc.egui_ctx.clone();
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || egui_ctx.request_repaint());
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
-        let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint);
+        let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
 
         // fonts
         let mut fonts = egui::FontDefinitions::default();

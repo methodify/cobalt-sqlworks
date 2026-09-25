@@ -1359,6 +1359,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "socket2",
  "thiserror 2.0.20",
  "tiberius-ng",
  "tokio",

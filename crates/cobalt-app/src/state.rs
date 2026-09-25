@@ -238,6 +238,12 @@ pub struct EditorTab {
     pub untitled_index: usize,
     /// Run again once the (re)connect completes.
     pub pending_run: Option<RunMode>,
+    /// The database the tab was last connected to; a reconnect after a dropped session goes back
+    /// there rather than to the profile's default.
+    pub last_database: Option<String>,
+    /// How the last run was started, so a run that found its connection dead can be repeated once
+    /// the tab is connected again.
+    pub last_run_mode: Option<RunMode>,
     /// Run-to-export target consumed by the next `execute` (set by the Run to File dialog).
     pub pending_export: Option<Box<crate::ops::ExportJob>>,
     /// Open the Import Data dialog once this tab's connection is up (tree: "Import data from file…").
@@ -279,10 +285,17 @@ impl EditorTab {
             last_snapshot: Instant::now(),
             untitled_index,
             pending_run: None,
+            last_database: None,
+            last_run_mode: None,
             pending_export: None,
             pending_import: false,
             snapshot_hash: hash_text(""),
         }
+    }
+
+    /// The database a reconnect should land in: the live one, else the one the tab last had.
+    pub fn reconnect_database(&self) -> Option<String> {
+        self.conn.database().map(str::to_string).or_else(|| self.last_database.clone())
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -883,6 +896,7 @@ impl AppState {
             Event::Connected { tab, engine, spid, database } => {
                 if let Some(t) = self.tab_mut(tab) {
                     t.conn = ConnState::Connected { engine, spid, database: database.clone() };
+                    t.last_database = Some(database.clone());
                     out.push(Followup::LoadTabDatabases(tab));
                     out.push(Followup::LoadCatalog(tab, database));
                 }
@@ -895,6 +909,9 @@ impl AppState {
             }
             Event::Disconnected { tab } => {
                 if let Some(t) = self.tab_mut(tab) {
+                    if let Some(db) = t.conn.database() {
+                        t.last_database = Some(db.to_string());
+                    }
                     t.conn = ConnState::Disconnected;
                     if let Some(r) = &mut t.run {
                         if r.is_live() {
@@ -902,6 +919,54 @@ impl AppState {
                             r.messages.push(MessageLine { text: "Connection closed.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
                         }
                     }
+                }
+            }
+            Event::Reconnected { tab, engine, spid, database, idle } => {
+                if let Some(t) = self.tab_mut(tab) {
+                    t.conn = ConnState::Connected { engine, spid, database: database.clone() };
+                    t.last_database = Some(database.clone());
+                    let text = format!(
+                        "The connection had been closed while idle ({}); reconnected to {} as SPID {}.",
+                        fmt_idle(idle),
+                        database,
+                        spid.map(|s| s.to_string()).unwrap_or_else(|| "?".into())
+                    );
+                    match t.run.as_mut().filter(|r| r.is_live()) {
+                        Some(r) => r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None }),
+                        None => out.push(Followup::Toast(ToastKind::Info, text)),
+                    }
+                    if t.catalog_database.as_deref() != Some(database.as_str()) {
+                        out.push(Followup::LoadCatalog(tab, database));
+                    }
+                }
+            }
+            Event::ConnectionLost { tab, error, hint, idle, rerun } => {
+                let text = format!(
+                    "The connection had been closed while idle ({}) and could not be reopened: {error}{}",
+                    fmt_idle(idle),
+                    hint.map(|h| format!(" ({h})")).unwrap_or_default()
+                );
+                if let Some(t) = self.tab_mut(tab) {
+                    if let Some(db) = t.conn.database() {
+                        t.last_database = Some(db.to_string());
+                    }
+                    t.conn = ConnState::Disconnected;
+                    let mut rerun_ok = false;
+                    if let Some(r) = t.run.as_mut().filter(|r| r.is_live()) {
+                        r.state = RunViewState::Failed;
+                        r.elapsed = r.started.elapsed();
+                        r.messages.push(MessageLine { text: text.clone(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                        out.push(Followup::FinishHistory { history_id: r.history_id, elapsed: r.elapsed, rows: 0, cancelled: false, failed: true, error: Some(text.clone()) });
+                        // a Run to File already handed its job to the writer; only a plain run repeats
+                        rerun_ok = r.export_target.is_none();
+                    }
+                    if rerun && rerun_ok {
+                        t.pending_run = t.last_run_mode;
+                    }
+                    out.push(Followup::Toast(ToastKind::Error, text));
+                    // back through the normal connect path (interactive sign-in when needed); a
+                    // pending run goes out once the tab is connected again
+                    out.push(Followup::Reconnect(tab));
                 }
             }
             Event::NotConnected { tab } => {
@@ -1035,6 +1100,7 @@ impl AppState {
                     if let ConnState::Connected { database: d, .. } = &mut t.conn {
                         *d = database.clone();
                     }
+                    t.last_database = Some(database.clone());
                     if !t.custom_title {
                         t.title = format!("SQLQuery_{} · {}", t.untitled_index, database);
                     }
@@ -1193,6 +1259,8 @@ pub enum Followup {
     Toast(ToastKind, String),
     /// Reload a database's objects in the Servers tree (after an import created a table).
     RefreshDatabase { profile: ProfileId, database: String },
+    /// Reconnect the tab to its profile and last database (after a session was lost for good).
+    Reconnect(TabId),
 }
 
 impl ImportDialog {
@@ -1231,6 +1299,18 @@ pub fn fmt_count(n: u64) -> String {
         out.push(ch);
     }
     out
+}
+
+/// An idle stretch for people: "6 h 12 min", "3 min", "45 s".
+pub fn fmt_idle(d: Duration) -> String {
+    let s = d.as_secs();
+    if s >= 3600 {
+        format!("{} h {} min", s / 3600, (s % 3600) / 60)
+    } else if s >= 60 {
+        format!("{} min", s / 60)
+    } else {
+        format!("{s} s")
+    }
 }
 
 pub fn fmt_duration(d: Duration) -> String {

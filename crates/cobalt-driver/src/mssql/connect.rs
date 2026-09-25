@@ -8,6 +8,20 @@ use tiberius::{Config, SqlBrowser};
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncWriteCompatExt;
 
+/// TCP keepalive, as SqlClient sets it (30 s idle, then a probe every second). Keeps NAT and
+/// gateway mappings alive across long idle stretches, and makes a vanished peer surface as an
+/// I/O error within seconds instead of after the retransmission budget.
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(30);
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(1);
+
+fn tune_socket(s: &TcpStream) {
+    let _ = s.set_nodelay(true);
+    let ka = socket2::TcpKeepalive::new().with_time(KEEPALIVE_IDLE).with_interval(KEEPALIVE_INTERVAL);
+    if let Err(e) = socket2::SockRef::from(s).set_tcp_keepalive(&ka) {
+        tracing::debug!("could not set TCP keepalive: {e}");
+    }
+}
+
 const PROBE_SQL: &str = "SELECT CAST(@@SPID AS int) AS spid, \
     CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)) AS product_version, \
     CAST(SERVERPROPERTY('ProductLevel') AS nvarchar(128)) AS product_level, \
@@ -49,10 +63,14 @@ async fn open(mut config: Config) -> Result<TdsClient> {
         let tcp = match &routed {
             Some((gateway, port)) => {
                 let s = TcpStream::connect((gateway.as_str(), *port)).await.map_err(|e| DriverError::Connect(format!("{gateway}:{port}: {e}")))?;
-                let _ = s.set_nodelay(true);
+                tune_socket(&s);
                 s
             }
-            None => TcpStream::connect_named(&config).await.map_err(|e| map_error(e, ErrorPhase::Connect))?,
+            None => {
+                let s = TcpStream::connect_named(&config).await.map_err(|e| map_error(e, ErrorPhase::Connect))?;
+                tune_socket(&s);
+                s
+            }
         };
         match tiberius::Client::connect(config.clone(), tcp.compat_write()).await {
             Ok(client) => return Ok(client),

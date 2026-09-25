@@ -6,12 +6,25 @@ use cobalt_driver::{split_batches, Connection, DriverError, StreamItem};
 use cobalt_results::{ResultSet, RunState};
 use futures_util::StreamExt;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
+
+/// A connection idle for longer than this gets a `SELECT 1` before its next command, so one the
+/// server (or a NAT) dropped while the app sat open is replaced before the user's batch goes out.
+/// `COBALT_IDLE_PING_SECS` overrides it (dev).
+const IDLE_PING_AFTER: Duration = Duration::from_secs(60);
+/// A ping that does not answer within this is a dead connection (a black-holed socket otherwise
+/// waits out the whole TCP retransmission budget).
+const PING_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn idle_ping_after() -> Duration {
+    std::env::var("COBALT_IDLE_PING_SECS").ok().and_then(|v| v.parse().ok()).map(Duration::from_secs).unwrap_or(IDLE_PING_AFTER)
+}
 
 pub enum TabMsg {
     Run { run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel,
+    SimulateLost,
     Import { table: String, create_sql: Option<String>, columns: Vec<ColumnInfo>, rx: std::sync::mpsc::Receiver<std::result::Result<arrow::array::RecordBatch, String>>, cancel: Arc<std::sync::atomic::AtomicBool> },
     FetchMore { rows: Option<u64> },
     ChangeDatabase { database: String },
@@ -32,6 +45,52 @@ async fn open(shared: &Shared, profile: &ConnectionProfile, creds: &ResolvedCred
     shared.driver.connect(&p, creds, role).await
 }
 
+enum Live {
+    Same,
+    Reconnected { idle: Duration },
+}
+
+/// Make sure `conn` is alive before a command. A connection idle past [`IDLE_PING_AFTER`] is
+/// pinged; a dead one (failed ping, poisoned by an earlier transport error, or `force_dead`) is
+/// replaced in place: credentials refreshed silently when they are an expired token, then a new
+/// session to the same database. `Err` = could not reconnect; the caller must give the tab up.
+async fn ensure_live(
+    shared: &Shared,
+    profile: &ConnectionProfile,
+    creds: &mut ResolvedCredentials,
+    conn: &mut Box<dyn Connection>,
+    role: ConnectionRole,
+    last_used: Instant,
+    force_dead: bool,
+) -> Result<Live, (String, Option<String>)> {
+    let idle = last_used.elapsed();
+    let mut dead = force_dead || !conn.is_usable();
+    if !dead && idle >= idle_ping_after() {
+        match tokio::time::timeout(PING_TIMEOUT, conn.ping()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::info!(spid = ?conn.spid(), idle_secs = idle.as_secs(), "idle connection is dead ({e}); reconnecting");
+                dead = true;
+            }
+            Err(_) => {
+                tracing::info!(spid = ?conn.spid(), idle_secs = idle.as_secs(), "idle connection did not answer a ping; reconnecting");
+                dead = true;
+            }
+        }
+    }
+    if !dead {
+        return Ok(Live::Same);
+    }
+    let database = conn.current_database().to_string();
+    // No `close()`: the socket is dead or mid-read; dropping it is the only thing that works.
+    let fresh = (shared.refresh)(profile.clone(), creds.clone()).await.map_err(|e| (e, None))?;
+    *creds = fresh;
+    let db = (!database.is_empty()).then_some(database.as_str());
+    let new = open(shared, profile, creds, db, role).await.map_err(|e| (e.to_string(), e.hint().map(str::to_string)))?;
+    *conn = new;
+    Ok(Live::Reconnected { idle })
+}
+
 pub async fn tab_actor(
     tab: TabId,
     profile: ConnectionProfile,
@@ -40,6 +99,7 @@ pub async fn tab_actor(
     mut rx: mpsc::UnboundedReceiver<TabMsg>,
     shared: Shared,
 ) {
+    let mut creds = creds;
     let mut conn = match open(&shared, &profile, &creds, database.as_deref(), ConnectionRole::Query).await {
         Ok(c) => c,
         Err(e) => {
@@ -48,10 +108,27 @@ pub async fn tab_actor(
         }
     };
     shared.emit(Event::Connected { tab, engine: conn.engine().clone(), spid: conn.spid(), database: conn.current_database().to_string() });
+    let mut last_used = Instant::now();
+    let mut force_dead = false;
 
     while let Some(msg) = rx.recv().await {
+        let needs_conn = matches!(msg, TabMsg::Run { .. } | TabMsg::Import { .. } | TabMsg::ChangeDatabase { .. });
+        if needs_conn {
+            match ensure_live(&shared, &profile, &mut creds, &mut conn, ConnectionRole::Query, last_used, std::mem::take(&mut force_dead)).await {
+                Ok(Live::Same) => {}
+                Ok(Live::Reconnected { idle }) => {
+                    shared.emit(Event::Reconnected { tab, engine: conn.engine().clone(), spid: conn.spid(), database: conn.current_database().to_string(), idle });
+                }
+                Err((error, hint)) => {
+                    let rerun = matches!(msg, TabMsg::Run { .. });
+                    shared.emit(Event::ConnectionLost { tab, error, hint, idle: last_used.elapsed(), rerun });
+                    return;
+                }
+            }
+        }
         match msg {
             TabMsg::Close => break,
+            TabMsg::SimulateLost => force_dead = true,
             TabMsg::Ping => {
                 let ok = conn.ping().await.is_ok();
                 shared.emit(Event::Pong { tab, ok });
@@ -83,6 +160,12 @@ pub async fn tab_actor(
                 }
             }
         }
+        // a transport failure mid-command poisons the session: say so now, not at the next run
+        if !conn.is_usable() {
+            tracing::info!(spid = ?conn.spid(), "connection unusable after the command; closing the tab's session");
+            break;
+        }
+        last_used = Instant::now();
     }
     let _ = conn.close().await;
     shared.emit(Event::Disconnected { tab });
@@ -415,26 +498,61 @@ fn opts_stop_on_error(_opts: &ExecOptions) -> bool {
     true
 }
 
+/// The per-profile metadata session. Opens lazily, pings after an idle stretch, and when the
+/// connection turns out dead (idle drop, transport failure) reopens it once — with silently
+/// refreshed credentials — and retries the request, so the object explorer and the database list
+/// recover on their own after the app sat open for hours.
 pub async fn meta_actor(profile: ConnectionProfile, creds: ResolvedCredentials, mut rx: mpsc::UnboundedReceiver<MetaMsg>, shared: Shared) {
+    let mut creds = creds;
     let mut conn: Option<Box<dyn Connection>> = None;
+    let mut last_used = Instant::now();
     while let Some(msg) = rx.recv().await {
         match msg {
             MetaMsg::Close => break,
             MetaMsg::Request { req, kind } => {
-                if conn.is_none() {
-                    match open(&shared, &profile, &creds, None, ConnectionRole::Metadata).await {
-                        Ok(c) => conn = Some(c),
-                        Err(e) => {
-                            let hint = e.hint().map(|h| format!(" ({h})")).unwrap_or_default();
-                            shared.emit(Event::Metadata { req, profile: profile.id, result: Err(format!("{e}{hint}")) });
-                            break;
+                let mut reopened = false;
+                let result: Result<MetadataResponse, String> = loop {
+                    if conn.as_ref().map(|c| !c.is_usable()).unwrap_or(false) {
+                        conn = None;
+                    }
+                    if let Some(c) = conn.as_mut() {
+                        if last_used.elapsed() >= idle_ping_after() {
+                            let alive = matches!(tokio::time::timeout(PING_TIMEOUT, c.ping()).await, Ok(Ok(())));
+                            if !alive {
+                                tracing::info!(profile = %profile.id, "idle metadata connection is dead; reopening");
+                                conn = None;
+                            }
                         }
                     }
-                }
-                let c = conn.as_mut().unwrap();
-                let result = serve(c.as_mut(), kind).await;
-                let lost = matches!(result, Err(DriverError::Disconnected(_)));
-                shared.emit(Event::Metadata { req, profile: profile.id, result: result.map_err(|e| e.to_string()) });
+                    if conn.is_none() {
+                        match (shared.refresh)(profile.clone(), creds.clone()).await {
+                            Ok(c) => creds = c,
+                            Err(e) => break Err(e),
+                        }
+                        match open(&shared, &profile, &creds, None, ConnectionRole::Metadata).await {
+                            Ok(c) => {
+                                conn = Some(c);
+                                last_used = Instant::now();
+                            }
+                            Err(e) => {
+                                let hint = e.hint().map(|h| format!(" ({h})")).unwrap_or_default();
+                                break Err(format!("{e}{hint}"));
+                            }
+                        }
+                    }
+                    let c = conn.as_mut().unwrap();
+                    match serve(c.as_mut(), kind.clone()).await {
+                        Err(DriverError::Disconnected(why)) if !reopened => {
+                            tracing::info!(profile = %profile.id, "metadata connection lost ({why}); reopening once");
+                            reopened = true;
+                            conn = None;
+                        }
+                        r => break r.map_err(|e| e.to_string()),
+                    }
+                };
+                last_used = Instant::now();
+                let lost = conn.as_ref().map(|c| !c.is_usable()).unwrap_or(true);
+                shared.emit(Event::Metadata { req, profile: profile.id, result });
                 if lost {
                     break;
                 }

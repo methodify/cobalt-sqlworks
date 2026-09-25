@@ -27,6 +27,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
+/// Silent credential refresh for an actor that has to reopen a connection on its own (the one it
+/// had died while the app sat idle). Returns the credentials unchanged when they are still good
+/// (SQL login, Windows auth, an unexpired token); an Entra token past its lifetime is refreshed
+/// from the stored refresh token. `Err` means the user has to sign in again interactively.
+pub type CredRefresher = Arc<
+    dyn Fn(ConnectionProfile, ResolvedCredentials) -> futures_util::future::BoxFuture<'static, std::result::Result<ResolvedCredentials, String>>
+        + Send
+        + Sync,
+>;
+
 /// Shared, cheap-to-clone context for actors.
 #[derive(Clone)]
 pub struct Shared {
@@ -35,6 +45,7 @@ pub struct Shared {
     pub driver: Arc<dyn Driver>,
     pub budget: Arc<MemoryBudget>,
     pub spill_dir: PathBuf,
+    pub refresh: CredRefresher,
 }
 
 impl Shared {
@@ -57,7 +68,7 @@ pub struct SessionManager {
 
 impl SessionManager {
     /// Spawn the runtime thread. `repaint` is called after every event.
-    pub fn start(driver: Arc<dyn Driver>, budget: Arc<MemoryBudget>, spill_dir: PathBuf, repaint: Arc<dyn Fn() + Send + Sync>) -> Self {
+    pub fn start(driver: Arc<dyn Driver>, budget: Arc<MemoryBudget>, spill_dir: PathBuf, repaint: Arc<dyn Fn() + Send + Sync>, refresh: CredRefresher) -> Self {
         let (tx, rx) = mpsc::unbounded_channel::<Command>();
         let (etx, erx) = crossbeam_channel::unbounded::<Event>();
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -67,7 +78,7 @@ impl SessionManager {
             .build()
             .expect("tokio runtime");
         let handle = runtime.handle().clone();
-        let shared = Shared { events: etx, repaint, driver: driver.clone(), budget, spill_dir };
+        let shared = Shared { events: etx, repaint, driver: driver.clone(), budget, spill_dir, refresh };
         std::thread::Builder::new()
             .name("cobalt-session-main".into())
             .spawn(move || {
@@ -143,6 +154,7 @@ async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
             Command::FetchMore { tab, rows } => route_tab(&tabs, &shared, tab, actor::TabMsg::FetchMore { rows }),
             Command::ChangeDatabase { tab, database } => route_tab(&tabs, &shared, tab, actor::TabMsg::ChangeDatabase { database }),
             Command::Ping { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Ping),
+            Command::SimulateLost { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::SimulateLost),
             Command::Metadata { req, profile, creds, kind } => {
                 let entry = meta.entry(profile.id);
                 let tx = entry.or_insert_with(|| {

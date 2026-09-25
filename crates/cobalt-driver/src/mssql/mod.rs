@@ -176,7 +176,15 @@ impl MssqlConnection {
                 Ok(Some(token)) => match token {
                     ReceivedToken::NewResultset(_) => result_sets += 1,
                     ReceivedToken::Row(row) if keep_rows && result_sets == 1 => rows.push(row),
-                    ReceivedToken::Error(e) if first_error.is_none() => first_error = Some(server_message_from_error(&e)),
+                    ReceivedToken::Error(e) => {
+                        let m = server_message_from_error(&e);
+                        if m.class >= 20 {
+                            self.broken.get_or_insert_with(|| format!("the server ended the session: {}", m.message));
+                        }
+                        if first_error.is_none() {
+                            first_error = Some(m);
+                        }
+                    }
                     ReceivedToken::EnvChange(TokenEnvChange::Database(new, _)) => self.database = new,
                     _ => {}
                 },
@@ -257,6 +265,10 @@ impl Connection for MssqlConnection {
     async fn ping(&mut self) -> Result<()> {
         self.settle().await?;
         self.run_silent("SELECT 1").await
+    }
+
+    fn is_usable(&self) -> bool {
+        self.broken.is_none() && self.client.is_some()
     }
 
     async fn close(&mut self) -> Result<()> {

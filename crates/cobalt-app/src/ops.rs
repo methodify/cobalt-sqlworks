@@ -491,6 +491,38 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
     }
 }
 
+/// The session runtime's silent credential refresh (see `session::CredRefresher`): SQL login and
+/// Windows auth pass through; an Entra token still valid for a couple of minutes passes through;
+/// an expired one is renewed from the stored refresh token (interactive/device-code profiles),
+/// re-fetched from Azure CLI, or re-issued with the client secret. `COBALT_TEST_EXPIRED_TOKENS=1`
+/// treats every token as expired (dev).
+pub fn cred_refresher(resolver: Arc<CredentialResolver>) -> crate::session::CredRefresher {
+    Arc::new(move |profile: ConnectionProfile, creds: ResolvedCredentials| {
+        let resolver = resolver.clone();
+        Box::pin(async move {
+            let ResolvedCredentials::EntraToken { expires_at, .. } = &creds else { return Ok(creds) };
+            let force = std::env::var("COBALT_TEST_EXPIRED_TOKENS").map(|v| !v.is_empty() && v != "0").unwrap_or(false);
+            let margin = chrono::Duration::seconds(120);
+            let valid = expires_at.map(|t| t - margin > chrono::Utc::now()).unwrap_or(true);
+            if valid && !force {
+                return Ok(creds);
+            }
+            tracing::info!(profile = %profile.id, forced = force, "Entra token expired; refreshing silently");
+            match &profile.auth {
+                AuthMethod::EntraInteractive { tenant, .. } | AuthMethod::EntraDeviceCode { tenant } => {
+                    match resolver.resource_token_silent(profile.id, cobalt_auth::provider::SQL_RESOURCE, tenant.as_deref()).await {
+                        Ok(Some(ts)) => Ok(ResolvedCredentials::EntraToken { token: ts.access.token, expires_at: Some(ts.access.expires_at) }),
+                        Ok(None) => Err("the sign-in has expired; sign in again".to_string()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } => resolver.resolve(&profile, &cobalt_auth::HeadlessPrompter::new()).await.map_err(|e| e.to_string()),
+                _ => Ok(creds),
+            }
+        })
+    })
+}
+
 pub fn on_auth_done(state: &mut AppState, cx: &Ctx, done: AuthDone) {
     if matches!(state.dialog, Dialog::AuthWaiting { .. }) {
         state.dialog = Dialog::None;
@@ -552,11 +584,9 @@ pub fn finish_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile
                 let db = database.or_else(|| profile.database.clone());
                 cx.session.send(Command::Connect { tab, profile: profile.clone(), creds: creds.clone(), database: db });
             }
-            // also keep creds for the tree so browsing works without a second prompt
-            let node = state.library.server(profile.id);
-            if node.creds.is_none() {
-                node.creds = Some(creds);
-            }
+            // also keep creds for the tree so browsing works without a second prompt; always the
+            // newest ones, so a metadata session opened later does not start from a stale token
+            state.library.server(profile.id).creds = Some(creds);
         }
         ConnectPurpose::Tree { profile: pid } => {
             let node = state.library.server(pid);
@@ -1015,6 +1045,7 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     if t.is_running() {
         return;
     }
+    t.last_run_mode = Some(mode);
     // choose the text
     let (script, start_line) = match mode {
         RunMode::All | RunMode::EstimatedPlan => match t.editor.selection {
@@ -1050,7 +1081,7 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         t.pending_run = Some(mode);
         match t.profile.clone() {
             Some(p) => {
-                let db = t.conn.database().map(str::to_string);
+                let db = t.reconnect_database();
                 begin_connect(state, cx, p, ConnectPurpose::Tab { tab: tab_id, database: db });
             }
             None => state.dialog = Dialog::ChangeConnection { tab_index: idx },
@@ -1221,6 +1252,14 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                 let shown = state.library.servers.get(&profile).map(|n| n.creds.is_some() && n.db_nodes.contains_key(&database)).unwrap_or(false);
                 if shown {
                     tree_action(state, cx, TreeAction::RefreshDatabase { profile, database });
+                }
+            }
+            Followup::Reconnect(tab) => {
+                if let Some(t) = state.tab_mut(tab) {
+                    if let Some(p) = t.profile.clone() {
+                        let db = t.reconnect_database();
+                        begin_connect(state, cx, p, ConnectPurpose::Tab { tab, database: db });
+                    }
                 }
             }
         }

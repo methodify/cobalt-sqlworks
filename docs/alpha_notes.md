@@ -125,6 +125,22 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |
 
+## Leaving the app open for hours
+
+Fabric and Azure gateways (and many NATs / VPNs) drop a TCP session after some idle time. Since
+0.4.1 a tab notices: the socket has keepalive on, a tab idle for over a minute pings the server
+before the next run, and a dead connection is replaced in place (an expired Entra token is
+refreshed silently from the stored refresh token) before the batch goes out. Messages then starts
+with "The connection had been closed while idle (…); reconnected to *db* as SPID *n*". A run that
+was in flight when the session died fails with the transport error in Messages and the tab shows
+disconnected; the next run reconnects to the same database. The object explorer's own connection
+heals the same way, so "Refresh list" in the database picker works after an idle stretch.
+
+Dev knobs: `COBALT_IDLE_PING_SECS=2` shortens the idle threshold; `COBALT_TEST_EXPIRED_TOKENS=1`
+treats every Entra token as expired (forces the silent refresh); the agent verb `break_connection`
+makes the active tab treat its connection as dead at the next run. A server-side `KILL <spid>` from
+another session reproduces the idle drop against the Docker server.
+
 ## Running without a GPU (VMs, RDP)
 
 Measured 2026-09-22 on a 1600×900 window: Microsoft's WARP software rasterizer (the only Direct3D

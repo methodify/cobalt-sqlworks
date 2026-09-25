@@ -42,6 +42,9 @@ pub enum Command {
     FetchMore { tab: TabId, rows: Option<u64> },
     ChangeDatabase { tab: TabId, database: String },
     Ping { tab: TabId },
+    /// Dev/agent: make the tab's actor treat its connection as dead before the next command, so the
+    /// idle-reconnect path can be exercised without waiting for a gateway to drop the session.
+    SimulateLost { tab: TabId },
     /// Object explorer / completion reads on the per-profile metadata connection.
     Metadata { req: RequestId, profile: ConnectionProfile, creds: ResolvedCredentials, kind: MetadataRequest },
     CloseMetadata { profile: ProfileId },
@@ -68,6 +71,12 @@ pub enum Event {
     Connected { tab: TabId, engine: EngineInfo, spid: Option<i32>, database: String },
     ConnectFailed { tab: TabId, error: String, hint: Option<String> },
     Disconnected { tab: TabId },
+    /// The tab's connection had died while idle (the server, a gateway or a NAT closed it) and the
+    /// actor replaced it with a new one to the same database before running the command.
+    Reconnected { tab: TabId, engine: EngineInfo, spid: Option<i32>, database: String, idle: Duration },
+    /// The connection had died and could not be replaced (sign-in expired, server unreachable).
+    /// `rerun`: the command that found it dead was a Run, worth repeating once reconnected.
+    ConnectionLost { tab: TabId, error: String, hint: Option<String>, idle: Duration, rerun: bool },
     NotConnected { tab: TabId },
     RunStarted { tab: TabId, run: RunId, batches: usize },
     BatchStarted { tab: TabId, run: RunId, batch: usize, start_line: u32 },

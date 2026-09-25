@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+- **Sessions survive long idle stretches.** Leaving a tab open for hours (a Fabric or Azure
+  gateway, or a NAT, drops the idle TCP session) used to end in a run that spun, then failed with
+  no message, a tab that still said "connected", a reconnect into the wrong database, and an empty
+  database list whose Refresh button never worked. Now:
+  - the TCP socket has keepalive on (30 s, as SqlClient sets it), so gateways and NATs keep the
+    mapping and a vanished peer is noticed within seconds;
+  - a tab idle for more than a minute pings the server before its next run; a dead connection is
+    replaced in place, silently refreshing an expired Entra token from the stored refresh token,
+    and the run proceeds — Messages says "The connection had been closed while idle (6 h 12 min);
+    reconnected to *db* as SPID *n*". If the sign-in itself has expired, the tab reconnects through
+    the normal sign-in and the run is repeated once connected;
+  - transport-level errors and command timeouts appear in Messages (they only set the red badge
+    before), and a session ended mid-run (severity 20+ errors such as "session is in the kill
+    state", or an I/O error) flips the tab to disconnected at once instead of at the next run;
+  - a reconnect goes back to the database the tab was in, not the profile's default;
+  - the object explorer / database-list connection heals itself: an idle-dropped or expired
+    metadata session is reopened with fresh credentials and the request retried, and the tree
+    always holds the newest credentials from a tab connect.
+- Dev: `COBALT_IDLE_PING_SECS` (default 60) and `COBALT_TEST_EXPIRED_TOKENS=1` knobs, agent verb
+  `break_connection`, `databases` in the agent `state` tab JSON.
+
 ## 0.4.0 — 2026-09-22
 
 - **Windows installer and zip now include a software renderer**: Mesa llvmpipe as a single

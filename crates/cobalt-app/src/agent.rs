@@ -6,6 +6,7 @@
 //! - `connect {profile: <name or id>, database?}` → opens a new tab connected to that profile
 //! - `open_query {text, connect?: <profile name>}` → new tab with text
 //! - `set_query {text}` (active tab), `run {mode?: all|current|selection|estimated_plan}`, `cancel`
+//! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
 //! - `results {set?, offset?, limit?}` → rows of the active tab as JSON, `messages`
 //! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
@@ -17,7 +18,7 @@
 use crate::app::CobaltApp;
 use crate::commands::{Command, COMMANDS};
 use crate::ops::{self, Ctx};
-use crate::state::{ConnState, RunMode, RunViewState, ToastKind};
+use crate::state::{ConnState, Loadable, RunMode, RunViewState, ToastKind};
 use cobalt_core::*;
 use egui_agent::{Action, ActionResult, AgentApp, Snapshot, SnapshotCtx};
 use serde_json::{json, Value};
@@ -54,6 +55,12 @@ impl CobaltApp {
                         ConnState::Connecting => json!("connecting"),
                         ConnState::Connected { engine, spid, database } => json!({"engine": engine.short_label(), "version": engine.version, "spid": spid, "database": database}),
                         ConnState::Failed { error, hint } => json!({"failed": error, "hint": hint}),
+                    },
+                    "databases": match &t.databases {
+                        Loadable::Loaded(d) => json!(d.len()),
+                        Loadable::Loading(_) => json!("loading"),
+                        Loadable::Failed(e) => json!({"failed": e}),
+                        Loadable::NotLoaded => json!(null),
                     },
                     "text": t.text,
                     "cursor": t.editor.cursor,
@@ -258,6 +265,14 @@ impl AgentApp for CobaltApp {
             "cancel" => {
                 if let Some(i) = self.state.active_tab {
                     self.with_ctx(egui, |s, cx| ops::cancel(s, cx, i));
+                }
+                ActionResult::ok()
+            }
+            "break_connection" => {
+                // the active tab's session treats its connection as dead at the next command
+                if let Some(i) = self.state.active_tab {
+                    let tab = self.state.tabs[i].id;
+                    self.with_ctx(egui, |_, cx| cx.session.send(crate::session::Command::SimulateLost { tab }));
                 }
                 ActionResult::ok()
             }
