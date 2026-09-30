@@ -14,6 +14,10 @@ env:
 
 permissions:
   contents: write
+  # artifact attestations (actions/attest-build-provenance): keyless Sigstore signatures that
+  # prove each published file was built by this workflow at this commit.
+  id-token: write
+  attestations: write
 
 jobs:
   check-version:
@@ -191,6 +195,18 @@ jobs:
           cd artifacts
           find . -type f ! -name SHA256SUMS -exec sha256sum {} \; | sed 's# \./[^/]*/# #' > SHA256SUMS
           cat SHA256SUMS
+      # Verify a download with: gh attestation verify <file> --repo methodify/cobalt-sqlworks
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            artifacts/**/*.exe
+            artifacts/**/*.zip
+            artifacts/**/*.deb
+            artifacts/**/*.AppImage
+            artifacts/**/*.tar.gz
+            artifacts/**/*.dmg
+            artifacts/SHA256SUMS
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

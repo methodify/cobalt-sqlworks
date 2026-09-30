@@ -274,16 +274,31 @@ impl Keymap {
         let mut out = Vec::new();
         ctx.input_mut(|i| {
             for (cmd, sc) in &self.bindings {
-                if i.consume_shortcut(sc) {
+                if consume_exact(i, sc) {
                     out.push(*cmd);
                 }
             }
             for (sc, cmd) in Self::aliases() {
-                if i.consume_shortcut(sc) {
+                if consume_exact(i, sc) {
                     out.push(*cmd);
                 }
             }
         });
         out
     }
+}
+
+/// Like `InputState::consume_shortcut`, but the modifiers must match exactly: egui's own version
+/// accepts extra Shift/Alt, so Ctrl+Shift+L would fire the Ctrl+L binding and steal the editor's
+/// multi-cursor keys.
+fn consume_exact(i: &mut egui::InputState, sc: &KeyboardShortcut) -> bool {
+    let mut hit = false;
+    i.events.retain(|e| match e {
+        egui::Event::Key { key, pressed: true, modifiers, .. } if *key == sc.logical_key && modifiers.matches_exact(sc.modifiers) => {
+            hit = true;
+            false
+        }
+        _ => true,
+    });
+    hit
 }

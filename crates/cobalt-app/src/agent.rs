@@ -13,7 +13,8 @@
 //! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}` → Import Data on the active tab; `import_start`, `import_state`
-//! - `pointer {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?}` → real mouse input in screenshot pixels
+//! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
+//! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
 
 use crate::app::CobaltApp;
 use crate::commands::{Command, COMMANDS};
@@ -64,6 +65,8 @@ impl CobaltApp {
                     },
                     "text": t.text,
                     "cursor": t.editor.cursor,
+                    "cursors": t.editor.cursors.sels.iter().map(|s| json!([s.anchor, s.head])).collect::<Vec<_>>(),
+                    "primary": t.editor.cursors.primary,
                     "actual_plan": t.actual_plan,
                     "run": run,
                 })
@@ -449,7 +452,7 @@ impl AgentApp for CobaltApp {
                 ActionResult::ok()
             }
             "pointer" => {
-                // {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?} in screenshot pixels.
+                // {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?, alt?} in screenshot pixels.
                 // Each step lands in its own frame via raw_input_hook, so egui treats it like a real mouse.
                 let act = arg_str(args, "action").unwrap_or_else(|| "click".into());
                 let num = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_f64());
@@ -457,7 +460,7 @@ impl AgentApp for CobaltApp {
                 let (Some(x), Some(y)) = (num("x"), num("y")) else { return ActionResult::BadArgs("x and y are required".into()) };
                 let ppp = egui.pixels_per_point();
                 let at = |x: f64, y: f64| egui::pos2(x as f32 / ppp, y as f32 / ppp);
-                let modifiers = egui::Modifiers { alt: false, ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
+                let modifiers = egui::Modifiers { alt: flag("alt"), ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
                 let button = if act == "rclick" { egui::PointerButton::Secondary } else { egui::PointerButton::Primary };
                 let press = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton { pos, button, pressed, modifiers };
                 let mut steps: Vec<Vec<egui::Event>> = vec![vec![egui::Event::PointerMoved(at(x, y))]];
@@ -467,14 +470,25 @@ impl AgentApp for CobaltApp {
                         steps.push(vec![press(at(x, y), true)]);
                         steps.push(vec![press(at(x, y), false)]);
                     }
-                    "dblclick" => {
-                        for _ in 0..2 {
+                    "dblclick" | "tripleclick" => {
+                        for _ in 0..(if act == "dblclick" { 2 } else { 3 }) {
                             steps.push(vec![press(at(x, y), true)]);
                             steps.push(vec![press(at(x, y), false)]);
                         }
                     }
-                    "drag" => {
+                    // drag: press, move, release; dbldrag / tripledrag: click(s) first, then press
+                    // and drag from the same point (word / line selection extended by dragging)
+                    "drag" | "dbldrag" | "tripledrag" => {
                         let (Some(x2), Some(y2)) = (num("x2"), num("y2")) else { return ActionResult::BadArgs("x2 and y2 are required for drag".into()) };
+                        let pre = match act.as_str() {
+                            "dbldrag" => 1,
+                            "tripledrag" => 2,
+                            _ => 0,
+                        };
+                        for _ in 0..pre {
+                            steps.push(vec![press(at(x, y), true)]);
+                            steps.push(vec![press(at(x, y), false)]);
+                        }
                         steps.push(vec![press(at(x, y), true)]);
                         let n = 8;
                         for i in 1..=n {
@@ -484,6 +498,12 @@ impl AgentApp for CobaltApp {
                         steps.push(vec![press(at(x2, y2), false)]);
                     }
                     _ => return ActionResult::BadArgs("unknown pointer action".into()),
+                }
+                // modifiers must hold for every step of the gesture (moves included)
+                if modifiers != egui::Modifiers::default() {
+                    for s in &mut steps {
+                        s.insert(0, egui::Event::ModifiersChanged(modifiers));
+                    }
                 }
                 self.state.injected_pointer.extend(steps);
                 egui.request_repaint();
@@ -561,6 +581,13 @@ impl AgentApp for CobaltApp {
                 egui.request_repaint();
                 ActionResult::ok()
             }
+            "paste" => {
+                // {text}: a paste event with this text (the OS clipboard is not involved)
+                let text = arg_str(args, "text").unwrap_or_default();
+                self.state.injected_events.push(egui::Event::Paste(text));
+                egui.request_repaint();
+                ActionResult::ok()
+            }
             "fabric_state" => {
                 let f = &self.state.fabric;
                 let ws: Vec<Value> = f.workspaces.get().map(|w| w.iter().map(|w| json!({"id": w.id, "name": w.display_name, "kind": format!("{:?}", w.kind), "expanded": f.expanded.contains(&w.id),
@@ -617,6 +644,12 @@ impl AgentApp for CobaltApp {
                     }
                 }
                 ActionResult::ok()
+            }
+            "focus" => {
+                // which widget holds keyboard focus, and whether it is the active editor
+                let focused = egui.memory(|m| m.focused()).map(|id| format!("{id:?}"));
+                let editor = self.state.active_tab.and_then(|i| self.state.tabs.get(i)).map(|t| format!("{:?}", egui::Id::new(("cobalt-editor", t.id))));
+                ActionResult::with(&json!({"focused": focused, "editor": editor, "is_editor": focused.is_some() && focused == editor}))
             }
             "dismiss_dialog" => {
                 self.state.dialog = crate::state::Dialog::None;

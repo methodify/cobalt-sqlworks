@@ -328,9 +328,13 @@ pub fn hash_text(s: &str) -> u64 {
 
 #[derive(Default)]
 pub struct EditorState {
-    /// Char index of the primary cursor as of the last frame.
+    /// Char index of the primary cursor as of the last frame (mirror of `cursors.primary()`).
     pub cursor: usize,
+    /// The primary selection as of the last frame (sorted char range), if any.
     pub selection: Option<(usize, usize)>,
+    /// The full cursor set (multi-cursor) and the undo stack; owned by the editor widget.
+    pub cursors: crate::ui::editor::core::Cursors,
+    pub undo: crate::ui::editor::core::UndoStack,
     pub scroll_to_cursor: bool,
     pub find_open: bool,
     pub find_text: String,

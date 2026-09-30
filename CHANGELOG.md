@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- **Editor rewrite: multi-cursor editing and VS Code mouse selection.** The editor is now
+  Cobalt's own widget (the model in `crates/cobalt-app/src/ui/editor/core.rs`, the design in
+  `docs/design/editor_multicursor.md`) instead of egui's single-cursor `TextEdit`.
+  - Multiple cursors: Ctrl+Alt+Up/Down adds a cursor above/below each cursor, Alt+Click adds
+    (or removes) one, Shift+Alt+drag makes a column selection, Ctrl+D selects the word and then
+    each next occurrence, Ctrl+Shift+L selects every occurrence, Shift+Alt+I puts a cursor at the
+    end of every selected line, Escape drops the extra cursors. Every motion (Home/End, words,
+    Up/Down with a sticky column, PageUp/Down, Shift variants) and every edit (typing, Backspace,
+    Delete, Enter with auto-indent, Tab/Shift+Tab indent, paste) applies to all cursors, and one
+    multi-cursor edit is one undo step. Copy of N selections pastes one line per cursor; a copy
+    from a single empty cursor takes the whole line and pastes above.
+  - Also new: Alt+Up/Down moves lines, Shift+Alt+Up/Down duplicates them, Ctrl+Shift+K deletes
+    them, Home toggles between the first non-blank and column 1, Ctrl+Backspace/Delete delete
+    words.
+  - Mouse: selection happens on press. Double-press and drag extends by whole words, triple-press
+    and drag by whole lines (the VS Code / ADS gesture); Shift+click extends.
+  - The status bar reads "n selections (k characters selected)" with more than one cursor.
+- Fixed: an empty editor drew its line number on the top edge of the gutter (egui reports an empty
+  text as a zero-height row); the caret was invisible on an empty last line after clicking there.
+- Fixed: keyboard shortcuts matched with extra modifiers (Ctrl+Shift+L ran "estimated plan" as if
+  it were Ctrl+L); bindings now require the exact modifiers.
+- Completion popup opens on typed text only (not after indent, paste or undo), and only plain
+  Tab/Enter/arrows drive it (Shift+Tab outdents again).
+- Release: every published file now carries a **GitHub artifact attestation** (Sigstore, keyless,
+  from the workflow identity). Verify a download with
+  `gh attestation verify <file> --repo methodify/cobalt-sqlworks`.
+- Dev: agent `pointer` gained `alt`, `tripleclick`, `dbldrag` and `tripledrag`; new `paste` and
+  `focus` verbs; `state` tabs carry `cursors`.
+
 ## 0.4.1 — 2026-09-24
 
 - **Sessions survive long idle stretches.** Leaving a tab open for hours (a Fabric or Azure

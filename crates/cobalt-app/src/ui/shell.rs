@@ -733,7 +733,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
                     }
                     ui.separator();
-                    ui.label(format!("Ln {}, Col {}", t.editor.line, t.editor.col));
+                    ui.label(editor::widget::status_text(&t.text, &t.editor.cursors));
                     ui.separator();
                     if let Some(p) = &t.file_path {
                         ui.label(RichText::new(p.display().to_string()).color(theme.text_faint));

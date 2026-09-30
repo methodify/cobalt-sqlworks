@@ -125,6 +125,23 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |
 
+## Editor: multiple cursors
+
+The editor follows VS Code / Azure Data Studio: Ctrl+Alt+Up/Down adds a cursor above/below,
+Alt+Click adds one (Alt+Click on an existing one removes it), Shift+Alt+drag selects a column,
+Ctrl+D selects the word under the cursor and then each next occurrence, Ctrl+Shift+L selects all
+occurrences, Shift+Alt+I puts a cursor at the end of every selected line, Escape keeps only the
+primary. Every motion and edit applies to all cursors; one edit is one undo step. Alt+Up/Down
+moves lines, Shift+Alt+Up/Down copies them, Ctrl+Shift+K deletes them. Double-click and hold
+selects by whole words while you drag; triple-click and hold by whole lines. Details and the rules
+copied from VS Code: `docs/design/editor_multicursor.md`.
+
+## Verifying a download
+
+Every release file has a GitHub artifact attestation (Sigstore, keyless): with the GitHub CLI,
+`gh attestation verify cobalt_<version>_x64-setup.exe --repo methodify/cobalt-sqlworks` confirms
+the file was built by the release workflow at the tagged commit. SHA256SUMS is published alongside.
+
 ## Leaving the app open for hours
 
 Fabric and Azure gateways (and many NATs / VPNs) drop a TCP session after some idle time. Since

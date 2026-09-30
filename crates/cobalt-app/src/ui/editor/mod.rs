@@ -1,13 +1,17 @@
-//! The SQL editor: egui `TextEdit` with a lexer-driven layouter, line-number gutter,
-//! current-statement highlight, completion popup, find/replace and go-to-line.
+//! The SQL editor: the multi-cursor code editor widget (`widget.rs` over the model in
+//! `core.rs`) with a lexer-driven layout, line-number gutter, current-statement highlight,
+//! completion popup, find/replace and go-to-line.
 
+pub mod core;
+pub mod widget;
+
+use self::core::{EditKind, Sel};
 use super::theme::{Theme, TokenColors};
 use crate::state::{CompletionEntry, CompletionPopup, EditorTab, PendingEdit};
 use cobalt_core::Settings;
 use cobalt_sql::lexer::{tokenize, TokenKind};
-use egui::text::{CCursor, CCursorRange, LayoutJob, TextFormat};
+use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, TextEdit, Ui, Vec2};
-use std::sync::Arc;
 
 pub const GUTTER_W: f32 = 52.0;
 
@@ -70,36 +74,49 @@ pub fn line_col(text: &str, byte_idx: usize) -> (usize, usize) {
     (line, col)
 }
 
+/// Consume a key press with no modifiers at all (egui's `consume_key` would also take Shift+Tab
+/// for a Tab pattern, which the editor needs for outdent).
+fn consume_plain_key(i: &mut egui::InputState, key: Key) -> bool {
+    let mut hit = false;
+    i.events.retain(|e| match e {
+        egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && modifiers.matches_exact(Modifiers::NONE) => {
+            hit = true;
+            false
+        }
+        _ => true,
+    });
+    hit
+}
+
 fn editor_id(tab: &EditorTab) -> egui::Id {
     egui::Id::new(("cobalt-editor", tab.id))
 }
 
-/// Apply a pending edit to the text and cursor state before the widget is drawn.
-fn apply_pending(ctx: &egui::Context, tab: &mut EditorTab) {
+/// Apply a pending edit (from a command: completion, format, Go to line, Insert CREATE INDEX…)
+/// to the text and the cursor set before the widget is drawn. Text edits are undoable.
+fn apply_pending(_ctx: &egui::Context, tab: &mut EditorTab) {
     let Some(edit) = tab.editor.pending_edit.take() else { return };
-    let id = editor_id(tab);
-    let mut state = TextEdit::load_state(ctx, id).unwrap_or_default();
-    let set_cursor = |state: &mut egui::text_edit::TextEditState, a: usize, b: usize| {
-        state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(a), CCursor::new(b))));
-    };
+    let ed = &mut tab.editor;
     match edit {
-        PendingEdit::SetCursor(c) => set_cursor(&mut state, c, c),
-        PendingEdit::Select(a, b) => set_cursor(&mut state, a, b),
+        PendingEdit::SetCursor(c) => ed.cursors.set_single(Sel::cursor(c)),
+        PendingEdit::Select(a, b) => ed.cursors.set_single(Sel::range(a, b)),
         PendingEdit::Replace { start, end, text, cursor_after } => {
+            ed.undo.record(EditKind::Other, &tab.text, &ed.cursors);
             let start = start.min(tab.text.len());
             let end = end.clamp(start, tab.text.len());
             tab.text.replace_range(start..end, &text);
             let after = cursor_after.unwrap_or(byte_to_char(&tab.text, start + text.len()));
-            set_cursor(&mut state, after, after);
+            ed.cursors.set_single(Sel::cursor(after));
         }
         PendingEdit::SetText { text, cursor } => {
+            ed.undo.record(EditKind::Other, &tab.text, &ed.cursors);
             tab.text = text;
-            set_cursor(&mut state, cursor, cursor);
+            ed.cursors.set_single(Sel::cursor(cursor));
         }
     }
-    TextEdit::store_state(ctx, id, state);
-    tab.editor.request_focus = true;
-    tab.editor.scroll_to_cursor = true;
+    ed.cursors.clamp(tab.text.chars().count());
+    ed.request_focus = true;
+    ed.scroll_to_cursor = true;
 }
 
 /// Draw the editor into the available space. Returns cursor/selection info.
@@ -132,22 +149,22 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
     if let Some(p) = &mut tab.editor.completion {
         let n = p.items.len();
         ui.input_mut(|i| {
-            if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+            if consume_plain_key(i, Key::ArrowDown) {
                 p.selected = (p.selected + 1) % n.max(1);
             }
-            if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+            if consume_plain_key(i, Key::ArrowUp) {
                 p.selected = (p.selected + n.max(1) - 1) % n.max(1);
             }
-            if i.consume_key(Modifiers::NONE, Key::PageDown) {
+            if consume_plain_key(i, Key::PageDown) {
                 p.selected = (p.selected + 8).min(n.saturating_sub(1));
             }
-            if i.consume_key(Modifiers::NONE, Key::PageUp) {
+            if consume_plain_key(i, Key::PageUp) {
                 p.selected = p.selected.saturating_sub(8);
             }
-            if i.consume_key(Modifiers::NONE, Key::Enter) || i.consume_key(Modifiers::NONE, Key::Tab) {
+            if consume_plain_key(i, Key::Enter) || consume_plain_key(i, Key::Tab) {
                 accept = Some(p.selected);
             }
-            if i.consume_key(Modifiers::NONE, Key::Escape) {
+            if consume_plain_key(i, Key::Escape) {
                 close_popup = true;
             }
         });
@@ -195,50 +212,47 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 let gutter_painter = ui.painter().clone();
                 let bg_idx = ui.painter().add(Shape::Noop);
 
-                let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| -> Arc<egui::Galley> {
-                    let w = if word_wrap { wrap_width } else { f32::INFINITY };
-                    let job = layout_job(buf.as_str(), &colors, font.clone(), w);
-                    ui.fonts_mut(|f| f.layout_job(job))
-                };
-                let desired_w = if word_wrap { ui.available_width() } else { f32::INFINITY };
-                let te = TextEdit::multiline(&mut tab.text)
-                    .id(id)
-                    .font(font.clone())
-                    .code_editor()
-                    .lock_focus(true)
-                    .frame(egui::Frame::NONE)
-                    .desired_width(desired_w)
-                    .desired_rows(((avail.y / row_h).floor() as usize).max(10))
-                    .margin(egui::Margin { left: 6, right: 8, top: 4, bottom: 4 })
-                    .layouter(&mut layouter);
-                let output = te.show(ui);
-                let resp = &output.response.response;
-                out.changed = resp.changed();
-                // egui 0.36 hands back the atom-layout response; ask memory about the text widget itself.
-                out.focused = resp.has_focus() || ui.ctx().memory(|m| m.has_focus(id));
                 if tab.editor.request_focus {
                     ui.ctx().memory_mut(|m| m.request_focus(id));
-                    out.focused = true;
                     tab.editor.request_focus = false;
                 }
+                let min_size = Vec2::new((ui.available_width()).max(0.0), avail.y);
+                let scroll_to_cursor = std::mem::take(&mut tab.editor.scroll_to_cursor);
+                let find_mode = core::MatchMode { case_sensitive: tab.editor.find_case, whole_word: false };
+                let ed = &mut tab.editor;
+                let output = widget::CodeEditor {
+                    id,
+                    text: &mut tab.text,
+                    cursors: &mut ed.cursors,
+                    undo: &mut ed.undo,
+                    font: font.clone(),
+                    colors: &colors,
+                    text_color: theme.text,
+                    cursor_color: theme.text,
+                    word_wrap,
+                    tab_size: settings.editor.tab_size as usize,
+                    insert_spaces: settings.editor.insert_spaces,
+                    min_size,
+                    margin: egui::Margin { left: 6, right: 8, top: 4, bottom: 4 },
+                    scroll_to_cursor,
+                    find_mode,
+                    page_rows: ((avail.y / row_h).floor() as usize).saturating_sub(1).max(1),
+                }
+                .show(ui);
+                out.changed = output.changed;
+                out.focused = output.focused || focus_pending;
                 let text = tab.text.as_str();
                 let galley = &output.galley;
                 let gpos = output.galley_pos;
 
-                // cursor info
-                if let Some(range) = output.cursor_range {
-                    let sorted = range.as_sorted_char_range();
-                    let a = char_to_byte(text, sorted.start.into());
-                    let b = char_to_byte(text, sorted.end.into());
-                    out.cursor_byte = char_to_byte(text, range.primary.index.into());
-                    if a != b {
-                        out.selection_bytes = Some((a, b));
-                    }
-                    tab.editor.cursor = range.primary.index.into();
-                    tab.editor.selection = if a != b { Some((sorted.start.into(), sorted.end.into())) } else { None };
-                } else {
-                    out.cursor_byte = char_to_byte(text, tab.editor.cursor);
+                // cursor info (the primary selection)
+                let p = tab.editor.cursors.primary();
+                out.cursor_byte = char_to_byte(text, p.head);
+                if !p.is_empty() {
+                    out.selection_bytes = Some((char_to_byte(text, p.min()), char_to_byte(text, p.max())));
                 }
+                tab.editor.cursor = p.head;
+                tab.editor.selection = (!p.is_empty()).then_some((p.min(), p.max()));
                 let (line, col) = line_col(text, out.cursor_byte);
                 tab.editor.line = line;
                 tab.editor.col = col;
@@ -250,8 +264,8 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                     if let Some((s, e)) = tab.editor.statement_range {
                         let cs = byte_to_char(text, s);
                         let ce = byte_to_char(text, e);
-                        let r0 = galley.pos_from_cursor(CCursor::new(cs));
-                        let r1 = galley.pos_from_cursor(CCursor::new(ce));
+                        let r0 = widget::caret_rect(galley, cs, row_h);
+                        let r1 = widget::caret_rect(galley, ce, row_h);
                         let full = Rect::from_min_max(
                             Pos2::new(gutter_rect.right(), gpos.y + r0.min.y - 1.0),
                             Pos2::new(ui.clip_rect().right().max(gutter_rect.right() + galley.size().x + 40.0), gpos.y + r1.max.y + 1.0),
@@ -267,9 +281,9 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 let cur_line = tab.editor.line;
                 let mut new_line = true;
                 let small = FontId::monospace((settings.appearance.editor_font_size - 1.0).max(9.0));
-                for row in &galley.rows {
+                for (ri, row) in galley.rows.iter().enumerate() {
                     if new_line {
-                        let y = gpos.y + row.rect().center().y;
+                        let y = gpos.y + widget::row_rect(galley, ri, row_h).center().y;
                         let color = if line_no == cur_line { theme.text } else { theme.text_faint };
                         gutter_painter.text(Pos2::new(gutter_rect.right() - 10.0, y), egui::Align2::RIGHT_CENTER, line_no.to_string(), small.clone(), color);
                         if let Some((_, label, err)) = timings.iter().find(|(l, _, _)| *l as usize == line_no) {
@@ -286,10 +300,10 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 // completion: trigger / update / draw
                 if out.changed {
                     tab.editor.completion = None;
-                    if settings.editor.completion_enabled && settings.editor.completion_on_type {
+                    if output.typed && settings.editor.completion_enabled && settings.editor.completion_on_type {
                         let before = text[..out.cursor_byte].chars().next_back();
                         if matches!(before, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '@' || c == '#') {
-                            let anchor = gpos + galley.pos_from_cursor(CCursor::new(tab.editor.cursor)).left_bottom().to_vec2();
+                            let anchor = gpos + widget::caret_rect(galley, tab.editor.cursor, row_h).left_bottom().to_vec2();
                             open_completion(tab, out.cursor_byte, anchor, before == Some('.'));
                         }
                     }
@@ -300,13 +314,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                     draw_completion(ui, tab, theme, anchor, row_h);
                 }
 
-                // scroll cursor into view after programmatic moves
-                if tab.editor.scroll_to_cursor {
-                    let r = galley.pos_from_cursor(CCursor::new(tab.editor.cursor));
-                    let rect = Rect::from_min_max(gpos + r.min.to_vec2(), gpos + r.max.to_vec2()).expand(row_h * 2.0);
-                    ui.scroll_to_rect(rect, None);
-                    tab.editor.scroll_to_cursor = false;
-                }
+                let _ = Rect::NOTHING; // (scrolling to the caret is done by the widget)
             });
         });
     });
@@ -452,7 +460,7 @@ fn find_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
             });
         });
     });
-    if ui.input(|i| i.key_pressed(Key::Escape)) {
+    if ui.input_mut(|i| consume_plain_key(i, Key::Escape)) {
         close = true;
     }
     if do_replace {
@@ -538,14 +546,18 @@ fn goto_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
         ui.horizontal(|ui| {
             ui.label("Go to line:");
             let r = ui.add(TextEdit::singleline(&mut tab.editor.goto_line_text).desired_width(80.0).id(egui::Id::new(("goto", tab.id))));
-            r.request_focus();
-            if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
+            // Enter makes the field surrender focus; check before re-requesting it, or the bar
+            // never closes on Enter
+            if (r.has_focus() || r.lost_focus()) && ui.input_mut(|i| consume_plain_key(i, Key::Enter)) {
                 go = true;
+            }
+            if !go {
+                r.request_focus();
             }
             if ui.small_button("Go").clicked() {
                 go = true;
             }
-            if ui.input(|i| i.key_pressed(Key::Escape)) {
+            if ui.input_mut(|i| consume_plain_key(i, Key::Escape)) {
                 close = true;
             }
         });
