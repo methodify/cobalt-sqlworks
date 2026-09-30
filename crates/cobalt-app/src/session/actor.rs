@@ -103,7 +103,7 @@ pub async fn tab_actor(
     let mut conn = match open(&shared, &profile, &creds, database.as_deref(), ConnectionRole::Query).await {
         Ok(c) => c,
         Err(e) => {
-            shared.emit(Event::ConnectFailed { tab, error: e.to_string(), hint: e.hint().map(str::to_string) });
+            shared.emit(Event::ConnectFailed { tab, error: e.to_string(), hint: e.hint().map(str::to_string), database });
             return;
         }
     };

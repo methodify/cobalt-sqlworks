@@ -69,7 +69,8 @@ pub enum MetadataRequest {
 #[derive(Debug)]
 pub enum Event {
     Connected { tab: TabId, engine: EngineInfo, spid: Option<i32>, database: String },
-    ConnectFailed { tab: TabId, error: String, hint: Option<String> },
+    /// `database`: the database the attempt asked for (None = the profile's default).
+    ConnectFailed { tab: TabId, error: String, hint: Option<String>, database: Option<String> },
     Disconnected { tab: TabId },
     /// The tab's connection had died while idle (the server, a gateway or a NAT closed it) and the
     /// actor replaced it with a new one to the same database before running the command.

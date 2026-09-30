@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: a tab whose remembered database had disappeared (a deleted lakehouse SQL endpoint, a
+  dropped database) could not reconnect: Connect kept asking for the vanished database, failed,
+  and the tab was dead until closed. A "database not found" login failure now forgets that
+  database and connects to the profile's default once, with a toast saying so (a run queued for
+  the old database is not replayed).
+
 ## 0.4.2 — 2026-09-30
 
 - **Editor rewrite: multi-cursor editing and VS Code mouse selection.** The editor is now

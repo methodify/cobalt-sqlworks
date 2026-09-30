@@ -905,10 +905,29 @@ impl AppState {
                     out.push(Followup::LoadCatalog(tab, database));
                 }
             }
-            Event::ConnectFailed { tab, error, hint } => {
+            Event::ConnectFailed { tab, error, hint, database } => {
                 if let Some(t) = self.tab_mut(tab) {
-                    t.conn = ConnState::Failed { error: error.clone(), hint: hint.clone() };
-                    out.push(Followup::Toast(ToastKind::Error, format!("Connection failed: {error}{}", hint.map(|h| format!("\n{h}")).unwrap_or_default())));
+                    let missing = is_database_missing(&error);
+                    let default_db = t.profile.as_ref().and_then(|p| p.database.clone());
+                    if missing {
+                        // never steer a reconnect back to a database that is gone
+                        t.last_database = None;
+                    }
+                    if missing && database.is_some() && database != default_db {
+                        // the remembered database vanished (a dropped lakehouse endpoint, a
+                        // dropped database): fall back to the profile's default once, and do
+                        // not replay a run that was meant for the old database
+                        t.pending_run = None;
+                        t.pending_import = false;
+                        t.conn = ConnState::Connecting;
+                        let db = database.unwrap_or_default();
+                        let target = default_db.clone().unwrap_or_else(|| "the server default".into());
+                        out.push(Followup::Toast(ToastKind::Warning, format!("Database {db} is no longer available on this connection; connecting to {target} instead.\n{error}")));
+                        out.push(Followup::ReconnectDefault(tab));
+                    } else {
+                        t.conn = ConnState::Failed { error: error.clone(), hint: hint.clone() };
+                        out.push(Followup::Toast(ToastKind::Error, format!("Connection failed: {error}{}", hint.map(|h| format!("\n{h}")).unwrap_or_default())));
+                    }
                 }
             }
             Event::Disconnected { tab } => {
@@ -1265,6 +1284,20 @@ pub enum Followup {
     RefreshDatabase { profile: ProfileId, database: String },
     /// Reconnect the tab to its profile and last database (after a session was lost for good).
     Reconnect(TabId),
+    /// Reconnect the tab to its profile's default database (the remembered one is gone).
+    ReconnectDefault(TabId),
+}
+
+/// A login rejected because the requested database does not exist (or is not visible): SQL
+/// Server 4060 "Cannot open database", Azure/Fabric "the database was not found or you have
+/// insufficient permissions", Fabric endpoints that were deleted.
+pub fn is_database_missing(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("cannot open database")
+        || e.contains("database was not found")
+        || e.contains("database does not exist")
+        || (e.contains("database") && e.contains("not found"))
+        || e.contains("cannot find the database")
 }
 
 impl ImportDialog {
@@ -1314,6 +1347,18 @@ pub fn fmt_idle(d: Duration) -> String {
         format!("{} min", s / 60)
     } else {
         format!("{s} s")
+    }
+}
+
+#[cfg(test)]
+mod db_missing_tests {
+    use super::is_database_missing;
+    #[test]
+    fn recognises_missing_database_logins() {
+        assert!(is_database_missing("login failed: Login failed for user '<token-identified principal>'.Reason: Authentication was successful, but the database was not found or you have insufficient permissions to connect to it."));
+        assert!(is_database_missing("login failed: Cannot open database \"tmpdb\" requested by the login. The login failed."));
+        assert!(!is_database_missing("login failed: Login failed for user 'sa'."));
+        assert!(!is_database_missing("connection failed: timed out after 30 s"));
     }
 }
 

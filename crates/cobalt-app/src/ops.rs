@@ -1262,6 +1262,11 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                     }
                 }
             }
+            Followup::ReconnectDefault(tab) => {
+                if let Some(p) = state.tab_mut(tab).and_then(|t| t.profile.clone()) {
+                    begin_connect(state, cx, p, ConnectPurpose::Tab { tab, database: None });
+                }
+            }
         }
     }
 }
