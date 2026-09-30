@@ -859,9 +859,14 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
     let mut done = false;
     let mut reinspect = false;
     let running = d.running;
+    let (connected, db_name) = f.state.tabs.get(d.tab_index).map(|t| (t.conn.is_connected(), t.conn.database().unwrap_or("").to_string())).unwrap_or((false, String::new()));
+    if !connected && d.destination == 0 {
+        d.destination = 1;
+    }
+    let to_table = d.destination == 0;
     let (_, close) = modal(ctx, theme, "import", 760.0, |ui| {
         ui.heading("Import data from file");
-        ui.label(RichText::new("The file streams through this tab's connection as a bulk insert, in one transaction.").size(12.0).color(theme.text_muted));
+        ui.label(RichText::new(if to_table { "The file streams through this tab's connection as a bulk insert, in one transaction." } else { "The file streams to any export target: a local file in any format, or a OneLake lakehouse (Delta table or Files)." }).size(12.0).color(theme.text_muted));
         ui.add_space(6.0);
         egui::Grid::new("import-grid").num_columns(2).spacing([10.0, 6.0]).min_col_width(90.0).show(ui, |ui| {
             ui.label("File");
@@ -904,6 +909,25 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 }
             });
             ui.end_row();
+            ui.label("Destination");
+            ui.horizontal(|ui| {
+                let table_label = if db_name.is_empty() { "Table in this database".to_string() } else { format!("Table in {db_name}") };
+                let r = ui.add_enabled(!running && connected, egui::Button::selectable(to_table, table_label));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import destination table"));
+                if r.clicked() {
+                    d.destination = 0;
+                }
+                let r = ui.add_enabled(!running, egui::Button::selectable(!to_table, format!("{} File or lakehouse…", icons::EXPORT)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import destination file"));
+                if r.clicked() {
+                    d.destination = 1;
+                }
+                if !connected {
+                    ui.label(RichText::new("connect the tab to load into a table").size(11.0).color(theme.text_faint));
+                }
+            });
+            ui.end_row();
+            if to_table {
             ui.label("Target table");
             ui.horizontal(|ui| {
                 let r1 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.schema_name).desired_width(90.0).hint_text("dbo"));
@@ -930,8 +954,9 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 }
             });
             ui.end_row();
+            }
         });
-        if d.existing {
+        if d.existing && to_table {
             match &d.existing_columns {
                 Loadable::Loading(_) => {
                     ui.horizontal(|ui| {
@@ -956,7 +981,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         }
         ui.add_space(4.0);
         // columns
-        ui.label(RichText::new("Columns").strong());
+        ui.label(RichText::new(if to_table { "Columns" } else { "Columns (names and types as they will be written)" }).strong());
         egui::ScrollArea::vertical().id_salt("import-cols").max_height(200.0).auto_shrink([false, true]).show(ui, |ui| {
             egui::Grid::new("import-columns").num_columns(5).spacing([10.0, 3.0]).striped(true).show(ui, |ui| {
                 ui.label(RichText::new("").small());
@@ -965,7 +990,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 ui.label(RichText::new("Nullable").small().color(theme.text_muted));
                 ui.label(RichText::new("In the file").small().color(theme.text_muted));
                 ui.end_row();
-                let lock_types = d.existing;
+                let lock_types = d.existing && to_table;
                 for (i, c) in d.columns.iter_mut().enumerate() {
                     ui.add_enabled(!running, egui::Checkbox::without_text(&mut c.include));
                     let r = ui.add_enabled_ui(!running && !lock_types, |ui| ui.add_sized([200.0, 20.0], egui::TextEdit::singleline(&mut c.name))).inner;
@@ -1023,7 +1048,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let can = !running && d.inspection.is_some() && !matches!(d.result, Some(Ok(_)));
-            let b = primary_button(ui, theme, "Import", can);
+            let b = primary_button(ui, theme, if to_table { "Import" } else { "Choose target…" }, can);
             if b.clicked() {
                 start = true;
             }
@@ -1060,9 +1085,13 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
     let running = d.running;
     let mut picked_lakehouse: Option<String> = None;
     let run_to_file = d.run_mode.is_some();
+    let importing = d.import.is_some();
+    let import_file = d.import.as_ref().and_then(|s| s.path.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default();
     let (_, close) = modal(ctx, theme, "export", 560.0, |ui| {
-        ui.heading(if run_to_file { "Run to file" } else { "Save results as" });
-        if run_to_file {
+        ui.heading(if importing { "Write file to" } else if run_to_file { "Run to file" } else { "Save results as" });
+        if importing {
+            ui.label(RichText::new(format!("Rows stream from {import_file} to the target as they are read, with the column names and types you set.")).size(12.0).color(theme.text_muted));
+        } else if run_to_file {
             ui.label(RichText::new(format!("The query streams straight to the target as it runs; the grid keeps a {}-row preview of each result set.", fmt_count(ops::RUN_EXPORT_PREVIEW_ROWS))).size(12.0).color(theme.text_muted));
         }
         ui.add_space(6.0);
@@ -1166,7 +1195,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                 }
             }));
             ui.end_row();
-            if !run_to_file {
+            if !run_to_file && !importing {
                 ui.label("");
                 ui.checkbox(&mut d.selection_only, "Selected cells only");
                 ui.end_row();
@@ -1216,7 +1245,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if primary_button(ui, theme, if run_to_file { "Run and export" } else { "Export" }, !running).clicked() {
+            if primary_button(ui, theme, if importing { "Write" } else if run_to_file { "Run and export" } else { "Export" }, !running).clicked() {
                 start = true;
             }
             if running {
@@ -1240,7 +1269,9 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
     }
     if start {
         f.state.dialog = Dialog::Export(d);
-        if run_to_file {
+        if importing {
+            ops::start_import_export(f.state, f.cx);
+        } else if run_to_file {
             ops::start_run_export(f.state, f.cx);
         } else {
             ops::start_export(f.state, f.cx);

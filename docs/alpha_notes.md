@@ -186,6 +186,11 @@ adapter (`basic render` = WARP) to reproduce the VM locally.
 
 ## Import Data from File
 
+Destination: a table in the tab's database, or *File or lakehouse…* to convert the file into any
+export format (Parquet, Arrow, Delta, CSV, JSON, Excel…) on disk or in a OneLake lakehouse. The
+column names, SQL types and exclusions you set in the dialog apply either way, so the same dialog
+turns a raw CSV into a typed Parquet or Delta table without a database in between.
+
 File → Import Data from File… (or right-click a database in Servers → Import data from file…).
 The file is read on a background thread (`cobalt-import`: CSV/TSV via arrow-csv with schema
 inference, Parquet, Arrow IPC) and streamed as Arrow batches to the tab's session actor, which

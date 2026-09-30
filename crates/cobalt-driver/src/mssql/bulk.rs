@@ -20,7 +20,9 @@ pub(crate) async fn bulk_insert(
     progress: &mut (dyn FnMut(u64) -> bool + Send),
 ) -> Result<u64> {
     conn.settle().await?;
-    let names: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+    // bracketed: tiberius probes the table with `SELECT TOP 0 <names> FROM <table>`, so a column
+    // called `when` or `order` must be quoted (the INSERT BULK list is bracketed by tiberius itself)
+    let names: Vec<String> = columns.iter().map(|c| format!("[{}]", c.name.replace(']', "]]"))).collect();
     let refs: Vec<&str> = names.iter().map(String::as_str).collect();
     let mut req = match conn.tds().bulk_insert_columns(table, &refs).await {
         Ok(r) => r,

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Import Data from File can write to any export target.** The Import dialog has a Destination
+  choice: a table in the tab's database (bulk insert, as before) or *File or lakehouse…*, which
+  hands the file to the export dialog: CSV/TSV, JSON, JSON Lines, XML, Markdown, Excel, Parquet,
+  Arrow or Delta, to a local path or a OneLake lakehouse (Delta table or Files). Rows stream
+  from the file straight to the writer with the column names, types and exclusions set in the
+  dialog (a CSV of strings becomes a typed Parquet file, for instance). No connection is needed
+  for file targets, so the dialog opens on a disconnected tab too. Agent: `import {…,
+  destination: "file"}` + `import_to {format, path | lakehouse, name}`.
 - Fixed: a tab whose remembered database had disappeared (a deleted lakehouse SQL endpoint, a
   dropped database) could not reconnect: Connect kept asking for the vanished database, failed,
   and the tab was dead until closed. A "database not found" login failure now forgets that

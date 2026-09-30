@@ -148,6 +148,19 @@ pub struct ExportJob {
     pub onelake: Option<OneLakeJob>,
 }
 
+/// A file described by the Import dialog, ready to stream into an export target: the reader
+/// projects the included columns and casts them to the SQL types chosen in the dialog.
+#[derive(Clone)]
+pub struct ImportSpec {
+    pub path: PathBuf,
+    pub format: cobalt_import::FileFormat,
+    /// The file's own Arrow schema (before projection).
+    pub schema: arrow::datatypes::SchemaRef,
+    /// Source column indexes to keep, in output order.
+    pub indexes: Vec<usize>,
+    pub columns: Vec<ColumnInfo>,
+}
+
 pub struct OneLakeJob {
     pub item: cobalt_fabric::SqlItem,
     pub name: String,
@@ -1134,7 +1147,7 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
     t.results_tab = if opts.plan == PlanMode::Estimated { ResultsTab::Plan } else { ResultsTab::Results };
     t.pending_run = None;
     let tab_id = t.id;
-    let sink = job.map(|j| spawn_run_export(state, cx, tab_id, *j));
+    let sink = job.map(|j| spawn_run_export(state, cx, Some(tab_id), *j));
     cx.session.send(Command::Run { tab: tab_id, run: run_id, script, opts, start_line, sink });
     state.history.loaded = false;
 }
@@ -1278,10 +1291,8 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
 /// Open the Import Data dialog for a connected tab. Without `path`, ask for the file first.
 pub fn open_import_dialog(state: &mut AppState, cx: &Ctx, idx: usize, path: Option<PathBuf>) {
     let Some(t) = state.tabs.get(idx) else { return };
-    if !t.conn.is_connected() {
-        cx.toast(ToastKind::Warning, "Connect this tab first: the file is loaded through the tab's connection.");
-        return;
-    }
+    let connected = t.conn.is_connected();
+    let _ = cx;
     let path = match path {
         Some(p) => p,
         None => match rfd::FileDialog::new().add_filter("Data files", &["csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "ipc"]).add_filter("All files", &["*"]).pick_file() {
@@ -1292,6 +1303,7 @@ pub fn open_import_dialog(state: &mut AppState, cx: &Ctx, idx: usize, path: Opti
     let mut d = ImportDialog {
         tab_index: idx,
         path: path.to_string_lossy().to_string(),
+        destination: if connected { 0 } else { 1 },
         delimiter: String::new(),
         has_header: true,
         inspection: None,
@@ -1372,9 +1384,154 @@ pub fn import_request_existing_columns(state: &mut AppState, cx: &Ctx) {
     }
 }
 
+/// The included columns as `ColumnInfo` (names and SQL types as edited) plus their source indexes.
+fn import_columns(d: &ImportDialog) -> Result<(Vec<ColumnInfo>, Vec<usize>), String> {
+    let mut columns: Vec<ColumnInfo> = Vec::new();
+    let mut indexes: Vec<usize> = Vec::new();
+    for (i, c) in d.columns.iter().enumerate() {
+        if !c.include {
+            continue;
+        }
+        let name = c.name.trim().to_string();
+        if name.is_empty() {
+            return Err(format!("Column {} has no name.", i + 1));
+        }
+        let Some(ty) = cobalt_import::parse_sql_type(&c.sql_type) else {
+            return Err(format!("Column {name}: type \"{}\" is not recognised (try int, bigint, nvarchar(100), decimal(18,2), date, datetime2, bit…).", c.sql_type));
+        };
+        columns.push(ColumnInfo::new(name, ty, c.nullable, columns.len()));
+        indexes.push(i);
+    }
+    if columns.is_empty() {
+        return Err("Include at least one column.".into());
+    }
+    Ok((columns, indexes))
+}
+
+/// Import dialog → "File or lakehouse": hand the file spec to the export dialog, which owns the
+/// target choice (format, path or OneLake, Delta mode) and starts the stream.
+pub fn open_import_export(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Import(d) = &mut state.dialog else { return };
+    let Some(ins) = d.inspection.clone() else {
+        d.result = Some(Err("Nothing to import: the file could not be read.".into()));
+        return;
+    };
+    let (columns, indexes) = match import_columns(d) {
+        Ok(v) => v,
+        Err(e) => {
+            d.result = Some(Err(e));
+            return;
+        }
+    };
+    let spec = ImportSpec { path: PathBuf::from(d.path.trim()), format: import_format(d), schema: ins.schema.clone(), indexes, columns };
+    let idx = d.tab_index;
+    let stem = spec.path.file_stem().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "import".into());
+    open_export_dialog(state, cx, idx, 0, false);
+    if let Dialog::Export(e) = &mut state.dialog {
+        let ext = FORMAT_LABELS[e.format_index].1;
+        let dir = std::path::Path::new(&e.path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        e.path = dir.join(if ext == "delta" { stem.clone() } else { format!("{stem}.{ext}") }).to_string_lossy().to_string();
+        e.onelake_name = stem;
+        e.import = Some(spec);
+    }
+}
+
+/// Arrow type a column is cast to on its way out: the SQL type's Arrow type, except that strings
+/// and binaries keep the width the file used (same rule as the bulk-insert cast).
+fn import_target_type(sql: &SqlType, src: &arrow::datatypes::DataType) -> arrow::datatypes::DataType {
+    use arrow::datatypes::DataType as D;
+    let target = sql.arrow_type();
+    match (&target, src) {
+        (D::Utf8 | D::LargeUtf8, D::Utf8 | D::LargeUtf8 | D::Utf8View) => src.clone(),
+        (D::Binary | D::LargeBinary, D::Binary | D::LargeBinary | D::BinaryView) => src.clone(),
+        _ => target,
+    }
+}
+
+/// Export dialog in import mode: read the file on a thread and stream it, as one result set,
+/// through the same export pipeline Run to File uses (every format, local or OneLake).
+pub fn start_import_export(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Export(mut d) = std::mem::take(&mut state.dialog) else { return };
+    let Some(spec) = d.import.clone() else {
+        state.dialog = Dialog::Export(d);
+        return;
+    };
+    let Some(job) = build_export_job(state, cx, &mut d) else {
+        state.dialog = Dialog::Export(d);
+        return;
+    };
+    let cancel = d.cancel.clone();
+    cancel.store(false, Ordering::Relaxed);
+    d.running = true;
+    d.result = None;
+    d.progress = None;
+    let sink = spawn_run_export(state, cx, None, job);
+    state.dialog = Dialog::Export(d);
+    let ImportSpec { path, format, schema, indexes, columns } = spec;
+    std::thread::Builder::new()
+        .name("cobalt-import-reader".into())
+        .spawn(move || {
+            use crate::session::SinkMsg;
+            let tx = sink.tx;
+            let iter = match cobalt_import::open_batches(&path, &format, schema.clone(), cobalt_import::BATCH_ROWS) {
+                Ok(it) => it,
+                Err(e) => {
+                    let _ = tx.send(SinkMsg::Failed(e.to_string()));
+                    let _ = tx.send(SinkMsg::RunEnd);
+                    return;
+                }
+            };
+            let targets: Vec<arrow::datatypes::DataType> = columns.iter().zip(&indexes).map(|(c, &i)| import_target_type(&c.sql_type, schema.field(i).data_type())).collect();
+            let out_schema = Arc::new(arrow::datatypes::Schema::new(columns.iter().zip(&targets).map(|(c, t)| arrow::datatypes::Field::new(c.name.clone(), t.clone(), true)).collect::<Vec<_>>()));
+            if tx.send(SinkMsg::SetStart { index: 0, columns: columns.clone(), schema: out_schema.clone() }).is_err() {
+                return;
+            }
+            let mut failed: Option<String> = None;
+            for b in iter {
+                if cancel.load(Ordering::Relaxed) {
+                    failed = Some("cancelled".into());
+                    break;
+                }
+                let batch = b.and_then(|b| cobalt_import::project(&b, &indexes)).map_err(|e| e.to_string()).and_then(|b| {
+                    let mut arrays = Vec::with_capacity(targets.len());
+                    for ((col, target), src) in columns.iter().zip(&targets).zip(b.columns()) {
+                        let arr = if src.data_type() == target { src.clone() } else { arrow::compute::cast(src, target).map_err(|e| format!("column {}: cannot convert {:?} to {}: {e}", col.name, src.data_type(), col.sql_type))? };
+                        arrays.push(arr);
+                    }
+                    arrow::array::RecordBatch::try_new(out_schema.clone(), arrays).map_err(|e| e.to_string())
+                });
+                match batch {
+                    Ok(b) => {
+                        if tx.send(SinkMsg::Batch(b)).is_err() {
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        failed = Some(e);
+                        break;
+                    }
+                }
+            }
+            match failed {
+                Some(e) => {
+                    let _ = tx.send(SinkMsg::Failed(e));
+                }
+                None => {
+                    let _ = tx.send(SinkMsg::SetEnd);
+                }
+            }
+            let _ = tx.send(SinkMsg::RunEnd);
+        })
+        .ok();
+}
+
 /// Validate the dialog, start the reader thread and hand the import to the tab's session actor.
 pub fn start_import(state: &mut AppState, cx: &Ctx) {
     let Dialog::Import(d) = &mut state.dialog else { return };
+    if d.destination == 1 {
+        open_import_export(state, cx);
+        return;
+    }
     let Some(ins) = d.inspection.clone() else {
         d.result = Some(Err("Nothing to import: the file could not be read.".into()));
         return;
@@ -1385,28 +1542,13 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
         d.result = Some(Err("Give the target table a schema and a name.".into()));
         return;
     }
-    let mut columns: Vec<ColumnInfo> = Vec::new();
-    let mut indexes: Vec<usize> = Vec::new();
-    for (i, c) in d.columns.iter().enumerate() {
-        if !c.include {
-            continue;
-        }
-        let name = c.name.trim().to_string();
-        if name.is_empty() {
-            d.result = Some(Err(format!("Column {} has no name.", i + 1)));
+    let (columns, indexes) = match import_columns(d) {
+        Ok(v) => v,
+        Err(e) => {
+            d.result = Some(Err(e));
             return;
         }
-        let Some(ty) = cobalt_import::parse_sql_type(&c.sql_type) else {
-            d.result = Some(Err(format!("Column {name}: type \"{}\" is not recognised (try int, bigint, nvarchar(100), decimal(18,2), date, datetime2, bit…).", c.sql_type)));
-            return;
-        };
-        columns.push(ColumnInfo::new(name, ty, c.nullable, columns.len()));
-        indexes.push(i);
-    }
-    if columns.is_empty() {
-        d.result = Some(Err("Include at least one column.".into()));
-        return;
-    }
+    };
     let Some(t) = state.tabs.get(d.tab_index) else { return };
     if !t.conn.is_connected() {
         d.result = Some(Err("The tab is not connected.".into()));
@@ -1603,6 +1745,7 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         result: None,
         cancel: Arc::new(AtomicBool::new(false)),
         run_mode: None,
+        import: None,
     }));
 }
 
@@ -1618,16 +1761,10 @@ pub fn open_run_to_file(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMod
     }
 }
 
-/// Validate the Run to File dialog, stash the target on the tab and start the run.
-pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
-    let Dialog::Export(d) = &mut state.dialog else { return };
-    let Some(mode) = d.run_mode else { return };
-    let idx = d.tab_index;
-    let Some(t) = state.tabs.get(idx) else { return };
-    if t.is_running() {
-        d.result = Some(Err("A query is already running in this tab.".into()));
-        return;
-    }
+/// Build the export job from the dialog's target fields (format, path or OneLake, Delta
+/// options), recording the last format/folder. On a validation error the message lands in
+/// `d.result` and `None` comes back.
+fn build_export_job(state: &mut AppState, cx: &Ctx, d: &mut ExportDialog) -> Option<ExportJob> {
     let (_, ext) = FORMAT_LABELS[d.format_index];
     let mut settings = cx.settings.export.clone();
     settings.csv_delimiter = d.csv_delimiter.clone();
@@ -1636,20 +1773,20 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
     let onelake = if d.destination == 1 {
         let Some(item_id) = d.onelake_item.clone() else {
             d.result = Some(Err("Choose a lakehouse.".into()));
-            return;
+            return None;
         };
         let name = d.onelake_name.trim().trim_matches('/').to_string();
         if name.is_empty() || name.contains(['\\', ':']) {
             d.result = Some(Err(if ext == "delta" { "Give the table a name." } else { "Give the file a name." }.into()));
-            return;
+            return None;
         }
         let Some(item) = state.fabric.item(&item_id).cloned() else {
             d.result = Some(Err("That lakehouse is no longer listed; refresh the Fabric panel.".into()));
-            return;
+            return None;
         };
         let Some(slot) = state.fabric.slot else {
             d.result = Some(Err("Sign in to Fabric first (Fabric panel).".into()));
-            return;
+            return None;
         };
         let _ = cx.store.fabric_cache_put(LAST_LAKEHOUSE_KEY, &item.id);
         let mut schema = d.onelake_schema.trim().trim_matches('/').to_string();
@@ -1662,7 +1799,7 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
     } else {
         if d.path.trim().is_empty() {
             d.result = Some(Err("Choose a file path.".into()));
-            return;
+            return None;
         }
         None
     };
@@ -1681,6 +1818,30 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
             state.settings_patch.push(SettingsPatch::LastExportDir(parent.to_string_lossy().to_string()));
         }
     }
+    Some(job)
+}
+
+/// Validate the Run to File dialog, stash the target on the tab and start the run.
+pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
+    let Dialog::Export(mut d) = std::mem::take(&mut state.dialog) else { return };
+    let Some(mode) = d.run_mode else {
+        state.dialog = Dialog::Export(d);
+        return;
+    };
+    let idx = d.tab_index;
+    let Some(t) = state.tabs.get(idx) else {
+        state.dialog = Dialog::Export(d);
+        return;
+    };
+    if t.is_running() {
+        d.result = Some(Err("A query is already running in this tab.".into()));
+        state.dialog = Dialog::Export(d);
+        return;
+    }
+    let Some(job) = build_export_job(state, cx, &mut d) else {
+        state.dialog = Dialog::Export(d);
+        return;
+    };
     state.tabs[idx].pending_export = Some(Box::new(job));
     state.dialog = Dialog::None;
     run(state, cx, idx, mode);
@@ -1711,7 +1872,7 @@ async fn onelake_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenan
 }
 
 /// Start the export thread for a run-to-export and return the sink the session actor feeds.
-fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) -> crate::session::RunSink {
+fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: Option<TabId>, job: ExportJob) -> crate::session::RunSink {
     use crate::session::{RunSink, SinkMsg};
     let (tx, rx) = std::sync::mpsc::sync_channel::<SinkMsg>(8);
     let mut rx = rx;
@@ -1736,7 +1897,7 @@ fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) 
             // whatever happens (including a panic in a writer), the run must learn the outcome
             struct DoneGuard {
                 tx: Sender<ExportDone>,
-                tab: TabId,
+                tab: Option<TabId>,
                 egui: egui::Context,
                 result: Option<Result<String, String>>,
                 path: Option<PathBuf>,
@@ -1744,7 +1905,7 @@ fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) 
             impl Drop for DoneGuard {
                 fn drop(&mut self) {
                     let result = self.result.take().unwrap_or_else(|| Err("the export thread stopped unexpectedly".into()));
-                    let _ = self.tx.send(ExportDone { result, tab: Some(self.tab), path: self.path.take() });
+                    let _ = self.tx.send(ExportDone { result, tab: self.tab, path: self.path.take() });
                     self.egui.request_repaint();
                 }
             }
@@ -1799,6 +1960,7 @@ fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: TabId, job: ExportJob) 
             drop(rx);
             let _ = sets;
             let result = match error {
+                None if lines.is_empty() && tab.is_none() => Err("The file produced no rows to write.".into()),
                 None if lines.is_empty() => Err("The query produced no result set to export.".into()),
                 None => Ok(if lines.len() == 1 { lines.remove(0) } else { format!("{} ({:.1}s total)", lines.join("; "), started.elapsed().as_secs_f32()) }),
                 Some(e) if e == "cancelled" && lines.is_empty() => Err("Export cancelled; the partial output was removed.".into()),

@@ -784,6 +784,8 @@ pub struct ImportColumnEdit {
 pub struct ImportDialog {
     pub tab_index: usize,
     pub path: String,
+    /// 0 = a table in this tab's database (bulk insert); 1 = any export target (file, OneLake).
+    pub destination: usize,
     /// CSV options (ignored for Parquet / Arrow).
     pub delimiter: String,
     pub has_header: bool,
@@ -828,6 +830,8 @@ pub struct ExportDialog {
     pub cancel: Arc<std::sync::atomic::AtomicBool>,
     /// `Some` = "Run to file": the query runs and streams straight to the target.
     pub run_mode: Option<RunMode>,
+    /// `Some` = "Import to file/lakehouse": rows come from a file (the Import dialog's spec), not a query.
+    pub import: Option<crate::ops::ImportSpec>,
 }
 
 impl AppState {

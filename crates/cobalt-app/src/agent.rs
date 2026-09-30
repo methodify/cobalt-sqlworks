@@ -12,7 +12,8 @@
 //! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
 //! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
-//! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}` → Import Data on the active tab; `import_start`, `import_state`
+//! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
+//! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
 
@@ -322,9 +323,14 @@ impl AgentApp for CobaltApp {
                     .collect();
                 ActionResult::with(&json!(plans))
             }
-            "export" | "run_to_export" => {
+            "export" | "run_to_export" | "import_to" => {
                 let run_to_file = action.name() == "run_to_export";
+                // import_to: the open Import dialog's file goes to the target instead of a table
+                let importing = action.name() == "import_to";
                 let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                if importing && !matches!(self.state.dialog, crate::state::Dialog::Import(_)) {
+                    return ActionResult::BadArgs("open the Import dialog first (import {path, destination: \"file\"})".into());
+                }
                 let format = arg_str(args, "format").unwrap_or_else(|| "csv".into());
                 // OneLake: {lakehouse: <name or id>, name: <table or file name>} instead of path
                 let lakehouse = arg_str(args, "lakehouse");
@@ -343,10 +349,16 @@ impl AgentApp for CobaltApp {
                 let set = arg_usize(args, "set").unwrap_or(0);
                 let fi = ops::FORMAT_LABELS.iter().position(|(_, e)| *e == format).unwrap_or(0);
                 self.with_ctx(egui, |s, cx| {
-                    ops::open_export_dialog(s, cx, i, set, false);
+                    if importing {
+                        ops::open_import_export(s, cx);
+                    } else {
+                        ops::open_export_dialog(s, cx, i, set, false);
+                    }
                     if let crate::state::Dialog::Export(d) = &mut s.dialog {
                         d.format_index = fi;
-                        d.path = path;
+                        if !path.is_empty() {
+                            d.path = path;
+                        }
                         if let Some(Some(id)) = lakehouse_id {
                             d.destination = 1;
                             d.onelake_item = Some(id);
@@ -364,7 +376,9 @@ impl AgentApp for CobaltApp {
                             d.run_mode = Some(RunMode::All);
                         }
                     }
-                    if run_to_file {
+                    if importing {
+                        ops::start_import_export(s, cx);
+                    } else if run_to_file {
                         ops::start_run_export(s, cx);
                     } else {
                         ops::start_export(s, cx);
@@ -520,7 +534,8 @@ impl AgentApp for CobaltApp {
                 let header = args.and_then(|a| a.get("header")).and_then(|v| v.as_bool());
                 let types: Vec<(String, String)> = args.and_then(|a| a.get("types")).and_then(|v| v.as_object()).map(|m| m.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect()).unwrap_or_default();
                 let exclude: Vec<String> = args.and_then(|a| a.get("exclude")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                let start_now = !existing; // existing mode needs the table's columns first
+                let to_file = arg_str(args, "destination").map(|d| d == "file").unwrap_or(false);
+                let start_now = !existing && !to_file; // existing mode needs the table's columns first; file mode waits for import_to
                 self.with_ctx(egui, |s, cx| {
                     ops::open_import_dialog(s, cx, i, Some(std::path::PathBuf::from(&path)));
                     if let crate::state::Dialog::Import(d) = &mut s.dialog {
@@ -537,6 +552,9 @@ impl AgentApp for CobaltApp {
                             if let Some(c) = d.columns.iter_mut().find(|c| c.name.eq_ignore_ascii_case(k)) { c.include = false; }
                         }
                         d.existing = existing;
+                        if to_file {
+                            d.destination = 1;
+                        }
                     }
                     if existing {
                         ops::import_request_existing_columns(s, cx);
@@ -552,8 +570,13 @@ impl AgentApp for CobaltApp {
             }
             "import_state" => {
                 let v = match &self.state.dialog {
+                    crate::state::Dialog::Export(d) if d.import.is_some() => json!({
+                        "open": true, "export": true, "running": d.running, "path": d.path,
+                        "rows_done": self.state.export_progress.as_ref().map(|p| p.lock().0).unwrap_or(0),
+                        "result": d.result.as_ref().map(|r| match r { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }),
+                    }),
                     crate::state::Dialog::Import(d) => json!({
-                        "open": true, "running": d.running, "rows_done": d.rows_done, "path": d.path, "table": format!("{}.{}", d.schema_name, d.table_name), "existing": d.existing,
+                        "open": true, "running": d.running, "rows_done": d.rows_done, "path": d.path, "table": format!("{}.{}", d.schema_name, d.table_name), "existing": d.existing, "destination": if d.destination == 0 { "table" } else { "file" },
                         "columns": d.columns.iter().map(|c| json!({"name": c.name, "sql_type": c.sql_type, "nullable": c.nullable, "include": c.include, "source": c.source})).collect::<Vec<_>>(),
                         "row_estimate": d.inspection.as_ref().and_then(|i| i.row_estimate), "format": d.inspection.as_ref().map(|i| i.format.label()),
                         "existing_columns": match &d.existing_columns { crate::state::Loadable::Loaded(c) => c.len() as i64, crate::state::Loadable::Loading(_) => -1, _ => 0 },
