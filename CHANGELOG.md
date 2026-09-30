@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2 — 2026-09-30
 
 - **Editor rewrite: multi-cursor editing and VS Code mouse selection.** The editor is now
   Cobalt's own widget (the model in `crates/cobalt-app/src/ui/editor/core.rs`, the design in
