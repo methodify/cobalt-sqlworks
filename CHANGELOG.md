@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-01
 
 - **Save results as table** (grid context menu, results toolbar, Results menu): load a result set
   — or the selected cells — into a new or existing table on the database of *any connected tab*,
