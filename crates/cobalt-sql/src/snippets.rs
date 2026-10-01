@@ -14,6 +14,15 @@ pub struct Snippet {
     pub body: &'static str,
 }
 
+/// A snippet from the user's `snippets.toml` (same body syntax as the built-ins).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UserSnippet {
+    pub prefix: String,
+    #[serde(default)]
+    pub label: String,
+    pub body: String,
+}
+
 /// The built-in snippets.
 pub static SNIPPETS: &[Snippet] = &[
     Snippet { prefix: "sel", label: "SELECT TOP (100) * FROM …", body: "SELECT TOP (100) *\nFROM ${1:table}$0" },

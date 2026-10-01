@@ -857,6 +857,44 @@ pub fn cursors_at_line_ends(text: &str, cursors: &mut Cursors) {
     }
 }
 
+/// An active snippet: the tab stops (char ranges) of an expanded snippet and which one the
+/// caret is on. Edits shift the stops so Tab keeps landing on the right placeholders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SnippetSession {
+    pub stops: Vec<(usize, usize)>,
+    pub index: usize,
+}
+
+impl SnippetSession {
+    pub fn current(&self) -> Option<(usize, usize)> {
+        self.stops.get(self.index).copied()
+    }
+    /// A text edit replaced something at `pos` and changed the length by `delta`: stops after it
+    /// move, the current stop (which the edit happened inside) grows or shrinks.
+    pub fn adjust(&mut self, pos: usize, delta: isize) {
+        let sh = |v: usize| (v as isize + delta).max(pos as isize) as usize;
+        for (i, (a, b)) in self.stops.iter_mut().enumerate() {
+            if i == self.index && *a <= pos && pos <= *b {
+                *b = sh(*b).max(*a);
+            } else if *a >= pos {
+                *a = sh(*a);
+                *b = sh(*b).max(*a);
+            } else if *b > pos {
+                *b = sh(*b).max(*a);
+            }
+        }
+    }
+    /// Move to the next (or previous) stop; None when leaving the snippet.
+    pub fn step(&mut self, back: bool) -> Option<(usize, usize)> {
+        let next = if back { self.index.checked_sub(1)? } else { self.index + 1 };
+        if next >= self.stops.len() {
+            return None;
+        }
+        self.index = next;
+        self.current()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1053,6 +1091,19 @@ mod tests {
         let mut c = Cursors::one(Sel::range(0, 8));
         cursors_at_line_ends(&t, &mut c);
         assert_eq!(c.sels.iter().map(|s| s.head).collect::<Vec<_>>(), vec![2, 6, 8]);
+    }
+
+    #[test]
+    fn snippet_stops_follow_edits() {
+        // "SELECT TOP (100) *\nFROM table" with stops at "table" (24..29) and $0 at 29
+        let mut s = SnippetSession { stops: vec![(24, 29), (29, 29)], index: 0 };
+        // typing "t" replaces the selected placeholder: 5 chars → 1
+        s.adjust(24, -4);
+        assert_eq!(s.stops, vec![(24, 25), (25, 25)]);
+        s.adjust(25, 2); // "t" → "tbl"
+        assert_eq!(s.stops, vec![(24, 27), (27, 27)]);
+        assert_eq!(s.step(false), Some((27, 27)));
+        assert_eq!(s.step(false), None);
     }
 
     #[test]

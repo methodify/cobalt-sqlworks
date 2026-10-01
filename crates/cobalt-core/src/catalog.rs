@@ -227,3 +227,10 @@ mod tests {
         assert_eq!(quote_ident("1st"), "[1st]");
     }
 }
+
+/// Row count and reserved size of a table (from the partition stats), for the Describe hover.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableStats {
+    pub rows: u64,
+    pub reserved_bytes: u64,
+}

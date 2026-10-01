@@ -116,6 +116,8 @@ pub struct CompletionRequest<'a> {
     pub databases: &'a [String],
     /// Maximum items to return (0 = unlimited).
     pub max_items: usize,
+    /// The user's own snippets (`snippets.toml`), offered next to the built-ins.
+    pub user_snippets: &'a [crate::snippets::UserSnippet],
 }
 
 /// Result of [`complete`]: the items plus the byte range of `text` they replace.
@@ -295,6 +297,7 @@ struct Ctx<'a> {
     before: Vec<usize>,
     catalog: Option<&'a DatabaseCatalog>,
     databases: &'a [String],
+    user_snippets: &'a [crate::snippets::UserSnippet],
     /// Absolute byte range of the current statement.
     stmt: (usize, usize),
     /// Absolute byte range of the current batch.
@@ -335,7 +338,7 @@ impl<'a> Ctx<'a> {
                 _ => {}
             }
         }
-        Ctx { text, tokens, before, catalog: req.catalog, databases: req.databases, stmt, batch, cursor_paren_depth: depth }
+        Ctx { text, tokens, before, catalog: req.catalog, databases: req.databases, user_snippets: req.user_snippets, stmt, batch, cursor_paren_depth: depth }
     }
 
     fn tok(&self, i: usize) -> &Token {
@@ -550,6 +553,7 @@ impl<'a> Ctx<'a> {
         v.extend(self.functions());
         if with_snippets {
             v.extend(SNIPPETS.iter().map(|s| item(s.prefix, s.body, CompletionKind::Snippet, Some(s.label.to_string()))));
+            v.extend(self.user_snippets.iter().map(|s| item(s.prefix.clone(), s.body.clone(), CompletionKind::Snippet, Some(if s.label.is_empty() { "Snippet".to_string() } else { s.label.clone() }))));
         }
         v
     }
@@ -1059,7 +1063,7 @@ mod tests {
     fn run(text: &str, cursor: usize) -> Completions {
         let cat = catalog();
         let dbs = vec!["master".to_string(), "Shop".to_string()];
-        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0 })
+        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0, user_snippets: &[] })
     }
 
     /// Complete at the `|` marker.
@@ -1269,11 +1273,11 @@ mod tests {
         let text = "SELECT o.| FROM sales.Orders o";
         let cursor = text.find('|').unwrap();
         let text = text.replacen('|', "", 1);
-        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5 });
+        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5, user_snippets: &[] });
         assert!(c.items.is_empty());
-        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5 });
+        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5, user_snippets: &[] });
         assert!(c.items.len() <= 5);
-        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3 });
+        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3, user_snippets: &[] });
         assert_eq!(c.items.len(), 3);
         assert_eq!((c.replace_start, c.replace_end), (0, 3));
     }
@@ -1293,7 +1297,7 @@ mod tests {
         let b = at("SELECT | FROM dbo.Customers");
         assert_eq!(a, b);
         let cat = catalog();
-        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4 });
+        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4, user_snippets: &[] });
         assert_eq!(c.items.len(), 4);
     }
 

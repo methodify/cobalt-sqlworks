@@ -125,6 +125,26 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |
 
+## Results: Save as table, Open in Excel, selection summary
+
+Right-click a grid (or use the results toolbar / Results menu): *Save as table…* loads the set or
+the selected cells into a new or existing table through any connected tab's connection — the
+Target connection combo lists every connected tab, so a query against one server can land on
+another. *Open in Excel* writes a temporary .xlsx and opens it. Select two or more cells and the
+status bar shows Count / Sum / Avg / Min / Max / Distinct / Null for the selection.
+
+## Snippets
+
+Type a prefix (`sel`, `selw`, `cte`, …), accept the suggestion, and Tab walks the placeholders
+(Shift+Tab back, Escape leaves). Your own snippets go in `snippets.toml` next to `settings.toml`
+(a commented template is created on first start; the file is reloaded when saved).
+
+## Object explorer: filters and schema grouping
+
+Right-click a folder (Tables, Views, …) → *Filter…* for a per-folder name filter; right-click the
+server → *Group objects by schema* to nest objects under schema rows. Hovering a table shows its
+columns plus the row count and reserved size.
+
 ## Editor: multiple cursors
 
 The editor follows VS Code / Azure Data Studio: Ctrl+Alt+Up/Down adds a cursor above/below,

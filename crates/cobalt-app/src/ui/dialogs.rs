@@ -860,15 +860,26 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
     let mut reinspect = false;
     let running = d.running;
     let (connected, db_name) = f.state.tabs.get(d.tab_index).map(|t| (t.conn.is_connected(), t.conn.database().unwrap_or("").to_string())).unwrap_or((false, String::new()));
-    if !connected && d.destination == 0 {
+    if !connected && d.destination == 0 && matches!(d.source, ImportSource::File) {
         d.destination = 1;
     }
+    let is_results = matches!(d.source, ImportSource::Results { .. });
+    if is_results {
+        d.destination = 0;
+    }
     let to_table = d.destination == 0;
+    let connected_tabs: Vec<(usize, String)> = f.state.tabs.iter().enumerate().filter(|(_, t)| t.conn.is_connected()).map(|(i, t)| (i, format!("{}", t.title))).collect();
     let (_, close) = modal(ctx, theme, "import", 760.0, |ui| {
-        ui.heading("Import data from file");
-        ui.label(RichText::new(if to_table { "The file streams through this tab's connection as a bulk insert, in one transaction." } else { "The file streams to any export target: a local file in any format, or a OneLake lakehouse (Delta table or Files)." }).size(12.0).color(theme.text_muted));
+        ui.heading(if is_results { "Save results as table" } else { "Import data from file" });
+        ui.label(RichText::new(if is_results { "The rows stream through the target tab's connection as a bulk insert, in one transaction — any connected tab, so results can land on another server." } else if to_table { "The file streams through the target tab's connection as a bulk insert, in one transaction." } else { "The file streams to any export target: a local file in any format, or a OneLake lakehouse (Delta table or Files)." }).size(12.0).color(theme.text_muted));
         ui.add_space(6.0);
         egui::Grid::new("import-grid").num_columns(2).spacing([10.0, 6.0]).min_col_width(90.0).show(ui, |ui| {
+            if let ImportSource::Results { label, .. } = &d.source {
+                ui.label("Source");
+                ui.label(RichText::new(label).strong());
+                ui.end_row();
+            }
+            if !is_results {
             ui.label("File");
             ui.horizontal(|ui| {
                 let r = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.path).desired_width(460.0));
@@ -909,6 +920,22 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 }
             });
             ui.end_row();
+            }
+            if to_table {
+                ui.label("Target connection");
+                let current = f.state.tabs.get(d.tab_index).map(|t| format!("{}", t.title)).unwrap_or_else(|| "choose…".into());
+                let before = d.tab_index;
+                egui::ComboBox::from_id_salt("import-target").width(360.0).selected_text(current).show_ui(ui, |ui| {
+                    for (i, label) in &connected_tabs {
+                        ui.selectable_value(&mut d.tab_index, *i, label);
+                    }
+                });
+                if d.tab_index != before && d.existing {
+                    d.want_existing_columns = true;
+                }
+                ui.end_row();
+            }
+            if !is_results {
             ui.label("Destination");
             ui.horizontal(|ui| {
                 let table_label = if db_name.is_empty() { "Table in this database".to_string() } else { format!("Table in {db_name}") };
@@ -927,6 +954,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 }
             });
             ui.end_row();
+            }
             if to_table {
             ui.label("Target table");
             ui.horizontal(|ui| {
@@ -1025,9 +1053,32 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 });
             }
         }
+        if let ImportSource::Results { rs, .. } = &d.source {
+            let n = rs.visible_count().min(12);
+            if n > 0 {
+                ui.add_space(4.0);
+                ui.label(RichText::new(format!("Preview (first {n} rows)")).strong());
+                egui::ScrollArea::horizontal().id_salt("import-preview-rs").max_height(150.0).show(ui, |ui| {
+                    egui::Grid::new("import-preview-rs-grid").striped(true).spacing([12.0, 2.0]).show(ui, |ui| {
+                        for c in &d.columns {
+                            ui.label(RichText::new(&c.name).small().strong());
+                        }
+                        ui.end_row();
+                        for row in 0..n {
+                            for col in 0..d.columns.len() {
+                                let v = rs.cell_text(row, col, &f.state.formatter);
+                                let shown: String = if v.chars().count() > 40 { format!("{}…", v.chars().take(40).collect::<String>()) } else { v.to_string() };
+                                ui.label(RichText::new(shown).monospace().size(11.0));
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+        }
         ui.add_space(6.0);
         if running || d.result.is_some() {
-            let total = d.inspection.as_ref().and_then(|i| i.row_estimate).unwrap_or(0);
+            let total = if let ImportSource::Results { rs, .. } = &d.source { Some(rs.visible_count() as u64) } else { d.inspection.as_ref().and_then(|i| i.row_estimate) }.unwrap_or(0);
             let frac = if total > 0 { (d.rows_done as f32 / total as f32).min(1.0) } else { 0.0 };
             let elapsed = d.started.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.0);
             let text = if running { format!("{} rows · {elapsed:.0}s", fmt_count(d.rows_done)) } else { format!("{} rows", fmt_count(d.rows_done)) };
@@ -1047,8 +1098,8 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let can = !running && d.inspection.is_some() && !matches!(d.result, Some(Ok(_)));
-            let b = primary_button(ui, theme, if to_table { "Import" } else { "Choose target…" }, can);
+            let can = !running && (d.inspection.is_some() || is_results) && !matches!(d.result, Some(Ok(_)));
+            let b = primary_button(ui, theme, if is_results { "Save rows" } else if to_table { "Import" } else { "Choose target…" }, can);
             if b.clicked() {
                 start = true;
             }
@@ -1067,7 +1118,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
     } else if done || (close && !running) {
         // closed
     } else {
-        if reinspect && !running {
+        if reinspect && !running && !is_results {
             ops::inspect_import(&mut d);
         }
         let want = d.want_existing_columns && d.existing;

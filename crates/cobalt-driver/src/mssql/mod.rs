@@ -314,6 +314,11 @@ impl Connection for MssqlConnection {
         self.settle().await?;
         catalog::load_catalog(self, database).await
     }
+    async fn table_stats(&mut self, obj: &ObjectRef) -> Result<TableStats> {
+        self.settle().await?;
+        catalog::table_stats(self, obj).await
+    }
+
     async fn script(&mut self, obj: &ObjectRef, kind: ScriptKind) -> Result<String> {
         self.settle().await?;
         script::script(self, obj, kind).await

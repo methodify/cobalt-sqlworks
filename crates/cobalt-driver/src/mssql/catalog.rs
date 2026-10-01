@@ -174,6 +174,20 @@ pub(crate) async fn list_columns(conn: &mut MssqlConnection, obj: &ObjectRef) ->
     Ok(rows.iter().enumerate().map(|(i, r)| column_from_row(r, 0, i)).collect())
 }
 
+/// Rows (heap/clustered partitions) and reserved bytes from `sys.dm_db_partition_stats`.
+pub(crate) async fn table_stats(conn: &mut MssqlConnection, obj: &ObjectRef) -> Result<TableStats> {
+    let rows = query_in_db(conn, &obj.database, |p| {
+        format!(
+            "SELECT SUM(CASE WHEN ps.index_id IN (0, 1) THEN ps.row_count ELSE 0 END) AS rows, SUM(ps.reserved_page_count) * 8192 AS bytes \
+             FROM {p}sys.dm_db_partition_stats ps WHERE ps.object_id = {}",
+            object_id_expr(obj, p)
+        )
+    })
+    .await?;
+    let r = rows.first().ok_or_else(|| DriverError::Other("no partition stats".into()))?;
+    Ok(TableStats { rows: cell_i64(r, 0).unwrap_or(0).max(0) as u64, reserved_bytes: cell_i64(r, 1).unwrap_or(0).max(0) as u64 })
+}
+
 pub(crate) async fn list_parameters(conn: &mut MssqlConnection, obj: &ObjectRef) -> Result<Vec<ParameterInfo>> {
     let rows = query_in_db(conn, &obj.database, |p| {
         format!(

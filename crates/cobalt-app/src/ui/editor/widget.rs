@@ -46,6 +46,10 @@ struct Mem {
     last_interaction: f64,
     /// Match mode adopted by the first Ctrl+D from an empty cursor (whole word, match case).
     ctrl_d_mode: Option<MatchMode>,
+    /// Keyboard column selection in progress: (anchor, head) in galley coordinates.
+    col_box: Option<(Pos2, Pos2)>,
+    /// Set by a key handler; surfaced once as a toast.
+    notice: Option<&'static str>,
 }
 
 /// The clipboard text of the last single-cursor whole-line copy (app-global, like VS Code's
@@ -58,6 +62,8 @@ pub struct CodeEditor<'a> {
     pub text: &'a mut String,
     pub cursors: &'a mut Cursors,
     pub undo: &'a mut UndoStack,
+    /// Snippet placeholders Tab walks through (ended by Escape, a click, or the last stop).
+    pub snippet: &'a mut Option<SnippetSession>,
     pub font: FontId,
     pub colors: &'a TokenColors,
     pub text_color: Color32,
@@ -82,6 +88,8 @@ pub struct CodeEditorOutput {
     pub galley_pos: Pos2,
     pub row_height: f32,
     pub changed: bool,
+    /// Something to tell the user ("No more matches").
+    pub notice: Option<&'static str>,
     /// Text was typed (Text / IME commit), as opposed to pasted, indented or undone.
     pub typed: bool,
     pub cursor_moved: bool,
@@ -129,10 +137,12 @@ fn first_nonblank_in_row(galley: &Galley, text_chars: &[char], row: usize) -> us
 
 impl<'a> CodeEditor<'a> {
     pub fn show(self, ui: &mut Ui) -> CodeEditorOutput {
-        let CodeEditor { id, text, cursors, undo, font, colors, text_color, cursor_color, word_wrap, tab_size, insert_spaces, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
+        let CodeEditor { id, text, cursors, undo, snippet, font, colors, text_color, cursor_color, word_wrap, tab_size, insert_spaces, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
         let mut mem: Mem = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
+        let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0')).max(1.0);
         let now = ui.input(|i| i.time);
+        mem.notice = None;
         let filter = EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true };
 
         let margin_w = (margin.left + margin.right) as f32;
@@ -154,6 +164,8 @@ impl<'a> CodeEditor<'a> {
             let events = ui.input(|i| i.filtered_events(&filter));
             for ev in &events {
                 let mut relayout = false;
+                let before_len = text.chars().count();
+                let edit_pos = cursors.primary().min();
                 match ev {
                     Event::Copy => {
                         let (s, line) = copy_text(text, cursors);
@@ -191,7 +203,7 @@ impl<'a> CodeEditor<'a> {
                         typed = true;
                     }
                     Event::Key { key, pressed: true, modifiers, .. } => {
-                        let r = handle_key(*key, modifiers, text, cursors, undo, &galley, &mut mem, tab_size, insert_spaces, find_mode, page_rows.max(1));
+                        let r = handle_key(*key, modifiers, text, cursors, undo, snippet, &galley, &mut mem, tab_size, insert_spaces, find_mode, page_rows.max(1), row_h, char_w);
                         match r {
                             KeyOutcome::Ignored => {}
                             KeyOutcome::Moved => cursor_moved = true,
@@ -203,7 +215,15 @@ impl<'a> CodeEditor<'a> {
                 if relayout {
                     changed = true;
                     cursor_moved = true;
-                    cursors.clamp(text.chars().count());
+                    let after_len = text.chars().count();
+                    cursors.clamp(after_len);
+                    if let Some(s) = snippet.as_mut() {
+                        if cursors.is_multi() {
+                            *snippet = None;
+                        } else {
+                            s.adjust(edit_pos, after_len as isize - before_len as isize);
+                        }
+                    }
                     galley = layout(ui, text);
                 }
             }
@@ -231,6 +251,8 @@ impl<'a> CodeEditor<'a> {
             let at = galley.cursor_from_pos(gp).index.0;
             let (pressed, released, mods) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released(), i.modifiers));
             if pressed && response.contains_pointer() {
+                mem.col_box = None;
+                *snippet = None;
                 let same = mem.last_press.map(|(t, p)| now - t < MULTI_PRESS_SECS && p.distance(pos) < MULTI_PRESS_DIST).unwrap_or(false);
                 mem.press_count = if same { (mem.press_count + 1).min(4) } else { 1 };
                 mem.last_press = Some((now, pos));
@@ -368,8 +390,9 @@ impl<'a> CodeEditor<'a> {
         if changed {
             response.mark_changed();
         }
+        let notice = mem.notice.take();
         ui.data_mut(|d| d.insert_temp(id, mem));
-        CodeEditorOutput { response, galley, galley_pos: origin, row_height: row_h, changed, typed, cursor_moved, focused: has_focus }
+        CodeEditorOutput { response, galley, galley_pos: origin, row_height: row_h, changed, notice, typed, cursor_moved, focused: has_focus }
     }
 }
 
@@ -436,12 +459,60 @@ enum KeyOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors, undo: &mut UndoStack, galley: &Galley, mem: &mut Mem, tab_size: usize, insert_spaces: bool, find_mode: MatchMode, page_rows: usize) -> KeyOutcome {
+fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors, undo: &mut UndoStack, snippet: &mut Option<SnippetSession>, galley: &Galley, mem: &mut Mem, tab_size: usize, insert_spaces: bool, find_mode: MatchMode, page_rows: usize, row_h: f32, char_w: f32) -> KeyOutcome {
     use KeyOutcome::*;
     let ctrl = m.ctrl || m.command;
     let alt = m.alt;
     let shift = m.shift;
     let len = text.chars().count();
+    // inside a snippet: Tab / Shift+Tab walk the placeholders, Escape leaves
+    if let Some(s) = snippet.as_mut() {
+        if key == Key::Tab && !ctrl && !alt {
+            return match s.step(shift) {
+                Some((a, b)) => {
+                    cursors.set_single(Sel::range(a.min(len), b.min(len)));
+                    undo.break_merge();
+                    Moved
+                }
+                None => {
+                    *snippet = None;
+                    if shift {
+                        Ignored
+                    } else {
+                        let end = s_end(text, cursors);
+                        cursors.set_single(Sel::cursor(end));
+                        Moved
+                    }
+                }
+            };
+        }
+        if key == Key::Escape {
+            *snippet = None;
+            return Moved;
+        }
+    }
+    // keyboard column select: Ctrl+Shift+Alt+arrows grow a box from the primary's anchor
+    if ctrl && shift && alt && matches!(key, Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight) {
+        let p = cursors.primary();
+        let (anchor, mut head) = mem.col_box.unwrap_or_else(|| {
+            let a = caret_rect(galley, p.anchor, row_h);
+            let h = caret_rect(galley, p.head, row_h);
+            (Pos2::new(a.left(), a.center().y), Pos2::new(h.left(), h.center().y))
+        });
+        match key {
+            Key::ArrowUp => head.y -= row_h,
+            Key::ArrowDown => head.y += row_h,
+            Key::ArrowLeft => head.x = (head.x - char_w).max(0.0),
+            _ => head.x += char_w,
+        }
+        let max_y = galley.rows.len().saturating_sub(1) as f32 * row_h + row_h / 2.0;
+        head.y = head.y.clamp(row_h / 2.0, max_y.max(row_h / 2.0));
+        mem.col_box = Some((anchor, head));
+        column_select(galley, cursors, anchor, head, row_h);
+        undo.break_merge();
+        return Moved;
+    }
+    mem.col_box = None;
 
     // helper: move every head with a function of (head, h_pos) → (head, h_pos)
     let move_all = |cursors: &mut Cursors, extend: bool, f: &dyn Fn(usize, Option<f32>) -> (usize, Option<f32>)| {
@@ -620,7 +691,10 @@ fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors,
                     undo.break_merge();
                     Moved
                 }
-                None => Ignored,
+                None => {
+                    mem.notice = Some("No more matches");
+                    Ignored
+                }
             }
         }
         Key::L if ctrl && shift && !alt => {
@@ -661,6 +735,11 @@ fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors,
         }
         _ => Ignored,
     }
+}
+
+/// Where the caret goes after the last snippet stop: the end of the current selection.
+fn s_end(text: &str, cursors: &Cursors) -> usize {
+    cursors.primary().max().min(text.chars().count())
 }
 
 /// Char index → (line, col), 1-based, for the status bar.

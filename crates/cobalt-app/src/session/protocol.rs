@@ -63,6 +63,7 @@ pub enum MetadataRequest {
     ListKeys { obj: ObjectRef },
     LoadCatalog { database: String },
     Script { obj: ObjectRef, kind: ScriptKind },
+    TableStats { obj: ObjectRef },
 }
 
 /// Session runtime → UI.
@@ -112,4 +113,5 @@ pub enum MetadataResponse {
     Keys(Vec<KeyInfo>),
     Catalog(DatabaseCatalog),
     Script(String),
+    TableStats(TableStats),
 }

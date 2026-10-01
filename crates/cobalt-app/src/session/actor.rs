@@ -576,5 +576,6 @@ async fn serve(conn: &mut dyn Connection, kind: MetadataRequest) -> Result<Metad
         MetadataRequest::ListKeys { obj } => MetadataResponse::Keys(conn.list_keys(&obj).await?),
         MetadataRequest::LoadCatalog { database } => MetadataResponse::Catalog(conn.load_catalog(&database).await?),
         MetadataRequest::Script { obj, kind } => MetadataResponse::Script(conn.script(&obj, kind).await?),
+        MetadataRequest::TableStats { obj } => MetadataResponse::TableStats(conn.table_stats(&obj).await?),
     })
 }

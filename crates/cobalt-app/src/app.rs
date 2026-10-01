@@ -59,6 +59,9 @@ pub struct CobaltApp {
     update_rx: Receiver<crate::update::UpdateOutcome>,
     update_started: bool,
     last_maintenance: Instant,
+    /// `snippets.toml` is polled for changes every few seconds.
+    snippets_checked: Instant,
+    snippets_mtime: Option<std::time::SystemTime>,
     applied_scale: f32,
     applied_theme: Option<bool>,
     frames: u64,
@@ -199,6 +202,8 @@ impl CobaltApp {
             update_rx,
             update_started: false,
             last_maintenance: Instant::now(),
+            snippets_checked: Instant::now(),
+            snippets_mtime: None,
             applied_scale: 1.0,
             applied_theme: None,
             frames: 0,
@@ -208,6 +213,12 @@ impl CobaltApp {
         };
         app.applied_scale = app.settings.appearance.ui_scale;
         app.applied_theme = Some(app.theme.is_dark());
+        {
+            let (snips, mtime) = ops::load_user_snippets(&app.paths);
+            tracing::info!(count = snips.len(), "user snippets loaded");
+            *crate::ui::editor::USER_SNIPPETS.write().unwrap() = snips;
+            app.snippets_mtime = mtime;
+        }
         {
             let toasts = RefCell::new(Vec::new());
             let cx = make_ctx!(app, &cc.egui_ctx, &toasts);
@@ -308,6 +319,16 @@ impl CobaltApp {
             if self.last_maintenance.elapsed() > Duration::from_secs(600) {
                 ops::maintenance(&mut self.state, &cx);
                 self.last_maintenance = Instant::now();
+            }
+            if self.snippets_checked.elapsed() > Duration::from_secs(3) {
+                self.snippets_checked = Instant::now();
+                let mtime = std::fs::metadata(self.paths.config_dir.join("snippets.toml")).and_then(|m| m.modified()).ok();
+                if mtime != self.snippets_mtime {
+                    let (snips, m) = ops::load_user_snippets(&self.paths);
+                    tracing::info!(count = snips.len(), "user snippets reloaded");
+                    *crate::ui::editor::USER_SNIPPETS.write().unwrap() = snips;
+                    self.snippets_mtime = m;
+                }
             }
         }
         self.flush_toasts(toasts.into_inner());

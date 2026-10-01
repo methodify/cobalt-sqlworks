@@ -52,6 +52,8 @@ pub struct ServerNode {
     /// without prompting again). Cleared on disconnect.
     pub creds: Option<ResolvedCredentials>,
     pub show_system_dbs: bool,
+    /// Nest a folder's objects under one row per schema.
+    pub group_by_schema: bool,
 }
 
 #[derive(Default)]
@@ -64,9 +66,16 @@ pub struct DbNode {
     pub parameters: HashMap<i32, Loadable<Vec<ParameterInfo>>>,
     pub indexes: HashMap<i32, Loadable<Vec<IndexInfo>>>,
     pub keys: HashMap<i32, Loadable<Vec<KeyInfo>>>,
+    /// Row count / size per table, loaded for the Describe hover.
+    pub stats: HashMap<i32, Loadable<TableStats>>,
     pub expanded_subfolders: HashSet<(i32, SubFolder)>,
     pub catalog: Loadable<DatabaseCatalog>,
     pub filter: String,
+    /// Per-folder name filters (Tables, Views, …) and which folders show their filter box.
+    pub folder_filters: HashMap<Folder, String>,
+    pub filter_open: HashSet<Folder>,
+    /// Expanded schema rows when grouping by schema: (folder, schema).
+    pub expanded_schemas: HashSet<(Folder, String)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -335,6 +344,10 @@ pub struct EditorState {
     /// The full cursor set (multi-cursor) and the undo stack; owned by the editor widget.
     pub cursors: crate::ui::editor::core::Cursors,
     pub undo: crate::ui::editor::core::UndoStack,
+    /// An expanded snippet whose placeholders Tab cycles through.
+    pub snippet: Option<crate::ui::editor::core::SnippetSession>,
+    /// Tab stops (absolute byte ranges in the text after the pending Replace) of a snippet just accepted.
+    pub pending_snippet: Option<Vec<(usize, usize)>>,
     pub scroll_to_cursor: bool,
     pub find_open: bool,
     pub find_text: String,
@@ -523,6 +536,8 @@ pub struct GridState {
     pub drag_select: bool,
     /// Open the viewer in record mode next time it is created (set by "View row as record").
     pub viewer_record: bool,
+    /// Status-bar aggregates of the selection, cached by (selection, view generation, row count).
+    pub summary: Option<(Selection, u64, usize, cobalt_results::summary::Summary)>,
 }
 
 impl Default for GridState {
@@ -544,6 +559,7 @@ impl Default for GridState {
             transposed: false,
             drag_select: false,
             viewer_record: false,
+            summary: None,
         }
     }
 }
@@ -781,8 +797,19 @@ pub struct ImportColumnEdit {
     pub source: String,
 }
 
+/// Where the rows of an Import dialog come from.
+#[derive(Clone)]
+pub enum ImportSource {
+    /// `ImportDialog::path` (CSV/Parquet/Arrow).
+    File,
+    /// A result set (or a selection of it) from a query tab: "Save results as table".
+    Results { rs: Arc<ResultSet>, label: String },
+}
+
 pub struct ImportDialog {
+    /// The target tab (its connection does the bulk insert); the file path for `ImportSource::File`.
     pub tab_index: usize,
+    pub source: ImportSource,
     pub path: String,
     /// 0 = a table in this tab's database (bulk insert); 1 = any export target (file, OneLake).
     pub destination: usize,
@@ -1226,6 +1253,10 @@ impl AppState {
                     (MetadataRequest::ListKeys { obj }, res) => {
                         let db = node.db_nodes.entry(obj.database.clone()).or_default();
                         db.keys.insert(obj.object_id.unwrap_or(0), match res { Ok(R::Keys(c)) => Loadable::Loaded(c), Err(e) => Loadable::Failed(e), _ => Loadable::Failed("unexpected".into()) });
+                    }
+                    (MetadataRequest::TableStats { obj }, res) => {
+                        let db = node.db_nodes.entry(obj.database.clone()).or_default();
+                        db.stats.insert(obj.object_id.unwrap_or(0), match res { Ok(R::TableStats(s)) => Loadable::Loaded(s), Err(e) => Loadable::Failed(e), _ => Loadable::Failed("unexpected".into()) });
                     }
                     (_, Err(e)) => out.push(Followup::Toast(ToastKind::Error, e)),
                     _ => {}

@@ -137,6 +137,9 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     item(ui, &mut cmds, c);
                 }
                 ui.separator();
+                item(ui, &mut cmds, Command::SaveAsTable);
+                item(ui, &mut cmds, Command::OpenInExcel);
+                ui.separator();
                 item(ui, &mut cmds, Command::ToggleResults);
                 item(ui, &mut cmds, Command::MaximizeResultSet);
                 item(ui, &mut cmds, Command::ClearFilters);
@@ -450,6 +453,9 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         ed_ui.set_clip_rect(editor_rect);
         let out = editor::show(&mut ed_ui, tab, theme, f.cx.settings);
+        if let Some(n) = out.notice {
+            f.cx.toast(ToastKind::Info, n);
+        }
         if out.focused {
             f.state.focus = Focus::Editor;
             for rs in tab.run.iter_mut().flat_map(|r| r.result_sets.iter_mut()) {
@@ -739,6 +745,10 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         ui.label(RichText::new(p.display().to_string()).color(theme.text_faint));
                     }
                 }
+                if let Some(text) = f.state.active_mut().and_then(selection_summary) {
+                    ui.separator();
+                    ui.label(RichText::new(text).color(theme.text)).on_hover_text("Aggregates over the selected cells (first 200,000 cells)");
+                }
                 if let Some(p) = &f.state.export_progress {
                     let (done, total) = *p.lock();
                     ui.separator();
@@ -748,6 +758,61 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             });
         });
     });
+}
+
+/// Excel-style aggregates for the focused result set's selection, cached on the grid.
+pub(crate) fn selection_summary(t: &mut EditorTab) -> Option<String> {
+    let run = t.run.as_mut()?;
+    let pos = run.result_sets.iter().position(|s| !s.is_plan && s.grid.focused).or_else(|| run.result_sets.iter().position(|s| !s.is_plan))?;
+    let v = &mut run.result_sets[pos];
+    let sel = v.grid.selection.clone();
+    if matches!(sel, Selection::None) {
+        return None;
+    }
+    let rows = v.rs.visible_count();
+    let (r, c) = sel.resolve(rows, v.rs.column_count())?;
+    let cells = (r.end() - r.start() + 1) * (c.end() - c.start() + 1);
+    if cells < 2 {
+        return None;
+    }
+    let generation = v.grid.view_generation;
+    let fresh = match &v.grid.summary {
+        Some((s, g, n, _)) => *s == sel && *g == generation && *n == rows,
+        None => false,
+    };
+    if !fresh {
+        let (r2, c2) = (r.clone(), c.clone());
+        let summary = cobalt_results::summary::summarize(&v.rs, r2.flat_map(move |row| c2.clone().map(move |col| (row, col))), 200_000);
+        v.grid.summary = Some((sel.clone(), generation, rows, summary));
+    }
+    let s = &v.grid.summary.as_ref()?.3;
+    Some(summary_text(s))
+}
+
+/// The summary already computed for the focused set (read-only; for the agent's `state`).
+pub(crate) fn cached_summary(t: &EditorTab) -> Option<String> {
+    let run = t.run.as_ref()?;
+    let v = run.result_sets.iter().find(|s| !s.is_plan && s.grid.focused).or_else(|| run.result_sets.iter().find(|s| !s.is_plan))?;
+    let (sel, _, _, s) = v.grid.summary.as_ref()?;
+    if *sel != v.grid.selection {
+        return None;
+    }
+    Some(summary_text(s))
+}
+
+fn summary_text(s: &cobalt_results::summary::Summary) -> String {
+    let mut parts = vec![format!("Count {}", fmt_count(s.count as u64))];
+    if let (Some(sum), Some(avg), Some(min), Some(max)) = (s.sum, s.avg, s.min, s.max) {
+        parts.push(format!("Sum {}", fmt_num(sum)));
+        parts.push(format!("Avg {}", fmt_num(avg)));
+        parts.push(format!("Min {}", fmt_num(min)));
+        parts.push(format!("Max {}", fmt_num(max)));
+    }
+    parts.push(format!("Distinct {}", fmt_count(s.distinct as u64)));
+    if s.nulls > 0 {
+        parts.push(format!("Null {}", fmt_count(s.nulls as u64)));
+    }
+    parts.join("  ·  ")
 }
 
 fn fmt_num(v: f64) -> String {
@@ -1022,6 +1087,20 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                     if g.find.is_none() {
                         g.find = Some(GridFind { text: String::new(), matches: Vec::new(), current: 0, generation: 0 });
                     }
+                }
+            }
+        }
+        Command::OpenInExcel => {
+            if let Some(i) = idx {
+                if let Some(set) = focused_set(state, i) {
+                    ops::open_in_excel(state, cx, i, set, false);
+                }
+            }
+        }
+        Command::SaveAsTable => {
+            if let Some(i) = idx {
+                if let Some(set) = focused_set(state, i) {
+                    ops::open_results_to_table(state, cx, i, set, false);
                 }
             }
         }

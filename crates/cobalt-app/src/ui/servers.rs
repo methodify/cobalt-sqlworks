@@ -1,6 +1,6 @@
 //! The Servers view: groups → profiles → databases → folders → objects → columns/keys/indexes.
 
-use crate::state::{DbNode, Folder, Library, Loadable, SubFolder};
+use crate::state::{fmt_count, DbNode, Folder, Library, Loadable, SubFolder};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{icon_for_object, tree_row, TreeRow};
 use cobalt_core::*;
@@ -29,6 +29,9 @@ pub enum TreeAction {
     InsertIntoEditor(String),
     MoveProfile { profile: ProfileId, group: Option<GroupId> },
     ToggleSystemDbs(ProfileId),
+    ToggleGroupBySchema(ProfileId),
+    /// Row count and size for the Describe hover.
+    LoadTableStats { profile: ProfileId, obj: ObjectRef },
     /// Import a flat file into a new or existing table of this database.
     ImportFile { profile: ProfileId, database: String },
 }
@@ -179,6 +182,10 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
                 actions.push(TreeAction::ToggleSystemDbs(p.id));
                 ui.close();
             }
+            if ui.button(format!("{} Group objects by schema", if node.group_by_schema { icons::CHECK_SQUARE } else { icons::SQUARE })).clicked() {
+                actions.push(TreeAction::ToggleGroupBySchema(p.id));
+                ui.close();
+            }
         } else if ui.button("Connect").clicked() {
             actions.push(TreeAction::ConnectServer(p.id));
             ui.close();
@@ -289,6 +296,7 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
 /// Fabric panel, where an item *is* a database on the workspace endpoint and gets no extra row.
 pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, engine: Option<&EngineInfo>, depth: usize, actions: &mut Vec<TreeAction>) {
     let node = lib.servers.entry(p.id).or_default();
+    let group_by_schema = node.group_by_schema;
     let dbn = node.db_nodes.entry(db.name.clone()).or_default();
     if let Loadable::Failed(e) = &dbn.objects {
         let msg = e.lines().next().unwrap_or("").to_string();
@@ -323,17 +331,25 @@ pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &Conn
         }
     }
     for folder in folders {
-        folder_node(ui, dbn, theme, p, db, folder, depth, actions);
+        folder_node(ui, dbn, theme, p, db, folder, depth, group_by_schema, actions);
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, folder: Folder, depth: usize, actions: &mut Vec<TreeAction>) {
+#[allow(clippy::too_many_arguments)]
+fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, folder: Folder, depth: usize, group_by_schema: bool, actions: &mut Vec<TreeAction>) {
     let objects: Vec<ObjectRef> = match &dbn.objects {
         Loadable::Loaded(o) => o.clone(),
         _ => Vec::new(),
     };
     let filter = dbn.filter.trim().to_lowercase();
+    // this folder's own filter (context menu → Filter…), on top of the database-wide one
+    let folder_filter = dbn.folder_filters.get(&folder).map(|f| f.trim().to_lowercase()).unwrap_or_default();
+    let matches = |o: &ObjectRef| {
+        let n = o.name.to_lowercase();
+        let sch = o.schema.to_lowercase();
+        (filter.is_empty() || n.contains(&filter) || sch.contains(&filter)) && (folder_filter.is_empty() || n.contains(&folder_filter) || sch.contains(&folder_filter) || format!("{sch}.{n}").contains(&folder_filter))
+    };
     let expanded = dbn.expanded_folders.contains(&folder);
     let count = if folder == Folder::Programmability {
         None
@@ -342,7 +358,12 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     } else {
         Some(objects.iter().filter(|o| folder.kinds().contains(&o.kind)).count())
     };
-    let detail = count.map(|c| c.to_string());
+    let shown = if folder_filter.is_empty() || folder == Folder::Programmability || folder == Folder::Schemas { None } else { Some(objects.iter().filter(|o| folder.kinds().contains(&o.kind) && matches(o)).count()) };
+    let detail = match (shown, count) {
+        (Some(s), Some(c)) => Some(format!("{s} of {c}")),
+        (None, Some(c)) => Some(c.to_string()),
+        _ => None,
+    };
     let icon = match folder {
         Folder::Programmability => icons::CODE,
         Folder::Schemas => icons::FOLDERS,
@@ -356,18 +377,46 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             dbn.expanded_folders.insert(folder);
         }
     }
+    let filterable = !matches!(folder, Folder::Programmability | Folder::Schemas);
+    if filterable {
+        r.response.context_menu(|ui| {
+            let open = dbn.filter_open.contains(&folder);
+            if ui.button(if open { "Hide filter" } else { "Filter…" }).clicked() {
+                if open {
+                    dbn.filter_open.remove(&folder);
+                    dbn.folder_filters.remove(&folder);
+                } else {
+                    dbn.filter_open.insert(folder);
+                    dbn.expanded_folders.insert(folder);
+                }
+                ui.close();
+            }
+        });
+    }
     if !expanded {
         return;
+    }
+    if filterable && dbn.filter_open.contains(&folder) {
+        ui.horizontal(|ui| {
+            ui.add_space(14.0 * (depth + 1) as f32 + 4.0);
+            let text = dbn.folder_filters.entry(folder).or_default();
+            let r = ui.add(egui::TextEdit::singleline(text).hint_text(format!("Filter {}", folder.label().to_lowercase())).desired_width(180.0));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("filter {}", folder.label().to_lowercase())));
+            if ui.small_button(icons::X).on_hover_text("Clear and hide the filter").clicked() {
+                dbn.folder_filters.remove(&folder);
+                dbn.filter_open.remove(&folder);
+            }
+        });
     }
     match folder {
         Folder::Programmability => {
             for sub in [Folder::Procedures, Folder::Functions] {
-                folder_node(ui, dbn, theme, p, db, sub, depth + 1, actions);
+                folder_node(ui, dbn, theme, p, db, sub, depth + 1, group_by_schema, actions);
             }
         }
         Folder::Functions => {
             for sub in [Folder::TableFunctions, Folder::ScalarFunctions] {
-                folder_node(ui, dbn, theme, p, db, sub, depth + 1, actions);
+                folder_node(ui, dbn, theme, p, db, sub, depth + 1, group_by_schema, actions);
             }
         }
         Folder::Schemas => {
@@ -387,24 +436,51 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             }
         }
         _ => {
-            let mut items: Vec<&ObjectRef> = objects.iter().filter(|o| folder.kinds().contains(&o.kind)).collect();
+            let mut items: Vec<&ObjectRef> = objects.iter().filter(|o| folder.kinds().contains(&o.kind) && matches(o)).collect();
             items.sort_by(|a, b| a.schema.cmp(&b.schema).then(a.name.cmp(&b.name)));
-            for obj in items {
-                if !filter.is_empty() && !obj.name.to_lowercase().contains(&filter) && !obj.schema.to_lowercase().contains(&filter) {
-                    continue;
+            if group_by_schema {
+                // one expandable row per schema; a filter opens every schema it matches into
+                let mut schemas: Vec<String> = items.iter().map(|o| o.schema.clone()).collect();
+                schemas.dedup();
+                for schema in schemas {
+                    let key = (folder, schema.clone());
+                    let forced = !filter.is_empty() || !folder_filter.is_empty();
+                    let open = forced || dbn.expanded_schemas.contains(&key);
+                    let n = items.iter().filter(|o| o.schema == schema).count().to_string();
+                    let r = tree_row(ui, theme, TreeRow { depth: depth + 1, expandable: true, expanded: open, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: None, label: &schema, detail: Some(&n), selected: false, color_dot: None, id_salt: &format!("{}-{:?}-{schema}", db.name, folder), kind: "schema" });
+                    if (r.toggle || r.response.clicked()) && !forced {
+                        if open {
+                            dbn.expanded_schemas.remove(&key);
+                        } else {
+                            dbn.expanded_schemas.insert(key.clone());
+                        }
+                    }
+                    if open {
+                        for obj in items.iter().filter(|o| o.schema == schema) {
+                            object_node(ui, dbn, theme, p, obj, depth + 2, actions);
+                        }
+                    }
                 }
-                object_node(ui, dbn, theme, p, obj, depth + 1, actions);
+            } else {
+                for obj in items {
+                    object_node(ui, dbn, theme, p, obj, depth + 1, actions);
+                }
             }
         }
     }
 }
 
 /// The hover card for a table-like object: name, kind, and its columns (name · type · nullability).
-fn describe_ui(ui: &mut Ui, theme: &Theme, obj: &ObjectRef, cols: Option<&Loadable<Vec<ColumnInfo>>>) {
+fn describe_ui(ui: &mut Ui, theme: &Theme, obj: &ObjectRef, cols: Option<&Loadable<Vec<ColumnInfo>>>, stats: Option<&Loadable<TableStats>>) {
     ui.set_max_width(460.0);
     ui.horizontal(|ui| {
         ui.label(RichText::new(obj.qualified()).strong());
         ui.label(RichText::new(obj.kind.label()).small().color(theme.text_muted));
+        if let Some(Loadable::Loaded(s)) = stats {
+            ui.label(RichText::new(format!("{} row{} · {}", fmt_count(s.rows), if s.rows == 1 { "" } else { "s" }, humansize::format_size(s.reserved_bytes, humansize::DECIMAL))).small().color(theme.text_faint));
+        } else if matches!(stats, Some(Loadable::Loading(_))) {
+            ui.label(RichText::new("counting…").small().color(theme.text_faint));
+        }
     });
     match cols {
         Some(Loadable::Loaded(cols)) => {
@@ -467,8 +543,12 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         if !dbn.columns.contains_key(&oid) {
             actions.push(TreeAction::LoadObjectChildren { profile: p.id, obj: obj.clone(), sub: SubFolder::Columns });
         }
+        if obj.kind == ObjectKind::Table && !dbn.stats.contains_key(&oid) {
+            actions.push(TreeAction::LoadTableStats { profile: p.id, obj: obj.clone() });
+        }
+        let stats = dbn.stats.get(&oid);
         let cols = dbn.columns.get(&oid);
-        r.response.clone().on_hover_ui(|ui| describe_ui(ui, theme, obj, cols));
+        r.response.clone().on_hover_ui(|ui| describe_ui(ui, theme, obj, cols, stats));
     }
     r.response.context_menu(|ui| {
         match obj.kind {

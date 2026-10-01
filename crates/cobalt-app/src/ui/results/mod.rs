@@ -28,6 +28,10 @@ pub enum ResultsAction {
     JumpToLine(u32),
     Summarize { set: usize },
     PopOut { set: usize },
+    /// Write the set (or selection) to a temporary .xlsx and open it with the system's app.
+    OpenInExcel { set: usize, selection_only: bool },
+    /// Load the set (or selection) into a table on a connected tab's database.
+    SaveAsTable { set: usize, selection_only: bool },
 }
 
 pub struct ResultsArgs<'a> {
@@ -129,6 +133,12 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         }
                         if icon_button(ui, icons::COPY, "Copy with headers (Ctrl+Shift+C)", true).clicked() {
                             actions.push(ResultsAction::Copy { set, kind: CopyKind::TsvWithHeaders });
+                        }
+                        if icon_button(ui, icons::MICROSOFT_EXCEL_LOGO, "Open in Excel", true).clicked() {
+                            actions.push(ResultsAction::OpenInExcel { set, selection_only: false });
+                        }
+                        if icon_button(ui, icons::TABLE, "Save as table…", true).clicked() {
+                            actions.push(ResultsAction::SaveAsTable { set, selection_only: false });
                         }
                         if icon_button(ui, icons::ARROW_SQUARE_OUT, "Open result set in its own tab", true).clicked() {
                             actions.push(ResultsAction::PopOut { set });
@@ -274,6 +284,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     }
                                     if ui.button("Save selection as…").clicked() {
                                         actions.push(ResultsAction::Export { set, selection_only: true });
+                                        close = true;
+                                    }
+                                    if ui.button("Save as table…").on_hover_text("Load these rows into a new or existing table on any connected tab's database").clicked() {
+                                        actions.push(ResultsAction::SaveAsTable { set, selection_only: false });
+                                        close = true;
+                                    }
+                                    if ui.button("Open in Excel").on_hover_text("Writes a temporary .xlsx and opens it").clicked() {
+                                        actions.push(ResultsAction::OpenInExcel { set, selection_only: false });
                                         close = true;
                                     }
                                     ui.separator();

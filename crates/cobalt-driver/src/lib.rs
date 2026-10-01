@@ -139,6 +139,11 @@ pub trait Connection: Send {
     async fn load_catalog(&mut self, database: &str) -> Result<DatabaseCatalog>;
     /// T-SQL for "Script as ...".
     async fn script(&mut self, obj: &ObjectRef, kind: ScriptKind) -> Result<String>;
+    /// Row count and reserved size of a table. May be unsupported on an engine.
+    async fn table_stats(&mut self, obj: &ObjectRef) -> Result<TableStats> {
+        let _ = obj;
+        Err(DriverError::Unsupported("table_stats"))
+    }
     /// Fetch the full value of one cell by primary key (for values the driver truncated). May be unsupported.
     async fn fetch_cell(&mut self, obj: &ObjectRef, key: &[(String, String)], column: &str) -> Result<Option<String>> {
         let _ = (obj, key, column);

@@ -43,6 +43,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
             ui.checkbox(&mut draft.editor.completion_enabled, "IntelliSense");
             ui.checkbox(&mut draft.editor.completion_on_type, "Suggest while typing");
             ui.checkbox(&mut draft.editor.uppercase_keywords_on_complete, "Uppercase keywords on completion");
+            ui.label(egui::RichText::new("Your own snippets: edit snippets.toml next to settings.toml (see the template there); it is reloaded automatically. Tab walks the placeholders.").size(11.0).color(theme.text_muted));
 
             section(ui, theme, "Execution");
             ui.horizontal(|ui| {

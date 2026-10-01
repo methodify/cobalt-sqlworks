@@ -5,7 +5,13 @@
 pub mod core;
 pub mod widget;
 
-use self::core::{EditKind, Sel};
+use self::core::{EditKind, Sel, SnippetSession};
+use cobalt_sql::snippets::UserSnippet;
+use std::sync::RwLock;
+
+/// The user's snippets (`snippets.toml` in the config folder), loaded by the app and reloaded
+/// when the file changes. Global because completion runs deep inside the editor widget.
+pub static USER_SNIPPETS: RwLock<Vec<UserSnippet>> = RwLock::new(Vec::new());
 use super::theme::{Theme, TokenColors};
 use crate::state::{CompletionEntry, CompletionPopup, EditorTab, PendingEdit};
 use cobalt_core::Settings;
@@ -17,6 +23,8 @@ pub const GUTTER_W: f32 = 52.0;
 
 pub struct EditorOutput {
     pub changed: bool,
+    /// Something to tell the user (a toast): "No more matches" after Ctrl+D, etc.
+    pub notice: Option<&'static str>,
     /// Byte offset of the cursor.
     pub cursor_byte: usize,
     /// Byte range of the selection, if any (sorted).
@@ -107,11 +115,23 @@ fn apply_pending(_ctx: &egui::Context, tab: &mut EditorTab) {
             tab.text.replace_range(start..end, &text);
             let after = cursor_after.unwrap_or(byte_to_char(&tab.text, start + text.len()));
             ed.cursors.set_single(Sel::cursor(after));
+            ed.snippet = None;
+            if let Some(stops) = ed.pending_snippet.take() {
+                // a snippet: select its first placeholder and let Tab walk the rest
+                let stops: Vec<(usize, usize)> = stops.iter().map(|&(a, b)| (byte_to_char(&tab.text, a), byte_to_char(&tab.text, b))).collect();
+                if let Some(&(a, b)) = stops.first() {
+                    ed.cursors.set_single(Sel::range(a, b));
+                    if stops.len() > 1 || a != b {
+                        ed.snippet = Some(SnippetSession { stops, index: 0 });
+                    }
+                }
+            }
         }
         PendingEdit::SetText { text, cursor } => {
             ed.undo.record(EditKind::Other, &tab.text, &ed.cursors);
             tab.text = text;
             ed.cursors.set_single(Sel::cursor(cursor));
+            ed.snippet = None;
         }
     }
     ed.cursors.clamp(tab.text.chars().count());
@@ -186,7 +206,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
     }
 
     let avail = ui.available_size();
-    let mut out = EditorOutput { changed: false, cursor_byte: 0, selection_bytes: None, focused: false };
+    let mut out = EditorOutput { changed: false, notice: None, cursor_byte: 0, selection_bytes: None, focused: false };
     let statement_bg = theme.bg_current_statement;
     let highlight_statement = settings.editor.highlight_current_statement;
 
@@ -225,6 +245,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                     text: &mut tab.text,
                     cursors: &mut ed.cursors,
                     undo: &mut ed.undo,
+                    snippet: &mut ed.snippet,
                     font: font.clone(),
                     colors: &colors,
                     text_color: theme.text,
@@ -240,6 +261,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 }
                 .show(ui);
                 out.changed = output.changed;
+                out.notice = output.notice;
                 out.focused = output.focused || focus_pending;
                 let text = tab.text.as_str();
                 let galley = &output.galley;
@@ -300,7 +322,9 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 // completion: trigger / update / draw
                 if out.changed {
                     tab.editor.completion = None;
-                    if output.typed && settings.editor.completion_enabled && settings.editor.completion_on_type {
+                    // not while a snippet's placeholders are being filled in: Tab must stay the
+                    // way to the next stop (Ctrl+Space still opens suggestions on demand)
+                    if output.typed && tab.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
                         let before = text[..out.cursor_byte].chars().next_back();
                         if matches!(before, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '@' || c == '#') {
                             let anchor = gpos + widget::caret_rect(galley, tab.editor.cursor, row_h).left_bottom().to_vec2();
@@ -324,7 +348,8 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
 /// Ctrl+Space or typing: compute completions at the cursor.
 pub fn open_completion(tab: &mut EditorTab, cursor_byte: usize, anchor: Pos2, force: bool) {
     let dbs: Vec<String> = tab.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
-    let req = cobalt_sql::completion::CompletionRequest { text: &tab.text, cursor: cursor_byte, catalog: tab.catalog.as_deref(), databases: &dbs, max_items: 60 };
+    let user = USER_SNIPPETS.read().map(|v| v.clone()).unwrap_or_default();
+    let req = cobalt_sql::completion::CompletionRequest { text: &tab.text, cursor: cursor_byte, catalog: tab.catalog.as_deref(), databases: &dbs, max_items: 60, user_snippets: &user };
     let c = cobalt_sql::completion::complete(&req);
     let prefix_len = c.replace_end.saturating_sub(c.replace_start);
     if c.items.is_empty() || (!force && prefix_len == 0) {
@@ -364,8 +389,11 @@ fn accept_completion(tab: &mut EditorTab, sel: usize) {
     let (text, cursor_after) = if item.insert.contains("${") || item.insert.contains('$') && item.icon == egui_phosphor::regular::SCISSORS {
         let (expanded, stops) = cobalt_sql::snippets::expand(&item.insert);
         let c = stops.first().map(|(s, _)| p.replace_start + s).unwrap_or(p.replace_start + expanded.len());
+        // absolute byte ranges in the text once the replacement is in; apply_pending selects the first
+        tab.editor.pending_snippet = Some(stops.iter().map(|&(s, e)| (p.replace_start + s, p.replace_start + e)).collect());
         (expanded, Some(c))
     } else {
+        tab.editor.pending_snippet = None;
         (item.insert.clone(), None)
     };
     let cursor_after_chars = cursor_after.map(|b| {
@@ -577,62 +605,114 @@ fn goto_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
     }
 }
 
-/// Toggle `--` on every line touched by the selection (or the cursor line).
+/// Toggle `--` on every line touched by each selection (or each cursor's line). One undo step.
 pub fn toggle_line_comment(tab: &mut EditorTab) {
-    let text = tab.text.clone();
-    let (a, b) = match tab.editor.selection {
-        Some((a, b)) => (char_to_byte(&text, a), char_to_byte(&text, b)),
-        None => {
-            let c = char_to_byte(&text, tab.editor.cursor);
-            (c, c)
-        }
-    };
-    let line_start = text[..a].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line_end = text[b..].find('\n').map(|i| b + i).unwrap_or(text.len());
-    let block = &text[line_start..line_end];
-    let all_commented = block.lines().filter(|l| !l.trim().is_empty()).all(|l| l.trim_start().starts_with("--"));
-    let new_block: String = block
-        .split_inclusive('\n')
-        .map(|l| {
-            let (body, nl) = match l.strip_suffix('\n') {
-                Some(b) => (b, "\n"),
-                None => (l, ""),
-            };
-            if all_commented {
-                let trimmed = body.trim_start();
-                if let Some(rest) = trimmed.strip_prefix("--") {
-                    let indent = &body[..body.len() - trimmed.len()];
-                    format!("{indent}{}{nl}", rest.strip_prefix(' ').unwrap_or(rest))
-                } else {
-                    format!("{body}{nl}")
-                }
-            } else if body.trim().is_empty() {
-                format!("{body}{nl}")
-            } else {
-                format!("-- {body}{nl}")
-            }
+    use self::core::{apply_replacements, line_end, line_start, Replace};
+    let chars: Vec<char> = tab.text.chars().collect();
+    // one block of whole lines per selection, merged when they touch
+    let mut blocks: Vec<(usize, usize)> = tab
+        .editor
+        .cursors
+        .sels
+        .iter()
+        .map(|s| {
+            let end = if !s.is_empty() && s.max() > 0 && chars.get(s.max() - 1) == Some(&'\n') { s.max() - 1 } else { s.max() };
+            (line_start(&chars, s.min()), line_end(&chars, end))
         })
         .collect();
-    let sel_start = byte_to_char(&text, line_start);
-    let sel_end = sel_start + new_block.chars().count();
-    tab.editor.pending_edit = Some(PendingEdit::Replace { start: line_start, end: line_end, text: new_block, cursor_after: Some(sel_end) });
-    tab.editor.selection = Some((sel_start, sel_end));
+    blocks.sort();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for b in blocks {
+        match merged.last_mut() {
+            Some(l) if b.0 <= l.1 => l.1 = l.1.max(b.1),
+            _ => merged.push(b),
+        }
+    }
+    let all_commented = merged.iter().flat_map(|&(a, b)| chars[a..b].iter().collect::<String>().lines().map(str::to_string).collect::<Vec<_>>()).filter(|l| !l.trim().is_empty()).all(|l| l.trim_start().starts_with("--"));
+    let reps: Vec<Replace> = merged
+        .iter()
+        .map(|&(a, b)| {
+            let block: String = chars[a..b].iter().collect();
+            let text: String = block
+                .split_inclusive('\n')
+                .map(|l| {
+                    let (body, nl) = match l.strip_suffix('\n') {
+                        Some(b) => (b, "\n"),
+                        None => (l, ""),
+                    };
+                    if all_commented {
+                        let trimmed = body.trim_start();
+                        if let Some(rest) = trimmed.strip_prefix("--") {
+                            let indent = &body[..body.len() - trimmed.len()];
+                            format!("{indent}{}{nl}", rest.strip_prefix(' ').unwrap_or(rest))
+                        } else {
+                            format!("{body}{nl}")
+                        }
+                    } else if body.trim().is_empty() {
+                        format!("{body}{nl}")
+                    } else {
+                        format!("-- {body}{nl}")
+                    }
+                })
+                .collect();
+            Replace { start: a, end: b, text }
+        })
+        .collect();
+    tab.editor.undo.record(EditKind::Other, &tab.text, &tab.editor.cursors);
+    let ends = apply_replacements(&mut tab.text, &reps);
+    let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
+    let primary = sels.len() - 1;
+    tab.editor.cursors = core::Cursors { sels, primary };
+    tab.editor.cursors.normalize();
+    tab.editor.request_focus = true;
+    tab.editor.scroll_to_cursor = true;
 }
 
+/// Wrap every non-empty selection in `/* … */` (or unwrap it). One undo step.
 pub fn toggle_block_comment(tab: &mut EditorTab) {
-    let text = tab.text.clone();
-    let Some((a, b)) = tab.editor.selection else { return };
-    let (ab, bb) = (char_to_byte(&text, a), char_to_byte(&text, b));
-    let sel = &text[ab..bb];
-    let new = if sel.trim_start().starts_with("/*") && sel.trim_end().ends_with("*/") {
-        let t = sel.trim();
-        t[2..t.len() - 2].trim().to_string()
-    } else {
-        format!("/* {sel} */")
-    };
-    let end = a + new.chars().count();
-    tab.editor.pending_edit = Some(PendingEdit::Replace { start: ab, end: bb, text: new, cursor_after: Some(end) });
-    tab.editor.selection = Some((a, end));
+    use self::core::{apply_replacements, Replace};
+    if !tab.editor.cursors.has_selection() {
+        return;
+    }
+    let chars: Vec<char> = tab.text.chars().collect();
+    let reps: Vec<Replace> = tab
+        .editor
+        .cursors
+        .sels
+        .iter()
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let sel: String = chars[s.min()..s.max()].iter().collect();
+            let text = if sel.trim_start().starts_with("/*") && sel.trim_end().ends_with("*/") {
+                let t = sel.trim();
+                t[2..t.len() - 2].trim().to_string()
+            } else {
+                format!("/* {sel} */")
+            };
+            Replace { start: s.min(), end: s.max(), text }
+        })
+        .collect();
+    tab.editor.undo.record(EditKind::Other, &tab.text, &tab.editor.cursors);
+    let ends = apply_replacements(&mut tab.text, &reps);
+    let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
+    let primary = sels.len() - 1;
+    tab.editor.cursors = core::Cursors { sels, primary };
+    tab.editor.cursors.normalize();
+    tab.editor.request_focus = true;
+    tab.editor.scroll_to_cursor = true;
+}
+
+/// The text to run for "Run selection": every non-empty selection, in document order, joined
+/// with newlines, plus the editor line the first one starts on. None when nothing is selected.
+pub fn selected_script(tab: &EditorTab) -> Option<(String, u32)> {
+    let sels: Vec<&Sel> = tab.editor.cursors.sels.iter().filter(|s| !s.is_empty()).collect();
+    if sels.is_empty() {
+        return None;
+    }
+    let text = &tab.text;
+    let parts: Vec<String> = sels.iter().map(|s| text[char_to_byte(text, s.min())..char_to_byte(text, s.max())].to_string()).collect();
+    let first = char_to_byte(text, sels[0].min());
+    Some((parts.join("\n"), cobalt_sql::statements::line_of(text, first)))
 }
 
 /// Replace the whole text keeping the cursor line.

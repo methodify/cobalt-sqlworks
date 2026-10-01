@@ -738,6 +738,10 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
                 state.library.server(id).databases = Loadable::Loading(r);
             }
         }
+        TreeAction::ToggleGroupBySchema(id) => {
+            let node = state.library.server(id);
+            node.group_by_schema = !node.group_by_schema;
+        }
         TreeAction::ToggleSystemDbs(id) => {
             let node = state.library.server(id);
             node.show_system_dbs = !node.show_system_dbs;
@@ -751,6 +755,12 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
                 dbn.keys.clear();
                 dbn.indexes.clear();
                 dbn.parameters.clear();
+            }
+        }
+        TreeAction::LoadTableStats { profile, obj } => {
+            if let Some(r) = request_meta(state, cx, profile, MetadataRequest::TableStats { obj: obj.clone() }, MetaPurpose::Tree) {
+                let dbn = state.library.server(profile).db_nodes.entry(obj.database.clone()).or_default();
+                dbn.stats.insert(obj.object_id.unwrap_or(0), Loadable::Loading(r));
             }
         }
         TreeAction::LoadObjectChildren { profile, obj, sub } => {
@@ -1061,22 +1071,8 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     t.last_run_mode = Some(mode);
     // choose the text
     let (script, start_line) = match mode {
-        RunMode::All | RunMode::EstimatedPlan => match t.editor.selection {
-            Some((a, b)) if a != b => {
-                let ab = char_to_byte(&t.text, a);
-                let bb = char_to_byte(&t.text, b);
-                (t.text[ab..bb].to_string(), cobalt_sql::statements::line_of(&t.text, ab))
-            }
-            _ => (t.text.clone(), 1),
-        },
-        RunMode::Selection => match t.editor.selection {
-            Some((a, b)) if a != b => {
-                let ab = char_to_byte(&t.text, a);
-                let bb = char_to_byte(&t.text, b);
-                (t.text[ab..bb].to_string(), cobalt_sql::statements::line_of(&t.text, ab))
-            }
-            _ => (t.text.clone(), 1),
-        },
+        // every selection (multi-cursor) in document order; the whole text when none
+        RunMode::All | RunMode::EstimatedPlan | RunMode::Selection => crate::ui::editor::selected_script(t).unwrap_or_else(|| (t.text.clone(), 1)),
         RunMode::Current => {
             let cursor = char_to_byte(&t.text, t.editor.cursor);
             match cobalt_sql::statements::statement_at(&t.text, cursor) {
@@ -1302,6 +1298,7 @@ pub fn open_import_dialog(state: &mut AppState, cx: &Ctx, idx: usize, path: Opti
     };
     let mut d = ImportDialog {
         tab_index: idx,
+        source: ImportSource::File,
         path: path.to_string_lossy().to_string(),
         destination: if connected { 0 } else { 1 },
         delimiter: String::new(),
@@ -1528,13 +1525,17 @@ pub fn start_import_export(state: &mut AppState, cx: &Ctx) {
 /// Validate the dialog, start the reader thread and hand the import to the tab's session actor.
 pub fn start_import(state: &mut AppState, cx: &Ctx) {
     let Dialog::Import(d) = &mut state.dialog else { return };
-    if d.destination == 1 {
+    if d.destination == 1 && matches!(d.source, ImportSource::File) {
         open_import_export(state, cx);
         return;
     }
-    let Some(ins) = d.inspection.clone() else {
-        d.result = Some(Err("Nothing to import: the file could not be read.".into()));
-        return;
+    let source = d.source.clone();
+    let ins = match (&source, d.inspection.clone()) {
+        (ImportSource::File, None) => {
+            d.result = Some(Err("Nothing to import: the file could not be read.".into()));
+            return;
+        }
+        (_, ins) => ins,
     };
     let schema_name = d.schema_name.trim().to_string();
     let table_name = d.table_name.trim().to_string();
@@ -1559,31 +1560,38 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
     let table = format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]"));
     let format = import_format(d);
     let path = PathBuf::from(d.path.trim());
-    let schema = ins.schema.clone();
+    let schema = ins.map(|i| i.schema.clone());
     d.running = true;
     d.result = None;
     d.rows_done = 0;
     d.started = Some(Instant::now());
     let cancel = d.cancel.clone();
     cancel.store(false, Ordering::Relaxed);
-    // reader thread: file → Arrow batches → bounded channel → session actor
+    // reader thread: file (or result set) → Arrow batches → bounded channel → session actor
     let (tx, rx) = std::sync::mpsc::sync_channel::<std::result::Result<arrow::array::RecordBatch, String>>(4);
     let cancel2 = cancel.clone();
     std::thread::Builder::new()
         .name("cobalt-import-reader".into())
         .spawn(move || {
-            let iter = match cobalt_import::open_batches(&path, &format, schema, cobalt_import::BATCH_ROWS) {
-                Ok(it) => it,
-                Err(e) => {
-                    let _ = tx.send(Err(e.to_string()));
-                    return;
+            let iter: Box<dyn Iterator<Item = std::result::Result<arrow::array::RecordBatch, String>>> = match &source {
+                ImportSource::File => match cobalt_import::open_batches(&path, &format, schema.unwrap_or_else(|| Arc::new(arrow::datatypes::Schema::empty())), cobalt_import::BATCH_ROWS) {
+                    Ok(it) => Box::new(it.map(|b| b.map_err(|e| e.to_string()))),
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string()));
+                        return;
+                    }
+                },
+                ImportSource::Results { rs, .. } => {
+                    let rs = rs.clone();
+                    let batches: Vec<std::result::Result<arrow::array::RecordBatch, String>> = rs.view_batches(cobalt_import::BATCH_ROWS).map(|b| b.map_err(|e| e.to_string())).collect();
+                    Box::new(batches.into_iter())
                 }
             };
             for b in iter {
                 if cancel2.load(Ordering::Relaxed) {
                     break;
                 }
-                let item = b.and_then(|b| cobalt_import::project(&b, &indexes)).map_err(|e| e.to_string());
+                let item = b.and_then(|b| cobalt_import::project(&b, &indexes).map_err(|e| e.to_string()));
                 let stop = item.is_err();
                 if tx.send(item).is_err() || stop {
                     break;
@@ -1632,7 +1640,137 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         }
         ResultsAction::Summarize { .. } => {}
         ResultsAction::PopOut { set } => pop_out_result(state, idx, set),
+        ResultsAction::OpenInExcel { set, selection_only } => open_in_excel(state, cx, idx, set, selection_only),
+        ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
     }
+}
+
+
+/// "Save results as table": the Import dialog fed by a result set (or its selection), loading
+/// into a new or existing table on any connected tab's database (defaults to this tab).
+pub fn open_results_to_table(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, selection_only: bool) {
+    let Some(t) = state.tabs.get(idx) else { return };
+    let Some(v) = t.run.as_ref().and_then(|r| r.result_sets.get(set)) else { return };
+    let rs = if selection_only && !matches!(v.grid.selection, Selection::None | Selection::All) {
+        match subset(&v.rs, &v.grid.selection) {
+            Ok(r) => r,
+            Err(e) => {
+                cx.toast(ToastKind::Error, e);
+                return;
+            }
+        }
+    } else {
+        v.rs.clone()
+    };
+    let target = if t.conn.is_connected() { Some(idx) } else { state.tabs.iter().position(|t| t.conn.is_connected()) };
+    let Some(target) = target else {
+        cx.toast(ToastKind::Warning, "Connect a tab first: the rows are loaded through a tab's connection.");
+        return;
+    };
+    let title = t.title.split(" · ").next().unwrap_or("results").to_string();
+    let label = format!("{title} · result set {} · {} rows", set + 1, fmt_count(rs.visible_count() as u64));
+    let table_name = format!("{}_{}", title.replace(|c: char| !c.is_alphanumeric() && c != '_', "_"), set + 1);
+    let columns: Vec<ImportColumnEdit> = rs
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ImportColumnEdit { name: c.name.clone(), sql_type: c.sql_type.to_string(), nullable: c.nullable, include: true, source: rs.schema.fields().get(i).map(|f| format!("{:?}", f.data_type())).unwrap_or_default() })
+        .collect();
+    state.dialog = Dialog::Import(Box::new(ImportDialog {
+        tab_index: target,
+        source: ImportSource::Results { rs, label },
+        path: String::new(),
+        destination: 0,
+        delimiter: String::new(),
+        has_header: true,
+        inspection: None,
+        inspect_error: None,
+        columns,
+        schema_name: "dbo".into(),
+        table_name,
+        existing: false,
+        existing_columns: Loadable::NotLoaded,
+        want_existing_columns: false,
+        running: false,
+        rows_done: 0,
+        started: None,
+        result: None,
+        cancel: Arc::new(AtomicBool::new(false)),
+    }));
+}
+
+/// `snippets.toml` next to settings.toml: `[[snippet]]` tables with `prefix`, `label` and `body`
+/// (VS Code tab-stop syntax: `${1:placeholder}`, `$0`). A commented template is written when the
+/// file does not exist. Returns the snippets and the file's modification time.
+pub fn load_user_snippets(paths: &AppPaths) -> (Vec<cobalt_sql::snippets::UserSnippet>, Option<std::time::SystemTime>) {
+    #[derive(serde::Deserialize)]
+    struct SnippetFile {
+        #[serde(default)]
+        snippet: Vec<cobalt_sql::snippets::UserSnippet>,
+    }
+    let path = paths.config_dir.join("snippets.toml");
+    if !path.exists() {
+        let _ = std::fs::create_dir_all(&paths.config_dir);
+        let template = "# Cobalt SQL Works — your snippets. Reloaded automatically when saved.\n\
+# Type the prefix in the editor and accept the suggestion; Tab moves between ${n:placeholders}, $0 is the final caret.\n\
+#\n\
+# [[snippet]]\n\
+# prefix = \"topn\"\n\
+# label = \"SELECT TOP (n) with ORDER BY\"\n\
+# body = \"SELECT TOP (${1:100}) *\\nFROM ${2:table}\\nORDER BY ${3:column} DESC$0\"\n";
+        let _ = std::fs::write(&path, template);
+    }
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    match toml::from_str::<SnippetFile>(&text) {
+        Ok(f) => (f.snippet.into_iter().filter(|s| !s.prefix.trim().is_empty() && !s.body.is_empty()).collect(), mtime),
+        Err(e) => {
+            tracing::warn!(path = %path.display(), error = %e, "snippets.toml could not be parsed");
+            (Vec::new(), mtime)
+        }
+    }
+}
+
+/// The result set (or its selection) as a temporary .xlsx, opened with the system's handler.
+pub fn open_in_excel(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, selection_only: bool) {
+    let Some(t) = state.tabs.get(idx) else { return };
+    let Some(v) = t.run.as_ref().and_then(|r| r.result_sets.get(set)) else { return };
+    let rs = if selection_only && !matches!(v.grid.selection, Selection::None | Selection::All) {
+        match subset(&v.rs, &v.grid.selection) {
+            Ok(r) => r,
+            Err(e) => {
+                cx.toast(ToastKind::Error, e);
+                return;
+            }
+        }
+    } else {
+        v.rs.clone()
+    };
+    let base = t.title.split(" · ").next().unwrap_or("results").replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_");
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("cobalt-{base}-{}-{nanos}.xlsx", set + 1));
+    let opts = cobalt_export::ExportOptions::from_settings(&cx.settings.export);
+    let fmt = state.formatter.clone().with_max_chars(0);
+    let tx = cx.export_tx.clone();
+    let egui = cx.egui.clone();
+    cx.toast(ToastKind::Info, format!("Opening {} rows in Excel…", fmt_count(rs.visible_count() as u64)));
+    std::thread::Builder::new()
+        .name("cobalt-open-excel".into())
+        .spawn(move || {
+            let mut progress = |_: cobalt_export::Progress| true;
+            let result = cobalt_export::export_to_file(&rs, cobalt_export::Format::Excel, &path, &opts, &fmt, &mut progress)
+                .map_err(|e| e.to_string())
+                .and_then(|s| {
+                    // COBALT_NO_OPEN=1: write the file but do not launch the viewer (agent tests)
+                    if std::env::var_os("COBALT_NO_OPEN").is_some() {
+                        return Ok(format!("Wrote {} rows to {}", fmt_count(s.rows as u64), path.display()));
+                    }
+                    open::that(&path).map(|_| format!("Opened {} rows in Excel ({})", fmt_count(s.rows as u64), path.display())).map_err(|e| format!("Could not open {}: {e}", path.display()))
+                });
+            let _ = tx.send(ExportDone { result, tab: None, path: None });
+            egui.request_repaint();
+        })
+        .ok();
 }
 
 pub fn apply_view(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, spec: cobalt_results::ViewSpec) {

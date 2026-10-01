@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Save results as table** (grid context menu, results toolbar, Results menu): load a result set
+  — or the selected cells — into a new or existing table on the database of *any connected tab*,
+  not only the one the query ran on, so results can be copied across servers (prod → scratch,
+  SQL Server → Fabric). Same dialog as Import Data: edit names and types, create or append, one
+  transaction with progress and cancel. Agent: `results_to_table {table, schema?, existing?,
+  target?}`.
+- **Selection summary in the status bar**: select two or more cells and the status bar shows
+  Count, and for numeric cells Sum, Avg, Min and Max, plus Distinct and Null counts (first 200,000
+  cells).
+- **Snippets with tab stops, and your own snippets.** Accepting a snippet (e.g. `sel`, `cte`)
+  selects its first placeholder; Tab and Shift+Tab walk the placeholders, Escape leaves. A
+  `snippets.toml` next to settings.toml (a commented template is created) adds your own, with the
+  same `${1:placeholder}` / `$0` syntax, reloaded when the file changes. Suggestions do not pop up
+  while placeholders are being filled in (Ctrl+Space still works).
+- Editor: toggle comment, block comment and Run selection apply to every cursor (Run selection
+  runs all selected ranges in document order); **keyboard column selection** with
+  Ctrl+Shift+Alt+arrows; a "No more matches" notice when Ctrl+D runs out.
+- Object explorer: **Filter…** on the Tables/Views/Procedures/… folders (context menu) narrows a
+  single folder by name or schema, with "n of m" in the folder row; **Group objects by schema**
+  (server context menu) nests a folder's objects under one row per schema.
+- Describe hover shows the table's **row count and reserved size** (from the partition stats).
+- Results: **Open in Excel** (toolbar, context menu, Results menu) writes a temporary .xlsx and
+  opens it with the default app.
 - **Import Data from File can write to any export target.** The Import dialog has a Destination
   choice: a table in the tab's database (bulk insert, as before) or *File or lakehouse…*, which
   hands the file to the export dialog: CSV/TSV, JSON, JSON Lines, XML, Markdown, Excel, Parquet,

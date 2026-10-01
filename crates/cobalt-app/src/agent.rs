@@ -13,6 +13,7 @@
 //! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
+//! - `results_to_table {table, schema?, existing?, set?, target?: tab index, selection_only?}` → Save results as table through the target tab's connection
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
@@ -66,6 +67,7 @@ impl CobaltApp {
                     },
                     "text": t.text,
                     "cursor": t.editor.cursor,
+                    "selection_summary": crate::ui::shell::cached_summary(t),
                     "cursors": t.editor.cursors.sels.iter().map(|s| json!([s.anchor, s.head])).collect::<Vec<_>>(),
                     "primary": t.editor.cursors.primary,
                     "actual_plan": t.actual_plan,
@@ -426,7 +428,10 @@ impl AgentApp for CobaltApp {
                 let v = r.result_sets.iter_mut().filter(|s| !s.is_plan).nth(set).unwrap();
                 v.grid.focused = true;
                 v.grid.anchor = Some((row, col));
-                v.grid.selection = crate::state::Selection::Cells { r0: row, c0: col, r1: row, c1: col };
+                // optional row2/col2 select a rectangle
+                let row2 = arg_usize(args, "row2").unwrap_or(row);
+                let col2 = arg_usize(args, "col2").unwrap_or(col);
+                v.grid.selection = crate::state::Selection::Cells { r0: row.min(row2), c0: col.min(col2), r1: row.max(row2), c1: col.max(col2) };
                 v.grid.scroll_to = Some((row, col));
                 ActionResult::ok()
             }
@@ -559,6 +564,31 @@ impl AgentApp for CobaltApp {
                     if existing {
                         ops::import_request_existing_columns(s, cx);
                     } else if start_now {
+                        ops::start_import(s, cx);
+                    }
+                });
+                ActionResult::ok()
+            }
+            "results_to_table" => {
+                // {table, schema?, existing?: bool, set?, target?: tab index, selection_only?: bool}: Save results as table
+                let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                let set = arg_usize(args, "set").unwrap_or(0);
+                let table = arg_str(args, "table");
+                let schema = arg_str(args, "schema");
+                let existing = args.and_then(|a| a.get("existing")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let target = arg_usize(args, "target");
+                let selection_only = args.and_then(|a| a.get("selection_only")).and_then(|v| v.as_bool()).unwrap_or(false);
+                self.with_ctx(egui, |s, cx| {
+                    ops::open_results_to_table(s, cx, i, set, selection_only);
+                    if let crate::state::Dialog::Import(d) = &mut s.dialog {
+                        if let Some(t) = table { d.table_name = t; }
+                        if let Some(sc) = schema { d.schema_name = sc; }
+                        if let Some(t) = target { d.tab_index = t; }
+                        d.existing = existing;
+                    }
+                    if existing {
+                        ops::import_request_existing_columns(s, cx);
+                    } else {
                         ops::start_import(s, cx);
                     }
                 });
