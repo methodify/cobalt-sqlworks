@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-05
 
 The remaining V1.x backlog, plus two V2 items that fit:
 
