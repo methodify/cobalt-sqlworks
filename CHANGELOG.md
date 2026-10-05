@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-10-05
 
 - **Ctrl+F follows the focus**: with a result grid focused (click into it) Ctrl+F opens Find in
   results; in the editor it opens the editor's find bar as before. Find in results is also on the
