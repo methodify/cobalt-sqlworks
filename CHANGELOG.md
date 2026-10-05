@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Ctrl+F follows the focus**: with a result grid focused (click into it) Ctrl+F opens Find in
+  results; in the editor it opens the editor's find bar as before. Find in results is also on the
+  results toolbar and in the grid's context menu, so it is discoverable without the palette.
+
 ## 0.6.0 — 2026-10-05
 
 The remaining V1.x backlog, plus two V2 items that fit:

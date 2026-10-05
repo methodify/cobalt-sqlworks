@@ -419,6 +419,7 @@ impl AgentApp for CobaltApp {
                 let row = arg_usize(args, "row").unwrap_or(0);
                 let col = arg_usize(args, "col").unwrap_or(0);
                 let set = arg_usize(args, "set").unwrap_or(0);
+                self.state.focus = crate::state::Focus::Results;
                 let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
                 let Some(r) = t.run.as_mut() else { return ActionResult::BadArgs("no run".into()) };
                 let mut data_sets: Vec<&mut crate::state::ResultSetView> = r.result_sets.iter_mut().filter(|s| !s.is_plan).collect();
@@ -426,8 +427,14 @@ impl AgentApp for CobaltApp {
                 for s in r.result_sets.iter_mut() {
                     s.grid.focused = false;
                 }
+                let run_id = r.id;
+                let tab_id = t.id;
                 let v = r.result_sets.iter_mut().filter(|s| !s.is_plan).nth(set).unwrap();
                 v.grid.focused = true;
+                // like a click: the grid takes egui's keyboard focus away from the editor
+                let set_index = r.result_sets.iter().position(|s| s.grid.focused).unwrap_or(set);
+                egui.memory_mut(|m| m.request_focus(egui::Id::new(("grid", tab_id, run_id, set_index)).with("kb-focus")));
+                let v = r.result_sets.iter_mut().filter(|s| !s.is_plan).nth(set).unwrap();
                 v.grid.anchor = Some((row, col));
                 // optional row2/col2 select a rectangle
                 let row2 = arg_usize(args, "row2").unwrap_or(row);

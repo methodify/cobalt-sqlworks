@@ -1082,6 +1082,13 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             }
         }
         Command::Find => {
+            // Ctrl+F follows the keyboard: a focused result grid gets "find in results", the editor
+            // gets its own find bar
+            let grid_focused = state.active().and_then(|t| t.run.as_ref()).map(|r| r.result_sets.iter().any(|s| !s.is_plan && s.grid.focused)).unwrap_or(false);
+            if grid_focused {
+                dispatch(f, Command::FindInResults);
+                return;
+            }
             if let Some(t) = state.active_mut() {
                 t.editor.find_open = true;
                 if let Some((a, b)) = t.editor.selection {

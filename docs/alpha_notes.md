@@ -127,7 +127,7 @@ If your tenant's conditional access ever rejects the public client, switch the p
 
 ## Results: find, totals, profile
 
-The results find bar (Ctrl+F on a grid) has match-case, whole-word and regex toggles, a match
+The results find bar (Ctrl+F while a grid has focus, the toolbar magnifier, or the grid's context menu) has match-case, whole-word and regex toggles, a match
 count and Shift+Enter for the previous match; matches are highlighted in the grid. Right-click a
 grid → *Totals row* for a sticky Sum/Avg/Min/Max/Count/Distinct row; *Profile columns…* (also on
 the toolbar) opens per-column nulls, distinct, min/max/avg, top values and a distribution.

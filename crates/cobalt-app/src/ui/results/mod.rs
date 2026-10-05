@@ -139,6 +139,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         if icon_button(ui, icons::COPY, "Copy with headers (Ctrl+Shift+C)", true).clicked() {
                             actions.push(ResultsAction::Copy { set, kind: CopyKind::TsvWithHeaders });
                         }
+                        if icon_button(ui, icons::MAGNIFYING_GLASS, "Find in results (Ctrl+F while the grid has focus)", true).clicked() {
+                            let g = &mut run.result_sets[set].grid;
+                            g.find.get_or_insert_with(Default::default);
+                            g.focused = true;
+                        }
                         if icon_button(ui, icons::CHART_BAR, "Profile columns", true).clicked() {
                             actions.push(ResultsAction::Profile { set });
                         }
@@ -300,6 +305,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     }
                                     if ui.button("Save selection as…").clicked() {
                                         actions.push(ResultsAction::Export { set, selection_only: true });
+                                        close = true;
+                                    }
+                                    if ui.button("Find in results…").on_hover_text("Ctrl+F while the grid has focus; match case, whole word and regex toggles").clicked() {
+                                        view.grid.find.get_or_insert_with(Default::default);
                                         close = true;
                                     }
                                     ui.menu_button("Totals row", |ui| {
