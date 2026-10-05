@@ -80,6 +80,10 @@ pub struct SessionState {
     pub statistics_io: Option<bool>,
     pub statistics_time: Option<bool>,
     pub isolation: Option<IsolationLevel>,
+    /// Applied tri-state options by SQL Server name, lock timeout and deadlock priority.
+    pub tri: std::collections::HashMap<&'static str, bool>,
+    pub lock_timeout_ms: Option<i32>,
+    pub deadlock_priority: Option<i8>,
 }
 
 impl SessionState {
@@ -108,6 +112,23 @@ impl SessionState {
                 parts.push(format!("SET TRANSACTION ISOLATION LEVEL {}", iso.sql()));
             }
         }
+        for (name, value) in opts.tri_state_options() {
+            if let Some(v) = value {
+                if self.tri.get(name) != Some(&v) {
+                    parts.push(format!("SET {name} {}", onoff(v)));
+                }
+            }
+        }
+        if let Some(ms) = opts.lock_timeout_ms {
+            if self.lock_timeout_ms != Some(ms) {
+                parts.push(format!("SET LOCK_TIMEOUT {ms}"));
+            }
+        }
+        if let Some(p) = opts.deadlock_priority {
+            if self.deadlock_priority != Some(p) {
+                parts.push(format!("SET DEADLOCK_PRIORITY {p}"));
+            }
+        }
         if parts.is_empty() {
             None
         } else {
@@ -123,6 +144,17 @@ impl SessionState {
         self.statistics_time = Some(opts.statistics_time);
         if let Some(iso) = opts.isolation {
             self.isolation = Some(iso);
+        }
+        for (name, value) in opts.tri_state_options() {
+            if let Some(v) = value {
+                self.tri.insert(name, v);
+            }
+        }
+        if opts.lock_timeout_ms.is_some() {
+            self.lock_timeout_ms = opts.lock_timeout_ms;
+        }
+        if opts.deadlock_priority.is_some() {
+            self.deadlock_priority = opts.deadlock_priority;
         }
     }
 }
@@ -464,6 +496,35 @@ impl<'a> Run<'a> {
         self.pending.push_back(StreamItem::Message(msg.clone()));
         self.pending.push_back(StreamItem::Done { error: Some(msg), cancelled: false });
         self.finished = true;
+    }
+}
+
+#[cfg(test)]
+mod prelude_tests {
+    use super::SessionState;
+    use cobalt_core::{Capabilities, EngineKind, ExecOptions};
+
+    #[test]
+    fn tri_state_options_are_set_once_and_tracked() {
+        let caps: Capabilities = EngineKind::SqlServer.capabilities();
+        let mut st = SessionState::default();
+        let mut opts = ExecOptions { quoted_identifier: Some(true), ansi_nulls: Some(false), lock_timeout_ms: Some(5000), deadlock_priority: Some(-5), ..ExecOptions::default() };
+        let p = st.prelude_for(&opts, &caps).unwrap();
+        assert!(p.contains("SET ANSI_NULLS OFF"), "{p}");
+        assert!(p.contains("SET QUOTED_IDENTIFIER ON"), "{p}");
+        assert!(p.contains("SET LOCK_TIMEOUT 5000"), "{p}");
+        assert!(p.contains("SET DEADLOCK_PRIORITY -5"), "{p}");
+        st.apply(&opts);
+        // same options again: nothing to send (NOCOUNT etc. were applied too)
+        assert!(st.prelude_for(&opts, &caps).is_none());
+        // flipping one option sends only that one
+        opts.ansi_nulls = Some(true);
+        let p2 = st.prelude_for(&opts, &caps).unwrap();
+        assert_eq!(p2.trim(), "SET ANSI_NULLS ON;");
+        // None leaves the server's setting alone
+        opts.ansi_nulls = None;
+        st.apply(&opts);
+        assert!(st.prelude_for(&opts, &caps).is_none());
     }
 }
 

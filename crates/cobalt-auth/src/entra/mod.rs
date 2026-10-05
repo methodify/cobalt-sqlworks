@@ -11,7 +11,9 @@
 //! can point the flows at a local mock identity provider.
 
 mod azure_cli;
+mod client_certificate;
 mod client_secret;
+mod managed_identity;
 mod device_code;
 mod interactive;
 pub(crate) mod loopback;
@@ -19,7 +21,9 @@ pub mod pkce;
 mod token;
 
 pub use azure_cli::azure_cli_token;
+pub use client_certificate::{client_assertion, client_certificate_token, parse_pem};
 pub use client_secret::client_secret_token;
+pub use managed_identity::managed_identity_token;
 pub use device_code::{device_code_login, DeviceCodePrompt};
 pub use interactive::{interactive_login, INTERACTIVE_TIMEOUT};
 pub use token::{decode_jwt_claims, refresh};

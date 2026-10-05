@@ -125,6 +125,34 @@ If your tenant's conditional access ever rejects the public client, switch the p
 | Agent verbs via egui-agent-cli | ✅ (this is how everything above was tested; `press`/`type_text`/`focus_editor` added for keyboard checks) |
 | Linux build runs the checklist | binary builds and runs under WSLg; checklist not exercised there |
 
+## Results: find, totals, profile
+
+The results find bar (Ctrl+F on a grid) has match-case, whole-word and regex toggles, a match
+count and Shift+Enter for the previous match; matches are highlighted in the grid. Right-click a
+grid → *Totals row* for a sticky Sum/Avg/Min/Max/Count/Distinct row; *Profile columns…* (also on
+the toolbar) opens per-column nulls, distinct, min/max/avg, top values and a distribution.
+
+## Execution options, query shortcuts, keyboard shortcuts
+
+Query → Execution options holds the full SET surface per tab (ANSI_NULLS … DEADLOCK_PRIORITY) as
+tri-state choices; Settings → Execution sets the defaults for new tabs. Settings → Query shortcuts
+binds keys to procedures (Alt+F1 = `sp_help` on the selection, `{sel}` is the placeholder).
+Settings → Keyboard shortcuts edits every command's binding.
+
+## Files sidebar, getting started
+
+The Files icon on the left rail opens a folder of .sql files as a tree (remembered across runs).
+A fresh empty query tab shows a getting-started pane on its right until you type; hide it there or
+in Settings → Appearance, bring it back with Help → Welcome.
+
+## Service principal certificates and managed identity
+
+A service principal can authenticate with a PEM file (certificate + unencrypted RSA private key,
+as `az ad sp create-for-rbac --create-cert` writes it) instead of a secret. *Managed identity* uses
+the Azure instance metadata endpoint on a VM / VMSS / AKS node or the App Service identity
+endpoint; leave the client ID empty for the system-assigned identity. Both are untested against a
+live tenant from the dev box — please report.
+
 ## Results: Save as table, Open in Excel, selection summary
 
 Right-click a grid (or use the results toolbar / Results menu): *Save as table…* loads the set or

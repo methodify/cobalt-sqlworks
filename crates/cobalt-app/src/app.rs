@@ -213,6 +213,12 @@ impl CobaltApp {
         };
         app.applied_scale = app.settings.appearance.ui_scale;
         app.applied_theme = Some(app.theme.is_dark());
+        app.keymap = Keymap::from_settings(&app.settings);
+        if let Ok(Some((root, _))) = app.store.fabric_cache_get(ops::FILES_ROOT_KEY) {
+            if !root.is_empty() {
+                app.state.files.root = Some(std::path::PathBuf::from(root));
+            }
+        }
         {
             let (snips, mtime) = ops::load_user_snippets(&app.paths);
             tracing::info!(count = snips.len(), "user snippets loaded");
@@ -253,6 +259,7 @@ impl CobaltApp {
         let theme_changed = new.appearance.theme != self.settings.appearance.theme;
         self.settings = new;
         let _ = cobalt_store::save_settings(&self.paths.settings_file(), &self.settings);
+        self.keymap = Keymap::from_settings(&self.settings);
         self.state.formatter = CellFormatter::from_settings(&self.settings.results);
         self.budget.set_limit(self.settings.advanced.memory_budget_bytes as usize);
         self.resolver.set_config(cobalt_auth::entra::EntraConfig::from_settings(&self.settings.connections));
@@ -378,6 +385,7 @@ impl CobaltApp {
                 SettingsPatch::LastExportFormat(f) => s.export.last_format = Some(f),
                 SettingsPatch::Theme(t) => s.appearance.theme = t,
                 SettingsPatch::UiScale(z) => s.appearance.ui_scale = z,
+                SettingsPatch::ShowWelcome(v) => s.appearance.show_welcome = v,
             }
         }
         self.apply_settings(ctx, s);
@@ -431,8 +439,17 @@ impl eframe::App for CobaltApp {
 
         // keyboard shortcuts (not while a modal dialog or the palette owns the keyboard)
         let mut cmds = Vec::new();
+        let mut query_shortcut: Option<String> = None;
         if !self.state.dialog.is_open() && !self.state.palette_open {
             cmds = self.keymap.consume(&ctx);
+            // query shortcuts (Alt+F1 = sp_help …): only while the editor or nothing has the keyboard
+            for q in &self.settings.execution.query_shortcuts {
+                if let Some(sc) = crate::commands::parse_shortcut(&q.keys) {
+                    if ctx.input_mut(|i| crate::commands::consume_exact(i, &sc)) {
+                        query_shortcut = Some(q.sql.clone());
+                    }
+                }
+            }
         } else if self.state.palette_open {
             // allow toggling the palette off
             if ctx.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P))) {
@@ -470,6 +487,9 @@ impl eframe::App for CobaltApp {
             let mut f = Frame { state: &mut self.state, cx: &cx, theme: &theme, keymap };
             for c in cmds {
                 shell::dispatch(&mut f, c);
+            }
+            if let Some(sql) = query_shortcut {
+                ops::run_query_shortcut(f.state, f.cx, &sql);
             }
             shell::show(ui, &mut f);
         }

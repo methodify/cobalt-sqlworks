@@ -1,7 +1,8 @@
 //! Settings window: edits a draft `Settings`; the app applies and saves it.
 
+use crate::commands::{self, parse_shortcut, shortcut_label, COMMANDS};
 use crate::ui::theme::Theme;
-use cobalt_core::{ResultLayout, Settings, ThemeChoice};
+use cobalt_core::{ExecOptions, QueryShortcut, ResultLayout, Settings, ThemeChoice};
 use egui::{RichText, Ui};
 
 pub enum SettingsAction {
@@ -32,6 +33,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.add(egui::DragValue::new(&mut draft.appearance.grid_font_size).range(9.0..=28.0));
             });
 
+            ui.checkbox(&mut draft.appearance.spid_in_tab_title, "Show the connection's SPID in tab titles");
+            ui.checkbox(&mut draft.appearance.show_welcome, "Show the getting-started pane next to a new empty query tab");
+
             section(ui, theme, "Editor");
             ui.horizontal(|ui| {
                 ui.label("Tab size");
@@ -43,6 +47,14 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
             ui.checkbox(&mut draft.editor.completion_enabled, "IntelliSense");
             ui.checkbox(&mut draft.editor.completion_on_type, "Suggest while typing");
             ui.checkbox(&mut draft.editor.uppercase_keywords_on_complete, "Uppercase keywords on completion");
+            ui.horizontal(|ui| {
+                ui.label("Format document:");
+                ui.checkbox(&mut draft.editor.format_uppercase_keywords, "Uppercase keywords");
+                ui.label("indent");
+                ui.add(egui::DragValue::new(&mut draft.editor.format_indent).range(1..=8));
+                ui.label("blank lines between statements");
+                ui.add(egui::DragValue::new(&mut draft.editor.format_blank_lines).range(0..=3));
+            });
             ui.label(egui::RichText::new("Your own snippets: edit snippets.toml next to settings.toml (see the template there); it is reloaded automatically. Tab walks the placeholders.").size(11.0).color(theme.text_muted));
 
             section(ui, theme, "Execution");
@@ -58,6 +70,78 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.label("Select Top N rows");
                 ui.add(egui::DragValue::new(&mut draft.execution.select_top_n).range(1..=1_000_000).speed(100));
             });
+            ui.label(RichText::new("Session options for new tabs ((default) = leave the server's setting)").size(11.0).color(theme.text_muted));
+            egui::Grid::new("settings-tri").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                tri_state(ui, "ANSI_NULLS", &mut draft.execution.session.ansi_nulls);
+                tri_state(ui, "ANSI_PADDING", &mut draft.execution.session.ansi_padding);
+                ui.end_row();
+                tri_state(ui, "ANSI_WARNINGS", &mut draft.execution.session.ansi_warnings);
+                tri_state(ui, "QUOTED_IDENTIFIER", &mut draft.execution.session.quoted_identifier);
+                ui.end_row();
+                tri_state(ui, "CONCAT_NULL_YIELDS_NULL", &mut draft.execution.session.concat_null_yields_null);
+                tri_state(ui, "NUMERIC_ROUNDABORT", &mut draft.execution.session.numeric_roundabort);
+                ui.end_row();
+                tri_state(ui, "IMPLICIT_TRANSACTIONS", &mut draft.execution.session.implicit_transactions);
+                ui.end_row();
+            });
+            lock_and_deadlock(ui, &mut draft.execution.session);
+
+            section(ui, theme, "Query shortcuts");
+            ui.label(RichText::new("A key combination runs the SQL in the current tab; {sel} is the selected text or the word at the caret (quotes doubled).").size(11.0).color(theme.text_muted));
+            let mut remove: Option<usize> = None;
+            egui::Grid::new("query-shortcuts").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+                for (i, q) in draft.execution.query_shortcuts.iter_mut().enumerate() {
+                    let ok = q.keys.trim().is_empty() || parse_shortcut(&q.keys).is_some();
+                    let r = ui.add(egui::TextEdit::singleline(&mut q.keys).desired_width(90.0).hint_text("Alt+F1"));
+                    if !ok {
+                        ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, theme.error), egui::StrokeKind::Outside);
+                    }
+                    ui.add(egui::TextEdit::singleline(&mut q.sql).desired_width(360.0).font(egui::FontId::monospace(12.0)).hint_text("EXEC sp_help N'{sel}'"));
+                    if ui.small_button(egui_phosphor::regular::X).clicked() {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
+                }
+            });
+            if let Some(i) = remove {
+                draft.execution.query_shortcuts.remove(i);
+            }
+            ui.horizontal(|ui| {
+                if ui.small_button("Add shortcut").clicked() {
+                    draft.execution.query_shortcuts.push(QueryShortcut::default());
+                }
+                if ui.small_button("Restore defaults").clicked() {
+                    draft.execution.query_shortcuts = QueryShortcut::defaults();
+                }
+            });
+
+            section(ui, theme, "Keyboard shortcuts");
+            ui.label(RichText::new("Type a combination such as Ctrl+Shift+R, F6 or Alt+Enter; clear the box to unbind; Reset returns the default.").size(11.0).color(theme.text_muted));
+            egui::Grid::new("keybindings").num_columns(3).spacing([10.0, 3.0]).striped(true).show(ui, |ui| {
+                for c in COMMANDS {
+                    ui.label(c.label);
+                    let default_text = c.default_key.map(shortcut_label).unwrap_or_default();
+                    let mut text = draft.keybindings.get(c.id).cloned().unwrap_or_else(|| default_text.clone());
+                    let r = ui.add(egui::TextEdit::singleline(&mut text).desired_width(150.0).hint_text("unbound"));
+                    if r.changed() {
+                        if text == default_text {
+                            draft.keybindings.remove(c.id);
+                        } else {
+                            draft.keybindings.insert(c.id.to_string(), text.clone());
+                        }
+                    }
+                    let valid = text.trim().is_empty() || parse_shortcut(&text).is_some();
+                    if !valid {
+                        ui.painter().rect_stroke(r.rect, 2.0, egui::Stroke::new(1.0, theme.error), egui::StrokeKind::Outside);
+                    }
+                    let overridden = draft.keybindings.contains_key(c.id);
+                    if ui.add_enabled(overridden, egui::Button::new("Reset").small()).clicked() {
+                        draft.keybindings.remove(c.id);
+                    }
+                    ui.end_row();
+                }
+            });
+            let _ = commands::info;
 
             section(ui, theme, "Results");
             ui.horizontal(|ui| {
@@ -193,4 +277,47 @@ fn section(ui: &mut Ui, theme: &Theme, title: &str) {
     ui.add_space(8.0);
     ui.label(RichText::new(title).strong().color(theme.accent));
     ui.separator();
+}
+
+/// A `(default) / ON / OFF` combo for a session option; two grid cells (label + combo).
+pub fn tri_state(ui: &mut Ui, name: &str, value: &mut Option<bool>) {
+    ui.label(RichText::new(name).monospace().size(12.0));
+    let text = match value {
+        None => "(default)",
+        Some(true) => "ON",
+        Some(false) => "OFF",
+    };
+    egui::ComboBox::from_id_salt(("tri", name)).width(90.0).selected_text(text).show_ui(ui, |ui| {
+        ui.selectable_value(value, None, "(default)");
+        ui.selectable_value(value, Some(true), "ON");
+        ui.selectable_value(value, Some(false), "OFF");
+    });
+}
+
+/// Lock timeout and deadlock priority controls.
+pub fn lock_and_deadlock(ui: &mut Ui, opts: &mut ExecOptions) {
+    ui.horizontal(|ui| {
+        let mut set = opts.lock_timeout_ms.is_some();
+        if ui.checkbox(&mut set, "LOCK_TIMEOUT (ms, -1 = wait)").changed() {
+            opts.lock_timeout_ms = if set { Some(opts.lock_timeout_ms.unwrap_or(-1)) } else { None };
+        }
+        if let Some(ms) = opts.lock_timeout_ms.as_mut() {
+            ui.add(egui::DragValue::new(ms).range(-1..=i32::MAX).speed(100));
+        }
+        ui.add_space(12.0);
+        ui.label("DEADLOCK_PRIORITY");
+        let text = match opts.deadlock_priority {
+            None => "(default)".to_string(),
+            Some(-5) => "LOW".into(),
+            Some(0) => "NORMAL".into(),
+            Some(5) => "HIGH".into(),
+            Some(n) => n.to_string(),
+        };
+        egui::ComboBox::from_id_salt("deadlock").width(90.0).selected_text(text).show_ui(ui, |ui| {
+            ui.selectable_value(&mut opts.deadlock_priority, None, "(default)");
+            ui.selectable_value(&mut opts.deadlock_priority, Some(-5), "LOW");
+            ui.selectable_value(&mut opts.deadlock_priority, Some(0), "NORMAL");
+            ui.selectable_value(&mut opts.deadlock_priority, Some(5), "HIGH");
+        });
+    });
 }

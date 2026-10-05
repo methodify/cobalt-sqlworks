@@ -21,9 +21,13 @@ tracing.workspace = true
 url.workspace = true
 base64.workspace = true
 sha2.workspace = true
+sha1.workspace = true
+rsa.workspace = true
+uuid.workspace = true
 rand.workspace = true
 open.workspace = true
 directories.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+rand_core06 = { package = "rand_core", version = "0.6", features = ["getrandom"] }

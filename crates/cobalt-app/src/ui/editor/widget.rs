@@ -242,6 +242,28 @@ impl<'a> CodeEditor<'a> {
         response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "editor"));
         let origin = rect.min + Vec2::new(margin.left as f32, margin.top as f32);
 
+        // drag-and-drop from the Servers tree: a bracketed object name lands at the pointer
+        let mut drop_caret: Option<usize> = None;
+        if response.dnd_hover_payload::<String>().is_some() {
+            if let Some(pos) = ui.input(|i| i.pointer.hover_pos()) {
+                drop_caret = Some(galley.cursor_from_pos(pos - origin).index.0);
+            }
+        }
+        if let Some(payload) = response.dnd_release_payload::<String>() {
+            if let Some(pos) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos())) {
+                let at = galley.cursor_from_pos(pos - origin).index.0;
+                undo.record(EditKind::Other, text, cursors);
+                cursors.set_single(Sel::cursor(at));
+                insert_at_cursors(text, cursors, &payload);
+                *snippet = None;
+                galley = layout(ui, text);
+                changed = true;
+                cursor_moved = true;
+                mem.last_interaction = now;
+                ui.memory_mut(|m| m.request_focus(id));
+            }
+        }
+
         // ---- mouse -------------------------------------------------------------------------
         if response.hovered() {
             ui.set_cursor_icon(egui::CursorIcon::Text);
@@ -351,6 +373,10 @@ impl<'a> CodeEditor<'a> {
         }
         painter.galley(origin, painted, text_color);
 
+        if let Some(at) = drop_caret {
+            let r = caret_rect(&galley, at, row_h).translate(origin.to_vec2());
+            painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(2.0, ui.visuals().selection.stroke.color));
+        }
         let primary_caret = caret_rect(&galley, cursors.primary().head, row_h).translate(origin.to_vec2());
         if has_focus && (ui.input(|i| i.focused) || cfg!(feature = "agent")) {
             let v = ui.visuals();

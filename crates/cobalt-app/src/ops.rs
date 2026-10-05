@@ -281,9 +281,14 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
         AuthMethod::EntraInteractive { tenant, account_hint } => (tenant.clone().unwrap_or_default(), account_hint.clone().unwrap_or_default(), String::new()),
         AuthMethod::EntraDeviceCode { tenant } | AuthMethod::AzureCli { tenant } => (tenant.clone().unwrap_or_default(), String::new(), String::new()),
         AuthMethod::EntraServicePrincipal { tenant, client_id, .. } => (tenant.clone(), String::new(), client_id.clone()),
+        AuthMethod::ManagedIdentity { client_id } => (String::new(), String::new(), client_id.clone().unwrap_or_default()),
         _ => (String::new(), String::new(), String::new()),
     };
     let auth_index = auth_index_of(&profile.auth);
+    let sp_cert = match &profile.auth {
+        AuthMethod::EntraServicePrincipal { certificate: Some(c), .. } => c.clone(),
+        _ => String::new(),
+    };
     let remember_password = matches!(&profile.auth, AuthMethod::SqlLogin { password: Some(_), .. });
     let recent = cx.store.recent_profiles(8).unwrap_or_default();
     let group_index = profile.group.and_then(|g| state.library.groups.iter().position(|x| x.id == g)).map(|i| i + 1).unwrap_or(0);
@@ -299,6 +304,7 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
         account_hint,
         sp_client_id,
         sp_secret: String::new(),
+        sp_cert,
         show_advanced: false,
         conn_string: String::new(),
         conn_string_note: None,
@@ -313,7 +319,7 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
     }));
 }
 
-pub const AUTH_LABELS: &[&str] = &["SQL Login", "Microsoft Entra ID (browser sign-in)", "Microsoft Entra ID (device code)", "Azure CLI (az login)", "Windows Authentication", "Entra service principal"];
+pub const AUTH_LABELS: &[&str] = &["SQL Login", "Microsoft Entra ID (browser sign-in)", "Microsoft Entra ID (device code)", "Azure CLI (az login)", "Windows Authentication", "Entra service principal", "Managed identity (Azure VM / App Service)"];
 
 pub fn auth_index_of(a: &AuthMethod) -> usize {
     match a {
@@ -323,6 +329,7 @@ pub fn auth_index_of(a: &AuthMethod) -> usize {
         AuthMethod::AzureCli { .. } => 3,
         AuthMethod::WindowsIntegrated => 4,
         AuthMethod::EntraServicePrincipal { .. } => 5,
+        AuthMethod::ManagedIdentity { .. } => 6,
     }
 }
 
@@ -335,7 +342,8 @@ pub fn auth_from_dialog(d: &ConnectionDialog) -> AuthMethod {
         2 => AuthMethod::EntraDeviceCode { tenant: opt(&d.tenant) },
         3 => AuthMethod::AzureCli { tenant: opt(&d.tenant) },
         4 => AuthMethod::WindowsIntegrated,
-        _ => AuthMethod::EntraServicePrincipal { tenant: d.tenant.trim().to_string(), client_id: d.sp_client_id.trim().to_string(), secret: None },
+        6 => AuthMethod::ManagedIdentity { client_id: opt(&d.sp_client_id) },
+        _ => AuthMethod::EntraServicePrincipal { tenant: d.tenant.trim().to_string(), client_id: d.sp_client_id.trim().to_string(), secret: None, certificate: opt(&d.sp_cert) },
     }
 }
 
@@ -466,7 +474,7 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
             }
         }
         AuthMethod::WindowsIntegrated => finish_connect(state, cx, profile, ResolvedCredentials::WindowsIntegrated, purpose),
-        AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. } | AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } => {
+        AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. } | AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } | AuthMethod::ManagedIdentity { .. } => {
             if matches!(profile.auth, AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. }) && cx.settings.connections.effective_entra_client_id().is_empty() {
                 let msg = "No Entra client ID is configured. Set one in Settings → Connections (or use Azure CLI authentication after `az login`).";
                 cx.toast(ToastKind::Error, msg);
@@ -529,7 +537,7 @@ pub fn cred_refresher(resolver: Arc<CredentialResolver>) -> crate::session::Cred
                         Err(e) => Err(e.to_string()),
                     }
                 }
-                AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } => resolver.resolve(&profile, &cobalt_auth::HeadlessPrompter::new()).await.map_err(|e| e.to_string()),
+                AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } | AuthMethod::ManagedIdentity { .. } => resolver.resolve(&profile, &cobalt_auth::HeadlessPrompter::new()).await.map_err(|e| e.to_string()),
                 _ => Ok(creds),
             }
         })
@@ -1097,7 +1105,7 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         }
         return;
     }
-    let mut opts = t.exec.clone();
+    let mut opts = t.exec.clone().with_defaults(&cx.settings.execution.session);
     opts.row_cap = cx.settings.execution.row_cap;
     if opts.timeout_secs == 0 {
         opts.timeout_secs = cx.settings.execution.command_timeout_secs;
@@ -1641,6 +1649,22 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         ResultsAction::Summarize { .. } => {}
         ResultsAction::PopOut { set } => pop_out_result(state, idx, set),
         ResultsAction::OpenInExcel { set, selection_only } => open_in_excel(state, cx, idx, set, selection_only),
+        ResultsAction::SetTotals { set, kind } => {
+            if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
+                v.grid.totals = kind.map(|k| crate::state::TotalsRow { kind: k, generation: v.rs.generation(), values: crate::ui::results::profile::totals(&v.rs, k) });
+            }
+        }
+        ResultsAction::Profile { set } => {
+            let fmt = state.formatter.clone();
+            if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
+                let stale = v.profile.as_ref().map(|p| p.generation != v.rs.generation()).unwrap_or(true);
+                if stale {
+                    v.profile = Some(crate::ui::results::profile::profile(&v.rs, &fmt));
+                } else if let Some(p) = v.profile.as_mut() {
+                    p.open = true;
+                }
+            }
+        }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
     }
 }
@@ -1697,6 +1721,78 @@ pub fn open_results_to_table(state: &mut AppState, cx: &Ctx, idx: usize, set: us
         result: None,
         cancel: Arc::new(AtomicBool::new(false)),
     }));
+}
+
+pub const FILES_ROOT_KEY: &str = "pref:files_root";
+
+/// Files sidebar actions.
+pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAction) {
+    use crate::ui::files::FilesAction as A;
+    match a {
+        A::PickRoot => {
+            let mut dlg = rfd::FileDialog::new();
+            if let Some(r) = &state.files.root {
+                dlg = dlg.set_directory(r);
+            }
+            if let Some(dir) = dlg.pick_folder() {
+                let _ = cx.store.fabric_cache_put(FILES_ROOT_KEY, &dir.to_string_lossy());
+                state.files.root = Some(dir);
+                state.files.cache.clear();
+                state.files.expanded.clear();
+            }
+        }
+        A::Refresh => state.files.cache.clear(),
+        A::Open(p) => open_file(state, cx, Some(p)),
+        A::NewFile(dir) => {
+            if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("SQL", &["sql"]).set_file_name("query.sql").save_file() {
+                if !p.exists() {
+                    if let Err(e) = std::fs::write(&p, "") {
+                        cx.toast(ToastKind::Error, format!("Could not create {}: {e}", p.display()));
+                        return;
+                    }
+                }
+                state.files.cache.clear();
+                open_file(state, cx, Some(p));
+            }
+        }
+        A::Reveal(p) => {
+            let target = if p.is_dir() { p.clone() } else { p.parent().map(|d| d.to_path_buf()).unwrap_or(p.clone()) };
+            if let Err(e) = open::that(&target) {
+                cx.toast(ToastKind::Error, format!("Could not open {}: {e}", target.display()));
+            }
+        }
+    }
+}
+
+/// A query shortcut (Alt+F1 = sp_help…): `{sel}` becomes the selection or the word at the caret,
+/// single quotes doubled; the SQL runs in the active tab without touching the editor text.
+pub fn run_query_shortcut(state: &mut AppState, cx: &Ctx, template: &str) {
+    let Some(idx) = state.active_tab else { return };
+    let Some(t) = state.tabs.get(idx) else { return };
+    if !t.conn.is_connected() {
+        cx.toast(ToastKind::Warning, "Connect the tab first.");
+        return;
+    }
+    if t.is_running() {
+        cx.toast(ToastKind::Warning, "A query is already running in this tab.");
+        return;
+    }
+    let sel = match crate::ui::editor::selected_script(t) {
+        Some((s, _)) => s.trim().to_string(),
+        None => {
+            let chars: Vec<char> = t.text.chars().collect();
+            let (a, b) = crate::ui::editor::core::word_at(&chars, t.editor.cursors.primary().head);
+            chars[a..b].iter().collect::<String>()
+        }
+    };
+    if template.contains("{sel}") && sel.is_empty() {
+        cx.toast(ToastKind::Warning, "Select an object name (or put the caret on one) first.");
+        return;
+    }
+    let sql = template.replace("{sel}", &sel.replace('\'', "''"));
+    let opts = t.exec.clone().with_defaults(&cx.settings.execution.session);
+    execute(state, cx, idx, sql, opts, 1);
+    state.tabs[idx].results_tab = ResultsTab::Results;
 }
 
 /// `snippets.toml` next to settings.toml: `[[snippet]]` tables with `prefix`, `label` and `body`
@@ -1833,7 +1929,7 @@ pub fn pop_out_result(state: &mut AppState, idx: usize, set: usize) {
     nt.text = String::new();
     let mut run = RunView::new(RunId(0), PlanMode::None);
     run.state = RunViewState::Done;
-    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false });
+    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
     nt.run = Some(run);
     nt.results_fraction = 0.95;
     nt.mark_saved();

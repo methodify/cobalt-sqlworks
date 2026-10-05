@@ -50,7 +50,7 @@ pub fn tree_row(ui: &mut Ui, theme: &Theme, row: TreeRow<'_>) -> TreeRowResponse
     let row_h = 22.0;
     let indent = 14.0 * row.depth as f32 + 4.0;
     let desired = Vec2::new(ui.available_width().max(100.0), row_h);
-    let (rect, response) = ui.allocate_exact_size(desired, Sense::click());
+    let (rect, response) = ui.allocate_exact_size(desired, Sense::click_and_drag());
     let label_for_a11y = if row.kind.is_empty() { row.label.to_owned() } else { format!("{}: {}", row.kind, row.label) };
     let expanded_a11y = row.expanded;
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, expanded_a11y, label_for_a11y.clone()));

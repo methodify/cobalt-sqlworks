@@ -68,6 +68,7 @@ pub enum Command {
     SaveResultsExcel,
     OpenInExcel,
     SaveAsTable,
+    ProfileColumns,
     SaveResultsJson,
     SaveResultsXml,
     SaveResultsMarkdown,
@@ -89,6 +90,8 @@ pub enum Command {
     ToggleSidebar,
     ShowServers,
     ShowHistory,
+    ShowFiles,
+    Welcome,
     ShowFabric,
     ShowSettings,
     ToggleTheme,
@@ -199,6 +202,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::SaveResultsExcel, id: "results.save_excel", label: "Save Results as Excel…", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::OpenInExcel, id: "results.open_in_excel", label: "Open Results in Excel", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::SaveAsTable, id: "results.save_as_table", label: "Save Results as Table…", category: Category::Results, default_key: None },
+    CommandInfo { cmd: Command::ProfileColumns, id: "results.profile", label: "Profile Result Columns…", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::SaveResultsJson, id: "results.save_json", label: "Save Results as JSON…", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::SaveResultsXml, id: "results.save_xml", label: "Save Results as XML…", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::SaveResultsMarkdown, id: "results.save_markdown", label: "Save Results as Markdown…", category: Category::Results, default_key: None },
@@ -218,6 +222,8 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::ToggleSidebar, id: "view.toggle_sidebar", label: "Toggle Sidebar", category: Category::View, default_key: sc(CTRL, Key::B) },
     CommandInfo { cmd: Command::ShowServers, id: "view.servers", label: "Show Servers", category: Category::View, default_key: sc(CTRL_SHIFT, Key::E) },
     CommandInfo { cmd: Command::ShowHistory, id: "view.history", label: "Show Query History", category: Category::View, default_key: sc(CTRL_SHIFT, Key::Y) },
+    CommandInfo { cmd: Command::ShowFiles, id: "view.files", label: "Show Files", category: Category::View, default_key: None },
+    CommandInfo { cmd: Command::Welcome, id: "help.welcome", label: "Welcome / Getting Started", category: Category::Help, default_key: None },
     CommandInfo { cmd: Command::ShowFabric, id: "view.fabric", label: "Show Fabric Explorer", category: Category::View, default_key: sc(CTRL_SHIFT, Key::B) },
     CommandInfo { cmd: Command::ShowSettings, id: "view.settings", label: "Settings", category: Category::View, default_key: sc(CTRL, Key::Comma) },
     CommandInfo { cmd: Command::ToggleTheme, id: "view.toggle_theme", label: "Toggle Light / Dark Theme", category: Category::View, default_key: None },
@@ -248,6 +254,112 @@ impl Default for Keymap {
         }
         // F1 also opens the palette; Ctrl+E runs (SSMS habit); Ctrl+F5 runs current statement (ADS habit).
         Self { bindings }
+    }
+}
+
+impl Keymap {
+    /// Defaults plus the user's overrides (`settings.keybindings`: command id → "Ctrl+Shift+P",
+    /// empty = unbound). Unparseable entries are ignored with a warning.
+    pub fn from_settings(settings: &cobalt_core::Settings) -> Self {
+        let mut km = Self::default();
+        for (id, keys) in &settings.keybindings {
+            let Some(c) = COMMANDS.iter().find(|c| c.id == id) else { continue };
+            if keys.trim().is_empty() {
+                km.bindings.remove(&c.cmd);
+            } else if let Some(sc) = parse_shortcut(keys) {
+                km.bindings.insert(c.cmd, sc);
+            } else {
+                tracing::warn!(command = id, keys, "keybinding ignored: cannot parse");
+            }
+        }
+        km
+    }
+}
+
+/// "Ctrl+Shift+P", "Alt+F1", "F5", "Ctrl+," → a shortcut. Modifier names: Ctrl (or Cmd/Command),
+/// Shift, Alt (or Option); the key uses egui's names (A, F5, Enter, ArrowUp, Slash, Comma…) or
+/// the symbol itself for punctuation.
+pub fn parse_shortcut(s: &str) -> Option<KeyboardShortcut> {
+    let mut mods = Modifiers::NONE;
+    let mut key: Option<Key> = None;
+    let parts: Vec<&str> = s.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    for (i, p) in parts.iter().enumerate() {
+        let last = i + 1 == parts.len();
+        match p.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" | "cmd" | "command" if !last => mods = mods | Modifiers::COMMAND,
+            "shift" if !last => mods = mods | Modifiers::SHIFT,
+            "alt" | "option" if !last => mods = mods | Modifiers::ALT,
+            _ => {
+                if !last {
+                    return None;
+                }
+                key = Key::from_name(p).or_else(|| {
+                    let name = match *p {
+                        "," => "Comma",
+                        "." => "Period",
+                        "/" => "Slash",
+                        "-" => "Minus",
+                        "=" => "Equals",
+                        "+" => "Plus",
+                        ";" => "Semicolon",
+                        "'" => "Quote",
+                        "[" => "OpenBracket",
+                        "]" => "CloseBracket",
+                        "\\" => "Backslash",
+                        "`" => "Backtick",
+                        "0" => "Num0",
+                        "1" => "Num1",
+                        "2" => "Num2",
+                        "3" => "Num3",
+                        "4" => "Num4",
+                        "5" => "Num5",
+                        "6" => "Num6",
+                        "7" => "Num7",
+                        "8" => "Num8",
+                        "9" => "Num9",
+                        other => other,
+                    };
+                    Key::from_name(name).or_else(|| Key::from_name(&name.to_ascii_uppercase()))
+                });
+            }
+        }
+    }
+    key.map(|k| KeyboardShortcut::new(mods, k))
+}
+
+/// The editable text form of a shortcut ("Ctrl+Shift+P").
+pub fn shortcut_label(sc: KeyboardShortcut) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if sc.modifiers.command || sc.modifiers.ctrl {
+        parts.push("Ctrl");
+    }
+    if sc.modifiers.shift {
+        parts.push("Shift");
+    }
+    if sc.modifiers.alt {
+        parts.push("Alt");
+    }
+    let key = sc.logical_key.name();
+    parts.push(key);
+    parts.join("+")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn shortcut_round_trip() {
+        for s in ["Ctrl+Shift+P", "Alt+F1", "F5", "Ctrl+1", "Ctrl+Enter", "Shift+Alt+F", "Ctrl+/", "Ctrl+,"] {
+            let sc = parse_shortcut(s).unwrap_or_else(|| panic!("parse {s}"));
+            let back = shortcut_label(sc);
+            assert_eq!(parse_shortcut(&back), Some(sc), "{s} → {back}");
+        }
+        assert!(parse_shortcut("").is_none());
+        assert!(parse_shortcut("Ctrl+").is_none());
+        assert!(parse_shortcut("Bogus+A").is_none());
     }
 }
 
@@ -295,7 +407,7 @@ impl Keymap {
 /// Like `InputState::consume_shortcut`, but the modifiers must match exactly: egui's own version
 /// accepts extra Shift/Alt, so Ctrl+Shift+L would fire the Ctrl+L binding and steal the editor's
 /// multi-cursor keys.
-fn consume_exact(i: &mut egui::InputState, sc: &KeyboardShortcut) -> bool {
+pub fn consume_exact(i: &mut egui::InputState, sc: &KeyboardShortcut) -> bool {
     let mut hit = false;
     i.events.retain(|e| match e {
         egui::Event::Key { key, pressed: true, modifiers, .. } if *key == sc.logical_key && modifiers.matches_exact(sc.modifiers) => {

@@ -55,6 +55,46 @@ pub struct ExecOptions {
     pub xact_abort: bool,
     /// Rows per Arrow batch handed to the UI.
     pub batch_rows: usize,
+    /// Tri-state session options: `None` leaves the server's default alone.
+    pub ansi_nulls: Option<bool>,
+    pub ansi_padding: Option<bool>,
+    pub ansi_warnings: Option<bool>,
+    pub quoted_identifier: Option<bool>,
+    pub concat_null_yields_null: Option<bool>,
+    pub numeric_roundabort: Option<bool>,
+    pub implicit_transactions: Option<bool>,
+    /// `SET LOCK_TIMEOUT` in milliseconds (-1 = wait forever).
+    pub lock_timeout_ms: Option<i32>,
+    /// `SET DEADLOCK_PRIORITY`: -10..=10 (LOW = -5, NORMAL = 0, HIGH = 5).
+    pub deadlock_priority: Option<i8>,
+}
+
+impl ExecOptions {
+    /// Every tri-state option as (name, value) for the SET prelude, in SQL Server's names.
+    pub fn tri_state_options(&self) -> [(&'static str, Option<bool>); 7] {
+        [
+            ("ANSI_NULLS", self.ansi_nulls),
+            ("ANSI_PADDING", self.ansi_padding),
+            ("ANSI_WARNINGS", self.ansi_warnings),
+            ("QUOTED_IDENTIFIER", self.quoted_identifier),
+            ("CONCAT_NULL_YIELDS_NULL", self.concat_null_yields_null),
+            ("NUMERIC_ROUNDABORT", self.numeric_roundabort),
+            ("IMPLICIT_TRANSACTIONS", self.implicit_transactions),
+        ]
+    }
+    /// Fill every `None` tri-state from `defaults` (the settings' session defaults).
+    pub fn with_defaults(mut self, d: &ExecOptions) -> Self {
+        self.ansi_nulls = self.ansi_nulls.or(d.ansi_nulls);
+        self.ansi_padding = self.ansi_padding.or(d.ansi_padding);
+        self.ansi_warnings = self.ansi_warnings.or(d.ansi_warnings);
+        self.quoted_identifier = self.quoted_identifier.or(d.quoted_identifier);
+        self.concat_null_yields_null = self.concat_null_yields_null.or(d.concat_null_yields_null);
+        self.numeric_roundabort = self.numeric_roundabort.or(d.numeric_roundabort);
+        self.implicit_transactions = self.implicit_transactions.or(d.implicit_transactions);
+        self.lock_timeout_ms = self.lock_timeout_ms.or(d.lock_timeout_ms);
+        self.deadlock_priority = self.deadlock_priority.or(d.deadlock_priority);
+        self
+    }
 }
 
 impl Default for ExecOptions {
@@ -70,6 +110,15 @@ impl Default for ExecOptions {
             statistics_time: false,
             xact_abort: false,
             batch_rows: 4096,
+            ansi_nulls: None,
+            ansi_padding: None,
+            ansi_warnings: None,
+            quoted_identifier: None,
+            concat_null_yields_null: None,
+            numeric_roundabort: None,
+            implicit_transactions: None,
+            lock_timeout_ms: None,
+            deadlock_priority: None,
         }
     }
 }

@@ -14,6 +14,7 @@
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
 //! - `results_to_table {table, schema?, existing?, set?, target?: tab index, selection_only?}` → Save results as table through the target tab's connection
+//! - `grid {action: totals|profile|find|find_state, kind?, set?, text?, regex?, case?, word?}`; `files_root {path}`; `plan_view {text?, metric?}`
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
@@ -567,6 +568,66 @@ impl AgentApp for CobaltApp {
                         ops::start_import(s, cx);
                     }
                 });
+                ActionResult::ok()
+            }
+            "grid" => {
+                // {action: totals|profile|find, kind?: Sum|Avg|Min|Max|Count|Distinct|None, set?, text?, regex?, case?, word?}
+                let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                let set = arg_usize(args, "set").unwrap_or(0);
+                let act = arg_str(args, "action").unwrap_or_default();
+                let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_bool());
+                match act.as_str() {
+                    "totals" => {
+                        let kind = arg_str(args, "kind").and_then(|k| crate::state::TotalKind::ALL.iter().copied().find(|t| t.label().eq_ignore_ascii_case(&k)));
+                        self.with_ctx(egui, |s, cx| ops::results_action(s, cx, i, crate::ui::results::ResultsAction::SetTotals { set, kind }));
+                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.grid.totals.as_ref()).map(|t| json!({"kind": t.kind.label(), "values": t.values}));
+                        ActionResult::with(&json!({"totals": v}))
+                    }
+                    "profile" => {
+                        self.with_ctx(egui, |s, cx| ops::results_action(s, cx, i, crate::ui::results::ResultsAction::Profile { set }));
+                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.profile.as_ref()).map(|p| json!({
+                            "rows_scanned": p.rows_scanned,
+                            "columns": p.columns.iter().map(|c| json!({"name": c.name, "type": c.type_label, "count": c.summary.count, "nulls": c.summary.nulls, "distinct": c.summary.distinct, "min": c.summary.min, "max": c.summary.max, "avg": c.summary.avg, "top": c.top.iter().map(|(v, n)| json!([v.to_string(), n])).collect::<Vec<_>>(), "histogram": c.histogram})).collect::<Vec<_>>(),
+                        }));
+                        ActionResult::with(&json!({"profile": v}))
+                    }
+                    "find" => {
+                        // open (or update) the find bar with the given text and toggles, report matches
+                        let Some(v) = self.state.tabs.get_mut(i).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) else { return ActionResult::BadArgs("no such result set".into()) };
+                        let f = v.grid.find.get_or_insert_with(Default::default);
+                        if let Some(t) = arg_str(args, "text") { f.text = t; }
+                        if let Some(b) = flag("regex") { f.use_regex = b; }
+                        if let Some(b) = flag("case") { f.case_sensitive = b; }
+                        if let Some(b) = flag("word") { f.whole_word = b; }
+                        f.generation = u64::MAX; // force a recompute on the next frame
+                        egui.request_repaint();
+                        ActionResult::ok()
+                    }
+                    "find_state" => {
+                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.grid.find.as_ref()).map(|f| json!({"text": f.text, "matches": f.matches, "current": f.current, "error": f.error}));
+                        ActionResult::with(&json!({"find": v}))
+                    }
+                    _ => ActionResult::BadArgs("action must be totals, profile, find or find_state".into()),
+                }
+            }
+            "files_root" => {
+                // {path}: point the Files sidebar at a folder (what Open folder… does, without the OS dialog)
+                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                self.state.files.root = Some(std::path::PathBuf::from(path));
+                self.state.files.cache.clear();
+                self.state.files.expanded.clear();
+                self.state.sidebar_visible = true;
+                self.state.sidebar_view = crate::state::SidebarView::Files;
+                egui.request_repaint();
+                ActionResult::ok()
+            }
+            "plan_view" => {
+                // {text?: bool, metric?: 0..4} on the active tab's shown plan
+                let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
+                let Some(pv) = t.run.as_mut().and_then(|r| r.plans.first_mut()) else { return ActionResult::BadArgs("no plan".into()) };
+                if let Some(b) = args.and_then(|a| a.get("text")).and_then(|v| v.as_bool()) { pv.text_view = b; }
+                if let Some(m) = arg_usize(args, "metric") { pv.metric = m; }
+                egui.request_repaint();
                 ActionResult::ok()
             }
             "results_to_table" => {

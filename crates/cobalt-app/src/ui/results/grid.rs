@@ -6,7 +6,10 @@ use crate::ui::theme::Theme;
 use cobalt_results::{CellFormatter, ColumnFilter, FilterOp, ResultSet, SortKey, ViewSpec};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use egui_table::{CellInfo, Column, HeaderCellInfo, HeaderRow, Table, TableDelegate};
+use std::collections::HashSet;
 use std::sync::Arc;
+
+const TOTALS_H: f32 = 22.0;
 
 pub const ROW_H: f32 = 24.0;
 pub const HEADER_H: f32 = 26.0;
@@ -53,6 +56,11 @@ struct Delegate<'a> {
     funnel_click: Option<(usize, Pos2)>,
     double_click: Option<(usize, usize)>,
     secondary: Option<Pos2>,
+    /// Find-bar matches (highlighted) and the current one.
+    find_set: HashSet<(usize, usize)>,
+    find_current: Option<(usize, usize)>,
+    /// Totals row values (one per data column) and its label.
+    totals: Option<(String, Vec<String>)>,
 }
 
 impl Delegate<'_> {
@@ -75,6 +83,32 @@ impl TableDelegate for Delegate<'_> {
             return;
         }
         let painter = ui.painter();
+        if cell.row_nr == 1 {
+            // totals row: one aggregate per column, the kind in the gutter
+            let Some((label, values)) = &self.totals else { return };
+            painter.rect_filled(rect, 0.0, self.theme.bg_grid_header);
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
+            painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
+            match self.data_col(cell.col_range.start) {
+                None => {
+                    painter.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, label, FontId::proportional((self.font.size - 1.0).max(9.0)), self.theme.accent);
+                }
+                Some(col) => {
+                    let Some(v) = values.get(col) else { return };
+                    let right = self.rs.columns.get(col).map(|c| c.sql_type.right_align()).unwrap_or(false);
+                    let text_rect = rect.shrink2(Vec2::new(6.0, 0.0));
+                    let clip = painter.with_clip_rect(text_rect);
+                    let galley = clip.layout_no_wrap(v.clone(), self.font.clone(), self.theme.accent);
+                    let x = if right { text_rect.right() - galley.size().x } else { text_rect.left() };
+                    clip.galley(Pos2::new(x.max(text_rect.left()), rect.center().y - galley.size().y / 2.0), galley, self.theme.accent);
+                    if !self.gutter && col == 0 {
+                        // no gutter: the label goes in front of the first value
+                        let _ = label;
+                    }
+                }
+            }
+            return;
+        }
         painter.rect_filled(rect, 0.0, self.theme.bg_grid_header);
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
@@ -165,14 +199,21 @@ impl TableDelegate for Delegate<'_> {
         }
         let selected = self.grid.selection.contains(row, col);
         let is_anchor = self.grid.anchor == Some((row, col));
+        let is_match = !self.find_set.is_empty() && self.find_set.contains(&(row, col));
         let bg = if selected {
             if self.grid.focused { self.theme.bg_selection } else { self.theme.bg_selection_inactive }
+        } else if is_match {
+            let w = self.theme.warning;
+            Color32::from_rgba_unmultiplied(w.r(), w.g(), w.b(), 60)
         } else if row % 2 == 1 {
             self.theme.bg_grid_alt
         } else {
             self.theme.bg_grid
         };
         painter.rect_filled(rect, 0.0, bg);
+        if self.find_current == Some((row, col)) {
+            painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.5, self.theme.warning), egui::StrokeKind::Inside);
+        }
         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         if is_anchor && self.grid.focused {
@@ -353,6 +394,12 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         columns.push(Column::new(*w).range(32.0..=4000.0).resizable(true).id(args.id_salt.with(("col", i))));
     }
     let sticky = if gutter { 1 + args.grid.frozen_cols } else { args.grid.frozen_cols };
+    let (find_set, find_current) = match &args.grid.find {
+        Some(f) if !f.matches.is_empty() => (f.matches.iter().copied().collect::<HashSet<_>>(), f.matches.get(f.current).copied()),
+        _ => (HashSet::new(), None),
+    };
+    let totals = args.grid.totals.as_ref().map(|t| (t.kind.label().to_string(), t.values.clone()));
+    let has_totals = totals.is_some();
 
     let mut delegate = Delegate {
         rs: &rs,
@@ -373,13 +420,17 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         funnel_click: None,
         double_click: None,
         secondary: None,
+        find_set,
+        find_current,
+        totals,
     };
+    let header_rows: Vec<HeaderRow> = if has_totals { vec![HeaderRow::new(HEADER_H), HeaderRow::new(TOTALS_H)] } else { vec![HeaderRow::new(HEADER_H)] };
     let mut table = Table::new()
         .id_salt(args.id_salt)
         .num_rows(rows as u64)
         .columns(columns)
         .num_sticky_cols(sticky)
-        .headers([HeaderRow::new(HEADER_H)])
+        .headers(header_rows)
         .auto_size_mode(egui_table::AutoSizeMode::Never);
     if let Some((r, c)) = delegate.grid.scroll_to.take() {
         table = table.scroll_to_row(r as u64, None).scroll_to_column(if gutter { c + 1 } else { c }, None);

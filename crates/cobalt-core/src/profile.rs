@@ -86,6 +86,15 @@ pub enum AuthMethod {
         tenant: String,
         client_id: String,
         secret: Option<SecretRef>,
+        /// A PEM file (certificate + unencrypted RSA private key) used instead of the secret.
+        #[serde(default)]
+        certificate: Option<String>,
+    },
+    /// Azure managed identity (IMDS on a VM / VMSS / AKS, or the App Service identity endpoint).
+    /// `client_id` picks a user-assigned identity; `None` = system-assigned.
+    ManagedIdentity {
+        #[serde(default)]
+        client_id: Option<String>,
     },
 }
 
@@ -171,7 +180,11 @@ impl ConnectionProfile {
         self.auth = match auth.as_deref() {
             Some(a) if a.contains("service principal") => {
                 out.client_secret = out.password.take();
-                AuthMethod::EntraServicePrincipal { tenant: String::new(), client_id: user.clone().unwrap_or_default(), secret: None }
+                AuthMethod::EntraServicePrincipal { tenant: String::new(), client_id: user.clone().unwrap_or_default(), secret: None, certificate: None }
+            }
+            Some(a) if a.contains("managed identity") || a.contains("msi") => {
+                out.password = None;
+                AuthMethod::ManagedIdentity { client_id: user.clone().filter(|u| !u.is_empty()) }
             }
             Some(a) if a.contains("device code") => AuthMethod::EntraDeviceCode { tenant: None },
             Some(a) if a.contains("active directory") || a.contains("activedirectory") => {
@@ -239,6 +252,7 @@ impl AuthMethod {
             AuthMethod::AzureCli { .. } => "Azure CLI (az login)",
             AuthMethod::WindowsIntegrated => "Windows Authentication",
             AuthMethod::EntraServicePrincipal { .. } => "Entra service principal",
+            AuthMethod::ManagedIdentity { .. } => "Managed identity",
         }
     }
     pub fn is_entra(&self) -> bool {
@@ -248,6 +262,7 @@ impl AuthMethod {
                 | AuthMethod::EntraDeviceCode { .. }
                 | AuthMethod::AzureCli { .. }
                 | AuthMethod::EntraServicePrincipal { .. }
+                | AuthMethod::ManagedIdentity { .. }
         )
     }
     pub fn user_name(&self) -> Option<&str> {

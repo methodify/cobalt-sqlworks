@@ -8,7 +8,7 @@ use crate::state::*;
 use crate::ui::results::viewer::ViewerState;
 use crate::ui::theme::Theme;
 use crate::ui::widgets::{icon_button, tool_button};
-use crate::ui::{editor, history, palette, plan, results, servers};
+use crate::ui::{editor, files, history, palette, plan, results, servers};
 use cobalt_core::*;
 use egui::{Color32, RichText, Sense, Stroke, Ui, Vec2};
 use egui_phosphor::regular as icons;
@@ -139,6 +139,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 ui.separator();
                 item(ui, &mut cmds, Command::SaveAsTable);
                 item(ui, &mut cmds, Command::OpenInExcel);
+                item(ui, &mut cmds, Command::ProfileColumns);
                 ui.separator();
                 item(ui, &mut cmds, Command::ToggleResults);
                 item(ui, &mut cmds, Command::MaximizeResultSet);
@@ -150,6 +151,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ToggleSidebar);
                 item(ui, &mut cmds, Command::ShowServers);
                 item(ui, &mut cmds, Command::ShowHistory);
+                item(ui, &mut cmds, Command::ShowFiles);
                 item(ui, &mut cmds, Command::ShowFabric);
                 ui.separator();
                 item(ui, &mut cmds, Command::ToggleTheme);
@@ -160,6 +162,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ShowSettings);
             });
             ui.menu_button("Help", |ui| {
+                item(ui, &mut cmds, Command::Welcome);
                 item(ui, &mut cmds, Command::KeyboardShortcuts);
                 item(ui, &mut cmds, Command::CheckForUpdates);
                 item(ui, &mut cmds, Command::About);
@@ -181,7 +184,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     egui::Panel::left("strip").exact_size(44.0).resizable(false).show_separator_line(false).frame(egui::Frame::new().fill(theme.bg_sidebar)).show(ui, |ui| {
         ui.add_space(6.0);
-        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
+        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::Files, icons::FOLDER_OPEN, "Files"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
         for (view, icon, tip) in items {
             let active = f.state.sidebar_visible && f.state.sidebar_view == view;
             let color = if active { theme.accent } else { theme.text_muted };
@@ -233,6 +236,12 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             let actions = history::show(ui, f.state, theme);
             for a in actions {
                 history_action(f, a);
+            }
+        }
+        SidebarView::Files => {
+            let actions = files::show(ui, f.state, theme);
+            for a in actions {
+                ops::files_action(f.state, f.cx, a);
             }
         }
         SidebarView::Fabric => {
@@ -293,7 +302,12 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 for (i, t) in f.state.tabs.iter().enumerate() {
                     let active = f.state.active_tab == Some(i);
                     let color = t.profile.as_ref().and_then(|p| f.state.library.color_for(p)).map(Theme::color32);
-                    let title = t.display_title();
+                    let mut title = t.display_title();
+                    if f.cx.settings.appearance.spid_in_tab_title {
+                        if let ConnState::Connected { spid: Some(s), .. } = &t.conn {
+                            title.push_str(&format!("  ({s})"));
+                        }
+                    }
                     let running = t.is_running();
                     let font = egui::FontId::proportional(13.0);
                     let galley = ui.painter().layout_no_wrap(title.clone(), font.clone(), theme.text);
@@ -435,9 +449,90 @@ fn welcome(ui: &mut Ui, f: &mut Frame<'_>) {
     });
 }
 
+/// The getting-started pane shown beside a fresh, empty query tab (Settings → Appearance).
+fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
+    let theme = f.theme;
+    let tab_id = f.state.tabs[idx].id;
+    egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        egui::ScrollArea::vertical().id_salt("welcome-pane").auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(RichText::new("Getting started").size(18.0).color(theme.accent));
+            ui.add_space(8.0);
+            let b = |ui: &mut Ui, icon: &str, label: &str| ui.add(egui::Button::new(format!("{icon}  {label}")).min_size(Vec2::new(230.0, 30.0))).clicked();
+            if b(ui, icons::PLUG, "Connect this tab…") {
+                dispatch(f, Command::ConnectTab);
+            }
+            if b(ui, icons::FOLDER_OPEN, "Open a .sql file…") {
+                dispatch(f, Command::OpenFile);
+            }
+            if b(ui, icons::UPLOAD_SIMPLE, "Import data from a file…") {
+                dispatch(f, Command::ImportFile);
+            }
+            if b(ui, icons::CUBE, "Browse Fabric workspaces") {
+                dispatch(f, Command::ShowFabric);
+            }
+            if b(ui, icons::KEYBOARD, "Keyboard shortcuts") {
+                dispatch(f, Command::KeyboardShortcuts);
+            }
+            let recent = f.cx.store.recent_profiles(6).unwrap_or_default();
+            if !recent.is_empty() {
+                ui.add_space(12.0);
+                ui.label(RichText::new("Recent connections").size(12.0).color(theme.text_muted));
+                for p in recent {
+                    let label = format!("{}  {}   {}", icons::HARD_DRIVES, p.display_name(), p.database.clone().unwrap_or_default());
+                    if ui.add(egui::Button::new(label).frame(false)).clicked() {
+                        ops::begin_connect(f.state, f.cx, p, ConnectPurpose::Tab { tab: tab_id, database: None });
+                    }
+                }
+            }
+            ui.add_space(12.0);
+            ui.label(RichText::new("Tips").size(12.0).color(theme.text_muted));
+            for tip in [
+                "F5 runs the script, Ctrl+Enter the statement under the caret; a selection runs only the selection.",
+                "Ctrl+Shift+O jumps to any table, view or procedure the app knows about.",
+                "Alt+Click adds a cursor; Ctrl+D selects the next occurrence; Ctrl+Alt+Down adds a cursor below.",
+                "Right-click a result grid: Save as table (any connected tab), Open in Excel, Profile columns, Totals row.",
+                "Run to File streams a query straight into Parquet, Delta, CSV… or a OneLake lakehouse.",
+                "Hover a table in Servers for its columns, row count and size; drag its name into the editor.",
+            ] {
+                ui.label(RichText::new(format!("•  {tip}")).size(12.0));
+            }
+            ui.add_space(14.0);
+            if ui.add(egui::Button::new(RichText::new("Hide this pane").size(11.0)).frame(false)).on_hover_text("Settings → Appearance brings it back; Help → Welcome opens a tab with it").clicked() {
+                f.state.settings_patch.push(SettingsPatch::ShowWelcome(false));
+            }
+        });
+    });
+}
+
 fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     let idx = f.state.active_tab.unwrap();
+    // a fresh, empty tab gets the getting-started pane on its right (until something is typed)
+    let pristine = {
+        let t = &f.state.tabs[idx];
+        t.text.is_empty() && t.profile.is_none() && t.run.is_none() && !t.custom_title && t.file_path.is_none() && !t.conn.is_connected()
+    };
+    if pristine && f.cx.settings.appearance.show_welcome {
+        let avail = ui.available_rect_before_wrap();
+        let pane_w = (avail.width() * 0.42).clamp(260.0, 420.0);
+        let pane_rect = egui::Rect::from_min_max(egui::pos2(avail.right() - pane_w, avail.top()), avail.max);
+        let editor_rect = egui::Rect::from_min_max(avail.min, egui::pos2(avail.right() - pane_w, avail.bottom()));
+        let mut pane_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        pane_ui.set_clip_rect(pane_rect);
+        welcome_pane(&mut pane_ui, f, idx);
+        if f.state.active_tab != Some(idx) || f.state.tabs.len() <= idx {
+            return;
+        }
+        let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
+        ed_ui.set_clip_rect(editor_rect);
+        let tab = &mut f.state.tabs[idx];
+        let out = editor::show(&mut ed_ui, tab, theme, f.cx.settings);
+        if out.focused {
+            f.state.focus = Focus::Editor;
+        }
+        return;
+    }
     editor_toolbar(ui, f, idx);
     let avail = ui.available_rect_before_wrap();
     let tab = &mut f.state.tabs[idx];
@@ -975,8 +1070,8 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             }
         }
         Command::FormatDocument => {
+            let opts = cobalt_sql::format::FormatOptions { uppercase_keywords: cx.settings.editor.format_uppercase_keywords, indent: cx.settings.editor.format_indent as usize, lines_between_queries: cx.settings.editor.format_blank_lines as usize };
             if let Some(t) = state.active_mut() {
-                let opts = cobalt_sql::format::FormatOptions::default();
                 let formatted = cobalt_sql::format::format(&t.text, &opts);
                 editor::set_text_keep_line(t, formatted);
             }
@@ -1085,8 +1180,15 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                 if let Some(set) = focused_set(state, i) {
                     let g = &mut state.tabs[i].run.as_mut().unwrap().result_sets[set].grid;
                     if g.find.is_none() {
-                        g.find = Some(GridFind { text: String::new(), matches: Vec::new(), current: 0, generation: 0 });
+                        g.find = Some(GridFind::default());
                     }
+                }
+            }
+        }
+        Command::ProfileColumns => {
+            if let Some(i) = idx {
+                if let Some(set) = focused_set(state, i) {
+                    ops::results_action(state, cx, i, results::ResultsAction::Profile { set });
                 }
             }
         }
@@ -1213,6 +1315,14 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             state.sidebar_visible = true;
             state.sidebar_view = SidebarView::History;
             state.history.loaded = false;
+        }
+        Command::ShowFiles => {
+            state.sidebar_visible = true;
+            state.sidebar_view = SidebarView::Files;
+        }
+        Command::Welcome => {
+            state.settings_patch.push(SettingsPatch::ShowWelcome(true));
+            ops::new_query_tab(state, cx, None, None, None, false);
         }
         Command::ShowSettings => state.settings_open = true,
         Command::ToggleTheme => {

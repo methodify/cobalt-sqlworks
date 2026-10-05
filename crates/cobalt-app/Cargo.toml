@@ -63,6 +63,7 @@ directories.workspace = true
 rfd.workspace = true
 open.workspace = true
 indexmap.workspace = true
+regex.workspace = true
 humansize.workspace = true
 once_cell.workspace = true
 

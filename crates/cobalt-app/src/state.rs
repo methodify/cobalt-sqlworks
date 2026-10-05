@@ -464,6 +464,8 @@ pub struct ResultSetView {
     pub grid: GridState,
     /// Showplan result sets are captured into `plans` instead of being shown as grids.
     pub is_plan: bool,
+    /// Column profile (nulls, distinct, min/max, top values, distribution), computed on demand.
+    pub profile: Option<crate::ui::results::profile::ColumnProfiles>,
 }
 
 #[derive(Clone, Debug)]
@@ -493,6 +495,10 @@ pub struct PlanView {
     pub show_top_ops: bool,
     pub top_ops_sort: (usize, bool),
     pub find: String,
+    /// What colours the nodes: 0 cost %, 1 est. rows, 2 actual rows, 3 elapsed ms, 4 logical reads.
+    pub metric: usize,
+    /// Operator tree as indented text instead of the graph.
+    pub text_view: bool,
 }
 
 impl PlanView {
@@ -511,6 +517,8 @@ impl PlanView {
             show_top_ops: true,
             top_ops_sort: (2, true),
             find: String::new(),
+            metric: 0,
+            text_view: false,
         }
     }
 }
@@ -538,6 +546,8 @@ pub struct GridState {
     pub viewer_record: bool,
     /// Status-bar aggregates of the selection, cached by (selection, view generation, row count).
     pub summary: Option<(Selection, u64, usize, cobalt_results::summary::Summary)>,
+    /// Totals row (context menu → Totals row).
+    pub totals: Option<TotalsRow>,
 }
 
 impl Default for GridState {
@@ -560,6 +570,7 @@ impl Default for GridState {
             drag_select: false,
             viewer_record: false,
             summary: None,
+            totals: None,
         }
     }
 }
@@ -623,11 +634,50 @@ pub struct FilterPopup {
     pub condition_value2: String,
 }
 
+#[derive(Default)]
 pub struct GridFind {
     pub text: String,
     pub matches: Vec<(usize, usize)>,
     pub current: usize,
     pub generation: u64,
+    pub case_sensitive: bool,
+    pub use_regex: bool,
+    pub whole_word: bool,
+    /// A regex that did not compile.
+    pub error: Option<String>,
+}
+
+/// The aggregate shown in the grid's totals row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TotalKind {
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Count,
+    Distinct,
+}
+
+impl TotalKind {
+    pub const ALL: [TotalKind; 6] = [TotalKind::Sum, TotalKind::Avg, TotalKind::Min, TotalKind::Max, TotalKind::Count, TotalKind::Distinct];
+    pub fn label(&self) -> &'static str {
+        match self {
+            TotalKind::Sum => "Sum",
+            TotalKind::Avg => "Avg",
+            TotalKind::Min => "Min",
+            TotalKind::Max => "Max",
+            TotalKind::Count => "Count",
+            TotalKind::Distinct => "Distinct",
+        }
+    }
+}
+
+/// A sticky row under the headers with one aggregate per column.
+#[derive(Clone, Debug)]
+pub struct TotalsRow {
+    pub kind: TotalKind,
+    pub generation: u64,
+    pub values: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -639,11 +689,23 @@ pub enum SidebarView {
     Servers,
     History,
     Fabric,
+    Files,
+}
+
+/// The Files sidebar: a remembered folder of query files.
+#[derive(Default)]
+pub struct FilesState {
+    pub root: Option<PathBuf>,
+    pub expanded: HashSet<PathBuf>,
+    /// Directory listings, cleared by Refresh.
+    pub cache: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
+    pub filter: String,
 }
 
 pub struct AppState {
     pub library: Library,
     pub fabric: crate::fabric::FabricState,
+    pub files: FilesState,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
     pub next_untitled: usize,
@@ -688,6 +750,7 @@ pub enum SettingsPatch {
     LastExportFormat(String),
     Theme(ThemeChoice),
     UiScale(f32),
+    ShowWelcome(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -770,6 +833,8 @@ pub struct ConnectionDialog {
     pub account_hint: String,
     pub sp_client_id: String,
     pub sp_secret: String,
+    /// Service principal certificate (.pem) path; empty = use the secret.
+    pub sp_cert: String,
     pub port_text: String,
     pub show_advanced: bool,
     /// "From connection string" box: pasted text, applied on demand.
@@ -871,6 +936,7 @@ impl AppState {
             sidebar_visible: true,
             sidebar_view: SidebarView::Servers,
             fabric: Default::default(),
+            files: FilesState::default(),
             sidebar_width: 280.0,
             pending_meta: HashMap::new(),
             formatter: CellFormatter::default(),
@@ -1054,7 +1120,7 @@ impl AppState {
             Event::ResultSetStarted { tab, run, rs } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     let is_plan = cobalt_driver::is_showplan_result(&rs.columns);
-                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan });
+                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan, profile: None });
                 }
             }
             Event::ResultSetDone { tab, run, index, rows } => {

@@ -389,6 +389,22 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.checkbox(&mut opts.xact_abort, "SET XACT_ABORT ON");
                 ui.checkbox(&mut opts.statistics_io, "SET STATISTICS IO ON");
                 ui.checkbox(&mut opts.statistics_time, "SET STATISTICS TIME ON");
+                ui.add_space(6.0);
+                ui.label(RichText::new("Session options ((default) = leave the server's setting; the Settings page holds the defaults for new tabs)").size(11.0).color(theme.text_muted));
+                egui::Grid::new("exec-tri").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+                    crate::ui::settings::tri_state(ui, "ANSI_NULLS", &mut opts.ansi_nulls);
+                    crate::ui::settings::tri_state(ui, "ANSI_PADDING", &mut opts.ansi_padding);
+                    ui.end_row();
+                    crate::ui::settings::tri_state(ui, "ANSI_WARNINGS", &mut opts.ansi_warnings);
+                    crate::ui::settings::tri_state(ui, "QUOTED_IDENTIFIER", &mut opts.quoted_identifier);
+                    ui.end_row();
+                    crate::ui::settings::tri_state(ui, "CONCAT_NULL_YIELDS_NULL", &mut opts.concat_null_yields_null);
+                    crate::ui::settings::tri_state(ui, "NUMERIC_ROUNDABORT", &mut opts.numeric_roundabort);
+                    ui.end_row();
+                    crate::ui::settings::tri_state(ui, "IMPLICIT_TRANSACTIONS", &mut opts.implicit_transactions);
+                    ui.end_row();
+                });
+                crate::ui::settings::lock_and_deadlock(ui, &mut opts);
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if primary_button(ui, theme, "Apply", true).clicked() {
@@ -665,6 +681,27 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                             ui.end_row();
                             ui.label("Client secret");
                             ui.add(egui::TextEdit::singleline(&mut d.sp_secret).password(true).desired_width(300.0).hint_text(if matches!(d.profile.auth, AuthMethod::EntraServicePrincipal { secret: Some(_), .. }) { "(saved)" } else { "" }));
+                            ui.end_row();
+                            ui.label("Certificate (.pem)");
+                            ui.horizontal(|ui| {
+                                ui.add(egui::TextEdit::singleline(&mut d.sp_cert).desired_width(230.0).hint_text("optional: instead of the secret"));
+                                if ui.button("Browse…").clicked() {
+                                    if let Some(p) = rfd::FileDialog::new().add_filter("PEM", &["pem", "crt", "key"]).add_filter("All files", &["*"]).pick_file() {
+                                        d.sp_cert = p.to_string_lossy().to_string();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            ui.label("");
+                            ui.label(RichText::new("The PEM holds the certificate and its unencrypted RSA private key (as az ad sp create-for-rbac --create-cert writes it).").size(11.0).color(theme.text_muted));
+                            ui.end_row();
+                        }
+                        6 => {
+                            ui.label("Client ID");
+                            ui.add(egui::TextEdit::singleline(&mut d.sp_client_id).desired_width(300.0).hint_text("optional: a user-assigned identity"));
+                            ui.end_row();
+                            ui.label("");
+                            ui.label(RichText::new("Works on an Azure VM, VM scale set, AKS node, App Service or Functions with an identity assigned; the token comes from the instance metadata endpoint.").size(11.0).color(theme.text_muted));
                             ui.end_row();
                         }
                         _ => {}

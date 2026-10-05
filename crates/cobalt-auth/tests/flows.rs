@@ -729,6 +729,7 @@ async fn resolver_service_principal_uses_stored_secret_or_prompt() {
             tenant: "contoso.com".into(),
             client_id: "sp".into(),
             secret: Some(sref),
+            certificate: None,
         },
     );
     profile.id = id;
@@ -747,6 +748,7 @@ async fn resolver_service_principal_uses_stored_secret_or_prompt() {
         tenant: "contoso.com".into(),
         client_id: "sp".into(),
         secret: None,
+        certificate: None,
     };
     assert_eq!(
         token_of(resolver.resolve(&profile, &prompt).await.unwrap()),

@@ -2,6 +2,7 @@
 //! the fetch-more bar, the cell viewer, and the per-grid context menu.
 
 pub mod grid;
+pub mod profile;
 pub mod viewer;
 
 use crate::copy::CopyKind;
@@ -28,6 +29,10 @@ pub enum ResultsAction {
     JumpToLine(u32),
     Summarize { set: usize },
     PopOut { set: usize },
+    /// Totals row under the headers (None removes it).
+    SetTotals { set: usize, kind: Option<crate::state::TotalKind> },
+    /// Column profile window for the set.
+    Profile { set: usize },
     /// Write the set (or selection) to a temporary .xlsx and open it with the system's app.
     OpenInExcel { set: usize, selection_only: bool },
     /// Load the set (or selection) into a table on a connected tab's database.
@@ -134,6 +139,9 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         if icon_button(ui, icons::COPY, "Copy with headers (Ctrl+Shift+C)", true).clicked() {
                             actions.push(ResultsAction::Copy { set, kind: CopyKind::TsvWithHeaders });
                         }
+                        if icon_button(ui, icons::CHART_BAR, "Profile columns", true).clicked() {
+                            actions.push(ResultsAction::Profile { set });
+                        }
                         if icon_button(ui, icons::MICROSOFT_EXCEL_LOGO, "Open in Excel", true).clicked() {
                             actions.push(ResultsAction::OpenInExcel { set, selection_only: false });
                         }
@@ -197,6 +205,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             });
                         }
                         let view = &mut run.result_sets[set];
+                        // keep the totals row current when rows arrive or the view changes
+                        if let Some(t) = view.grid.totals.as_mut() {
+                            let g = view.rs.generation();
+                            if t.generation != g {
+                                t.values = profile::totals(&view.rs, t.kind);
+                                t.generation = g;
+                            }
+                        }
                         let find_h = if view.grid.find.is_some() { 28.0 } else { 0.0 };
                         if view.grid.find.is_some() {
                             find_bar(ui, view, theme, args.fmt);
@@ -284,6 +300,23 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     }
                                     if ui.button("Save selection as…").clicked() {
                                         actions.push(ResultsAction::Export { set, selection_only: true });
+                                        close = true;
+                                    }
+                                    ui.menu_button("Totals row", |ui| {
+                                        let current = view.grid.totals.as_ref().map(|t| t.kind);
+                                        if ui.selectable_label(current.is_none(), "None").clicked() {
+                                            actions.push(ResultsAction::SetTotals { set, kind: None });
+                                            ui.close();
+                                        }
+                                        for k in crate::state::TotalKind::ALL {
+                                            if ui.selectable_label(current == Some(k), k.label()).clicked() {
+                                                actions.push(ResultsAction::SetTotals { set, kind: Some(k) });
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                    if ui.button("Profile columns…").on_hover_text("Nulls, distinct values, min/max/avg, top values and distribution per column").clicked() {
+                                        actions.push(ResultsAction::Profile { set });
                                         close = true;
                                     }
                                     if ui.button("Save as table…").on_hover_text("Load these rows into a new or existing table on any connected tab's database").clicked() {
@@ -400,6 +433,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
             // drawn by the plan module via the shell (needs the parsed plan cache)
         }
     }
+    // column-profile windows (one per set that has one open)
+    for (set, view) in run.result_sets.iter_mut().enumerate() {
+        profile_window(ui.ctx(), tab.id, set, view, theme);
+    }
     actions
 }
 
@@ -409,41 +446,60 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
     let Some(find) = view.grid.find.as_mut() else { return };
     let mut close = false;
     let mut step: i32 = 0;
+    let mut recompute = false;
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(icons::MAGNIFYING_GLASS);
             let r = ui.add(egui::TextEdit::singleline(&mut find.text).hint_text("Find in results").desired_width(220.0).id(egui::Id::new(("grid-find", rs.index, std::sync::Arc::as_ptr(&rs) as usize))));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "find in results"));
             if !r.has_focus() && find.matches.is_empty() && find.text.is_empty() {
                 r.request_focus();
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                step = 1;
+                step = if ui.input(|i| i.modifiers.shift) { -1 } else { 1 };
                 r.request_focus();
             }
+            recompute |= r.changed();
+            let toggle = |ui: &mut Ui, on: &mut bool, label: &str, tip: &str, a11y: &str| {
+                let b = ui.add(egui::Button::selectable(*on, RichText::new(label).size(12.0)).small());
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y));
+                if b.on_hover_text(tip).clicked() {
+                    *on = !*on;
+                    true
+                } else {
+                    false
+                }
+            };
+            recompute |= toggle(ui, &mut find.case_sensitive, "Aa", "Match case", "find match case");
+            recompute |= toggle(ui, &mut find.whole_word, "ab", "Whole word", "find whole word");
+            recompute |= toggle(ui, &mut find.use_regex, ".*", "Regular expression", "find regex");
             let gen = rs.generation();
-            let changed = r.changed() || find.generation != gen;
-            if changed {
+            if recompute || find.generation != gen {
                 find.generation = gen;
                 find.matches.clear();
                 find.current = 0;
-                let needle = find.text.to_lowercase();
-                if !needle.is_empty() {
-                    let rows = rs.visible_count();
-                    let cols = rs.column_count();
-                    let mut budget = 200_000usize;
-                    'outer: for row in 0..rows {
-                        for col in 0..cols {
-                            if budget == 0 {
-                                break 'outer;
-                            }
-                            budget -= 1;
-                            if rs.cell_text(row, col, fmt).to_lowercase().contains(&needle) {
-                                find.matches.push((row, col));
+                find.error = None;
+                if !find.text.is_empty() {
+                    match profile::find_matcher(&find.text, find.case_sensitive, find.use_regex, find.whole_word) {
+                        Ok(is_match) => {
+                            let rows = rs.visible_count();
+                            let cols = rs.column_count();
+                            let mut budget = 200_000usize;
+                            'outer: for row in 0..rows {
+                                for col in 0..cols {
+                                    if budget == 0 {
+                                        break 'outer;
+                                    }
+                                    budget -= 1;
+                                    if is_match(&rs.cell_text(row, col, fmt)) {
+                                        find.matches.push((row, col));
+                                    }
+                                }
                             }
                         }
+                        Err(e) => find.error = Some(e),
                     }
                 }
-                step = if find.matches.is_empty() { 0 } else { 0 };
                 if !find.matches.is_empty() {
                     let (r0, c0) = find.matches[0];
                     view.grid.anchor = Some((r0, c0));
@@ -457,8 +513,14 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
             if ui.small_button(icons::CARET_DOWN).on_hover_text("Next (Enter)").clicked() {
                 step = 1;
             }
-            let label = if find.text.is_empty() { String::new() } else if find.matches.is_empty() { "No matches".into() } else { format!("{} of {}", find.current + 1, find.matches.len()) };
-            ui.label(RichText::new(label).size(12.0).color(theme.text_muted));
+            let (label, color) = match (&find.error, find.text.is_empty(), find.matches.is_empty()) {
+                (Some(e), _, _) => (e.clone(), theme.error),
+                (None, true, _) => (String::new(), theme.text_muted),
+                (None, false, true) => ("No matches".into(), theme.text_muted),
+                (None, false, false) => (format!("{} of {}", find.current + 1, find.matches.len()), theme.text_muted),
+            };
+            let l = ui.label(RichText::new(label).size(12.0).color(color));
+            l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "find status"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(icons::X).clicked() {
                     close = true;
@@ -479,6 +541,65 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
     }
     if close {
         view.grid.find = None;
+    }
+}
+
+/// The column-profile window of a result set.
+fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usize, view: &mut crate::state::ResultSetView, theme: &Theme) {
+    let Some(p) = view.profile.as_mut() else { return };
+    if !p.open {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new(format!("Column profile · result {}", set + 1))
+        .id(egui::Id::new(("profile", tab_id, set)))
+        .open(&mut open)
+        .default_width(860.0)
+        .default_height(420.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.label(RichText::new(format!("{} rows scanned{}", crate::state::fmt_count(p.rows_scanned as u64), if p.rows_scanned >= profile::SCAN_CAP { " (capped)" } else { "" })).size(11.0).color(theme.text_muted));
+            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                egui::Grid::new(("profile-grid", tab_id, set)).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
+                    for h in ["Column", "Type", "Rows", "Nulls", "Distinct", "Min", "Max", "Avg", "Top values", "Distribution"] {
+                        ui.label(RichText::new(h).small().strong().color(theme.text_muted));
+                    }
+                    ui.end_row();
+                    for c in &p.columns {
+                        let s = &c.summary;
+                        ui.label(RichText::new(&c.name).monospace());
+                        ui.label(RichText::new(&c.type_label).monospace().color(theme.text_muted));
+                        ui.label(crate::state::fmt_count(s.count as u64));
+                        let pct = if s.count > 0 { 100.0 * s.nulls as f64 / s.count as f64 } else { 0.0 };
+                        ui.label(RichText::new(format!("{} ({pct:.0}%)", crate::state::fmt_count(s.nulls as u64))).color(if s.nulls > 0 { theme.warning } else { theme.text }));
+                        ui.label(crate::state::fmt_count(s.distinct as u64));
+                        ui.label(s.min.map(profile::fmt_num).unwrap_or_default());
+                        ui.label(s.max.map(profile::fmt_num).unwrap_or_default());
+                        ui.label(s.avg.map(profile::fmt_num).unwrap_or_default());
+                        let top: Vec<String> = c.top.iter().map(|(v, n)| format!("{} ×{}", if v.chars().count() > 24 { format!("{}…", v.chars().take(24).collect::<String>()) } else { v.to_string() }, n)).collect();
+                        ui.label(RichText::new(top.join("  ")).size(11.0));
+                        if c.histogram.is_empty() {
+                            ui.label("");
+                        } else {
+                            let (rect, r) = ui.allocate_exact_size(Vec2::new(150.0, 26.0), egui::Sense::hover());
+                            let max = c.histogram.iter().copied().max().unwrap_or(1).max(1) as f32;
+                            let w = rect.width() / c.histogram.len() as f32;
+                            for (i, n) in c.histogram.iter().enumerate() {
+                                let h = (rect.height() - 2.0) * (*n as f32 / max);
+                                let bar = egui::Rect::from_min_max(egui::pos2(rect.left() + i as f32 * w + 1.0, rect.bottom() - h), egui::pos2(rect.left() + (i + 1) as f32 * w - 1.0, rect.bottom()));
+                                ui.painter().rect_filled(bar, 1.0, theme.accent);
+                            }
+                            if let Some((lo, hi)) = c.hist_range {
+                                r.on_hover_text(format!("{} … {}\n{} bins; tallest {}", profile::fmt_num(lo), profile::fmt_num(hi), c.histogram.len(), crate::state::fmt_count(max as u64)));
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+            });
+        });
+    if !open {
+        p.open = false;
     }
 }
 

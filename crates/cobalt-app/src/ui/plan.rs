@@ -141,6 +141,13 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 ui.separator();
                 ui.add(egui::TextEdit::singleline(&mut pv.find).hint_text(format!("{} Find node", icons::MAGNIFYING_GLASS)).desired_width(160.0));
                 ui.separator();
+                egui::ComboBox::from_id_salt("plan-metric").width(130.0).selected_text(METRICS[pv.metric.min(METRICS.len() - 1)]).show_ui(ui, |ui| {
+                    for (i, m) in METRICS.iter().enumerate() {
+                        ui.selectable_value(&mut pv.metric, i, *m);
+                    }
+                });
+                ui.toggle_value(&mut pv.text_view, format!("{} Tree", icons::TEXT_INDENT)).on_hover_text("The operator tree as indented text");
+                ui.separator();
                 if icon_button(ui, icons::FLOPPY_DISK, "Save plan as .sqlplan", true).clicked() {
                     save_xml = Some(pv.xml.clone());
                 }
@@ -208,7 +215,11 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
         let props_w = if pv.show_properties { 320.0f32.min(avail.width() * 0.4) } else { 0.0 };
         let top_h = if pv.show_top_ops { 180.0f32.min(avail.height() * 0.4) } else { 0.0 };
         let canvas_rect = Rect::from_min_size(avail.min, Vec2::new(avail.width() - props_w, avail.height() - top_h));
-        canvas(ui, canvas_rect, pv, stmt, &layout, theme, settings);
+        if pv.text_view {
+            tree_text(ui, canvas_rect, pv, stmt, theme);
+        } else {
+            canvas(ui, canvas_rect, pv, stmt, &layout, theme, settings);
+        }
         if pv.show_properties {
             let r = Rect::from_min_max(Pos2::new(canvas_rect.right(), avail.top()), Pos2::new(avail.right(), canvas_rect.bottom()));
             let mut pui = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -266,6 +277,8 @@ fn canvas(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, layout: 
     let to_screen = |x: f32, y: f32| Pos2::new(origin.x + x * z, origin.y + y * z);
     let find = pv.find.trim().to_lowercase();
     let matches: Vec<usize> = if find.is_empty() { vec![] } else { stmt.find_nodes(&find) };
+    let metric = pv.metric;
+    let max_metric = (0..stmt.nodes.len()).map(|i| node_metric(stmt, i, metric)).fold(0.0f64, f64::max).max(1e-9);
 
     // edges
     for e in &layout.edges {
@@ -297,7 +310,7 @@ fn canvas(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, layout: 
         if !rect.intersects(nrect) {
             continue;
         }
-        let cost_t = (node.cost_pct / 100.0) as f32;
+        let cost_t = if metric == 0 { (node.cost_pct / 100.0) as f32 } else { (node_metric(stmt, *ni, metric) / max_metric) as f32 };
         let bg = theme.cost_color(cost_t.powf(0.6));
         let selected = pv.selected_node == Some(*ni);
         let is_match = matches.contains(ni);
@@ -573,4 +586,58 @@ pub fn metric_label(m: Metric) -> &'static str {
         Metric::ActualCpu => "Actual CPU",
         Metric::RowsRead => "Rows read",
     }
+}
+
+/// Node colouring choices ("Highlight by").
+const METRICS: &[&str] = &["Cost %", "Est. rows", "Actual rows", "Elapsed ms", "Logical reads"];
+
+fn node_metric(stmt: &Statement, i: usize, metric: usize) -> f64 {
+    let n = &stmt.nodes[i];
+    match metric {
+        0 => n.cost_pct,
+        1 => n.est_rows,
+        2 => n.actual.as_ref().map(|a| a.rows as f64).unwrap_or(0.0),
+        3 => n.actual.as_ref().map(|a| a.elapsed_ms as f64).unwrap_or(0.0),
+        _ => n.actual.as_ref().and_then(|a| a.logical_reads).unwrap_or(0) as f64,
+    }
+}
+
+/// The operator tree as indented text (SET SHOWPLAN_TEXT style), one selectable line per node
+/// with the key numbers; find matches are highlighted and clicking selects the node.
+fn tree_text(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, theme: &Theme) {
+    let find = pv.find.trim().to_lowercase();
+    let matches: Vec<usize> = if find.is_empty() { vec![] } else { stmt.find_nodes(&find) };
+    let metric = pv.metric;
+    let max_metric = (0..stmt.nodes.len()).map(|i| node_metric(stmt, i, metric)).fold(0.0f64, f64::max).max(1e-9);
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    child.set_clip_rect(rect);
+    child.painter().rect_filled(rect, 0.0, theme.bg_editor);
+    egui::ScrollArea::both().id_salt(("plan-text", stmt.id)).auto_shrink([false, false]).show(&mut child, |ui| {
+        ui.add_space(4.0);
+        // depth-first from the roots, children in plan order
+        let roots: Vec<usize> = stmt.nodes.iter().filter(|n| n.parent.is_none()).map(|n| n.index).collect();
+        let mut stack: Vec<(usize, usize)> = roots.into_iter().rev().map(|i| (i, 0)).collect();
+        while let Some((i, depth)) = stack.pop() {
+            let n = &stmt.nodes[i];
+            for &c in n.children.iter().rev() {
+                stack.push((c, depth + 1));
+            }
+            let object = n.object.as_ref().map(|o| format!(" [{}{}]", o.table_name(), o.index.as_ref().map(|i| format!(".{i}")).unwrap_or_default())).unwrap_or_default();
+            let logical = if n.logical_op.is_empty() || n.logical_op == n.physical_op { String::new() } else { format!(" ({})", n.logical_op) };
+            let actual = n.actual.as_ref().map(|a| format!("  act {}  {} ms", cobalt_plan::fmt_thousands(a.rows as f64), a.elapsed_ms)).unwrap_or_default();
+            let reads = n.actual.as_ref().and_then(|a| a.logical_reads).map(|r| format!("  reads {}", cobalt_plan::fmt_thousands(r as f64))).unwrap_or_default();
+            let line = format!("{}{}{logical}{object}    cost {:.0}%  est {}{actual}{reads}", "    ".repeat(depth), n.physical_op, n.cost_pct, cobalt_plan::fmt_thousands(n.est_rows));
+            let selected = pv.selected_node == Some(i);
+            let t = (node_metric(stmt, i, metric) / max_metric).clamp(0.0, 1.0) as f32;
+            let color = if matches.contains(&i) { theme.warning } else if t > 0.5 { theme.error } else if t > 0.2 { theme.warning } else { theme.text };
+            let r = ui.add(egui::Button::selectable(selected, RichText::new(line).family(egui::FontFamily::Monospace).size(12.0).color(color)).frame(false));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("plan node {}", n.physical_op)));
+            if r.clicked() {
+                pv.selected_node = Some(i);
+            }
+            if let Some(w) = n.warnings.first() {
+                r.on_hover_text(format!("{:?}", w));
+            }
+        }
+    });
 }

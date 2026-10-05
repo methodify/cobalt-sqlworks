@@ -6,8 +6,9 @@
 //! - Azure CLI, Windows integrated, service principal: straight through.
 
 use crate::entra::{
-    azure_cli_token, client_secret_token, device_code_login, interactive_login, refresh,
-    CancelToken, DeviceCodePrompt, EntraAccount, EntraConfig, TokenSet,
+    azure_cli_token, client_certificate_token, client_secret_token, device_code_login,
+    interactive_login, managed_identity_token, refresh, CancelToken, DeviceCodePrompt,
+    EntraAccount, EntraConfig, TokenSet,
 };
 use crate::secrets::SecretStore;
 use crate::{AuthError, Result};
@@ -137,11 +138,27 @@ impl CredentialResolver {
                 })
             }
             AuthMethod::WindowsIntegrated => Ok(ResolvedCredentials::WindowsIntegrated),
+            AuthMethod::ManagedIdentity { client_id } => {
+                let t = managed_identity_token(SQL_RESOURCE, client_id.as_deref()).await?;
+                Ok(ResolvedCredentials::EntraToken {
+                    token: t.token,
+                    expires_at: Some(t.expires_at),
+                })
+            }
             AuthMethod::EntraServicePrincipal {
                 tenant,
                 client_id,
                 secret,
+                certificate,
             } => {
+                if let Some(path) = certificate.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                    let cfg = self.config();
+                    let t = client_certificate_token(&cfg, tenant, client_id, std::path::Path::new(path)).await?;
+                    return Ok(ResolvedCredentials::EntraToken {
+                        token: t.token,
+                        expires_at: Some(t.expires_at),
+                    });
+                }
                 let stored = match secret {
                     Some(r) => self.secrets.get(r)?,
                     None => None,

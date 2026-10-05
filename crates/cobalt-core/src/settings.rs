@@ -13,6 +13,8 @@ pub struct Settings {
     pub history: HistorySettings,
     pub updates: UpdateSettings,
     pub advanced: AdvancedSettings,
+    /// Keyboard shortcut overrides: command id → "Ctrl+Shift+P" (empty = unbound).
+    pub keybindings: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -32,10 +34,14 @@ pub struct Appearance {
     pub editor_font_size: f32,
     pub grid_font_size: f32,
     pub ui_font_size: f32,
+    /// Append the connection's SPID to tab titles.
+    pub spid_in_tab_title: bool,
+    /// Show the getting-started pane next to a fresh, empty query tab.
+    pub show_welcome: bool,
 }
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0 }
+        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0, spid_in_tab_title: false, show_welcome: true }
     }
 }
 
@@ -51,6 +57,10 @@ pub struct EditorSettings {
     pub completion_on_type: bool,
     pub uppercase_keywords_on_complete: bool,
     pub auto_save: bool,
+    /// Format document: keyword case, indent width, blank lines between statements.
+    pub format_uppercase_keywords: bool,
+    pub format_indent: u8,
+    pub format_blank_lines: u8,
 }
 impl Default for EditorSettings {
     fn default() -> Self {
@@ -63,6 +73,9 @@ impl Default for EditorSettings {
             completion_enabled: true,
             completion_on_type: true,
             uppercase_keywords_on_complete: true,
+            format_uppercase_keywords: true,
+            format_indent: 4,
+            format_blank_lines: 1,
             auto_save: false,
         }
     }
@@ -76,10 +89,34 @@ pub struct ExecutionSettings {
     pub select_top_n: u32,
     pub stop_on_error: bool,
     pub arithabort: bool,
+    /// Session SET defaults for every new tab (each tab can override in Execution options).
+    pub session: crate::ExecOptions,
+    /// Keyboard shortcuts that run a procedure on the selected text (SSMS's Alt+F1 = sp_help).
+    pub query_shortcuts: Vec<QueryShortcut>,
 }
 impl Default for ExecutionSettings {
     fn default() -> Self {
-        Self { row_cap: 10_000, command_timeout_secs: 0, select_top_n: 1000, stop_on_error: true, arithabort: true }
+        Self { row_cap: 10_000, command_timeout_secs: 0, select_top_n: 1000, stop_on_error: true, arithabort: true, session: crate::ExecOptions::default(), query_shortcuts: QueryShortcut::defaults() }
+    }
+}
+
+/// A key combination that runs `sql` with `{sel}` replaced by the editor's selection (or the word
+/// at the caret), single quotes doubled.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct QueryShortcut {
+    /// e.g. "Alt+F1", "Ctrl+1".
+    pub keys: String,
+    pub sql: String,
+}
+impl QueryShortcut {
+    pub fn defaults() -> Vec<QueryShortcut> {
+        vec![
+            QueryShortcut { keys: "Alt+F1".into(), sql: "EXEC sp_help N'{sel}'".into() },
+            QueryShortcut { keys: "Ctrl+1".into(), sql: "EXEC sp_who".into() },
+            QueryShortcut { keys: "Ctrl+2".into(), sql: "EXEC sp_lock".into() },
+            QueryShortcut { keys: "Ctrl+3".into(), sql: "EXEC sp_helptext N'{sel}'".into() },
+        ]
     }
 }
 

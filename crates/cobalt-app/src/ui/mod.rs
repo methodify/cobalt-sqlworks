@@ -1,6 +1,7 @@
 pub mod dialogs;
 pub mod editor;
 pub mod fabric;
+pub mod files;
 pub mod history;
 pub mod palette;
 pub mod plan;

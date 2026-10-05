@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+The remaining V1.x backlog, plus two V2 items that fit:
+
+- **Results**: the find bar gained *match case*, *whole word* and *regular expression* toggles, a
+  live match count, Shift+Enter for the previous match, and every match is highlighted in the
+  grid. A **totals row** (grid context menu → Totals row: Sum, Avg, Min, Max, Count or Distinct)
+  sits under the headers and follows filters and new rows. **Profile columns** (toolbar, context
+  menu, Results menu) opens a window with nulls, distinct, min/max/avg, top values and a
+  distribution bar per column.
+- **Editor**: drag a table, view or procedure from the Servers tree into the editor to insert its
+  bracketed name at the drop point. **Format document** now follows Settings → Editor (keyword
+  case, indent, blank lines between statements).
+- **Execution**: the full session SET surface — ANSI_NULLS, ANSI_PADDING, ANSI_WARNINGS,
+  QUOTED_IDENTIFIER, CONCAT_NULL_YIELDS_NULL, NUMERIC_ROUNDABORT, IMPLICIT_TRANSACTIONS,
+  LOCK_TIMEOUT and DEADLOCK_PRIORITY — as tri-state options per tab (Query → Execution options)
+  with defaults in Settings; "(default)" leaves the server's setting alone.
+- **Query shortcuts** (Settings → Query shortcuts): Alt+F1 runs `sp_help` on the selection or the
+  word at the caret, Ctrl+1 `sp_who`, Ctrl+2 `sp_lock`, Ctrl+3 `sp_helptext`; add your own with
+  `{sel}` as the placeholder.
+- **Editable keyboard shortcuts** (Settings → Keyboard shortcuts): every command's binding can be
+  changed or cleared; invalid combinations are flagged, Reset restores the default.
+- **Files sidebar** (left rail, View → Show Files): open a folder of .sql files and browse it as a
+  tree; click opens, right-click reveals in the file manager or creates a new file; the folder is
+  remembered.
+- **Getting-started pane** beside a fresh empty query tab: connect, open, import, Fabric, recent
+  connections, tips; hide it from the pane or Settings → Appearance; Help → Welcome brings it
+  back. Optional **SPID in tab titles** (Settings → Appearance).
+- **Plan viewer**: a *Highlight by* choice colours operators by cost, estimated rows, actual rows,
+  elapsed time or logical reads, and *Tree* shows the operator tree as indented text with the key
+  numbers (click selects the node; Find node highlights there too).
+- **Authentication**: Entra service principals can use a **certificate** (a PEM with the
+  certificate and its unencrypted RSA key; the client assertion is signed locally) instead of a
+  secret, and a new **Managed identity** method takes a token from the Azure instance metadata
+  service or the App Service identity endpoint (system- or user-assigned). Connection strings with
+  `Authentication=Active Directory Managed Identity` map to it. Neither could be exercised against
+  a live tenant from the dev box; the assertion builder and PEM parser are unit-tested.
+- Dev: agent verbs `grid {totals|profile|find|find_state}`, `files_root`, `plan_view`.
+
 ## 0.5.0 — 2026-10-01
 
 - **Save results as table** (grid context menu, results toolbar, Results menu): load a result set
