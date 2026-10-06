@@ -49,7 +49,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             // run through the normal path: binding resolution, OneLake token, start
             if let Some(nb) = f.state.tabs[i].notebook.as_deref_mut() {
                 if nb.queue.is_empty() {
-                    nb.queue.push_back(String::new()); // a no-op marker so pump starts the session
+                    nb.queue.push_back(QueuedCell { id: String::new(), text: None }); // a no-op marker so pump starts the session
                 }
             }
             let tab = f.state.tabs[i].id;
@@ -152,6 +152,8 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 ui.separator();
                 item(ui, &mut cmds, Command::RunAllCells);
                 item(ui, &mut cmds, Command::RunCellsAbove);
+                item(ui, &mut cmds, Command::RunCellsBelow);
+                item(ui, &mut cmds, Command::RunCellSelection);
                 item(ui, &mut cmds, Command::KernelRestart);
                 item(ui, &mut cmds, Command::KernelStop);
                 item(ui, &mut cmds, Command::KernelLog);
@@ -1227,6 +1229,22 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             if let Some(i) = idx {
                 if let Some(sel) = state.tabs[i].notebook.as_deref().map(|nb| nb.selected) {
                     crate::notebook::run_cells(state, cx, i, (0..sel).collect());
+                }
+            }
+        }
+        Command::RunCellsBelow => {
+            if let Some(i) = idx {
+                if let Some((sel, n)) = state.tabs[i].notebook.as_deref().map(|nb| (nb.selected, nb.cells.len())) {
+                    crate::notebook::run_cells(state, cx, i, (sel..n).collect());
+                }
+            }
+        }
+        Command::RunCellSelection => {
+            if let Some(i) = idx {
+                match state.tabs[i].notebook.as_deref().map(|nb| nb.selected) {
+                    Some(sel) => crate::notebook::run_selection(state, cx, i, sel),
+                    // in a query tab: the selection, as F5 does
+                    None => ops::run(state, cx, i, RunMode::Selection),
                 }
             }
         }

@@ -312,6 +312,13 @@ pub struct NotebookLoading {
     pub failed: bool,
 }
 
+/// A queued run: a cell, optionally only a selected span of it (Ctrl+Shift+Enter).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueuedCell {
+    pub id: String,
+    pub text: Option<String>,
+}
+
 pub struct NotebookState {
     pub nb: cobalt_notebook::Notebook,
     pub cells: Vec<CellState>,
@@ -321,8 +328,8 @@ pub struct NotebookState {
     pub loading: Option<NotebookLoading>,
     /// The current cell (keyboard target, highlighted).
     pub selected: usize,
-    /// Cell ids waiting to run, in order; one runs at a time per tab.
-    pub queue: std::collections::VecDeque<String>,
+    /// Cells waiting to run, in order; one runs at a time per tab.
+    pub queue: std::collections::VecDeque<QueuedCell>,
     /// Set by edits, runs and structure changes; cleared by save.
     pub dirty: bool,
     /// Next `execution_count`.
@@ -369,6 +376,13 @@ impl NotebookState {
     }
     pub fn cell_index(&self, id: &str) -> Option<usize> {
         self.cells.iter().position(|c| c.id == id)
+    }
+    pub fn is_queued(&self, id: &str) -> bool {
+        self.queue.iter().any(|q| q.id == id)
+    }
+    /// Take a cell out of the queue (a run that has not started yet).
+    pub fn dequeue(&mut self, id: &str) {
+        self.queue.retain(|q| q.id != id);
     }
     pub fn language_of(&self, i: usize) -> cobalt_notebook::CellLanguage {
         self.nb.cell_language(&self.nb.cells[i])

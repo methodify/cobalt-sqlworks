@@ -20,6 +20,8 @@ use egui_phosphor::regular as icons;
 
 enum NbAction {
     Run(Vec<usize>),
+    RunSelection(usize),
+    Dequeue(usize),
     RunAndAdvance(usize),
     RunAndInsert(usize),
     Insert { at: usize, kind: CellKind },
@@ -394,7 +396,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             let cell_id = nb.cells[i].id.clone();
             let exec_count = nb.nb.cells[i].execution_count;
             let is_live = nb.cells[i].run.as_ref().map(|r| r.is_live()).unwrap_or(false);
-            let queued = nb.queue.contains(&cell_id);
+            let queued = nb.is_queued(&cell_id);
+            let has_selection = nb.cells[i].editor.cursors.has_selection();
             let frame_id = egui::Id::new(("nbcell-frame", tab_id, cell_id.as_str()));
             let hovered_before: bool = ui.memory(|m| m.data.get_temp(frame_id)).unwrap_or(false);
             let stroke = if is_selected { egui::Stroke::new(1.0, theme.accent) } else if hovered_before { egui::Stroke::new(1.0, theme.border_strong) } else { egui::Stroke::new(1.0, theme.border) };
@@ -406,13 +409,60 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         ui.add_space(2.0);
                         if cell_kind == CellKind::Code {
                             let label = if is_live { format!("[{}]", icons::CIRCLE_NOTCH) } else if queued { "[…]".to_string() } else { exec_count.map(|c| format!("[{c}]")).unwrap_or_else(|| "[ ]".into()) };
-                            let color = if is_live { theme.accent } else { theme.text_faint };
+                            let color = if is_live { theme.accent } else if queued { theme.warning } else { theme.text_faint };
                             ui.label(RichText::new(label).monospace().size(11.0).color(color));
-                            let btn = ui.add_enabled(!is_live, egui::Button::new(RichText::new(if is_live { icons::STOP } else { icons::PLAY }).size(13.0)).frame(false));
-                            btn.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("run cell {}", i + 1)));
-                            if btn.on_hover_text("Run this cell").clicked() {
-                                actions.push(NbAction::Run(vec![i]));
-                            }
+                            // the run button: play, or "queued — click to cancel", or stop while running
+                            let (icon, tip, a11y, icon_color) = if is_live {
+                                (icons::STOP, "Stop", format!("stop cell {}", i + 1), theme.error)
+                            } else if queued {
+                                (icons::HOURGLASS, "Queued — click to cancel", format!("dequeue cell {}", i + 1), theme.warning)
+                            } else {
+                                (icons::PLAY, "Run this cell (Ctrl+Enter) · Ctrl+Shift+Enter runs the selected code", format!("run cell {}", i + 1), theme.text)
+                            };
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 0.0;
+                                let btn = ui.add(egui::Button::new(RichText::new(icon).size(13.0).color(icon_color)).frame(false));
+                                btn.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.clone()));
+                                if btn.on_hover_text(tip).clicked() {
+                                    if is_live {
+                                        actions.push(NbAction::Cancel);
+                                    } else if queued {
+                                        actions.push(NbAction::Dequeue(i));
+                                    } else {
+                                        actions.push(NbAction::Run(vec![i]));
+                                    }
+                                }
+                                // run options for this cell
+                                let more = ui.add(egui::Button::new(RichText::new(icons::CARET_DOWN).size(10.0).color(theme.text_faint)).frame(false).min_size(Vec2::new(12.0, 18.0)));
+                                more.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("run options cell {}", i + 1)));
+                                egui::Popup::menu(&more).id(more.id.with("run-menu")).show(|ui| {
+                                    ui.set_min_width(220.0);
+                                    if ui.add_enabled(!is_live, egui::Button::new("Run cell")).clicked() {
+                                        actions.push(NbAction::Run(vec![i]));
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(has_selection && !is_live, egui::Button::new("Run selected code")).on_hover_text("Ctrl+Shift+Enter").clicked() {
+                                        actions.push(NbAction::RunSelection(i));
+                                        ui.close();
+                                    }
+                                    ui.separator();
+                                    if ui.add_enabled(i > 0, egui::Button::new("Run all above this cell")).clicked() {
+                                        actions.push(NbAction::Run((0..i).collect()));
+                                        ui.close();
+                                    }
+                                    if ui.button("Run this cell and all below").clicked() {
+                                        actions.push(NbAction::Run((i..n).collect()));
+                                        ui.close();
+                                    }
+                                    if queued {
+                                        ui.separator();
+                                        if ui.button("Cancel queued run").clicked() {
+                                            actions.push(NbAction::Dequeue(i));
+                                            ui.close();
+                                        }
+                                    }
+                                });
+                            });
                         } else {
                             ui.label(RichText::new(icons::TEXT_AA).size(13.0).color(theme.text_faint)).on_hover_text("Markdown cell — double-click to edit");
                         }
@@ -845,6 +895,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     for a in actions {
         match a {
             NbAction::Run(cells) => nbops::run_cells(f.state, cx, idx, cells),
+            NbAction::RunSelection(i) => nbops::run_selection(f.state, cx, idx, i),
+            NbAction::Dequeue(i) => nbops::dequeue(f.state, idx, i),
             NbAction::RunAndAdvance(i) => {
                 let nb = f.state.tabs[idx].notebook.as_deref_mut().unwrap();
                 let is_md = nb.nb.cells[i].kind == CellKind::Markdown;

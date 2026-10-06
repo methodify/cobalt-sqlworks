@@ -2,6 +2,16 @@
 
 ## Unreleased — 0.7.3
 
+- **Cell run queue, visible and cancellable.** Running several cells (Run all, Run cells above,
+  Shift+Enter in a row) queues them in notebook order; a waiting cell shows an hourglass in place
+  of its play button, and clicking it (or "Cancel queued run" in the cell's menu) takes the cell
+  back to inert. A running cell's button is Stop.
+- **Per-cell run menu** (the small chevron under the play button): Run cell, Run selected code,
+  Run all above this cell, Run this cell and all below.
+- **Ctrl+Shift+Enter runs the selected code** in the focused cell (the whole cell when nothing is
+  selected); the cell's source is untouched and its outputs show the selection's result. Ctrl+Enter
+  runs the focused cell as before. In a query tab Ctrl+Shift+Enter runs the selection.
+  Agent: `notebook {action: dequeue, index}`, `notebook {action: run_selection, index?, selection?}`.
 - **PySpark cells are highlighted as Python**, not T-SQL: `#` comments (an apostrophe in one no
   longer opens a string that swallows the rest of the cell), string prefixes and triple quotes,
   numbers, keywords, common builtins (`spark`, `display`, `F`, `T`…), decorators and `%magics`.

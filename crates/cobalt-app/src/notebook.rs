@@ -530,13 +530,48 @@ pub fn run_cells(state: &mut AppState, cx: &Ctx, idx: usize, cells: Vec<usize>) 
                 continue;
             }
             let id = c.id.clone();
-            if !nb.queue.contains(&id) {
-                nb.queue.push_back(id);
+            if !nb.is_queued(&id) {
+                nb.queue.push_back(QueuedCell { id, text: None });
             }
         }
     }
     let tab = t.id;
     pump(state, cx, tab, false);
+}
+
+/// Run only the selected text of a cell (Ctrl+Shift+Enter); the whole cell when nothing is
+/// selected. The cell's source is left alone; its outputs show the selection's result.
+pub fn run_selection(state: &mut AppState, cx: &Ctx, idx: usize, cell: usize) {
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    let Some(nb) = t.notebook.as_deref_mut() else { return };
+    let Some(cs) = nb.cells.get(cell) else { return };
+    if nb.nb.cells[cell].kind != CellKind::Code {
+        return;
+    }
+    let text = &nb.nb.cells[cell].source;
+    let sels: Vec<_> = cs.editor.cursors.sels.iter().filter(|s| !s.is_empty()).collect();
+    let selected: Option<String> = if sels.is_empty() {
+        None
+    } else {
+        let parts: Vec<String> = sels.iter().map(|s| text.chars().skip(s.min()).take(s.max() - s.min()).collect()).collect();
+        Some(parts.join("\n"))
+    };
+    let id = cs.id.clone();
+    if !nb.is_queued(&id) {
+        nb.queue.push_back(QueuedCell { id, text: selected });
+    }
+    let tab = t.id;
+    pump(state, cx, tab, false);
+}
+
+/// Cancel a queued (not yet started) cell: it goes back to inert.
+pub fn dequeue(state: &mut AppState, idx: usize, cell: usize) {
+    if let Some(nb) = state.tabs.get_mut(idx).and_then(|t| t.notebook.as_deref_mut()) {
+        if let Some(cs) = nb.cells.get(cell) {
+            let id = cs.id.clone();
+            nb.dequeue(&id);
+        }
+    }
 }
 
 /// Start the next queued cell when nothing is running. After a failure the queue is dropped.
@@ -552,10 +587,10 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
         return;
     }
     // skip ids that no longer exist or are not code cells
-    let cell_idx = loop {
-        let Some(id) = nb.queue.front().cloned() else { return };
-        match nb.cell_index(&id) {
-            Some(i) if nb.nb.cells[i].kind == CellKind::Code => break i,
+    let (cell_idx, override_text) = loop {
+        let Some(q) = nb.queue.front().cloned() else { return };
+        match nb.cell_index(&q.id) {
+            Some(i) if nb.nb.cells[i].kind == CellKind::Code => break (i, q.text),
             _ => {
                 nb.queue.pop_front();
             }
@@ -579,7 +614,7 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
     }
     let lang = nb.language_of(cell_idx);
     if nb.kernel == NotebookKernel::Spark {
-        return pump_spark(state, cx, idx, cell_idx);
+        return pump_spark(state, cx, idx, cell_idx, override_text);
     }
     if lang != CellLanguage::Sql {
         nb.queue.pop_front();
@@ -588,7 +623,7 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
         return pump(state, cx, tab, false);
     }
     let (_, body) = nb.nb.cells[cell_idx].split_magic();
-    let script = body.to_string();
+    let script = override_text.clone().unwrap_or_else(|| body.to_string());
     nb.queue.pop_front();
     if script.trim().is_empty() {
         let tab = t.id;
@@ -679,7 +714,7 @@ fn py_literal(s: &str) -> String {
 }
 
 /// Run the next queued cell on the local Spark kernel (starting it when needed).
-fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
+fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, override_text: Option<String>) {
     use crate::kernel::{self, KernelState, RunReq, StartError};
     let tab = state.tabs[idx].id;
     // the kernel must be up or starting
@@ -741,10 +776,11 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
     let (magic, body) = cell.split_magic();
     let limit = cx.settings.notebooks.spark_row_limit.max(1);
     let code = match lang {
-        CellLanguage::Sql => format!("__cobalt_sql({}, {limit})", py_literal(body)),
-        CellLanguage::Python => match magic.as_deref() {
-            Some("pyspark") | Some("python") => body.to_string(),
-            _ => cell.source.clone(),
+        CellLanguage::Sql => format!("__cobalt_sql({}, {limit})", py_literal(override_text.as_deref().unwrap_or(body))),
+        CellLanguage::Python => match (&override_text, magic.as_deref()) {
+            (Some(t), _) => t.clone(),
+            (None, Some("pyspark")) | (None, Some("python")) => body.to_string(),
+            (None, _) => cell.source.clone(),
         },
         other => {
             nb.queue.pop_front();

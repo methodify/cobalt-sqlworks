@@ -63,7 +63,7 @@ impl CobaltApp {
                         "cell_kernel": if nb.kernel == crate::state::NotebookKernel::Spark { "spark" } else { "connection" },
                         "md_editing": c.md_editing,
                         "cached": c.cached,
-                        "queued": nb.queue.contains(&c.id),
+                        "queued": nb.is_queued(&c.id),
                         "run": c.run.as_ref().map(|r| json!({
                             "state": format!("{:?}", r.state).to_lowercase(),
                             "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
@@ -1007,6 +1007,25 @@ impl AgentApp for CobaltApp {
                     "cancel" => {
                         let i = idx.unwrap();
                         self.with_ctx(egui, |s, cx| crate::notebook::cancel(s, cx, i));
+                        ActionResult::ok()
+                    }
+                    "dequeue" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        crate::notebook::dequeue(&mut self.state, idx.unwrap(), ci);
+                        ActionResult::ok()
+                    }
+                    "run_selection" => {
+                        // {index?, selection?: [start_char, end_char]} — runs the cell's selected span (or sets one first)
+                        let i = idx.unwrap();
+                        let ci = arg_usize(args, "index").or_else(|| self.state.tabs[i].notebook.as_deref().map(|nb| nb.selected)).unwrap_or(0);
+                        if let Some(sel) = args.and_then(|a| a.get("selection")).and_then(|v| v.as_array()) {
+                            if let (Some(a), Some(b)) = (sel.first().and_then(|v| v.as_u64()), sel.get(1).and_then(|v| v.as_u64())) {
+                                if let Some(cs) = self.state.tabs[i].notebook.as_deref_mut().and_then(|nb| nb.cells.get_mut(ci)) {
+                                    cs.editor.cursors.set_single(crate::ui::editor::core::Sel::range(a as usize, b as usize));
+                                }
+                            }
+                        }
+                        self.with_ctx(egui, |s, cx| crate::notebook::run_selection(s, cx, i, ci));
                         ActionResult::ok()
                     }
                     "clear_outputs" => {
