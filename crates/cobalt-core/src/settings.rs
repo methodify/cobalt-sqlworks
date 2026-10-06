@@ -13,6 +13,8 @@ pub struct Settings {
     pub history: HistorySettings,
     pub updates: UpdateSettings,
     pub advanced: AdvancedSettings,
+    pub notebooks: NotebookSettings,
+    pub spark: SparkSettings,
     /// Keyboard shortcut overrides: command id → "Ctrl+Shift+P" (empty = unbound).
     pub keybindings: std::collections::BTreeMap<String, String>,
 }
@@ -268,6 +270,43 @@ pub struct UpdateSettings {
 impl Default for UpdateSettings {
     fn default() -> Self {
         Self { check_on_startup: true, skipped_version: None }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NotebookSettings {
+    /// Rows of each result set kept in the notebook file as an Arrow payload (0 = none).
+    pub max_output_rows: u64,
+    /// `sql` or `pyspark`: what New Notebook creates.
+    pub default_language: String,
+    /// Height of a result grid under a cell, in rows.
+    pub grid_rows: u32,
+}
+impl Default for NotebookSettings {
+    fn default() -> Self {
+        Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12 }
+    }
+}
+
+/// The Cobalt-managed local Spark runtime (Settings → Spark runtime).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SparkSettings {
+    /// Runtime profile: `fabric-2.0` or `fabric-1.3`.
+    pub profile: String,
+    /// `microsoft` (Microsoft Build of OpenJDK) or `temurin`.
+    pub jdk_vendor: String,
+    /// A JDK home to use instead of a managed one ("Use what I have").
+    pub java_home: Option<String>,
+    /// Spark driver memory, e.g. `4g`.
+    pub driver_memory: String,
+    /// Where the runtime lives; default is the app's local data folder.
+    pub runtime_dir: Option<String>,
+}
+impl Default for SparkSettings {
+    fn default() -> Self {
+        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None }
     }
 }
 

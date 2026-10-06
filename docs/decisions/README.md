@@ -14,3 +14,4 @@ than re-litigating.
 | [D006](D006_result_model_arrow.md) | Result model: Arrow RecordBatches, disk spill; Delta via delta-rs | 2026-09-16 |
 | [D007](D007_egui_agent.md) | egui_agent v0.3.0 integrated from first commit | 2026-09-16 |
 | [D008](D008_license.md) | License: MIT OR Apache-2.0 | 2026-09-16 |
+| [D009](D009_notebooks_and_local_spark.md) | Notebooks: .ipynb with SQL + Markdown + PySpark cells; PySpark on a Cobalt-managed local Spark (local-spark-mcp worker, no Jupyter) | 2026-10-05 |

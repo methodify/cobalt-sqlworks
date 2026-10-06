@@ -20,6 +20,8 @@ pub struct AppPaths {
     pub log_dir: PathBuf,
     /// Large scratch data (result spill files). May live on a different volume.
     pub temp_dir: PathBuf,
+    /// Big, machine-local installs (the Spark runtime). Not roamed on Windows.
+    pub local_data_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -41,6 +43,7 @@ impl AppPaths {
             cache_dir: dirs.cache_dir().to_path_buf(),
             log_dir: dirs.data_local_dir().join("logs"),
             temp_dir: std::env::temp_dir().join("cobalt-sqlworks"),
+            local_data_dir: dirs.data_local_dir().to_path_buf(),
         };
         paths.ensure_dirs()?;
         Ok(paths)
@@ -55,6 +58,7 @@ impl AppPaths {
             cache_dir: root.join("cache"),
             log_dir: root.join("logs"),
             temp_dir: root.join("temp"),
+            local_data_dir: root.join("local"),
         };
         // Best effort: tests own the tempdir, so creation is expected to succeed.
         let _ = paths.ensure_dirs();
@@ -91,6 +95,11 @@ impl AppPaths {
 
     pub fn spill_dir(&self) -> PathBuf {
         self.temp_dir.join("spill")
+    }
+
+    /// The Cobalt-managed Spark runtime (uv, Python, JDK, environments, Ivy cache).
+    pub fn runtime_dir(&self) -> PathBuf {
+        self.local_data_dir.join("spark-runtime")
     }
 
     /// Create the spill dir and delete stale `cobalt-spill-*` entries left by a previous run.

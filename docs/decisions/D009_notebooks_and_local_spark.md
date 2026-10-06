@@ -1,6 +1,6 @@
 # D009 — Notebooks with Python/PySpark cells on a Cobalt-managed local Spark
 
-**Status:** proposed, 2026-10-05 · **Supersedes part of:** D002 ("Out: Jupyter/Python kernels")
+**Status:** accepted by the founder, 2026-10-05 (reuse local-spark-mcp; Microsoft Build of OpenJDK; target `fabric-2.0`; runtime manager ships in 0.7) · **Supersedes part of:** D002 ("Out: Jupyter/Python kernels")
 
 ## Context
 
@@ -35,7 +35,14 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
   fetch; it never happens without the user asking.
 - `docs/product_design.md` §5.5 ("No Jupyter, no Python") needs rewording once this is accepted.
 
-## Open
+## Founder's answers (2026-10-05)
 
-JDK vendor (Microsoft Build of OpenJDK vs Temurin), notebooks root (= Files sidebar root?), and
-whether the runtime manager ships in 0.7 or 0.8.
+- Reuse local-spark-mcp as the engine. It does not ship a machine-readable manifest yet, so Cobalt
+  mirrors `profiles.py` in `crates/cobalt-runtime/manifest.json`; the ask (and the Arrow /
+  interrupt / PyPI / pre-warm asks) is written up in `docs/requests/local-spark-mcp.md`.
+- Microsoft Build of OpenJDK by default, Temurin as the alternative; the user may choose.
+- Target `fabric-2.0` (Spark 4.1.1, Delta 4.2.0, Java 21/17, Python 3.13; 3.11 on Windows).
+  `fabric-1.3` stays selectable. The runtime manager detects every profile the manifest lists
+  and bootstraps Python and the JDK from it.
+- The runtime manager ships in 0.7 with SQL notebooks (done: `cobalt-runtime`, Settings → Spark
+  runtime, verified end to end on the founder's machine).

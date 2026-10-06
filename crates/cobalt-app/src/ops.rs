@@ -111,6 +111,9 @@ pub fn apply_launch(state: &mut AppState, cx: &Ctx, launch: LaunchArgs) {
     for path in &launch.files {
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("sqlplan") => open_plan_file(state, cx, path.clone()),
+            Some("ipynb") => {
+                crate::notebook::open_path(state, cx, path.clone());
+            }
             _ => {
                 if let (Some(idx), true) = (opened_tab.take(), state.tabs.get(opened_tab.unwrap_or(usize::MAX)).map(|t| t.text.trim().is_empty()).unwrap_or(false)) {
                     // put the first file into the tab that -S just opened
@@ -875,14 +878,15 @@ pub fn new_query_tab(state: &mut AppState, cx: &Ctx, profile: Option<ProfileId>,
 
 pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let Some(t) = state.tabs.get(idx) else { return };
-    if t.is_dirty() && !force && !t.text.trim().is_empty() {
+    if t.is_dirty() && !force && (t.is_notebook() || !t.text.trim().is_empty()) {
         state.dialog = Dialog::ConfirmClose { tab_index: idx };
         return;
     }
-    let t = state.tabs.remove(idx);
+    let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
     // keep a restorable snapshot
-    let mut snap = TabSnapshot::new(t.id, t.title.clone(), t.text.clone());
+    let text = if t.is_notebook() { crate::notebook::document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).map(|d| d.to_ipynb()).unwrap_or_default() } else { t.text.clone() };
+    let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
     snap.database = t.conn.database().map(str::to_string);
     snap.cursor = t.editor.cursor;
@@ -919,10 +923,23 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
 
 /// Persist unsaved tab contents (hot exit). Cheap: only tabs whose text changed since the last snapshot.
 pub fn snapshot_tabs(state: &mut AppState, cx: &Ctx, force: bool) {
+    let fmt = state.formatter.clone();
+    let max_rows = cx.settings.notebooks.max_output_rows;
     for t in &mut state.tabs {
-        let h = hash_text(&t.text);
+        let text = if t.is_notebook() {
+            if !force && !t.is_dirty() && t.snapshot_hash != hash_text("") {
+                continue;
+            }
+            match crate::notebook::document(t, max_rows, &fmt) {
+                Some(doc) => doc.to_ipynb(),
+                None => continue,
+            }
+        } else {
+            t.text.clone()
+        };
+        let h = hash_text(&text);
         if force || h != t.snapshot_hash {
-            let mut snap = TabSnapshot::new(t.id, t.title.clone(), t.text.clone());
+            let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
             snap.profile_id = t.profile.as_ref().map(|p| p.id);
             snap.database = t.conn.database().map(str::to_string);
             snap.cursor = t.editor.cursor;
@@ -951,7 +968,14 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         t.file_path = snap.file_path.clone();
         t.editor.cursor = snap.cursor;
         t.snapshot_hash = hash_text(&t.text);
-        if let Some(path) = &snap.file_path {
+        let is_nb = snap.file_path.as_ref().map(|p| crate::notebook::is_notebook_path(p)).unwrap_or(false) || cobalt_notebook::Notebook::looks_like_ipynb(&t.text);
+        if is_nb && crate::notebook::restore_from_snapshot(t) {
+            // dirty unless the file on disk has the same document
+            let same = snap.file_path.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|disk| cobalt_notebook::Notebook::parse(&disk).ok()).map(|disk| t.notebook.as_ref().map(|nb| nb.nb == disk).unwrap_or(false)).unwrap_or(false);
+            if let Some(nb) = t.notebook.as_deref_mut() {
+                nb.dirty = !same;
+            }
+        } else if let Some(path) = &snap.file_path {
             if let Ok(disk) = std::fs::read_to_string(path) {
                 if disk == t.text {
                     t.mark_saved();
@@ -973,13 +997,16 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
 pub fn open_file(state: &mut AppState, cx: &Ctx, path: Option<PathBuf>) {
     let path = match path {
         Some(p) => p,
-        None => match rfd::FileDialog::new().add_filter("SQL", &["sql"]).add_filter("Execution plan", &["sqlplan"]).add_filter("All files", &["*"]).pick_file() {
+        None => match rfd::FileDialog::new().add_filter("SQL and notebooks", &["sql", "ipynb"]).add_filter("SQL", &["sql"]).add_filter("Notebook", &["ipynb", "py"]).add_filter("Execution plan", &["sqlplan"]).add_filter("All files", &["*"]).pick_file() {
             Some(p) => p,
             None => return,
         },
     };
     if path.extension().map(|e| e.eq_ignore_ascii_case("sqlplan")).unwrap_or(false) {
         open_plan_file(state, cx, path);
+        return;
+    }
+    if crate::notebook::open_path(state, cx, path.clone()) {
         return;
     }
     match std::fs::read_to_string(&path) {
@@ -1026,6 +1053,9 @@ pub fn open_plan_file(state: &mut AppState, cx: &Ctx, path: PathBuf) {
 
 pub fn save_file(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
     let Some(t) = state.tabs.get(idx) else { return };
+    if t.is_notebook() {
+        return crate::notebook::save(state, cx, idx, save_as);
+    }
     let path = match (&t.file_path, save_as) {
         (Some(p), false) => p.clone(),
         _ => {
@@ -1056,7 +1086,7 @@ pub fn save_file(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
 // Running
 // ---------------------------------------------------------------------------------------------
 
-fn read_only_violation(script: &str) -> Option<String> {
+pub fn read_only_violation(script: &str) -> Option<String> {
     let lower = script.to_ascii_lowercase();
     for kw in ["insert ", "update ", "delete ", "merge ", "drop ", "alter ", "create ", "truncate ", "exec ", "execute ", "grant ", "deny ", "revoke "] {
         if let Some(pos) = lower.find(kw) {
@@ -1073,6 +1103,18 @@ fn read_only_violation(script: &str) -> Option<String> {
 
 pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     let Some(t) = state.tabs.get_mut(idx) else { return };
+    if let Some(nb) = t.notebook.as_deref() {
+        let tab = t.id;
+        if !nb.queue.is_empty() {
+            // a (re)connect completed: carry on with the queued cells
+            return crate::notebook::pump(state, cx, tab, false);
+        }
+        let cells: Vec<usize> = match mode {
+            RunMode::All => (0..nb.cells.len()).collect(),
+            _ => vec![nb.selected],
+        };
+        return crate::notebook::run_cells(state, cx, idx, cells);
+    }
     if t.is_running() {
         return;
     }
@@ -1157,6 +1199,9 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
 }
 
 pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
+    if state.tabs.get(idx).map(|t| t.is_notebook()).unwrap_or(false) {
+        return crate::notebook::cancel(state, cx, idx);
+    }
     if let Some(t) = state.tabs.get_mut(idx) {
         if let Some(r) = &mut t.run {
             if r.is_live() {
@@ -1279,6 +1324,7 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                     }
                 }
             }
+            Followup::NotebookPump(tab, failed) => crate::notebook::pump(state, cx, tab, failed),
             Followup::ReconnectDefault(tab) => {
                 if let Some(p) = state.tab_mut(tab).and_then(|t| t.profile.clone()) {
                     begin_connect(state, cx, p, ConnectPurpose::Tab { tab, database: None });
@@ -1747,6 +1793,21 @@ pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAc
             if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("SQL", &["sql"]).set_file_name("query.sql").save_file() {
                 if !p.exists() {
                     if let Err(e) = std::fs::write(&p, "") {
+                        cx.toast(ToastKind::Error, format!("Could not create {}: {e}", p.display()));
+                        return;
+                    }
+                }
+                state.files.cache.clear();
+                open_file(state, cx, Some(p));
+            }
+        }
+        A::NewNotebook(dir) => {
+            if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("Notebook", &["ipynb"]).set_file_name("notebook.ipynb").save_file() {
+                if !p.exists() {
+                    let lang = if cx.settings.notebooks.default_language.eq_ignore_ascii_case("pyspark") { cobalt_notebook::CellLanguage::Python } else { cobalt_notebook::CellLanguage::Sql };
+                    let mut nb = cobalt_notebook::Notebook::new(lang);
+                    nb.cells.push(cobalt_notebook::Cell::code(""));
+                    if let Err(e) = std::fs::write(&p, nb.to_ipynb()) {
                         cx.toast(ToastKind::Error, format!("Could not create {}: {e}", p.display()));
                         return;
                     }

@@ -258,6 +258,67 @@ pub struct EditorTab {
     /// Open the Import Data dialog once this tab's connection is up (tree: "Import data from file…").
     pub pending_import: bool,
     pub snapshot_hash: u64,
+    /// `Some` = this tab is a notebook: cells instead of `text`, per-cell runs instead of `run`.
+    pub notebook: Option<Box<NotebookState>>,
+}
+
+/// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay
+/// parallel (same length, same order; `CellState.id == Cell.id`).
+pub struct NotebookState {
+    pub nb: cobalt_notebook::Notebook,
+    pub cells: Vec<CellState>,
+    /// The current cell (keyboard target, highlighted).
+    pub selected: usize,
+    /// Cell ids waiting to run, in order; one runs at a time per tab.
+    pub queue: std::collections::VecDeque<String>,
+    /// Set by edits, runs and structure changes; cleared by save.
+    pub dirty: bool,
+    /// Next `execution_count`.
+    pub counter: u64,
+    /// Warnings from the Git `.py` reader, shown once.
+    pub warnings: Vec<String>,
+    pub md_cache: egui_commonmark::CommonMarkCache,
+    /// The last deleted cell (Z restores it).
+    pub undo_delete: Option<(usize, cobalt_notebook::Cell)>,
+}
+
+pub struct CellState {
+    pub id: String,
+    pub editor: EditorState,
+    /// The cell's SQL run (live, or rebuilt from the file's cached outputs).
+    pub run: Option<RunView>,
+    /// Outputs from the file that are not tabular (text, errors, images), shown under the grids.
+    pub extra_outputs: Vec<cobalt_notebook::Output>,
+    /// `run` came from the file, not from this session.
+    pub cached: bool,
+    pub md_editing: bool,
+    pub outputs_collapsed: bool,
+}
+
+impl CellState {
+    pub fn new(id: String) -> Self {
+        Self { id, editor: EditorState::default(), run: None, extra_outputs: Vec::new(), cached: false, md_editing: false, outputs_collapsed: false }
+    }
+}
+
+impl NotebookState {
+    pub fn new(nb: cobalt_notebook::Notebook) -> Self {
+        let cells = nb.cells.iter().map(|c| CellState::new(c.id.clone())).collect();
+        let counter = nb.cells.iter().filter_map(|c| c.execution_count).max().unwrap_or(0);
+        Self { nb, cells, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
+    }
+    pub fn is_running(&self) -> bool {
+        !self.queue.is_empty() || self.cells.iter().any(|c| c.run.as_ref().map(|r| r.is_live()).unwrap_or(false))
+    }
+    pub fn running_cell(&self) -> Option<usize> {
+        self.cells.iter().position(|c| c.run.as_ref().map(|r| r.is_live()).unwrap_or(false))
+    }
+    pub fn cell_index(&self, id: &str) -> Option<usize> {
+        self.cells.iter().position(|c| c.id == id)
+    }
+    pub fn language_of(&self, i: usize) -> cobalt_notebook::CellLanguage {
+        self.nb.cell_language(&self.nb.cells[i])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -299,6 +360,25 @@ impl EditorTab {
             pending_export: None,
             pending_import: false,
             snapshot_hash: hash_text(""),
+            notebook: None,
+        }
+    }
+
+    pub fn is_notebook(&self) -> bool {
+        self.notebook.is_some()
+    }
+
+    /// The editor a command should act on: the selected notebook cell, or the query editor.
+    pub fn active_host(&mut self) -> crate::ui::editor::EditorHost<'_> {
+        let tab_id = self.id;
+        let EditorTab { notebook, catalog, databases, text, editor, .. } = self;
+        match notebook.as_deref_mut() {
+            Some(nb) if !nb.cells.is_empty() => {
+                let i = nb.selected.min(nb.cells.len() - 1);
+                let cell = &mut nb.cells[i];
+                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases }
+            }
+            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases },
         }
     }
 
@@ -308,16 +388,28 @@ impl EditorTab {
     }
 
     pub fn is_dirty(&self) -> bool {
-        hash_text(&self.text) != self.saved_text_hash
+        match &self.notebook {
+            Some(nb) => nb.dirty,
+            None => hash_text(&self.text) != self.saved_text_hash,
+        }
     }
     pub fn mark_saved(&mut self) {
         self.saved_text_hash = hash_text(&self.text);
+        if let Some(nb) = self.notebook.as_mut() {
+            nb.dirty = false;
+        }
     }
     pub fn is_running(&self) -> bool {
+        if let Some(nb) = &self.notebook {
+            return nb.is_running();
+        }
         self.run.as_ref().map(|r| r.state == RunViewState::Running || r.state == RunViewState::Paused || r.state == RunViewState::Cancelling).unwrap_or(false)
     }
     pub fn display_title(&self) -> String {
         let mut t = self.title.clone();
+        if self.notebook.is_some() {
+            t = format!("{} {t}", egui_phosphor::regular::NOTEBOOK);
+        }
         if self.profile.as_ref().map(|p| p.read_only_guard).unwrap_or(false) {
             t = format!("{} {t}", egui_phosphor::regular::LOCK_SIMPLE);
         }
@@ -735,7 +827,11 @@ pub struct AppState {
     /// Settings changes requested by ops/UI; applied by the app (which owns `Settings`).
     pub settings_patch: Vec<SettingsPatch>,
     pub settings_draft: Option<Settings>,
+    /// Scroll the settings window to this section when it opens.
+    pub settings_scroll_to: Option<&'static str>,
     pub theme_override: Option<ThemeChoice>,
+    /// Settings → Spark runtime: status snapshot and the running install job.
+    pub runtime: crate::runtime::RuntimeUi,
     /// Synthetic input from the agent (`press` / `type_text` verbs), injected next frame.
     pub injected_events: Vec<egui::Event>,
     /// Agent-injected pointer input, one frame per entry. Fed through eframe's `raw_input_hook`
@@ -958,6 +1054,8 @@ impl AppState {
             export_progress: None,
             settings_patch: Vec::new(),
             settings_draft: None,
+            settings_scroll_to: None,
+            runtime: Default::default(),
             theme_override: None,
             injected_events: Vec::new(),
             injected_pointer: std::collections::VecDeque::new(),
@@ -1214,6 +1312,9 @@ impl AppState {
                         }
                     }
                 }
+                if self.tab_mut(tab).map(|t| t.is_notebook()).unwrap_or(false) {
+                    out.push(Followup::NotebookPump(tab, failed || cancelled));
+                }
             }
             Event::DatabaseChanged { tab, database } => {
                 if let Some(t) = self.tab_mut(tab) {
@@ -1283,7 +1384,11 @@ impl AppState {
     }
 
     fn run_mut(&mut self, tab: TabId, run: RunId) -> Option<&mut RunView> {
-        self.tab_mut(tab).and_then(|t| t.run.as_mut()).filter(|r| r.id == run)
+        let t = self.tab_mut(tab)?;
+        if let Some(nb) = t.notebook.as_deref_mut() {
+            return nb.cells.iter_mut().find_map(|c| c.run.as_mut().filter(|r| r.id == run));
+        }
+        t.run.as_mut().filter(|r| r.id == run)
     }
 
     fn apply_metadata(&mut self, pending: PendingMeta, profile: ProfileId, result: Result<crate::session::MetadataResponse, String>) -> Vec<Followup> {
@@ -1387,6 +1492,8 @@ pub enum Followup {
     Reconnect(TabId),
     /// Reconnect the tab to its profile's default database (the remembered one is gone).
     ReconnectDefault(TabId),
+    /// A notebook cell finished: start the next queued cell (or drop the queue after a failure).
+    NotebookPump(TabId, bool),
 }
 
 /// A login rejected because the requested database does not exist (or is not visible): SQL

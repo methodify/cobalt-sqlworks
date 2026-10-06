@@ -12,6 +12,7 @@ use std::collections::HashMap;
 pub enum Command {
     // file
     NewQuery,
+    NewNotebook,
     OpenFile,
     SaveFile,
     SaveFileAs,
@@ -23,6 +24,13 @@ pub enum Command {
     ImportConnections,
     ExportConnections,
     ImportFile,
+    ExportNotebookHtml,
+    ExportNotebookMarkdown,
+    RunAllCells,
+    RunCellsAbove,
+    AddCodeCell,
+    AddMarkdownCell,
+    SparkRuntime,
     Quit,
     // connections
     NewConnection,
@@ -150,7 +158,15 @@ const NONE: Modifiers = Modifiers::NONE;
 
 pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::NewQuery, id: "file.new_query", label: "New Query", category: Category::File, default_key: sc(CTRL, Key::N) },
+    CommandInfo { cmd: Command::NewNotebook, id: "file.new_notebook", label: "New Notebook", category: Category::File, default_key: sc(CTRL_SHIFT, Key::N) },
     CommandInfo { cmd: Command::OpenFile, id: "file.open", label: "Open File…", category: Category::File, default_key: sc(CTRL, Key::O) },
+    CommandInfo { cmd: Command::ExportNotebookHtml, id: "notebook.export_html", label: "Export Notebook as HTML…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::ExportNotebookMarkdown, id: "notebook.export_markdown", label: "Export Notebook as Markdown…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::RunAllCells, id: "notebook.run_all", label: "Run All Cells", category: Category::Query, default_key: None },
+    CommandInfo { cmd: Command::RunCellsAbove, id: "notebook.run_above", label: "Run Cells Above", category: Category::Query, default_key: None },
+    CommandInfo { cmd: Command::AddCodeCell, id: "notebook.add_code", label: "Add Code Cell", category: Category::Editor, default_key: None },
+    CommandInfo { cmd: Command::AddMarkdownCell, id: "notebook.add_markdown", label: "Add Markdown Cell", category: Category::Editor, default_key: None },
+    CommandInfo { cmd: Command::SparkRuntime, id: "view.spark_runtime", label: "Spark Runtime…", category: Category::View, default_key: None },
     CommandInfo { cmd: Command::SaveFile, id: "file.save", label: "Save", category: Category::File, default_key: sc(CTRL, Key::S) },
     CommandInfo { cmd: Command::SaveFileAs, id: "file.save_as", label: "Save As…", category: Category::File, default_key: sc(CTRL_SHIFT, Key::S) },
     CommandInfo { cmd: Command::CloseTab, id: "file.close_tab", label: "Close Tab", category: Category::File, default_key: sc(CTRL, Key::W) },

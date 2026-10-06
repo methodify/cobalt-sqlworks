@@ -78,6 +78,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             };
             ui.menu_button("File", |ui| {
                 item(ui, &mut cmds, Command::NewQuery);
+                item(ui, &mut cmds, Command::NewNotebook);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
                 ui.separator();
@@ -92,6 +93,9 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ExportConnections);
                 ui.separator();
                 item(ui, &mut cmds, Command::ImportFile);
+                ui.separator();
+                item(ui, &mut cmds, Command::ExportNotebookHtml);
+                item(ui, &mut cmds, Command::ExportNotebookMarkdown);
                 ui.separator();
                 item(ui, &mut cmds, Command::Quit);
             });
@@ -291,6 +295,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let mut activate: Option<usize> = None;
     let mut close: Option<usize> = None;
     let mut new_tab = false;
+    let mut new_notebook = false;
     let mut rename: Option<usize> = None;
     let mut pin: Option<usize> = None;
     let mut close_others: Option<usize> = None;
@@ -379,7 +384,17 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.painter().rect_filled(rect.shrink(4.0), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::PLUS, egui::FontId::proportional(16.0), theme.text_muted);
-                if resp.on_hover_text("New query (Ctrl+N)").clicked() {
+                resp.context_menu(|ui| {
+                    if ui.button("New query").clicked() {
+                        new_tab = true;
+                        ui.close();
+                    }
+                    if ui.button("New notebook").clicked() {
+                        new_notebook = true;
+                        ui.close();
+                    }
+                });
+                if resp.on_hover_text("New query (Ctrl+N) · right-click for a notebook").clicked() {
                     new_tab = true;
                 }
             });
@@ -411,6 +426,9 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_tab {
         dispatch(f, Command::NewQuery);
+    }
+    if new_notebook {
+        dispatch(f, Command::NewNotebook);
     }
 }
 
@@ -462,8 +480,11 @@ fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             if b(ui, icons::PLUG, "Connect this tab…") {
                 dispatch(f, Command::ConnectTab);
             }
-            if b(ui, icons::FOLDER_OPEN, "Open a .sql file…") {
+            if b(ui, icons::FOLDER_OPEN, "Open a .sql file or notebook…") {
                 dispatch(f, Command::OpenFile);
+            }
+            if b(ui, icons::NOTEBOOK, "New notebook (SQL cells + Markdown)") {
+                dispatch(f, Command::NewNotebook);
             }
             if b(ui, icons::UPLOAD_SIMPLE, "Import data from a file…") {
                 dispatch(f, Command::ImportFile);
@@ -508,6 +529,10 @@ fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
 fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     let idx = f.state.active_tab.unwrap();
+    if f.state.tabs[idx].is_notebook() {
+        crate::ui::notebook::show(ui, f, idx);
+        return;
+    }
     // a fresh, empty tab gets the getting-started pane on its right (until something is typed)
     let pristine = {
         let t = &f.state.tabs[idx];
@@ -790,6 +815,10 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         ui.label(RichText::new("Not connected").color(theme.text_muted));
                     }
                 }
+                if let Some(s) = crate::ui::notebook::status_summary(t) {
+                    ui.separator();
+                    ui.label(RichText::new(s).color(theme.text_muted));
+                }
                 if let Some(r) = &t.run {
                     ui.separator();
                     let elapsed = if r.is_live() && r.state != RunViewState::Paused { r.started.elapsed() } else { r.elapsed };
@@ -936,6 +965,54 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             let (profile, db) = state.active().map(|t| (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string))).unwrap_or((None, None));
             ops::new_query_tab(state, cx, profile, db, None, false);
         }
+        Command::NewNotebook => {
+            let lang = if cx.settings.notebooks.default_language.eq_ignore_ascii_case("pyspark") { cobalt_notebook::CellLanguage::Python } else { cobalt_notebook::CellLanguage::Sql };
+            crate::notebook::new_tab(state, cx, lang);
+        }
+        Command::ExportNotebookHtml => {
+            if let Some(i) = idx {
+                if state.tabs[i].is_notebook() {
+                    crate::notebook::export(state, cx, i, crate::notebook::ExportKind::Html, None);
+                } else {
+                    cx.toast(ToastKind::Info, "Open a notebook tab to export it.");
+                }
+            }
+        }
+        Command::ExportNotebookMarkdown => {
+            if let Some(i) = idx {
+                if state.tabs[i].is_notebook() {
+                    crate::notebook::export(state, cx, i, crate::notebook::ExportKind::Markdown, None);
+                } else {
+                    cx.toast(ToastKind::Info, "Open a notebook tab to export it.");
+                }
+            }
+        }
+        Command::RunAllCells => {
+            if let Some(i) = idx {
+                if state.tabs[i].is_notebook() {
+                    ops::run(state, cx, i, RunMode::All);
+                }
+            }
+        }
+        Command::RunCellsAbove => {
+            if let Some(i) = idx {
+                if let Some(sel) = state.tabs[i].notebook.as_deref().map(|nb| nb.selected) {
+                    crate::notebook::run_cells(state, cx, i, (0..sel).collect());
+                }
+            }
+        }
+        Command::AddCodeCell | Command::AddMarkdownCell => {
+            if let Some(i) = idx {
+                if let Some(sel) = state.tabs[i].notebook.as_deref().map(|nb| nb.selected) {
+                    let kind = if cmd == Command::AddCodeCell { cobalt_notebook::CellKind::Code } else { cobalt_notebook::CellKind::Markdown };
+                    crate::notebook::insert_cell(state, i, sel + 1, kind, true);
+                }
+            }
+        }
+        Command::SparkRuntime => {
+            state.settings_open = true;
+            state.settings_scroll_to = Some("Spark runtime");
+        }
         Command::OpenFile => ops::open_file(state, cx, None),
         Command::OpenPlanFile => {
             if let Some(p) = rfd::FileDialog::new().add_filter("Execution plan", &["sqlplan", "xml"]).pick_file() {
@@ -1072,8 +1149,9 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::FormatDocument => {
             let opts = cobalt_sql::format::FormatOptions { uppercase_keywords: cx.settings.editor.format_uppercase_keywords, indent: cx.settings.editor.format_indent as usize, lines_between_queries: cx.settings.editor.format_blank_lines as usize };
             if let Some(t) = state.active_mut() {
-                let formatted = cobalt_sql::format::format(&t.text, &opts);
-                editor::set_text_keep_line(t, formatted);
+                let mut h = t.active_host();
+                let formatted = cobalt_sql::format::format(h.text, &opts);
+                editor::set_text_keep_line(&mut h, formatted);
             }
         }
         Command::ExecutionOptions => {
@@ -1090,49 +1168,54 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                 return;
             }
             if let Some(t) = state.active_mut() {
-                t.editor.find_open = true;
-                if let Some((a, b)) = t.editor.selection {
-                    let ab = editor::char_to_byte(&t.text, a);
-                    let bb = editor::char_to_byte(&t.text, b);
-                    if bb > ab && !t.text[ab..bb].contains('\n') {
-                        t.editor.find_text = t.text[ab..bb].to_string();
+                let h = t.active_host();
+                h.editor.find_open = true;
+                if let Some((a, b)) = h.editor.selection {
+                    let ab = editor::char_to_byte(h.text, a);
+                    let bb = editor::char_to_byte(h.text, b);
+                    if bb > ab && !h.text[ab..bb].contains('\n') {
+                        h.editor.find_text = h.text[ab..bb].to_string();
                     }
                 }
-                cx.egui.memory_mut(|m| m.request_focus(egui::Id::new(("find", t.id))));
+                let fid = h.id.with("find");
+                cx.egui.memory_mut(|m| m.request_focus(fid));
             }
         }
         Command::Replace => {
             if let Some(t) = state.active_mut() {
-                t.editor.find_open = true;
+                t.active_host().editor.find_open = true;
             }
         }
         Command::GoToLine => {
             if let Some(t) = state.active_mut() {
-                t.editor.goto_line_open = true;
-                t.editor.goto_line_text.clear();
+                let h = t.active_host();
+                h.editor.goto_line_open = true;
+                h.editor.goto_line_text.clear();
             }
         }
         Command::ToggleLineComment => {
             if let Some(t) = state.active_mut() {
-                editor::toggle_line_comment(t);
+                editor::toggle_line_comment(&mut t.active_host());
             }
         }
         Command::ToggleBlockComment => {
             if let Some(t) = state.active_mut() {
-                editor::toggle_block_comment(t);
+                editor::toggle_block_comment(&mut t.active_host());
             }
         }
         Command::TriggerCompletion => {
             if let Some(t) = state.active_mut() {
-                let cursor = editor::char_to_byte(&t.text, t.editor.cursor);
                 let anchor = cx.egui.input(|i| i.pointer.hover_pos()).unwrap_or(egui::pos2(300.0, 200.0));
-                editor::open_completion(t, cursor, anchor, true);
+                let mut h = t.active_host();
+                let cursor = editor::char_to_byte(h.text, h.editor.cursor);
+                editor::open_completion(&mut h, cursor, anchor, true);
             }
         }
         Command::UppercaseKeywords => {
             if let Some(t) = state.active_mut() {
-                let up = cobalt_sql::casing::uppercase_keywords(&t.text);
-                editor::set_text_keep_line(t, up);
+                let mut h = t.active_host();
+                let up = cobalt_sql::casing::uppercase_keywords(h.text);
+                editor::set_text_keep_line(&mut h, up);
             }
         }
         Command::ToggleResults => {

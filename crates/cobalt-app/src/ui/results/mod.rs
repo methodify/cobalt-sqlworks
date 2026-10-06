@@ -554,7 +554,7 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
 }
 
 /// The column-profile window of a result set.
-fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usize, view: &mut crate::state::ResultSetView, theme: &Theme) {
+pub fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usize, view: &mut crate::state::ResultSetView, theme: &Theme) {
     let Some(p) = view.profile.as_mut() else { return };
     if !p.open {
         return;

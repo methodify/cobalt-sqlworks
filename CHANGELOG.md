@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — 0.7.0 (notebooks, slate 1)
+
+The first of three notebook releases (`docs/design/notebooks_roadmap.md`, D009): SQL notebooks and
+the Cobalt-managed local Spark runtime. PySpark cells come in 0.8; OneLake shallow clones and
+Fabric notebook open/save in 0.9.
+
+- **Notebooks**: File → New Notebook (Ctrl+Shift+N), or open any `.ipynb` (Azure Data Studio SQL
+  notebooks and Fabric notebooks included) or a Fabric Git `notebook-content.py`. Markdown cells
+  render in place (double-click or Enter to edit, Shift+Enter to render); SQL cells use the Cobalt
+  editor (IntelliSense against the tab's connection, multi-cursor, snippets) and run through the
+  tab's connection with the full result grid under each cell: sort/filter, copy, find, profile
+  columns, Save results as…, Save as table, Open in Excel, open in its own tab. Run cell
+  (Ctrl+Enter), run and advance (Shift+Enter), run and insert (Alt+Enter), Run all (F5), Run cells
+  above; a failing cell stops the queue. Jupyter's command-mode keys: ↑/↓, Enter, A, B, M, Y, D D,
+  Z (undo delete). Outputs are saved in the file — an Arrow payload (Settings → Notebooks → rows
+  per result set) plus HTML/Markdown/text previews — so grids come back on reopen and other tools
+  still render something. Notebooks take part in hot exit, the Files sidebar (plus "New notebook
+  here"), the command line and the `.ipynb` file association. Export as an HTML page or Markdown
+  with results embedded.
+- **Spark runtime (Settings → Spark runtime)**: Cobalt provisions a local Spark matching a Fabric
+  runtime (`fabric-2.0` = Spark 4.1.1 / Delta 4.2.0 / Python 3.13, or `fabric-1.3`) into its own
+  app-data folder: a pinned `uv`, a uv-managed Python (3.11 on Windows, SPARK-53759), a virtual
+  environment with `local-spark-mcp` and its pyspark/delta-spark, and Microsoft Build of OpenJDK
+  (or Temurin) — never Oracle. "Use what I have" adopts a JDK or uv already on the machine; every
+  download is SHA-256 checked and resumable; a first Spark session pre-warms the Delta/Hadoop jars
+  into a local Ivy cache; the smoke test runs `SELECT 1` through local-spark-mcp's worker protocol.
+  Re-check, Remove runtime, log file. Nothing is downloaded until you click Install.
+- Internals: new crates `cobalt-notebook` (nbformat 4 + Fabric metadata, Git `.py` form, HTML/MD
+  export) and `cobalt-runtime` (manifest, detection, provisioning, worker protocol client); the
+  editor widget is now hosted (`EditorHost`) so a query tab and a notebook cell share one editor.
+  Agent verbs `notebook {…}` and `runtime {…}`; `state` tabs carry `kind` and `cells`.
+
 ## 0.6.1 — 2026-10-05
 
 - **Ctrl+F follows the focus**: with a result grid focused (click into it) Ctrl+F opens Find in

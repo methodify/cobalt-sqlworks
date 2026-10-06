@@ -29,6 +29,9 @@ cobalt-export-delta.workspace = true
 cobalt-import.workspace = true
 cobalt-plan.workspace = true
 cobalt-fabric.workspace = true
+cobalt-notebook.workspace = true
+cobalt-runtime.workspace = true
+egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }
 
 egui.workspace = true
 eframe.workspace = true
@@ -93,6 +96,7 @@ resources = ["mesa/*"]
 file-associations = [
     { extensions = ["sql"], description = "SQL script", mime-type = "application/sql" },
     { extensions = ["sqlplan"], description = "SQL Server execution plan", mime-type = "application/xml" },
+    { extensions = ["ipynb"], description = "Notebook", mime-type = "application/x-ipynb+json" },
 ]
 icons = ["../../assets/icon.ico", "../../assets/icons/32x32.png", "../../assets/icons/128x128.png", "../../assets/icons/128x128@2x.png", "../../assets/icons/icon_256.png"]
 

@@ -3,6 +3,7 @@ pub mod editor;
 pub mod fabric;
 pub mod files;
 pub mod history;
+pub mod notebook;
 pub mod palette;
 pub mod plan;
 pub mod results;

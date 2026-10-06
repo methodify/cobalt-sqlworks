@@ -1,20 +1,24 @@
 //! Settings window: edits a draft `Settings`; the app applies and saves it.
 
 use crate::commands::{self, parse_shortcut, shortcut_label, COMMANDS};
+use crate::runtime::{RuntimeAction, RuntimeUi};
 use crate::ui::theme::Theme;
 use cobalt_core::{ExecOptions, QueryShortcut, ResultLayout, Settings, ThemeChoice};
+use cobalt_runtime::{ComponentState, JdkVendor};
 use egui::{RichText, Ui};
 
 pub enum SettingsAction {
     Apply(Settings),
     Close,
+    /// Save the draft, then act on the Spark runtime (the window stays open).
+    Runtime(RuntimeAction, Settings),
 }
 
-pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str) -> Option<SettingsAction> {
+pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str, runtime: &mut RuntimeUi, scroll_to: Option<&str>) -> Option<SettingsAction> {
     let mut action = None;
     let mut open = true;
-    egui::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([640.0, 560.0]).resizable(true).show(ctx, |ui| {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(480.0).show(ui, |ui| {
+    egui::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([680.0, 600.0]).resizable(true).show(ctx, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(520.0).show(ui, |ui| {
             section(ui, theme, "Appearance");
             ui.horizontal(|ui| {
                 ui.label("Theme");
@@ -224,6 +228,26 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 });
             }
 
+            section(ui, theme, "Notebooks");
+            ui.horizontal(|ui| {
+                ui.label("New notebooks start as");
+                ui.selectable_value(&mut draft.notebooks.default_language, "sql".to_string(), "SQL");
+                ui.selectable_value(&mut draft.notebooks.default_language, "pyspark".to_string(), "PySpark");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Rows saved per result set in the .ipynb");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.max_output_rows).range(0..=100_000).speed(50));
+                ui.label("Grid height (rows)");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.grid_rows).range(3..=60));
+            });
+            ui.label(RichText::new("Saved rows travel inside the notebook as Arrow (plus HTML/Markdown previews for other tools), so grids come back when the notebook is reopened.").size(11.0).color(theme.text_muted));
+
+            let r = section(ui, theme, "Spark runtime");
+            if scroll_to == Some("Spark runtime") {
+                r.scroll_to_me(Some(egui::Align::Min));
+            }
+            spark_runtime(ui, theme, draft, runtime, &mut action);
+
             section(ui, theme, "Advanced");
             ui.horizontal(|ui| {
                 ui.label("Result memory budget (MB)");
@@ -273,10 +297,193 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
     action
 }
 
-fn section(ui: &mut Ui, theme: &Theme, title: &str) {
+fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {
     ui.add_space(8.0);
-    ui.label(RichText::new(title).strong().color(theme.accent));
+    let r = ui.label(RichText::new(title).strong().color(theme.accent));
     ui.separator();
+    r
+}
+
+fn component_row(ui: &mut Ui, theme: &Theme, name: &str, st: &ComponentState) {
+    let (icon, color, what) = match st {
+        ComponentState::Managed { .. } => (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "installed by Cobalt"),
+        ComponentState::Adopted { .. } => (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "found on this machine"),
+        ComponentState::Missing { .. } => (egui_phosphor::regular::CIRCLE_DASHED, theme.text_faint, "missing"),
+    };
+    ui.label(RichText::new(icon).color(color));
+    ui.label(RichText::new(name).strong());
+    ui.label(RichText::new(st.detail()).size(12.0));
+    ui.label(RichText::new(what).size(11.0).color(theme.text_faint));
+    ui.end_row();
+}
+
+/// Settings → Spark runtime: profile and JDK choices, component status, install / smoke test /
+/// remove, and the live log of the running job.
+fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, action: &mut Option<SettingsAction>) {
+    let manifest = cobalt_runtime::Manifest::embedded();
+    ui.label(RichText::new("Cobalt provisions a local Spark that matches a Fabric runtime (uv, Python, pyspark + delta-spark via local-spark-mcp, and a non-Oracle JDK) into its own folder. Nothing is downloaded until you ask. PySpark notebook cells run on it from the next release; today this page installs and verifies the runtime.").size(12.0).color(theme.text_muted));
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Runtime profile");
+        let current = draft.spark.profile.clone();
+        egui::ComboBox::from_id_salt("spark-profile").width(130.0).selected_text(&current).show_ui(ui, |ui| {
+            for (name, p) in &manifest.profiles {
+                ui.selectable_value(&mut draft.spark.profile, name.clone(), name).on_hover_text(p.describe());
+            }
+        });
+        if let Ok(p) = manifest.profile(&draft.spark.profile) {
+            ui.label(RichText::new(p.describe()).size(11.0).color(theme.text_muted));
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("JDK");
+        let vendor = if draft.spark.jdk_vendor.eq_ignore_ascii_case("temurin") { JdkVendor::Temurin } else { JdkVendor::Microsoft };
+        egui::ComboBox::from_id_salt("spark-jdk").width(220.0).selected_text(vendor.label()).show_ui(ui, |ui| {
+            for v in JdkVendor::ALL {
+                if ui.selectable_label(vendor == v, v.label()).clicked() {
+                    draft.spark.jdk_vendor = match v {
+                        JdkVendor::Microsoft => "microsoft".into(),
+                        JdkVendor::Temurin => "temurin".into(),
+                    };
+                }
+            }
+        });
+        ui.label("Driver memory");
+        ui.add(egui::TextEdit::singleline(&mut draft.spark.driver_memory).desired_width(50.0));
+    });
+    // "Use what I have": pick an existing JDK
+    if let Some(st) = &runtime.status {
+        if !st.jdk_candidates.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Java on this machine");
+                let current = draft.spark.java_home.clone().unwrap_or_default();
+                let label = if current.is_empty() { "Let Cobalt install one".to_string() } else { current.clone() };
+                egui::ComboBox::from_id_salt("spark-java-home").width(420.0).selected_text(RichText::new(label).size(12.0)).show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_empty(), "Let Cobalt install one").clicked() {
+                        draft.spark.java_home = None;
+                    }
+                    for c in &st.jdk_candidates {
+                        if c.source == "managed" {
+                            continue;
+                        }
+                        let p = c.home.to_string_lossy().to_string();
+                        if ui.selectable_label(current == p, RichText::new(c.label()).size(12.0)).clicked() {
+                            draft.spark.java_home = Some(p.clone());
+                        }
+                    }
+                });
+            });
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label("Folder");
+        let mut dir = draft.spark.runtime_dir.clone().unwrap_or_default();
+        let r = ui.add(egui::TextEdit::singleline(&mut dir).hint_text("default: the app's local data folder").desired_width(380.0));
+        if r.changed() {
+            draft.spark.runtime_dir = if dir.trim().is_empty() { None } else { Some(dir) };
+        }
+        if ui.small_button("Open").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::OpenFolder, draft.clone()));
+        }
+    });
+    ui.add_space(6.0);
+    match &runtime.status {
+        None => {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(if runtime.status_pending { "Checking what is installed…" } else { "Status unknown" }).color(theme.text_muted));
+                if !runtime.status_pending && ui.small_button("Check").clicked() {
+                    *action = Some(SettingsAction::Runtime(RuntimeAction::Refresh, draft.clone()));
+                }
+            });
+        }
+        Some(st) => {
+            egui::Grid::new("spark-status").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                component_row(ui, theme, "uv", &st.uv);
+                component_row(ui, theme, "Python", &st.python);
+                component_row(ui, theme, "Spark", &st.env);
+                component_row(ui, theme, "Java", &st.jdk);
+            });
+            ui.horizontal(|ui| {
+                let ready = st.is_ready();
+                let msg = if ready && st.warm { format!("Ready — Spark {} verified", st.spark_version.clone().unwrap_or_default()) } else if ready { "Installed; run the smoke test to verify".to_string() } else { "Not installed".to_string() };
+                ui.label(RichText::new(msg).strong().color(if ready { theme.success } else { theme.text_muted }));
+                ui.label(RichText::new(format!("· {} on disk", cobalt_runtime::fmt_bytes(st.disk_bytes))).size(11.0).color(theme.text_faint));
+                if st.profile != draft.spark.profile {
+                    ui.label(RichText::new(format!("(status is for {}; save to re-check)", st.profile)).size(11.0).color(theme.warning));
+                }
+            });
+            if let Some(e) = &st.last_error {
+                ui.label(RichText::new(format!("Last run failed: {e}")).size(12.0).color(theme.error));
+            }
+        }
+    }
+    ui.add_space(4.0);
+    let busy = runtime.job.is_some();
+    ui.horizontal(|ui| {
+        let ready = runtime.status.as_ref().map(|s| s.is_ready()).unwrap_or(false);
+        let b = ui.add_enabled(!busy, egui::Button::new(if ready { "Reinstall / update" } else { "Install for me" }));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install spark runtime"));
+        if b.on_hover_text("Downloads what is missing (uv, Python, pyspark/delta-spark, a JDK), then starts Spark once so its jars are cached. Hash-checked and resumable.").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::Install, draft.clone()));
+        }
+        let b = ui.add_enabled(!busy && ready, egui::Button::new("Run smoke test"));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark smoke test"));
+        if b.on_hover_text("Starts a Spark session in the worker and runs SELECT 1").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::SmokeTest, draft.clone()));
+        }
+        if ui.add_enabled(busy, egui::Button::new("Cancel")).clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::Cancel, draft.clone()));
+        }
+        if ui.add_enabled(!busy, egui::Button::new("Re-check")).clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::Refresh, draft.clone()));
+        }
+        if ui.add_enabled(!busy, egui::Button::new(RichText::new("Remove runtime").color(theme.error))).on_hover_text("Deletes everything Cobalt installed in the runtime folder (tools found on the machine are untouched)").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::Remove, draft.clone()));
+        }
+        if ui.small_button("Log file").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::OpenLog, draft.clone()));
+        }
+    });
+    if let Some(job) = &runtime.job {
+        ui.add_space(4.0);
+        let (label, frac) = match (&job.step, &job.bytes) {
+            (Some((_, l)), Some((done, Some(total)))) if *total > 0 => (format!("{l} — {} / {}", cobalt_runtime::fmt_bytes(*done), cobalt_runtime::fmt_bytes(*total)), Some(*done as f32 / *total as f32)),
+            (Some((_, l)), Some((done, None))) => (format!("{l} — {}", cobalt_runtime::fmt_bytes(*done)), None),
+            (Some((_, l)), None) => (l.clone(), None),
+            _ => ("Starting…".to_string(), None),
+        };
+        let bar = match frac {
+            Some(f) => egui::ProgressBar::new(f).text(RichText::new(label).size(12.0)),
+            None => egui::ProgressBar::new(0.0).animate(true).text(RichText::new(label).size(12.0)),
+        };
+        ui.add(bar);
+        ui.label(RichText::new(format!("{}s elapsed", job.started.elapsed().as_secs())).size(11.0).color(theme.text_faint));
+    }
+    if let Some(r) = &runtime.last_result {
+        match r {
+            Ok(m) => ui.label(RichText::new(m).size(12.0).color(theme.success)),
+            Err(e) => ui.add(egui::Label::new(RichText::new(e).size(12.0).color(theme.error)).wrap()),
+        };
+    }
+    if let Some(s) = &runtime.last_smoke {
+        ui.label(RichText::new(s).size(12.0).color(theme.text_muted));
+    }
+    let has_log = runtime.job.as_ref().map(|j| !j.log.is_empty()).unwrap_or(false);
+    if has_log || runtime.log_open {
+        ui.checkbox(&mut runtime.log_open, "Show log");
+        if runtime.log_open {
+            if let Some(job) = &runtime.job {
+                egui::Frame::new().fill(theme.bg_editor).inner_margin(6.0).show(ui, |ui| {
+                    egui::ScrollArea::vertical().id_salt("spark-log").max_height(180.0).stick_to_bottom(true).auto_shrink([false, true]).show(ui, |ui| {
+                        ui.style_mut().override_font_id = Some(egui::FontId::monospace(11.0));
+                        for l in job.log.iter().rev().take(400).collect::<Vec<_>>().into_iter().rev() {
+                            ui.label(l);
+                        }
+                    });
+                });
+            }
+        }
+    }
 }
 
 /// A `(default) / ON / OFF` combo for a session option; two grid cells (label + combo).

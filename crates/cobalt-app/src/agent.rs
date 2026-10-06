@@ -18,6 +18,8 @@
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
+//! - `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit, …}` → notebook tabs; `state` tabs carry `kind` and `cells`
+//! - `runtime {action: status|install|smoke|cancel|remove|refresh}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
 
 use crate::app::CobaltApp;
 use crate::commands::{Command, COMMANDS};
@@ -47,10 +49,35 @@ impl CobaltApp {
                         "paused": r.paused_set,
                     })
                 });
+                let cells = t.notebook.as_deref().map(|nb| nb.cells.iter().enumerate().map(|(ci, c)| {
+                    let cell = &nb.nb.cells[ci];
+                    json!({
+                        "index": ci,
+                        "id": c.id,
+                        "kind": cell.kind.as_str(),
+                        "language": nb.nb.cell_language(cell).label(),
+                        "source": cell.source,
+                        "execution_count": cell.execution_count,
+                        "selected": nb.selected == ci,
+                        "md_editing": c.md_editing,
+                        "cached": c.cached,
+                        "queued": nb.queue.contains(&c.id),
+                        "run": c.run.as_ref().map(|r| json!({
+                            "state": format!("{:?}", r.state).to_lowercase(),
+                            "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                            "messages": r.messages.iter().filter(|m| !m.is_batch_header).map(|m| json!({"text": m.text, "error": m.is_error})).collect::<Vec<_>>(),
+                        })),
+                        "extra_outputs": c.extra_outputs.len(),
+                    })
+                }).collect::<Vec<_>>());
                 json!({
                     "index": i,
                     "id": t.id.to_string(),
                     "title": t.title,
+                    "kind": if t.is_notebook() { "notebook" } else { "query" },
+                    "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                    "cells": cells,
+                    "selected_cell": t.notebook.as_deref().map(|nb| nb.selected),
                     "active": self.state.active_tab == Some(i),
                     "dirty": t.is_dirty(),
                     "profile": t.profile.as_ref().map(|p| p.display_name()),
@@ -456,7 +483,7 @@ impl AgentApp for CobaltApp {
                 let cursor = t.text.len();
                 t.editor.cursor = t.text.chars().count();
                 t.editor.pending_edit = Some(crate::state::PendingEdit::SetCursor(t.editor.cursor));
-                crate::ui::editor::open_completion(t, cursor, egui::pos2(460.0, 120.0), true);
+                crate::ui::editor::open_completion(&mut t.host(), cursor, egui::pos2(460.0, 120.0), true);
                 let items: Vec<String> = t.editor.completion.as_ref().map(|c| c.items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
                 ActionResult::with(&json!({"items": items}))
             }
@@ -775,6 +802,181 @@ impl AgentApp for CobaltApp {
             "dismiss_dialog" => {
                 self.state.dialog = crate::state::Dialog::None;
                 ActionResult::ok()
+            }
+            "notebook" => {
+                use cobalt_notebook::{CellKind, CellLanguage};
+                let Some(action) = arg_str(args, "action") else { return ActionResult::BadArgs("action is required".into()) };
+                let idx = self.state.active_tab;
+                let is_nb = idx.map(|i| self.state.tabs[i].is_notebook()).unwrap_or(false);
+                match action.as_str() {
+                    "new" => {
+                        let lang = match arg_str(args, "language").as_deref() {
+                            Some("pyspark") | Some("python") => CellLanguage::Python,
+                            _ => CellLanguage::Sql,
+                        };
+                        let i = self.with_ctx(egui, |s, cx| crate::notebook::new_tab(s, cx, lang));
+                        ActionResult::with(&json!({"tab": i}))
+                    }
+                    "open" => {
+                        let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                        let ok = self.with_ctx(egui, |s, cx| crate::notebook::open_path(s, cx, std::path::PathBuf::from(path)));
+                        ActionResult::with(&json!({"opened": ok, "tab": self.state.active_tab}))
+                    }
+                    _ if !is_nb => ActionResult::Rejected("the active tab is not a notebook".into()),
+                    "save" => {
+                        let i = idx.unwrap();
+                        if let Some(p) = arg_str(args, "path") {
+                            self.state.tabs[i].file_path = Some(std::path::PathBuf::from(p));
+                        }
+                        self.with_ctx(egui, |s, cx| crate::notebook::save(s, cx, i, false));
+                        ActionResult::with(&json!({"dirty": self.state.tabs[i].is_dirty(), "file_path": self.state.tabs[i].file_path}))
+                    }
+                    "cells" => ActionResult::with(&self.state_json()["tabs"][idx.unwrap()]["cells"]),
+                    "set_cell" => {
+                        let (Some(ci), Some(text)) = (arg_usize(args, "index"), arg_str(args, "text")) else { return ActionResult::BadArgs("index and text are required".into()) };
+                        let nb = self.state.tabs[idx.unwrap()].notebook.as_deref_mut().unwrap();
+                        let Some(cell) = nb.nb.cells.get_mut(ci) else { return ActionResult::BadArgs("no such cell".into()) };
+                        cell.source = text;
+                        nb.cells[ci].editor.cursors.clamp(cell.source.chars().count());
+                        nb.dirty = true;
+                        egui.request_repaint();
+                        ActionResult::ok()
+                    }
+                    "add_cell" => {
+                        let i = idx.unwrap();
+                        let kind = match arg_str(args, "kind").as_deref() {
+                            Some("markdown") => CellKind::Markdown,
+                            _ => CellKind::Code,
+                        };
+                        let n = self.state.tabs[i].notebook.as_deref().map(|nb| nb.cells.len()).unwrap_or(0);
+                        let at = arg_usize(args, "at").unwrap_or(n);
+                        let r = crate::notebook::insert_cell(&mut self.state, i, at, kind, false);
+                        if let Some(text) = arg_str(args, "text") {
+                            if let (Some(at), Some(nb)) = (r, self.state.tabs[i].notebook.as_deref_mut()) {
+                                nb.nb.cells[at].source = text;
+                            }
+                        }
+                        egui.request_repaint();
+                        ActionResult::with(&json!({"index": r}))
+                    }
+                    "delete_cell" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        crate::notebook::delete_cell(&mut self.state, idx.unwrap(), ci);
+                        ActionResult::ok()
+                    }
+                    "move_cell" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let delta = args.and_then(|a| a.get("delta")).and_then(|v| v.as_i64()).unwrap_or(1) as isize;
+                        crate::notebook::move_cell(&mut self.state, idx.unwrap(), ci, delta);
+                        ActionResult::ok()
+                    }
+                    "set_kind" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let kind = match arg_str(args, "kind").as_deref() {
+                            Some("markdown") => CellKind::Markdown,
+                            _ => CellKind::Code,
+                        };
+                        crate::notebook::set_kind(&mut self.state, idx.unwrap(), ci, kind);
+                        ActionResult::ok()
+                    }
+                    "select" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let nb = self.state.tabs[idx.unwrap()].notebook.as_deref_mut().unwrap();
+                        if ci >= nb.cells.len() {
+                            return ActionResult::BadArgs("no such cell".into());
+                        }
+                        nb.selected = ci;
+                        if args.and_then(|a| a.get("focus")).and_then(|v| v.as_bool()).unwrap_or(false) {
+                            nb.cells[ci].editor.request_focus = true;
+                            if nb.nb.cells[ci].kind == CellKind::Markdown {
+                                nb.cells[ci].md_editing = true;
+                            }
+                        }
+                        egui.request_repaint();
+                        ActionResult::ok()
+                    }
+                    "md_edit" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let editing = args.and_then(|a| a.get("editing")).and_then(|v| v.as_bool()).unwrap_or(true);
+                        let nb = self.state.tabs[idx.unwrap()].notebook.as_deref_mut().unwrap();
+                        if let Some(c) = nb.cells.get_mut(ci) {
+                            c.md_editing = editing;
+                        }
+                        egui.request_repaint();
+                        ActionResult::ok()
+                    }
+                    "run" => {
+                        let i = idx.unwrap();
+                        let n = self.state.tabs[i].notebook.as_deref().map(|nb| nb.cells.len()).unwrap_or(0);
+                        let cells: Vec<usize> = match args.and_then(|a| a.get("cells")) {
+                            Some(Value::Array(a)) => a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect(),
+                            Some(Value::String(s)) if s == "all" => (0..n).collect(),
+                            _ => match arg_usize(args, "index") {
+                                Some(ci) => vec![ci],
+                                None => (0..n).collect(),
+                            },
+                        };
+                        self.with_ctx(egui, |s, cx| crate::notebook::run_cells(s, cx, i, cells));
+                        ActionResult::ok()
+                    }
+                    "cancel" => {
+                        let i = idx.unwrap();
+                        self.with_ctx(egui, |s, cx| crate::notebook::cancel(s, cx, i));
+                        ActionResult::ok()
+                    }
+                    "clear_outputs" => {
+                        crate::notebook::clear_outputs(&mut self.state, idx.unwrap(), arg_usize(args, "index"));
+                        ActionResult::ok()
+                    }
+                    "export" => {
+                        let (Some(kind), Some(path)) = (arg_str(args, "kind"), arg_str(args, "path")) else { return ActionResult::BadArgs("kind and path are required".into()) };
+                        let kind = if kind == "html" { crate::notebook::ExportKind::Html } else { crate::notebook::ExportKind::Markdown };
+                        let i = idx.unwrap();
+                        self.with_ctx(egui, |s, cx| crate::notebook::export(s, cx, i, kind, Some(std::path::PathBuf::from(path))));
+                        ActionResult::ok()
+                    }
+                    other => ActionResult::BadArgs(format!("unknown notebook action {other}")),
+                }
+            }
+            "runtime" => {
+                use crate::runtime::RuntimeAction;
+                let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
+                let a = match action.as_str() {
+                    "status" => None,
+                    "install" => Some(RuntimeAction::Install),
+                    "smoke" => Some(RuntimeAction::SmokeTest),
+                    "cancel" => Some(RuntimeAction::Cancel),
+                    "remove" => Some(RuntimeAction::Remove),
+                    "refresh" => Some(RuntimeAction::Refresh),
+                    other => return ActionResult::BadArgs(format!("unknown runtime action {other}")),
+                };
+                if let Some(a) = a {
+                    if let Some(err) = crate::runtime::action(&mut self.state.runtime, &self.settings, &self.paths, egui, a) {
+                        return ActionResult::Rejected(err);
+                    }
+                } else if self.state.runtime.status.is_none() {
+                    crate::runtime::refresh_status(&mut self.state.runtime, &self.settings, &self.paths, egui);
+                }
+                let r = &self.state.runtime;
+                let comp = |c: &cobalt_runtime::ComponentState| match c {
+                    cobalt_runtime::ComponentState::Managed { detail } => json!({"state": "managed", "detail": detail}),
+                    cobalt_runtime::ComponentState::Adopted { detail } => json!({"state": "adopted", "detail": detail}),
+                    cobalt_runtime::ComponentState::Missing { reason } => json!({"state": "missing", "detail": reason}),
+                };
+                ActionResult::with(&json!({
+                    "dir": crate::runtime::dirs(&self.settings, &self.paths).root.to_string_lossy(),
+                    "profile": self.settings.spark.profile,
+                    "pending": r.status_pending,
+                    "status": r.status.as_ref().map(|s| json!({
+                        "ready": s.is_ready(), "warm": s.warm, "spark_version": s.spark_version,
+                        "uv": comp(&s.uv), "python": comp(&s.python), "env": comp(&s.env), "jdk": comp(&s.jdk),
+                        "jdk_candidates": s.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),
+                        "disk_bytes": s.disk_bytes, "last_error": s.last_error,
+                    })),
+                    "job": r.job.as_ref().map(|j| json!({"kind": format!("{:?}", j.kind), "step": j.step.as_ref().map(|(s, l)| format!("{s:?}: {l}")), "bytes": j.bytes, "elapsed_s": j.started.elapsed().as_secs(), "log_tail": j.log.iter().rev().take(15).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()})),
+                    "last_result": r.last_result.as_ref().map(|x| match x { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }),
+                    "last_smoke": r.last_smoke,
+                }))
             }
             "run_state" => {
                 let Some(t) = self.state.active() else { return ActionResult::BadArgs("no active tab".into()) };

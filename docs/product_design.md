@@ -418,11 +418,14 @@ and saved queries you can switch between (prod investigation vs. dev work).
 
 ### 5.5 Notebooks, reborn
 
-SQL + Markdown cells in an `.ipynb`-compatible file, with results cached in the document so a
-runbook carries its evidence. No Jupyter, no Python. The upgrade: **cells chain** — a cell's
-result is a local table the next cell can query with DataFusion, or a variable it can splice
-into SQL. Export to HTML/Markdown (the thing ADS never had). Run from the command line for
-scheduled reports.
+SQL + Markdown cells in an `.ipynb` file (nbformat 4 with Fabric's and ADS's metadata), with
+results cached in the document so a runbook carries its evidence. No Jupyter kernels, no
+Jupyter server — but, since D009, **PySpark cells** too: they run on a Cobalt-managed local
+Spark that matches a Fabric runtime, reads OneLake directly and sandboxes writes as Delta
+shallow clones (`docs/design/notebooks_roadmap.md`). Fabric notebooks open from the workspace and
+save back. The upgrade: **cells chain** — a cell's result is a local table the next cell can
+query with DataFusion, or a variable it can splice into SQL. Export to HTML/Markdown (the thing
+ADS never had). Run from the command line for scheduled reports.
 
 ### 5.6 Lightweight dashboards
 
@@ -466,8 +469,8 @@ selected tables with Mermaid export · Query Store "regressed plans" view.
 
 ## 6. Non-goals
 
-Extension marketplace · source control · integrated terminal · Python/PowerShell/Jupyter
-kernels · SQL Agent · dacpac/bacpac/SQL projects · Schema Compare (SSMS and VS Code do it) ·
+Extension marketplace · source control · integrated terminal · PowerShell/Jupyter kernels
+(Python runs only inside the managed Spark worker, D009) · SQL Agent · dacpac/bacpac/SQL projects · Schema Compare (SSMS and VS Code do it) ·
 migration wizards · telemetry of any kind · accounts, cloud sync, or anything that phones home.
 
 ---

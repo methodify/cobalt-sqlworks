@@ -13,10 +13,11 @@ pub enum FilesAction {
     Refresh,
     Open(PathBuf),
     NewFile(PathBuf),
+    NewNotebook(PathBuf),
     Reveal(PathBuf),
 }
 
-const SHOWN_EXTENSIONS: &[&str] = &["sql", "txt", "sqlplan", "csv", "tsv", "json", "md", "toml"];
+const SHOWN_EXTENSIONS: &[&str] = &["sql", "ipynb", "txt", "sqlplan", "csv", "tsv", "json", "md", "toml", "py"];
 
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FilesAction> {
     let mut actions = Vec::new();
@@ -30,6 +31,9 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FilesAction
                 if let Some(root) = state.files.root.clone() {
                     if icon_button(ui, icons::ARROWS_CLOCKWISE, "Refresh", true).clicked() {
                         actions.push(FilesAction::Refresh);
+                    }
+                    if icon_button(ui, icons::NOTEBOOK, "New notebook in this folder", true).clicked() {
+                        actions.push(FilesAction::NewNotebook(root.clone()));
                     }
                     if icon_button(ui, icons::FILE_PLUS, "New .sql file in this folder", true).clicked() {
                         actions.push(FilesAction::NewFile(root));
@@ -102,6 +106,10 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
                     actions.push(FilesAction::NewFile(path.clone()));
                     ui.close();
                 }
+                if ui.button("New notebook here…").clicked() {
+                    actions.push(FilesAction::NewNotebook(path.clone()));
+                    ui.close();
+                }
                 if ui.button("Reveal in file manager").clicked() {
                     actions.push(FilesAction::Reveal(path.clone()));
                     ui.close();
@@ -116,6 +124,8 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
             }
             let icon = match path.extension().and_then(|x| x.to_str()).map(|x| x.to_ascii_lowercase()).as_deref() {
                 Some("sql") => icons::FILE_SQL,
+                Some("ipynb") => icons::NOTEBOOK,
+                Some("py") => icons::FILE_PY,
                 Some("sqlplan") => icons::TREE_STRUCTURE,
                 _ => icons::FILE_TEXT,
             };

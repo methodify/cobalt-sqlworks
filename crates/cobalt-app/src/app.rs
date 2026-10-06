@@ -287,6 +287,8 @@ impl CobaltApp {
             if let Some(launch) = self.launch.take() {
                 ops::apply_launch(&mut self.state, &cx, launch);
             }
+            // Spark runtime jobs (Settings → Spark runtime)
+            crate::runtime::poll(&mut self.state.runtime, &self.settings, &self.paths, ctx);
             // session events
             let events = self.session.drain();
             let mut followups = Vec::new();
@@ -499,11 +501,15 @@ impl eframe::App for CobaltApp {
         if self.state.settings_open {
             if self.state.settings_draft.is_none() {
                 self.state.settings_draft = Some(self.settings.clone());
+                if self.state.runtime.status.is_none() {
+                    crate::runtime::refresh_status(&mut self.state.runtime, &self.settings, &self.paths, &ctx);
+                }
             }
-            let info = format!("Settings: {}\nData: {}\nSpill: {}", self.paths.settings_file().display(), self.paths.db_file().display(), self.paths.spill_dir().display());
+            let info = format!("Settings: {}\nData: {}\nSpill: {}\nSpark runtime: {}", self.paths.settings_file().display(), self.paths.db_file().display(), self.paths.spill_dir().display(), crate::runtime::dirs(&self.settings, &self.paths).root.display());
             let mut draft = self.state.settings_draft.take().unwrap();
             let theme = self.theme.clone();
-            match crate::ui::settings::show(&ctx, &mut draft, &theme, &info) {
+            let scroll_to = self.state.settings_scroll_to.take();
+            match crate::ui::settings::show(&ctx, &mut draft, &theme, &info, &mut self.state.runtime, scroll_to) {
                 Some(crate::ui::settings::SettingsAction::Apply(s)) => {
                     self.apply_settings(&ctx, s);
                     self.state.settings_open = false;
@@ -512,6 +518,13 @@ impl eframe::App for CobaltApp {
                 Some(crate::ui::settings::SettingsAction::Close) => {
                     self.state.settings_open = false;
                     self.state.settings_draft = None;
+                }
+                Some(crate::ui::settings::SettingsAction::Runtime(a, s)) => {
+                    self.apply_settings(&ctx, s);
+                    if let Some(err) = crate::runtime::action(&mut self.state.runtime, &self.settings, &self.paths, &ctx, a) {
+                        self.toasts.warning(err);
+                    }
+                    self.state.settings_draft = Some(draft);
                 }
                 None => self.state.settings_draft = Some(draft),
             }

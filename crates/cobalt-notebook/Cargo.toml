@@ -1,0 +1,14 @@
+[package]
+name = "cobalt-notebook"
+description = "Notebook document model: nbformat 4 (.ipynb) with Fabric and ADS metadata, the Fabric Git .py form, outputs, HTML/Markdown export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+thiserror.workspace = true
+base64.workspace = true
+uuid.workspace = true
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }

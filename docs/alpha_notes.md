@@ -232,6 +232,42 @@ dev build: `COBALT_PERF=1` logs fps and frame cost every 2 s; the agent verbs `p
 and `viewport {w,h}` measure the real maximum frame rate; `COBALT_ADAPTER=<name substring>` forces an
 adapter (`basic render` = WARP) to reproduce the VM locally.
 
+## Notebooks (0.7)
+
+File → New Notebook (Ctrl+Shift+N), the Files sidebar (`.ipynb` files, "New notebook here"), or
+Open File. ADS SQL notebooks and Fabric notebooks open as they are; Fabric's Git form
+(`notebook-content.py`) opens too and saves back to `.py` when you Save As with that extension.
+A notebook tab has the same connection machinery as a query tab (the kernel button on the right
+of the toolbar changes it); SQL cells run through it one at a time and a failing cell stops the
+queue. Shift+Enter runs and moves on (a new cell at the end), Ctrl+Enter runs in place, Alt+Enter
+runs and inserts, F5 runs everything. Esc leaves the cell editor: then ↑/↓ select, Enter edits,
+A/B insert above/below, M/Y switch Markdown/code, D D deletes, Z restores the last deleted cell.
+Grids under cells are the real results grid (filters, find, totals, profile, copy, exports, Save
+as table, pop out to a tab). Saving writes the outputs into the file: an Arrow IPC payload (rows
+capped by Settings → Notebooks) plus HTML/Markdown/text previews; reopening shows the saved grids
+marked "saved with the notebook". Export as HTML or Markdown from the toolbar or the File menu.
+
+PySpark cells are selectable (cell type menu) but do not run yet — that is 0.8, on the runtime
+below. Agent: `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit}`.
+
+## Spark runtime (Settings → Spark runtime)
+
+Everything lands under `%LOCALAPPDATA%\Cobalt\Cobalt SQL Works\data\spark-runtime` (override
+the folder in the same section): `uv/`, `python/`, `envs/<profile>/`, `jdk/`, `ivy/`, `state/`,
+`runtime.json`, `provision.log`. Pick the profile (`fabric-2.0` by default) and the JDK vendor,
+optionally a JDK already on the machine ("Java on this machine" lists JAVA_HOME, PATH, vfox,
+SDKMAN, Program Files…; Oracle builds are refused), then **Install for me**. On this machine the
+first install took 4½ minutes: uv adopted from `~/.local/bin`, Python 3.11.12, local-spark-mcp
+0.3.4 with pyspark 4.1.1 + delta-spark 4.2.0, Microsoft JDK 21.0.8 (hash-verified), then a first
+Spark session that pulled the Delta and hadoop-azure jars into `ivy/` and answered `SELECT 1`
+(`[[1,"ok"]]`). Footprint after the uv cache is dropped: ≈1.3 GB. **Run smoke test** repeats the
+session start (≈30 s warm). The Spark driver binds to 127.0.0.1 only, so Windows Firewall has
+nothing to ask about java.exe.
+
+The manifest (`crates/cobalt-runtime/manifest.json`) mirrors local-spark-mcp's `profiles.py`
+until that project publishes a machine-readable one; the asks are in
+`docs/requests/local-spark-mcp.md`. Agent: `runtime {action: status|install|smoke|cancel|remove|refresh}`.
+
 ## Import Data from File
 
 Destination: a table in the tab's database, or *File or lakehouse…* to convert the file into any

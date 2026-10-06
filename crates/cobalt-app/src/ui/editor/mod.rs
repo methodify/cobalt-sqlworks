@@ -13,7 +13,8 @@ use std::sync::RwLock;
 /// when the file changes. Global because completion runs deep inside the editor widget.
 pub static USER_SNIPPETS: RwLock<Vec<UserSnippet>> = RwLock::new(Vec::new());
 use super::theme::{Theme, TokenColors};
-use crate::state::{CompletionEntry, CompletionPopup, EditorTab, PendingEdit};
+use crate::state::{CompletionEntry, CompletionPopup, EditorState, EditorTab, Loadable, PendingEdit};
+use cobalt_core::DatabaseInfo;
 use cobalt_core::Settings;
 use cobalt_sql::lexer::{tokenize, TokenKind};
 use egui::text::{LayoutJob, TextFormat};
@@ -96,29 +97,25 @@ fn consume_plain_key(i: &mut egui::InputState, key: Key) -> bool {
     hit
 }
 
-fn editor_id(tab: &EditorTab) -> egui::Id {
-    egui::Id::new(("cobalt-editor", tab.id))
-}
-
 /// Apply a pending edit (from a command: completion, format, Go to line, Insert CREATE INDEX…)
 /// to the text and the cursor set before the widget is drawn. Text edits are undoable.
-fn apply_pending(_ctx: &egui::Context, tab: &mut EditorTab) {
-    let Some(edit) = tab.editor.pending_edit.take() else { return };
-    let ed = &mut tab.editor;
+pub fn apply_pending(h: &mut EditorHost<'_>) {
+    let Some(edit) = h.editor.pending_edit.take() else { return };
+    let ed = &mut *h.editor;
     match edit {
         PendingEdit::SetCursor(c) => ed.cursors.set_single(Sel::cursor(c)),
         PendingEdit::Select(a, b) => ed.cursors.set_single(Sel::range(a, b)),
         PendingEdit::Replace { start, end, text, cursor_after } => {
-            ed.undo.record(EditKind::Other, &tab.text, &ed.cursors);
-            let start = start.min(tab.text.len());
-            let end = end.clamp(start, tab.text.len());
-            tab.text.replace_range(start..end, &text);
-            let after = cursor_after.unwrap_or(byte_to_char(&tab.text, start + text.len()));
+            ed.undo.record(EditKind::Other, &h.text, &ed.cursors);
+            let start = start.min(h.text.len());
+            let end = end.clamp(start, h.text.len());
+            h.text.replace_range(start..end, &text);
+            let after = cursor_after.unwrap_or(byte_to_char(&h.text, start + text.len()));
             ed.cursors.set_single(Sel::cursor(after));
             ed.snippet = None;
             if let Some(stops) = ed.pending_snippet.take() {
                 // a snippet: select its first placeholder and let Tab walk the rest
-                let stops: Vec<(usize, usize)> = stops.iter().map(|&(a, b)| (byte_to_char(&tab.text, a), byte_to_char(&tab.text, b))).collect();
+                let stops: Vec<(usize, usize)> = stops.iter().map(|&(a, b)| (byte_to_char(&h.text, a), byte_to_char(&h.text, b))).collect();
                 if let Some(&(a, b)) = stops.first() {
                     ed.cursors.set_single(Sel::range(a, b));
                     if stops.len() > 1 || a != b {
@@ -128,13 +125,13 @@ fn apply_pending(_ctx: &egui::Context, tab: &mut EditorTab) {
             }
         }
         PendingEdit::SetText { text, cursor } => {
-            ed.undo.record(EditKind::Other, &tab.text, &ed.cursors);
-            tab.text = text;
+            ed.undo.record(EditKind::Other, &h.text, &ed.cursors);
+            *h.text = text;
             ed.cursors.set_single(Sel::cursor(cursor));
             ed.snippet = None;
         }
     }
-    ed.cursors.clamp(tab.text.chars().count());
+    ed.cursors.clamp(h.text.chars().count());
     ed.request_focus = true;
     ed.scroll_to_cursor = true;
 }
@@ -153,11 +150,44 @@ fn fmt_batch_time(d: std::time::Duration) -> String {
     }
 }
 
+/// Where the editor borrows its text, cursor state and completion context from: a query tab,
+/// or one notebook cell.
+pub struct EditorHost<'a> {
+    pub id: egui::Id,
+    pub text: &'a mut String,
+    pub editor: &'a mut EditorState,
+    pub catalog: Option<&'a cobalt_core::DatabaseCatalog>,
+    pub databases: &'a Loadable<Vec<DatabaseInfo>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EditorLayout {
+    /// Fill the available space and scroll inside it (query tabs).
+    Fill,
+    /// Grow with the text, at least `min_rows` tall; the surrounding UI scrolls (notebook cells).
+    Auto { min_rows: usize },
+}
+
+impl EditorTab {
+    pub fn host(&mut self) -> EditorHost<'_> {
+        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases }
+    }
+}
+
+/// Draw a query tab's editor into the available space. Returns cursor/selection info.
 pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings) -> EditorOutput {
-    let ctx = ui.ctx().clone();
-    apply_pending(&ctx, tab);
-    let focus_pending = tab.editor.request_focus;
-    let id = editor_id(tab);
+    // per-batch timings from the last run, shown while the text is unchanged
+    let timings: Vec<(u32, String, bool)> = match &tab.run {
+        Some(r) if !r.batch_times.is_empty() && r.script_hash == crate::state::hash_text(&tab.text) => r.batch_times.iter().filter_map(|(line, el, err)| el.map(|d| (*line, fmt_batch_time(d), *err))).collect(),
+        _ => Vec::new(),
+    };
+    show_host(ui, &mut tab.host(), timings, EditorLayout::Fill, theme, settings)
+}
+
+pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String, bool)>, layout: EditorLayout, theme: &Theme, settings: &Settings) -> EditorOutput {
+    apply_pending(h);
+    let focus_pending = h.editor.request_focus;
+    let id = h.id;
     let font = FontId::monospace(settings.appearance.editor_font_size);
     let row_h = ui.fonts_mut(|f| f.row_height(&font));
     let colors = theme.tokens.clone();
@@ -166,7 +196,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
     // completion popup key handling happens before the TextEdit consumes keys
     let mut accept: Option<usize> = None;
     let mut close_popup = false;
-    if let Some(p) = &mut tab.editor.completion {
+    if let Some(p) = &mut h.editor.completion {
         let n = p.items.len();
         ui.input_mut(|i| {
             if consume_plain_key(i, Key::ArrowDown) {
@@ -190,59 +220,62 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
         });
     }
     if let Some(sel) = accept {
-        accept_completion(tab, sel);
-        apply_pending(&ctx, tab);
+        accept_completion(h, sel);
+        apply_pending(h);
     }
     if close_popup {
-        tab.editor.completion = None;
+        h.editor.completion = None;
     }
 
     // find / replace bar
-    if tab.editor.find_open {
-        find_bar(ui, tab, theme);
+    if h.editor.find_open {
+        find_bar(ui, h, theme);
     }
-    if tab.editor.goto_line_open {
-        goto_bar(ui, tab, theme);
+    if h.editor.goto_line_open {
+        goto_bar(ui, h, theme);
     }
 
-    let avail = ui.available_size();
+    let mut avail = ui.available_size();
+    let auto_rows = match layout {
+        EditorLayout::Fill => None,
+        EditorLayout::Auto { min_rows } => {
+            let rows = (h.text.matches('\n').count() + 1).max(min_rows);
+            avail.y = rows as f32 * row_h + 10.0;
+            Some(rows)
+        }
+    };
     let mut out = EditorOutput { changed: false, notice: None, cursor_byte: 0, selection_bytes: None, focused: false };
     let statement_bg = theme.bg_current_statement;
     let highlight_statement = settings.editor.highlight_current_statement;
 
     egui::Frame::new().fill(theme.bg_editor).show(ui, |ui| {
         ui.set_min_size(avail);
-        let scroll = egui::ScrollArea::both().id_salt(("editor-scroll", tab.id)).auto_shrink([false, false]);
+        let scroll = if auto_rows.is_some() {
+            egui::ScrollArea::neither().id_salt(id.with("scroll")).auto_shrink([false, true])
+        } else {
+            egui::ScrollArea::both().id_salt(id.with("scroll")).auto_shrink([false, false])
+        };
         scroll.show(ui, |ui| {
             ui.set_min_height(avail.y);
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                // per-batch timings from the last run, shown while the text is unchanged
-                let timings: Vec<(u32, String, bool)> = match &tab.run {
-                    Some(r) if !r.batch_times.is_empty() && r.script_hash == crate::state::hash_text(&tab.text) => r
-                        .batch_times
-                        .iter()
-                        .filter_map(|(line, el, err)| el.map(|d| (*line, fmt_batch_time(d), *err)))
-                        .collect(),
-                    _ => Vec::new(),
-                };
                 let gutter_w = GUTTER_W + if timings.is_empty() { 0.0 } else { 48.0 };
                 // gutter placeholder; painted after the galley is known
                 let (gutter_rect, _) = ui.allocate_exact_size(Vec2::new(gutter_w, avail.y.max(row_h)), Sense::hover());
                 let gutter_painter = ui.painter().clone();
                 let bg_idx = ui.painter().add(Shape::Noop);
 
-                if tab.editor.request_focus {
+                if h.editor.request_focus {
                     ui.ctx().memory_mut(|m| m.request_focus(id));
-                    tab.editor.request_focus = false;
+                    h.editor.request_focus = false;
                 }
                 let min_size = Vec2::new((ui.available_width()).max(0.0), avail.y);
-                let scroll_to_cursor = std::mem::take(&mut tab.editor.scroll_to_cursor);
-                let find_mode = core::MatchMode { case_sensitive: tab.editor.find_case, whole_word: false };
-                let ed = &mut tab.editor;
+                let scroll_to_cursor = std::mem::take(&mut h.editor.scroll_to_cursor);
+                let find_mode = core::MatchMode { case_sensitive: h.editor.find_case, whole_word: false };
+                let ed = &mut *h.editor;
                 let output = widget::CodeEditor {
                     id,
-                    text: &mut tab.text,
+                    text: &mut *h.text,
                     cursors: &mut ed.cursors,
                     undo: &mut ed.undo,
                     snippet: &mut ed.snippet,
@@ -257,33 +290,33 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                     margin: egui::Margin { left: 6, right: 8, top: 4, bottom: 4 },
                     scroll_to_cursor,
                     find_mode,
-                    page_rows: ((avail.y / row_h).floor() as usize).saturating_sub(1).max(1),
+                    page_rows: auto_rows.unwrap_or(((avail.y / row_h).floor() as usize).saturating_sub(1)).max(1),
                 }
                 .show(ui);
                 out.changed = output.changed;
                 out.notice = output.notice;
                 out.focused = output.focused || focus_pending;
-                let text = tab.text.as_str();
+                let text: &str = h.text;
                 let galley = &output.galley;
                 let gpos = output.galley_pos;
 
                 // cursor info (the primary selection)
-                let p = tab.editor.cursors.primary();
+                let p = h.editor.cursors.primary();
                 out.cursor_byte = char_to_byte(text, p.head);
                 if !p.is_empty() {
                     out.selection_bytes = Some((char_to_byte(text, p.min()), char_to_byte(text, p.max())));
                 }
-                tab.editor.cursor = p.head;
-                tab.editor.selection = (!p.is_empty()).then_some((p.min(), p.max()));
+                h.editor.cursor = p.head;
+                h.editor.selection = (!p.is_empty()).then_some((p.min(), p.max()));
                 let (line, col) = line_col(text, out.cursor_byte);
-                tab.editor.line = line;
-                tab.editor.col = col;
-                tab.editor.line_count = text.matches('\n').count() + 1;
+                h.editor.line = line;
+                h.editor.col = col;
+                h.editor.line_count = text.matches('\n').count() + 1;
 
                 // current statement highlight
-                tab.editor.statement_range = cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end));
+                h.editor.statement_range = cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end));
                 if highlight_statement && out.focused {
-                    if let Some((s, e)) = tab.editor.statement_range {
+                    if let Some((s, e)) = h.editor.statement_range {
                         let cs = byte_to_char(text, s);
                         let ce = byte_to_char(text, e);
                         let r0 = widget::caret_rect(galley, cs, row_h);
@@ -300,7 +333,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
                 gutter_painter.rect_filled(Rect::from_min_size(gutter_rect.min, Vec2::new(gutter_w, galley.size().y.max(avail.y) + 8.0)), 0.0, theme.bg_sidebar);
                 gutter_painter.line_segment([Pos2::new(gutter_rect.right(), gutter_rect.top()), Pos2::new(gutter_rect.right(), gutter_rect.top() + galley.size().y.max(avail.y) + 8.0)], Stroke::new(1.0, theme.border));
                 let mut line_no = 1usize;
-                let cur_line = tab.editor.line;
+                let cur_line = h.editor.line;
                 let mut new_line = true;
                 let small = FontId::monospace((settings.appearance.editor_font_size - 1.0).max(9.0));
                 for (ri, row) in galley.rows.iter().enumerate() {
@@ -321,21 +354,21 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
 
                 // completion: trigger / update / draw
                 if out.changed {
-                    tab.editor.completion = None;
+                    h.editor.completion = None;
                     // not while a snippet's placeholders are being filled in: Tab must stay the
                     // way to the next stop (Ctrl+Space still opens suggestions on demand)
-                    if output.typed && tab.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
+                    if output.typed && h.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
                         let before = text[..out.cursor_byte].chars().next_back();
                         if matches!(before, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '@' || c == '#') {
-                            let anchor = gpos + widget::caret_rect(galley, tab.editor.cursor, row_h).left_bottom().to_vec2();
-                            open_completion(tab, out.cursor_byte, anchor, before == Some('.'));
+                            let anchor = gpos + widget::caret_rect(galley, h.editor.cursor, row_h).left_bottom().to_vec2();
+                            open_completion(h, out.cursor_byte, anchor, before == Some('.'));
                         }
                     }
-                } else if tab.editor.completion.is_some() && !out.focused && !focus_pending {
-                    tab.editor.completion = None;
+                } else if h.editor.completion.is_some() && !out.focused && !focus_pending {
+                    h.editor.completion = None;
                 }
-                if let Some(anchor) = tab.editor.completion.as_ref().map(|p| p.anchor) {
-                    draw_completion(ui, tab, theme, anchor, row_h);
+                if let Some(anchor) = h.editor.completion.as_ref().map(|p| p.anchor) {
+                    draw_completion(ui, h, theme, anchor, row_h);
                 }
 
                 let _ = Rect::NOTHING; // (scrolling to the caret is done by the widget)
@@ -346,14 +379,14 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
 }
 
 /// Ctrl+Space or typing: compute completions at the cursor.
-pub fn open_completion(tab: &mut EditorTab, cursor_byte: usize, anchor: Pos2, force: bool) {
-    let dbs: Vec<String> = tab.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
+pub fn open_completion(h: &mut EditorHost<'_>, cursor_byte: usize, anchor: Pos2, force: bool) {
+    let dbs: Vec<String> = h.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
     let user = USER_SNIPPETS.read().map(|v| v.clone()).unwrap_or_default();
-    let req = cobalt_sql::completion::CompletionRequest { text: &tab.text, cursor: cursor_byte, catalog: tab.catalog.as_deref(), databases: &dbs, max_items: 60, user_snippets: &user };
+    let req = cobalt_sql::completion::CompletionRequest { text: &h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user };
     let c = cobalt_sql::completion::complete(&req);
     let prefix_len = c.replace_end.saturating_sub(c.replace_start);
     if c.items.is_empty() || (!force && prefix_len == 0) {
-        tab.editor.completion = None;
+        h.editor.completion = None;
         return;
     }
     let items = c
@@ -361,7 +394,7 @@ pub fn open_completion(tab: &mut EditorTab, cursor_byte: usize, anchor: Pos2, fo
         .into_iter()
         .map(|i| CompletionEntry { label: i.label, insert: i.insert, detail: i.detail, icon: completion_icon(i.kind) })
         .collect();
-    tab.editor.completion = Some(CompletionPopup { items, selected: 0, replace_start: c.replace_start, replace_end: c.replace_end, anchor });
+    h.editor.completion = Some(CompletionPopup { items, selected: 0, replace_start: c.replace_start, replace_end: c.replace_end, anchor });
 }
 
 fn completion_icon(kind: cobalt_sql::completion::CompletionKind) -> &'static str {
@@ -383,32 +416,32 @@ fn completion_icon(kind: cobalt_sql::completion::CompletionKind) -> &'static str
     }
 }
 
-fn accept_completion(tab: &mut EditorTab, sel: usize) {
-    let Some(p) = tab.editor.completion.take() else { return };
+fn accept_completion(h: &mut EditorHost<'_>, sel: usize) {
+    let Some(p) = h.editor.completion.take() else { return };
     let Some(item) = p.items.get(sel) else { return };
     let (text, cursor_after) = if item.insert.contains("${") || item.insert.contains('$') && item.icon == egui_phosphor::regular::SCISSORS {
         let (expanded, stops) = cobalt_sql::snippets::expand(&item.insert);
         let c = stops.first().map(|(s, _)| p.replace_start + s).unwrap_or(p.replace_start + expanded.len());
         // absolute byte ranges in the text once the replacement is in; apply_pending selects the first
-        tab.editor.pending_snippet = Some(stops.iter().map(|&(s, e)| (p.replace_start + s, p.replace_start + e)).collect());
+        h.editor.pending_snippet = Some(stops.iter().map(|&(s, e)| (p.replace_start + s, p.replace_start + e)).collect());
         (expanded, Some(c))
     } else {
-        tab.editor.pending_snippet = None;
+        h.editor.pending_snippet = None;
         (item.insert.clone(), None)
     };
     let cursor_after_chars = cursor_after.map(|b| {
         // compute after replacement
-        let mut t = tab.text.clone();
+        let mut t = h.text.clone();
         t.replace_range(p.replace_start.min(t.len())..p.replace_end.min(t.len()), &text);
         byte_to_char(&t, b)
     });
-    tab.editor.pending_edit = Some(PendingEdit::Replace { start: p.replace_start, end: p.replace_end, text, cursor_after: cursor_after_chars });
+    h.editor.pending_edit = Some(PendingEdit::Replace { start: p.replace_start, end: p.replace_end, text, cursor_after: cursor_after_chars });
 }
 
-fn draw_completion(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, anchor: Pos2, row_h: f32) {
+fn draw_completion(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme, anchor: Pos2, row_h: f32) {
     let mut accept: Option<usize> = None;
-    let id = egui::Id::new(("completion", tab.id));
-    let Some(p) = tab.editor.completion.as_mut() else { return };
+    let id = h.id.with("completion");
+    let Some(p) = h.editor.completion.as_mut() else { return };
     let max_visible = 12usize;
     let item_h = 22.0;
     egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(anchor + Vec2::new(0.0, 2.0)).constrain(true).show(ui.ctx(), |ui| {
@@ -449,11 +482,11 @@ fn draw_completion(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, anchor: Pos2
     });
     let _ = row_h;
     if let Some(i) = accept {
-        accept_completion(tab, i);
+        accept_completion(h, i);
     }
 }
 
-fn find_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
+fn find_bar(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme) {
     let mut do_find = false;
     let mut do_replace = false;
     let mut do_replace_all = false;
@@ -461,8 +494,8 @@ fn find_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
-            let r = ui.add(TextEdit::singleline(&mut tab.editor.find_text).desired_width(220.0).hint_text("Find").id(egui::Id::new(("find", tab.id))));
-            if tab.editor.request_focus {
+            let r = ui.add(TextEdit::singleline(&mut h.editor.find_text).desired_width(220.0).hint_text("Find").id(h.id.with("find")));
+            if h.editor.request_focus {
                 // keep editor focus request
             }
             if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
@@ -472,9 +505,9 @@ fn find_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
             if ui.small_button("Next").clicked() {
                 do_find = true;
             }
-            ui.checkbox(&mut tab.editor.find_case, "Aa").on_hover_text("Match case");
+            ui.checkbox(&mut h.editor.find_case, "Aa").on_hover_text("Match case");
             ui.separator();
-            ui.add(TextEdit::singleline(&mut tab.editor.replace_text).desired_width(200.0).hint_text("Replace"));
+            ui.add(TextEdit::singleline(&mut h.editor.replace_text).desired_width(200.0).hint_text("Replace"));
             if ui.small_button("Replace").clicked() {
                 do_replace = true;
             }
@@ -492,49 +525,49 @@ fn find_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
         close = true;
     }
     if do_replace {
-        if let Some((a, b)) = tab.editor.selection {
-            let ab = char_to_byte(&tab.text, a);
-            let bb = char_to_byte(&tab.text, b);
-            let sel = &tab.text[ab..bb];
-            let matches = if tab.editor.find_case { sel == tab.editor.find_text } else { sel.eq_ignore_ascii_case(&tab.editor.find_text) };
+        if let Some((a, b)) = h.editor.selection {
+            let ab = char_to_byte(&h.text, a);
+            let bb = char_to_byte(&h.text, b);
+            let sel = &h.text[ab..bb];
+            let matches = if h.editor.find_case { sel == h.editor.find_text } else { sel.eq_ignore_ascii_case(&h.editor.find_text) };
             if matches {
-                let rep = tab.editor.replace_text.clone();
-                let after = byte_to_char(&tab.text, ab) + rep.chars().count();
-                tab.editor.pending_edit = Some(PendingEdit::Replace { start: ab, end: bb, text: rep, cursor_after: Some(after) });
-                tab.editor.cursor = after;
+                let rep = h.editor.replace_text.clone();
+                let after = byte_to_char(&h.text, ab) + rep.chars().count();
+                h.editor.pending_edit = Some(PendingEdit::Replace { start: ab, end: bb, text: rep, cursor_after: Some(after) });
+                h.editor.cursor = after;
             }
         }
         do_find = true;
     }
-    if do_replace_all && !tab.editor.find_text.is_empty() {
-        let needle = tab.editor.find_text.clone();
-        let rep = tab.editor.replace_text.clone();
-        let new_text = if tab.editor.find_case {
-            tab.text.replace(&needle, &rep)
+    if do_replace_all && !h.editor.find_text.is_empty() {
+        let needle = h.editor.find_text.clone();
+        let rep = h.editor.replace_text.clone();
+        let new_text = if h.editor.find_case {
+            h.text.replace(&needle, &rep)
         } else {
-            replace_case_insensitive(&tab.text, &needle, &rep)
+            replace_case_insensitive(&h.text, &needle, &rep)
         };
-        let cursor = tab.editor.cursor.min(new_text.chars().count());
-        tab.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor });
+        let cursor = h.editor.cursor.min(new_text.chars().count());
+        h.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor });
     }
-    if do_find && !tab.editor.find_text.is_empty() {
-        find_next(tab);
+    if do_find && !h.editor.find_text.is_empty() {
+        find_next(h);
     }
     if close {
-        tab.editor.find_open = false;
-        tab.editor.request_focus = true;
+        h.editor.find_open = false;
+        h.editor.request_focus = true;
     }
 }
 
-pub fn find_next(tab: &mut EditorTab) {
-    let needle = tab.editor.find_text.clone();
+pub fn find_next(h: &mut EditorHost<'_>) {
+    let needle = h.editor.find_text.clone();
     if needle.is_empty() {
         return;
     }
-    let text = &tab.text;
-    let start_char = tab.editor.selection.map(|(_, b)| b).unwrap_or(tab.editor.cursor);
+    let text: &str = h.text;
+    let start_char = h.editor.selection.map(|(_, b)| b).unwrap_or(h.editor.cursor);
     let start = char_to_byte(text, start_char);
-    let (hay, nd) = if tab.editor.find_case { (text.to_string(), needle.clone()) } else { (text.to_lowercase(), needle.to_lowercase()) };
+    let (hay, nd) = if h.editor.find_case { (text.to_string(), needle.clone()) } else { (text.to_lowercase(), needle.to_lowercase()) };
     // lowercase can change byte lengths for non-ASCII; fall back to char-wise search in that case
     let found = if hay.len() == text.len() {
         hay[start..].find(&nd).map(|i| start + i).or_else(|| hay[..start].find(&nd))
@@ -544,9 +577,9 @@ pub fn find_next(tab: &mut EditorTab) {
     if let Some(b) = found {
         let a = byte_to_char(text, b);
         let e = a + needle.chars().count();
-        tab.editor.pending_edit = Some(PendingEdit::Select(a, e));
-        tab.editor.selection = Some((a, e));
-        tab.editor.cursor = e;
+        h.editor.pending_edit = Some(PendingEdit::Select(a, e));
+        h.editor.selection = Some((a, e));
+        h.editor.cursor = e;
     }
 }
 
@@ -567,13 +600,13 @@ fn replace_case_insensitive(text: &str, needle: &str, rep: &str) -> String {
     out
 }
 
-fn goto_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
+fn goto_bar(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme) {
     let mut go = false;
     let mut close = false;
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label("Go to line:");
-            let r = ui.add(TextEdit::singleline(&mut tab.editor.goto_line_text).desired_width(80.0).id(egui::Id::new(("goto", tab.id))));
+            let r = ui.add(TextEdit::singleline(&mut h.editor.goto_line_text).desired_width(80.0).id(h.id.with("goto")));
             // Enter makes the field surrender focus; check before re-requesting it, or the bar
             // never closes on Enter
             if (r.has_focus() || r.lost_focus()) && ui.input_mut(|i| consume_plain_key(i, Key::Enter)) {
@@ -591,26 +624,26 @@ fn goto_bar(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
         });
     });
     if go {
-        if let Ok(n) = tab.editor.goto_line_text.trim().parse::<usize>() {
+        if let Ok(n) = h.editor.goto_line_text.trim().parse::<usize>() {
             let n = n.max(1);
-            let byte = tab.text.split_inclusive('\n').take(n - 1).map(|l| l.len()).sum::<usize>();
-            let c = byte_to_char(&tab.text, byte);
-            tab.editor.pending_edit = Some(PendingEdit::SetCursor(c));
+            let byte = h.text.split_inclusive('\n').take(n - 1).map(|l| l.len()).sum::<usize>();
+            let c = byte_to_char(&h.text, byte);
+            h.editor.pending_edit = Some(PendingEdit::SetCursor(c));
         }
         close = true;
     }
     if close {
-        tab.editor.goto_line_open = false;
-        tab.editor.request_focus = true;
+        h.editor.goto_line_open = false;
+        h.editor.request_focus = true;
     }
 }
 
 /// Toggle `--` on every line touched by each selection (or each cursor's line). One undo step.
-pub fn toggle_line_comment(tab: &mut EditorTab) {
+pub fn toggle_line_comment(h: &mut EditorHost<'_>) {
     use self::core::{apply_replacements, line_end, line_start, Replace};
-    let chars: Vec<char> = tab.text.chars().collect();
+    let chars: Vec<char> = h.text.chars().collect();
     // one block of whole lines per selection, merged when they touch
-    let mut blocks: Vec<(usize, usize)> = tab
+    let mut blocks: Vec<(usize, usize)> = h
         .editor
         .cursors
         .sels
@@ -658,24 +691,24 @@ pub fn toggle_line_comment(tab: &mut EditorTab) {
             Replace { start: a, end: b, text }
         })
         .collect();
-    tab.editor.undo.record(EditKind::Other, &tab.text, &tab.editor.cursors);
-    let ends = apply_replacements(&mut tab.text, &reps);
+    h.editor.undo.record(EditKind::Other, &h.text, &h.editor.cursors);
+    let ends = apply_replacements(&mut *h.text, &reps);
     let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
     let primary = sels.len() - 1;
-    tab.editor.cursors = core::Cursors { sels, primary };
-    tab.editor.cursors.normalize();
-    tab.editor.request_focus = true;
-    tab.editor.scroll_to_cursor = true;
+    h.editor.cursors = core::Cursors { sels, primary };
+    h.editor.cursors.normalize();
+    h.editor.request_focus = true;
+    h.editor.scroll_to_cursor = true;
 }
 
 /// Wrap every non-empty selection in `/* … */` (or unwrap it). One undo step.
-pub fn toggle_block_comment(tab: &mut EditorTab) {
+pub fn toggle_block_comment(h: &mut EditorHost<'_>) {
     use self::core::{apply_replacements, Replace};
-    if !tab.editor.cursors.has_selection() {
+    if !h.editor.cursors.has_selection() {
         return;
     }
-    let chars: Vec<char> = tab.text.chars().collect();
-    let reps: Vec<Replace> = tab
+    let chars: Vec<char> = h.text.chars().collect();
+    let reps: Vec<Replace> = h
         .editor
         .cursors
         .sels
@@ -692,14 +725,14 @@ pub fn toggle_block_comment(tab: &mut EditorTab) {
             Replace { start: s.min(), end: s.max(), text }
         })
         .collect();
-    tab.editor.undo.record(EditKind::Other, &tab.text, &tab.editor.cursors);
-    let ends = apply_replacements(&mut tab.text, &reps);
+    h.editor.undo.record(EditKind::Other, &h.text, &h.editor.cursors);
+    let ends = apply_replacements(&mut *h.text, &reps);
     let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
     let primary = sels.len() - 1;
-    tab.editor.cursors = core::Cursors { sels, primary };
-    tab.editor.cursors.normalize();
-    tab.editor.request_focus = true;
-    tab.editor.scroll_to_cursor = true;
+    h.editor.cursors = core::Cursors { sels, primary };
+    h.editor.cursors.normalize();
+    h.editor.request_focus = true;
+    h.editor.scroll_to_cursor = true;
 }
 
 /// The text to run for "Run selection": every non-empty selection, in document order, joined
@@ -716,11 +749,11 @@ pub fn selected_script(tab: &EditorTab) -> Option<(String, u32)> {
 }
 
 /// Replace the whole text keeping the cursor line.
-pub fn set_text_keep_line(tab: &mut EditorTab, new_text: String) {
-    let line = tab.editor.line.max(1);
+pub fn set_text_keep_line(h: &mut EditorHost<'_>, new_text: String) {
+    let line = h.editor.line.max(1);
     let byte = new_text.split_inclusive('\n').take(line - 1).map(|l| l.len()).sum::<usize>();
     let c = byte_to_char(&new_text, byte);
-    tab.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor: c });
+    h.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor: c });
 }
 
 pub fn color_hex(c: Color32) -> String {

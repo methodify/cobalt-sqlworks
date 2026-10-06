@@ -218,6 +218,7 @@ fn profile_roundtrip_all_fields() {
             tenant: "t".into(),
             client_id: "c".into(),
             secret: None,
+            certificate: None,
         },
     ] {
         let q = ConnectionProfile::new("x", auth.clone());
