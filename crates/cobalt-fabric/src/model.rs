@@ -167,6 +167,67 @@ pub(crate) struct Page<T> {
     pub continuation_token: Option<String>,
 }
 
+/// Any workspace item (notebooks, pipelines, reports…) as listed; SQL-capable ones become
+/// [`SqlItem`]s instead.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FabricItem {
+    pub id: String,
+    pub workspace_id: String,
+    pub display_name: String,
+    pub description: String,
+    /// Fabric's item type string, e.g. `Notebook`.
+    pub item_type: String,
+    pub folder_id: Option<String>,
+}
+
+impl FabricItem {
+    pub fn is_notebook(&self) -> bool {
+        self.item_type == "Notebook"
+    }
+    /// The portal page for this item.
+    pub fn portal_url(&self) -> String {
+        let seg = match self.item_type.as_str() {
+            "Notebook" => "synapsenotebooks",
+            "Lakehouse" => "lakehouses",
+            "Warehouse" => "datawarehouses",
+            _ => "items",
+        };
+        format!("https://app.fabric.microsoft.com/groups/{}/{seg}/{}", self.workspace_id, self.id)
+    }
+}
+
+/// One file of an item definition (`getDefinition` / `updateDefinition`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DefinitionPart {
+    pub path: String,
+    /// Base64 of the file's bytes (`payloadType` = `InlineBase64`).
+    pub payload: String,
+    #[serde(rename = "payloadType", default = "inline_base64")]
+    pub payload_type: String,
+}
+
+fn inline_base64() -> String {
+    "InlineBase64".into()
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ItemDefinition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub parts: Vec<DefinitionPart>,
+}
+
+impl ItemDefinition {
+    pub fn part(&self, path: &str) -> Option<&DefinitionPart> {
+        self.parts.iter().find(|p| p.path == path)
+    }
+    /// A part whose name ends with `suffix` (e.g. `.ipynb`, `.py`).
+    pub fn part_with_suffix(&self, suffix: &str) -> Option<&DefinitionPart> {
+        self.parts.iter().find(|p| p.path.ends_with(suffix))
+    }
+}
+
 #[derive(Deserialize)]
 pub(crate) struct WireItem {
     pub id: String,
@@ -183,6 +244,9 @@ pub(crate) struct WireItem {
 }
 
 impl WireItem {
+    pub(crate) fn into_item(self) -> FabricItem {
+        FabricItem { id: self.id, workspace_id: self.workspace_id, display_name: self.display_name, description: self.description, item_type: self.item_type, folder_id: self.folder_id }
+    }
     pub(crate) fn into_sql_item(self) -> Option<SqlItem> {
         let kind = SqlItemKind::parse(&self.item_type)?;
         Some(SqlItem { id: self.id, workspace_id: self.workspace_id, display_name: self.display_name, description: self.description, kind, folder_id: self.folder_id })

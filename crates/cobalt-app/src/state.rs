@@ -260,6 +260,8 @@ pub struct EditorTab {
     pub snapshot_hash: u64,
     /// `Some` = this tab is a notebook: cells instead of `text`, per-cell runs instead of `run`.
     pub notebook: Option<Box<NotebookState>>,
+    /// The Fabric item this notebook came from; Save writes back to it.
+    pub fabric_item: Option<FabricItemRef>,
 }
 
 /// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay
@@ -273,10 +275,39 @@ pub enum NotebookKernel {
     Spark,
 }
 
+/// A notebook's Fabric binding: which workspace's lakehouses the Spark session should see.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotebookFabric {
+    pub workspace_id: String,
+    pub lakehouse_id: Option<String>,
+    /// `sandbox` (default), `readonly` or `writethrough`.
+    pub write_mode: String,
+}
+
+/// A notebook opened from (and saved back to) a Fabric workspace item.
+#[derive(Clone, Debug)]
+pub struct FabricItemRef {
+    pub item: cobalt_fabric::FabricItem,
+    /// The `.platform` definition part, written back unchanged on save.
+    pub platform: Option<cobalt_fabric::DefinitionPart>,
+    pub saving: bool,
+}
+
+/// The Shadows window (sandbox clones of OneLake tables in the running session).
+#[derive(Default)]
+pub struct ShadowsUi {
+    pub open: bool,
+    pub status: Option<serde_json::Value>,
+    pub loading: bool,
+    pub error: Option<String>,
+    pub note: Option<String>,
+}
+
 pub struct NotebookState {
     pub nb: cobalt_notebook::Notebook,
     pub cells: Vec<CellState>,
     pub kernel: NotebookKernel,
+    pub fabric: Option<NotebookFabric>,
     /// The current cell (keyboard target, highlighted).
     pub selected: usize,
     /// Cell ids waiting to run, in order; one runs at a time per tab.
@@ -316,7 +347,8 @@ impl NotebookState {
         let cells = nb.cells.iter().map(|c| CellState::new(c.id.clone())).collect();
         let counter = nb.cells.iter().filter_map(|c| c.execution_count).max().unwrap_or(0);
         let kernel = if nb.default_language() == cobalt_notebook::CellLanguage::Python { NotebookKernel::Spark } else { NotebookKernel::Connection };
-        Self { nb, cells, kernel, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
+        let fabric = nb.default_lakehouse().and_then(|lh| lh.workspace_id.map(|ws| NotebookFabric { workspace_id: ws, lakehouse_id: Some(lh.id), write_mode: "sandbox".into() }));
+        Self { nb, cells, kernel, fabric, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
     }
     pub fn is_running(&self) -> bool {
         !self.queue.is_empty() || self.cells.iter().any(|c| c.run.as_ref().map(|r| r.is_live()).unwrap_or(false))
@@ -372,6 +404,7 @@ impl EditorTab {
             pending_import: false,
             snapshot_hash: hash_text(""),
             notebook: None,
+            fabric_item: None,
         }
     }
 
@@ -847,6 +880,9 @@ pub struct AppState {
     pub kernel: crate::kernel::KernelUi,
     /// Restart requested: start again once the old session has stopped.
     pub kernel_restart_pending: bool,
+    pub shadows: ShadowsUi,
+    /// The last toasts shown (agent diagnostics).
+    pub recent_toasts: std::collections::VecDeque<String>,
     /// Commands raised by widgets drawn outside `dispatch`'s reach (status bar); run next frame.
     pub pending_commands: Vec<crate::commands::Command>,
     /// Synthetic input from the agent (`press` / `type_text` verbs), injected next frame.
@@ -904,6 +940,8 @@ pub struct HistoryRow {
 pub enum Dialog {
     #[default]
     None,
+    /// Save a notebook back to its Fabric item (overwrites the item's definition).
+    ConfirmFabricSave { tab_index: usize },
     Connection(Box<ConnectionDialog>),
     Password { profile: ConnectionProfile, password: String, remember: bool, purpose: ConnectPurpose, error: Option<String> },
     AuthWaiting { profile: ConnectionProfile, purpose: ConnectPurpose, message: String, device: Arc<parking_lot::Mutex<Option<(String, String)>>>, url: Arc<parking_lot::Mutex<Option<String>>>, cancel: Arc<std::sync::atomic::AtomicBool>, started: Instant },
@@ -1075,6 +1113,8 @@ impl AppState {
             runtime: Default::default(),
             kernel: Default::default(),
             kernel_restart_pending: false,
+            shadows: ShadowsUi::default(),
+            recent_toasts: Default::default(),
             pending_commands: Vec::new(),
             theme_override: None,
             injected_events: Vec::new(),

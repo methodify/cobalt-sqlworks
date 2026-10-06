@@ -36,6 +36,8 @@ pub struct FabricState {
     pub slot: Option<ProfileId>,
     pub workspaces: Loadable<Vec<Workspace>>,
     pub items: HashMap<String, Loadable<Vec<SqlItem>>>,
+    /// Notebook items per workspace (loaded with the SQL items).
+    pub notebooks: HashMap<String, Loadable<Vec<cobalt_fabric::FabricItem>>>,
     pub details: HashMap<String, Loadable<SqlTarget>>,
     pub expanded: HashSet<String>,
     pub pins: Vec<FabricPin>,
@@ -95,6 +97,12 @@ pub enum FabricEvent {
     Items { workspace_id: String, result: Result<Vec<SqlItem>, String> },
     Detail { item_id: String, result: Result<SqlTarget, String> },
     Capacities(Vec<Capacity>),
+    Notebooks { workspace_id: String, result: Result<Vec<cobalt_fabric::FabricItem>, String> },
+    /// A notebook item's definition arrived (open it, or open a copy).
+    NotebookDefinition { item: cobalt_fabric::FabricItem, copy: bool, result: Result<cobalt_fabric::ItemDefinition, String> },
+    NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
+    /// The OneLake token needed before a Fabric-bound Spark session can start.
+    OneLakeToken(Result<(), String>),
 }
 
 /// What the panel asks for.
@@ -116,6 +124,8 @@ pub enum FabricAction {
     ExportHere { item_id: String },
     /// An action from the inline object explorer.
     Tree(TreeAction),
+    /// Open a notebook item as a tab bound to it (`copy` = a detached local notebook).
+    OpenNotebook { item_id: String, copy: bool },
 }
 
 fn fabric_error_text(e: &FabricError) -> String {
@@ -216,6 +226,7 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             }
         }
         FabricAction::TogglePin { item_id } => toggle_pin(state, cx, &item_id),
+        FabricAction::OpenNotebook { item_id, copy } => open_notebook(state, cx, &item_id, copy),
         FabricAction::SaveToServers { item_id } => match state.fabric.details.get(&item_id).and_then(|d| d.get()).cloned() {
             Some(target) => save_to_servers(state, cx, &item_id, target),
             None => {
@@ -463,13 +474,131 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
     let egui = cx.egui.clone();
     let tenant = tenant_hint(cx);
     let ws = workspace_id.to_string();
+    state.fabric.notebooks.insert(workspace_id.to_string(), Loadable::Loading(cx.session.new_request()));
+    cx.session.spawn(async move {
+        let (result, notebooks) = match token(&resolver, slot, tenant.as_deref()).await {
+            Ok((tok, _)) => {
+                let client = FabricClient::new(tok);
+                // one listing serves both: SQL items and notebooks
+                match client.list_items(&ws, None).await {
+                    Ok(all) => {
+                        let nbs: Vec<cobalt_fabric::FabricItem> = all.iter().filter(|i| i.is_notebook()).cloned().collect();
+                        let sql = client.list_sql_items(&ws).await.map_err(|e| fabric_error_text(&e));
+                        (sql, Ok(nbs))
+                    }
+                    Err(e) => {
+                        let t = fabric_error_text(&e);
+                        (Err(t.clone()), Err(t))
+                    }
+                }
+            }
+            Err(None) => (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into())),
+            Err(Some(e)) => (Err(e.clone()), Err(e)),
+        };
+        let _ = tx.send(FabricEvent::Items { workspace_id: ws.clone(), result });
+        let _ = tx.send(FabricEvent::Notebooks { workspace_id: ws, result: notebooks });
+        egui.request_repaint();
+    });
+}
+
+impl FabricState {
+    pub fn notebook(&self, item_id: &str) -> Option<&cobalt_fabric::FabricItem> {
+        self.notebooks.values().filter_map(|l| l.get()).flatten().find(|i| i.id == item_id)
+    }
+    /// `(name, id)` of the lakehouses in a workspace, when loaded.
+    pub fn lakehouses(&self, workspace_id: &str) -> Option<Vec<(String, String)>> {
+        self.items.get(workspace_id).and_then(|l| l.get()).map(|v| v.iter().filter(|i| i.kind == SqlItemKind::Lakehouse).map(|i| (i.display_name.clone(), i.id.clone())).collect())
+    }
+}
+
+/// Fetch a notebook's definition (ipynb, else the Git form) and open it.
+pub fn open_notebook(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) {
+    let Some(slot) = state.fabric.slot else {
+        cx.toast(ToastKind::Warning, "Sign in to Fabric first.");
+        return;
+    };
+    let Some(item) = state.fabric.notebook(item_id).cloned() else { return };
+    if !copy {
+        if let Some(i) = state.tabs.iter().position(|t| t.fabric_item.as_ref().map(|f| f.item.id == item.id).unwrap_or(false)) {
+            state.active_tab = Some(i);
+            return;
+        }
+    }
+    state.flash(format!("Opening {} from Fabric…", item.display_name));
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
     cx.session.spawn(async move {
         let result = match token(&resolver, slot, tenant.as_deref()).await {
-            Ok((tok, _)) => FabricClient::new(tok).list_sql_items(&ws).await.map_err(|e| fabric_error_text(&e)),
+            Ok((tok, _)) => {
+                let client = FabricClient::new(tok);
+                match client.get_item_definition(&item.workspace_id, &item.id, Some("ipynb")).await {
+                    Ok(d) => Ok(d),
+                    Err(e1) => client.get_item_definition(&item.workspace_id, &item.id, None).await.map_err(|e2| format!("{} (ipynb form: {})", fabric_error_text(&e2), fabric_error_text(&e1))),
+                }
+            }
             Err(None) => Err("Sign in to Fabric first.".into()),
             Err(Some(e)) => Err(e),
         };
-        let _ = tx.send(FabricEvent::Items { workspace_id: ws, result });
+        let _ = tx.send(FabricEvent::NotebookDefinition { item, copy, result });
+        egui.request_repaint();
+    });
+}
+
+/// Write a notebook tab's document back to its Fabric item (`updateDefinition`).
+pub fn save_notebook(state: &mut AppState, cx: &Ctx, idx: usize) {
+    let Some(slot) = state.fabric.slot else {
+        cx.toast(ToastKind::Warning, "Sign in to Fabric first.");
+        return;
+    };
+    let fmt = state.formatter.clone();
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    let Some(fi) = t.fabric_item.clone() else { return };
+    if fi.saving {
+        return;
+    }
+    let Some(doc) = crate::notebook::document(t, cx.settings.notebooks.max_output_rows, &fmt) else { return };
+    use base64::Engine;
+    let payload = base64::engine::general_purpose::STANDARD.encode(doc.to_ipynb());
+    let mut parts = vec![cobalt_fabric::DefinitionPart { path: "notebook-content.ipynb".into(), payload, payload_type: "InlineBase64".into() }];
+    if let Some(p) = fi.platform.clone() {
+        parts.push(p);
+    }
+    let def = cobalt_fabric::ItemDefinition { format: Some("ipynb".into()), parts };
+    if let Some(f) = t.fabric_item.as_mut() {
+        f.saving = true;
+    }
+    let tab = t.id;
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let (ws, id) = (fi.item.workspace_id.clone(), fi.item.id.clone());
+    cx.session.spawn(async move {
+        let result = match token(&resolver, slot, tenant.as_deref()).await {
+            Ok((tok, _)) => FabricClient::new(tok).update_item_definition(&ws, &id, &def).await.map_err(|e| fabric_error_text(&e)),
+            Err(None) => Err("Sign in to Fabric first.".into()),
+            Err(Some(e)) => Err(e),
+        };
+        let _ = tx.send(FabricEvent::NotebookSaved { tab, result });
+        egui.request_repaint();
+    });
+}
+
+/// Get (interactively if needed) the OneLake token a Fabric-bound Spark session relies on, then
+/// report through `FabricEvent::OneLakeToken` so the kernel can start.
+pub fn prepare_onelake(state: &mut AppState, cx: &Ctx, slot: ProfileId) {
+    let prompter = ops::UiPrompter { cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)), device: Arc::new(parking_lot::Mutex::new(None)), url: Arc::new(parking_lot::Mutex::new(None)), egui: cx.egui.clone() };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
+    state.flash("Checking OneLake access…");
+    cx.session.spawn(async move {
+        let result = ops::onelake_token(resolver, slot, tenant, hint, prompter).await.map(|_| ());
+        let _ = tx.send(FabricEvent::OneLakeToken(result));
         egui.request_repaint();
     });
 }
@@ -585,6 +714,58 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Ok(v) => Loadable::Loaded(v),
                 Err(e) => Loadable::Failed(e),
             });
+            // notebooks waiting on lakehouse names for their Spark session
+            crate::notebook::pump_all_spark(state, cx);
+        }
+        FabricEvent::Notebooks { workspace_id, result } => {
+            state.fabric.notebooks.insert(workspace_id, match result {
+                Ok(v) => Loadable::Loaded(v),
+                Err(e) => Loadable::Failed(e),
+            });
+        }
+        FabricEvent::NotebookDefinition { item, copy, result } => match result {
+            Ok(def) => crate::notebook::install_from_fabric(state, cx, item, def, copy),
+            Err(e) if e.contains("InsufficientScopes") => cx.toast(ToastKind::Error, format!("Could not open {}: the Fabric sign-in lacks the Item.ReadWrite.All permission that reading and writing notebook definitions needs. Add it (delegated, Power BI Service / Fabric) to the app registration, grant consent, then sign out and in on the Fabric panel.", item.display_name)),
+            Err(e) => cx.toast(ToastKind::Error, format!("Could not open {}: {e}", item.display_name)),
+        },
+        FabricEvent::NotebookSaved { tab, result } => {
+            if let Some(t) = state.tab_mut(tab) {
+                if let Some(f) = t.fabric_item.as_mut() {
+                    f.saving = false;
+                }
+                match result {
+                    Ok(()) => {
+                        t.mark_saved();
+                        let name = t.fabric_item.as_ref().map(|f| f.item.display_name.clone()).unwrap_or_default();
+                        state.flash(format!("Saved {name} to Fabric"));
+                    }
+                    Err(e) if e.contains("InsufficientScopes") => cx.toast(ToastKind::Error, "Saving to Fabric failed: the sign-in lacks Item.ReadWrite.All. Add it to the app registration, grant consent, then sign out and in on the Fabric panel."),
+                    Err(e) => cx.toast(ToastKind::Error, format!("Saving to Fabric failed: {e}")),
+                }
+            }
+        }
+        FabricEvent::OneLakeToken(result) => {
+            let Some(fabric) = state.kernel.pending_fabric_start.take() else { return };
+            match result {
+                Ok(()) => {
+                    let fs = crate::kernel::FabricStart { fabric, resolver: cx.resolver.clone(), handle: cx.session.handle() };
+                    match crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, Some(fs)) {
+                        Ok(()) => {}
+                        Err(crate::kernel::StartError::NotProvisioned) => cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings → Spark runtime)."),
+                        Err(crate::kernel::StartError::NoJar) => cx.toast(ToastKind::Error, "The OneLake catalog jar is missing from the runtime environment; reinstall under Settings → Spark runtime."),
+                        Err(crate::kernel::StartError::TokenServer(e)) => cx.toast(ToastKind::Error, format!("Could not start the OneLake token endpoint: {e}")),
+                    }
+                    crate::notebook::pump_all_spark(state, cx);
+                }
+                Err(e) => {
+                    for t in state.tabs.iter_mut() {
+                        if let Some(nb) = t.notebook.as_deref_mut() {
+                            nb.queue.clear();
+                        }
+                    }
+                    cx.toast(ToastKind::Error, e);
+                }
+            }
         }
         FabricEvent::Detail { item_id, result } => match result {
             Ok(target) => {

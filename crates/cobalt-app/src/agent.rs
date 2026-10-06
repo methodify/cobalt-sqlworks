@@ -81,6 +81,8 @@ impl CobaltApp {
                     "cells": cells,
                     "selected_cell": t.notebook.as_deref().map(|nb| nb.selected),
                     "kernel": t.notebook.as_deref().map(|nb| if nb.kernel == crate::state::NotebookKernel::Spark { "spark" } else { "connection" }),
+                    "lakehouse": t.notebook.as_deref().and_then(|nb| nb.fabric.as_ref()).map(|b| json!({"workspace_id": b.workspace_id, "lakehouse_id": b.lakehouse_id, "write_mode": b.write_mode})),
+                    "fabric_item": t.fabric_item.as_ref().map(|fi| json!({"id": fi.item.id, "name": fi.item.display_name, "workspace_id": fi.item.workspace_id, "saving": fi.saving})),
                     "active": self.state.active_tab == Some(i),
                     "dirty": t.is_dirty(),
                     "profile": t.profile.as_ref().map(|p| p.display_name()),
@@ -113,6 +115,7 @@ impl CobaltApp {
             "groups": self.state.library.groups.iter().map(|g| json!({"id": g.id.to_string(), "name": g.name})).collect::<Vec<_>>(),
             "dialog": if self.state.dialog.is_open() { format!("{}", dialog_name(&self.state.dialog)) } else { "none".into() },
             "kernel": kernel_json(&self.state.kernel),
+            "toasts": self.state.recent_toasts.iter().cloned().collect::<Vec<_>>(),
             "sidebar": format!("{:?}", self.state.sidebar_view),
             "theme": if self.theme.is_dark() { "dark" } else { "light" },
         })
@@ -157,6 +160,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
     use crate::state::Dialog::*;
     match d {
         None => "none",
+        ConfirmFabricSave { .. } => "confirm_fabric_save",
         Connection(_) => "connection",
         Password { .. } => "password",
         AuthWaiting { .. } => "auth_waiting",
@@ -193,6 +197,10 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "profile": k.profile,
         "info": info,
         "log_tail": k.log.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
+        "fabric": k.fabric.as_ref().map(|f| json!({"workspace_id": f.workspace_id, "workspace": f.workspace_name, "lakehouses": f.lakehouses, "default_lakehouse": f.default_lakehouse, "write_mode": f.write_mode})),
+        "pending_fabric_start": k.pending_fabric_start.is_some(),
+        "token_requests": k.token_requests(),
+        "token_error": k.token_error(),
     })
 }
 
@@ -846,6 +854,15 @@ impl AgentApp for CobaltApp {
                         let ok = self.with_ctx(egui, |s, cx| crate::notebook::open_path(s, cx, std::path::PathBuf::from(path)));
                         ActionResult::with(&json!({"opened": ok, "tab": self.state.active_tab}))
                     }
+                    "open_fabric" => {
+                        // {item: id or display name, copy?}
+                        let Some(item) = arg_str(args, "item") else { return ActionResult::BadArgs("item is required".into()) };
+                        let copy = args.and_then(|a| a.get("copy")).and_then(|v| v.as_bool()).unwrap_or(false);
+                        let id = self.state.fabric.notebooks.values().filter_map(|l| l.get()).flatten().find(|n| n.id == item || n.display_name.eq_ignore_ascii_case(&item)).map(|n| n.id.clone());
+                        let Some(id) = id else { return ActionResult::BadArgs("unknown notebook (expand the workspace in the Fabric panel first)".into()) };
+                        self.with_ctx(egui, |s, cx| crate::fabric::open_notebook(s, cx, &id, copy));
+                        ActionResult::ok()
+                    }
                     _ if !is_nb => ActionResult::Rejected("the active tab is not a notebook".into()),
                     "save" => {
                         let i = idx.unwrap();
@@ -856,6 +873,36 @@ impl AgentApp for CobaltApp {
                         ActionResult::with(&json!({"dirty": self.state.tabs[i].is_dirty(), "file_path": self.state.tabs[i].file_path}))
                     }
                     "cells" => ActionResult::with(&self.state_json()["tabs"][idx.unwrap()]["cells"]),
+                    "set_lakehouse" => {
+                        // {workspace?, lakehouse?, write_mode?}: workspace/lakehouse by id or name; omit workspace to unbind
+                        let i = idx.unwrap();
+                        let ws_arg = arg_str(args, "workspace");
+                        let Some(ws_arg) = ws_arg else {
+                            crate::notebook::set_fabric(&mut self.state, i, None);
+                            return ActionResult::ok();
+                        };
+                        let ws_id = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone()));
+                        let Some(ws_id) = ws_id else { return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into()) };
+                        let lh_id = match arg_str(args, "lakehouse") {
+                            Some(l) => match self.state.fabric.lakehouses(&ws_id).and_then(|v| v.into_iter().find(|(n, id)| *id == l || n.eq_ignore_ascii_case(&l)).map(|(_, id)| id)) {
+                                Some(id) => Some(id),
+                                None => return ActionResult::BadArgs("unknown lakehouse (workspace items not loaded?)".into()),
+                            },
+                            None => None,
+                        };
+                        let current_mode = self.state.tabs[i].notebook.as_deref().and_then(|nb| nb.fabric.as_ref().map(|f| f.write_mode.clone())).unwrap_or_else(|| "sandbox".into());
+                        let write_mode = arg_str(args, "write_mode").unwrap_or(current_mode);
+                        crate::notebook::set_fabric(&mut self.state, i, Some(crate::state::NotebookFabric { workspace_id: ws_id, lakehouse_id: lh_id, write_mode }));
+                        ActionResult::ok()
+                    }
+                    "save_fabric" => {
+                        let i = idx.unwrap();
+                        if self.state.tabs[i].fabric_item.is_none() {
+                            return ActionResult::Rejected("this notebook is not bound to a Fabric item".into());
+                        }
+                        self.with_ctx(egui, |s, cx| crate::fabric::save_notebook(s, cx, i));
+                        ActionResult::ok()
+                    }
                     "set_kernel" => {
                         let k = match arg_str(args, "kernel").as_deref() {
                             Some("spark") => crate::state::NotebookKernel::Spark,
@@ -970,12 +1017,56 @@ impl AgentApp for CobaltApp {
                     other => ActionResult::BadArgs(format!("unknown notebook action {other}")),
                 }
             }
+            "fabric_notebooks" => {
+                // {workspace?: id or name} → notebooks listed so far (loads the workspace when needed)
+                let ws = arg_str(args, "workspace");
+                let ws_id = ws.as_ref().and_then(|w| self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|x| x.id == *w || x.display_name.eq_ignore_ascii_case(w)).map(|x| x.id.clone())));
+                if let Some(id) = &ws_id {
+                    if !self.state.fabric.items.contains_key(id) {
+                        let id2 = id.clone();
+                        self.with_ctx(egui, |s, cx| crate::fabric::load_items(s, cx, &id2));
+                    }
+                }
+                let list: Vec<Value> = self.state.fabric.notebooks.iter().filter(|(k, _)| ws_id.as_ref().map(|w| *k == w).unwrap_or(true)).flat_map(|(ws, l)| l.get().into_iter().flatten().map(move |n| json!({"id": n.id, "name": n.display_name, "workspace_id": ws}))).collect();
+                let loading: Vec<&String> = self.state.fabric.notebooks.iter().filter(|(_, l)| l.is_loading()).map(|(k, _)| k).collect();
+                ActionResult::with(&json!({"notebooks": list, "loading": loading, "fabric_status": format!("{:?}", self.state.fabric.status()), "workspaces": self.state.fabric.workspaces.get().map(|v| v.iter().map(|w| json!({"id": w.id, "name": w.display_name})).collect::<Vec<_>>())}))
+            }
+            "fabric_scopes" => {
+                // the scopes granted on the cached Fabric API token (diagnostics)
+                let Some(slot) = self.state.fabric.slot else { return ActionResult::Rejected("not signed in to Fabric".into()) };
+                let tenant = self.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty());
+                let resolver = self.resolver.clone();
+                let r = self.session.handle().block_on(async move { resolver.resource_token_silent(slot, cobalt_auth::provider::FABRIC_API_RESOURCE, tenant.as_deref()).await });
+                match r {
+                    Ok(Some(ts)) => ActionResult::with(&json!({"scopes": ts.access.scope, "expires_at": ts.access.expires_at.to_rfc3339(), "account": ts.account.username})),
+                    Ok(None) => ActionResult::with(&json!({"scopes": null})),
+                    Err(e) => ActionResult::Rejected(e.to_string()),
+                }
+            }
+            "shadows" => {
+                // {action: status|discard|discard_written|restore, table?}
+                let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
+                match action.as_str() {
+                    "status" => crate::notebook::refresh_shadows(&mut self.state),
+                    "discard" => crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({})),
+                    "discard_written" => crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({"only": "written"})),
+                    "restore" => {
+                        let Some(t) = arg_str(args, "table") else { return ActionResult::BadArgs("table is required".into()) };
+                        crate::notebook::shadows_action(&mut self.state, "restore_shadow", json!({"table": t, "version": args.and_then(|a| a.get("version")).and_then(|v| v.as_u64()).unwrap_or(0)}));
+                    }
+                    other => return ActionResult::BadArgs(format!("unknown shadows action {other}")),
+                }
+                self.state.shadows.open = true;
+                egui.request_repaint();
+                let sh = &self.state.shadows;
+                ActionResult::with(&json!({"loading": sh.loading, "status": sh.status, "error": sh.error, "note": sh.note}))
+            }
             "kernel" => {
                 let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
                 match action.as_str() {
                     "status" => {}
                     "start" => {
-                        if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, egui) {
+                        if crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, egui, None).is_err() {
                             return ActionResult::Rejected("runtime not provisioned".into());
                         }
                     }

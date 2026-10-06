@@ -135,6 +135,10 @@ pub fn save(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
     if t.notebook.is_none() {
         return ops::save_file(state, cx, idx, save_as);
     }
+    if t.fabric_item.is_some() && !save_as {
+        state.dialog = Dialog::ConfirmFabricSave { tab_index: idx };
+        return;
+    }
     let path = match (&t.file_path, save_as) {
         (Some(p), false) => p.clone(),
         _ => {
@@ -157,10 +161,141 @@ pub fn save(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
             t.file_path = Some(path.clone());
             t.title = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or(t.title.clone());
             t.custom_title = true;
+            t.fabric_item = None; // a local copy from here on
             t.mark_saved();
             state.flash(format!("Saved {}", path.display()));
         }
         Err(e) => cx.toast(ToastKind::Error, format!("Save failed: {e}")),
+    }
+}
+
+/// A notebook fetched from Fabric: `copy` opens it as a detached local notebook.
+pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::FabricItem, def: cobalt_fabric::ItemDefinition, copy: bool) {
+    use base64::Engine;
+    let decode = |p: &cobalt_fabric::DefinitionPart| base64::engine::general_purpose::STANDARD.decode(p.payload.trim()).ok().and_then(|b| String::from_utf8(b).ok());
+    let (nb, warnings) = if let Some(p) = def.part_with_suffix(".ipynb") {
+        match decode(p).ok_or_else(|| "bad base64".to_string()).and_then(|t| Notebook::parse(&t).map_err(|e| e.to_string())) {
+            Ok(nb) => (nb, Vec::new()),
+            Err(e) => {
+                cx.toast(ToastKind::Error, format!("Could not read {}: {e}", item.display_name));
+                return;
+            }
+        }
+    } else if let Some(p) = def.part_with_suffix(".py") {
+        match decode(p) {
+            Some(t) => Notebook::from_fabric_py(&t),
+            None => {
+                cx.toast(ToastKind::Error, format!("Could not read {}: bad base64", item.display_name));
+                return;
+            }
+        }
+    } else {
+        cx.toast(ToastKind::Error, format!("{} has no notebook content ({} parts)", item.display_name, def.parts.len()));
+        return;
+    };
+    let platform = def.part(".platform").cloned();
+    let title = if copy { format!("{} (copy).ipynb", item.display_name) } else { item.display_name.clone() };
+    let idx = install(state, cx, nb, None, title);
+    let t = &mut state.tabs[idx];
+    if !copy {
+        t.fabric_item = Some(FabricItemRef { item: item.clone(), platform, saving: false });
+    }
+    if let Some(nbs) = t.notebook.as_deref_mut() {
+        nbs.warnings = warnings;
+        // a Fabric notebook's lakehouse lives in its workspace unless the metadata says otherwise
+        if nbs.fabric.is_none() {
+            nbs.fabric = Some(NotebookFabric { workspace_id: item.workspace_id.clone(), lakehouse_id: None, write_mode: "sandbox".into() });
+        }
+    }
+    state.flash(format!("Opened {} from Fabric{}", item.display_name, if copy { " as a copy" } else { "" }));
+}
+
+/// Bind a notebook to a workspace / default lakehouse / write mode; the metadata follows so
+/// Fabric sees the same default lakehouse.
+pub fn set_fabric(state: &mut AppState, idx: usize, binding: Option<NotebookFabric>) {
+    let names: Option<(String, Option<String>)> = binding.as_ref().map(|b| (state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), b.lakehouse_id.as_ref().and_then(|id| state.fabric.lakehouses(&b.workspace_id).and_then(|v| v.into_iter().find(|(_, i)| i == id).map(|(n, _)| n)))));
+    let Some(nb) = state.tabs.get_mut(idx).and_then(|t| t.notebook.as_deref_mut()) else { return };
+    nb.fabric = binding.clone();
+    let deps = nb.nb.metadata.entry("dependencies").or_insert_with(|| serde_json::Value::Object(Default::default()));
+    if let serde_json::Value::Object(d) = deps {
+        match (&binding, names) {
+            (Some(b), Some((_, lh_name))) if b.lakehouse_id.is_some() => {
+                let id = b.lakehouse_id.clone().unwrap_or_default();
+                let mut lh = serde_json::Map::new();
+                lh.insert("default_lakehouse".into(), serde_json::Value::String(id.clone()));
+                if let Some(n) = lh_name {
+                    lh.insert("default_lakehouse_name".into(), serde_json::Value::String(n));
+                }
+                lh.insert("default_lakehouse_workspace_id".into(), serde_json::Value::String(b.workspace_id.clone()));
+                lh.insert("known_lakehouses".into(), serde_json::json!([{"id": id}]));
+                d.insert("lakehouse".into(), serde_json::Value::Object(lh));
+            }
+            _ => {
+                d.remove("lakehouse");
+            }
+        }
+    }
+    nb.dirty = true;
+}
+
+/// Resolve a notebook's binding into the session config. `Err(true)` = still loading the
+/// workspace's items (try again on the Items event); `Err(false)` = cannot bind (told the user).
+fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<crate::kernel::KernelFabric>, bool> {
+    let Some(b) = state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone()) else { return Ok(None) };
+    let Some(slot) = state.fabric.slot else {
+        if state.fabric.status() == crate::fabric::FabricStatus::SignedOut {
+            crate::fabric::on_panel_shown(state, cx);
+        }
+        if state.fabric.slot.is_none() {
+            cx.toast(ToastKind::Warning, "This notebook uses a Fabric lakehouse: sign in on the Fabric panel first, then run the cell again.");
+            state.sidebar_visible = true;
+            state.sidebar_view = SidebarView::Fabric;
+            return Err(false);
+        }
+        return Err(true);
+    };
+    let lakehouses = match state.fabric.lakehouses(&b.workspace_id) {
+        Some(v) => v,
+        None => {
+            if !state.fabric.items.get(&b.workspace_id).map(|l| l.is_loading()).unwrap_or(false) {
+                if state.fabric.workspaces.get().is_none() {
+                    crate::fabric::load_workspaces(state, cx);
+                }
+                crate::fabric::load_items(state, cx, &b.workspace_id);
+            }
+            return Err(true);
+        }
+    };
+    let default_lakehouse = b.lakehouse_id.as_ref().and_then(|id| lakehouses.iter().find(|(_, i)| i == id).map(|(n, _)| n.clone()));
+    if b.lakehouse_id.is_some() && default_lakehouse.is_none() {
+        cx.toast(ToastKind::Warning, "The notebook's default lakehouse is not in that workspace any more; pick one from the lakehouse button.");
+    }
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()) }))
+}
+
+/// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).
+pub fn pump_all_spark(state: &mut AppState, cx: &Ctx) {
+    let tabs: Vec<TabId> = state.tabs.iter().filter(|t| t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark && !nb.queue.is_empty()).unwrap_or(false)).map(|t| t.id).collect();
+    for tab in tabs {
+        pump(state, cx, tab, false);
+    }
+}
+
+/// Ask the running session for its shadow state (the Shadows window).
+pub fn refresh_shadows(state: &mut AppState) {
+    if crate::kernel::call(&mut state.kernel, "shadows", "shadow_status", serde_json::json!({})) {
+        state.shadows.loading = true;
+        state.shadows.error = None;
+    } else {
+        state.shadows.status = None;
+        state.shadows.error = Some("the local Spark session is not running".into());
+    }
+}
+
+pub fn shadows_action(state: &mut AppState, method: &str, params: serde_json::Value) {
+    if crate::kernel::call(&mut state.kernel, "shadows-action", method, params) {
+        state.shadows.loading = true;
+        state.shadows.error = None;
     }
 }
 
@@ -486,7 +621,27 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
     // the kernel must be up or starting
     match &state.kernel.state {
         KernelState::Stopped | KernelState::Failed(_) => {
-            if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui) {
+            if state.kernel.pending_fabric_start.is_some() {
+                return; // the OneLake token is on its way; cells stay queued
+            }
+            let fabric = match kernel_fabric(state, cx, idx) {
+                Ok(f) => f,
+                Err(true) => return,
+                Err(false) => {
+                    if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+                        nb.queue.clear();
+                    }
+                    return;
+                }
+            };
+            if let Some(f) = fabric {
+                // a OneLake token first (may need the browser); the Fabric event starts the kernel
+                let slot = f.slot;
+                state.kernel.pending_fabric_start = Some(f);
+                crate::fabric::prepare_onelake(state, cx, slot);
+                return;
+            }
+            if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
                 if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
                     nb.queue.clear();
                 }
@@ -494,6 +649,23 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
                 state.settings_open = true;
                 state.settings_scroll_to = Some("Spark runtime");
                 return;
+            }
+        }
+        KernelState::Ready { .. } => {
+            // warn once per notebook when its binding differs from the running session's
+            if !state.kernel.binding_warned.contains(&tab) {
+                if let Ok(want) = kernel_fabric(state, cx, idx) {
+                    let differs = match (&want, &state.kernel.fabric) {
+                        (None, None) => false,
+                        (Some(a), Some(b)) => !a.same_binding(b),
+                        _ => true,
+                    };
+                    if differs {
+                        state.kernel.binding_warned.insert(tab);
+                        let have = state.kernel.fabric.as_ref().map(|f| f.label()).unwrap_or_else(|| "no lakehouse".into());
+                        cx.toast(ToastKind::Warning, format!("The running Spark session is bound to {have}. Restart the session (status bar) to use this notebook's lakehouse binding."));
+                    }
+                }
             }
         }
         _ => {}
@@ -546,6 +718,32 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
 /// cells; a kernel that died fails the cells still marked running.
 pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     let out = crate::kernel::poll(&mut state.kernel);
+    for (tag, result) in out.calls {
+        match tag.as_str() {
+            "shadows" => {
+                state.shadows.loading = false;
+                match result {
+                    Ok(v) => state.shadows.status = Some(v),
+                    Err(e) => state.shadows.error = Some(e),
+                }
+            }
+            "shadows-action" => {
+                state.shadows.loading = false;
+                match result {
+                    Ok(v) => {
+                        state.shadows.note = Some(v.to_string());
+                        refresh_shadows(state);
+                    }
+                    Err(e) => state.shadows.error = Some(e),
+                }
+            }
+            _ => {}
+        }
+    }
+    if out.broke.is_some() {
+        state.shadows.status = None;
+        state.shadows.loading = false;
+    }
     let mut followups = Vec::new();
     let mut pumps: Vec<(TabId, bool)> = Vec::new();
     for (req, result) in out.done {

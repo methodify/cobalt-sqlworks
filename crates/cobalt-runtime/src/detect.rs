@@ -236,6 +236,21 @@ pub fn venv_python_version(env_dir: &Path) -> Option<String> {
     })
 }
 
+/// local-spark-mcp's bundled catalog/token-provider jar for a Scala line, inside a venv.
+pub fn package_jar(env_dir: &Path, scala: &str) -> Option<PathBuf> {
+    let site: Vec<PathBuf> = if cfg!(windows) { vec![env_dir.join("Lib").join("site-packages")] } else { glob_dirs(&env_dir.join("lib")).into_iter().map(|p| p.join("site-packages")).collect() };
+    let prefix = format!("localsparkjars_{scala}-");
+    for sp in site {
+        let jars = sp.join("local_spark_mcp").join("jars");
+        let mut found: Vec<PathBuf> = std::fs::read_dir(&jars).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.file_name().map(|n| n.to_string_lossy().starts_with(&prefix) && n.to_string_lossy().ends_with(".jar")).unwrap_or(false)).collect()).unwrap_or_default();
+        found.sort();
+        if let Some(j) = found.pop() {
+            return Some(j);
+        }
+    }
+    None
+}
+
 /// Installed `local-spark-mcp` version inside a venv (from the dist-info folder name).
 pub fn installed_package_version(env_dir: &Path, dist: &str) -> Option<String> {
     let site = if cfg!(windows) {

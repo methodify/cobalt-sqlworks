@@ -41,14 +41,25 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     for c in std::mem::take(&mut f.state.pending_commands) {
         dispatch(f, c);
     }
-    // a restart finishes once the old session is gone
+    // a restart finishes once the old session is gone; it rebinds to the active notebook
     if f.state.kernel_restart_pending && matches!(f.state.kernel.state, crate::kernel::KernelState::Stopped | crate::kernel::KernelState::Failed(_)) && f.state.kernel.busy.is_none() {
         f.state.kernel_restart_pending = false;
-        if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut f.state.kernel, f.cx.settings, f.cx.paths, f.cx.egui) {
+        let active_nb = f.state.active_tab.filter(|i| f.state.tabs[*i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
+        if let Some(i) = active_nb {
+            // run through the normal path: binding resolution, OneLake token, start
+            if let Some(nb) = f.state.tabs[i].notebook.as_deref_mut() {
+                if nb.queue.is_empty() {
+                    nb.queue.push_back(String::new()); // a no-op marker so pump starts the session
+                }
+            }
+            let tab = f.state.tabs[i].id;
+            crate::notebook::pump(f.state, f.cx, tab, false);
+        } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut f.state.kernel, f.cx.settings, f.cx.paths, f.cx.egui, None) {
             f.cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings → Spark runtime).");
         }
     }
     kernel_log_window(ctx, f);
+    shadows_window(ctx, f);
     // overlays
     if let Some(item) = palette::show(ui, f.state, f.theme, f.keymap) {
         match item {
@@ -144,6 +155,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::KernelRestart);
                 item(ui, &mut cmds, Command::KernelStop);
                 item(ui, &mut cmds, Command::KernelLog);
+                item(ui, &mut cmds, Command::Shadows);
                 item(ui, &mut cmds, Command::RefreshIntelliSense);
             });
             ui.menu_button("Results", |ui| {
@@ -447,6 +459,114 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);
+    }
+}
+
+/// Sandbox clones of OneLake tables in the running session: inspect, discard, rewind.
+fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
+    if !f.state.shadows.open {
+        return;
+    }
+    let theme = f.theme;
+    let mut open = true;
+    let mut action: Option<(&'static str, serde_json::Value)> = None;
+    let mut refresh = false;
+    {
+        let sh = &f.state.shadows;
+        let k = &f.state.kernel;
+        egui::Window::new("Lakehouse shadows").id(egui::Id::new("shadows-window")).open(&mut open).default_size([640.0, 360.0]).resizable(true).show(ctx, |ui| {
+            match &k.fabric {
+                Some(fb) => {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{} · workspace {}", fb.label(), fb.workspace_name)).strong());
+                        if let Some(n) = k.token_requests() {
+                            ui.label(RichText::new(format!("· {n} OneLake token request{}", if n == 1 { "" } else { "s" })).size(11.0).color(theme.text_faint));
+                        }
+                    });
+                    if let Some(e) = k.token_error() {
+                        ui.label(RichText::new(format!("OneLake token endpoint: {e}")).size(11.0).color(theme.error));
+                    }
+                }
+                None => {
+                    ui.label(RichText::new("The running session has no lakehouse binding (or is not running). Bind a notebook with the lakehouse button and restart the session.").color(theme.text_muted));
+                }
+            }
+            ui.label(RichText::new("In sandbox mode the first touch of a lakehouse table makes a Delta shallow clone here; reads and writes hit the clone, OneLake stays untouched. Discard to re-clone from OneLake next time; rewind to the clone's first version to drop local writes.").size(11.0).color(theme.text_muted));
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!sh.loading, egui::Button::new("Refresh")).clicked() {
+                    refresh = true;
+                }
+                let has = sh.status.as_ref().and_then(|s| s.get("tables")).and_then(|t| t.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+                if ui.add_enabled(!sh.loading && has, egui::Button::new("Discard all")).on_hover_text("Drop every clone; OneLake is not affected").clicked() {
+                    action = Some(("discard_shadow", serde_json::json!({})));
+                }
+                if ui.add_enabled(!sh.loading && has, egui::Button::new("Discard written")).on_hover_text("Drop only the clones that local writes changed").clicked() {
+                    action = Some(("discard_shadow", serde_json::json!({"only": "written"})));
+                }
+                if sh.loading {
+                    ui.spinner();
+                }
+            });
+            if let Some(e) = &sh.error {
+                ui.label(RichText::new(e).color(theme.error));
+            }
+            if let Some(n) = &sh.note {
+                ui.label(RichText::new(n).size(11.0).color(theme.text_faint));
+            }
+            if let Some(st) = &sh.status {
+                ui.label(RichText::new(format!("write mode {} · shadow root {}", st.get("write_mode").and_then(|v| v.as_str()).unwrap_or("?"), st.get("shadow_root").and_then(|v| v.as_str()).unwrap_or("?"))).size(11.0).color(theme.text_muted));
+                let tables = st.get("tables").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                if tables.is_empty() {
+                    ui.label(RichText::new("No clones yet — nothing has touched a lakehouse table this session.").color(theme.text_faint));
+                } else {
+                    egui::Grid::new("shadows-grid").striped(true).num_columns(5).spacing([12.0, 4.0]).show(ui, |ui| {
+                        ui.label(RichText::new("Lakehouse").strong());
+                        ui.label(RichText::new("Table").strong());
+                        ui.label(RichText::new("State").strong());
+                        ui.label(RichText::new("Version").strong());
+                        ui.label("");
+                        ui.end_row();
+                        for t in &tables {
+                            let lh = t.get("lakehouse").and_then(|v| v.as_str()).unwrap_or("");
+                            let tb = t.get("table").and_then(|v| v.as_str()).unwrap_or("");
+                            let state_s = t.get("state").and_then(|v| v.as_str()).unwrap_or("");
+                            ui.label(lh);
+                            ui.label(tb);
+                            ui.label(RichText::new(state_s).color(if state_s == "written" { theme.warning } else { theme.text_muted }));
+                            ui.label(t.get("version").map(|v| v.to_string()).unwrap_or_default());
+                            ui.horizontal(|ui| {
+                                if ui.small_button("Discard").clicked() {
+                                    action = Some(("discard_shadow_one", serde_json::json!({"lakehouse": lh, "table": tb})));
+                                }
+                                if state_s == "written" && ui.small_button("Rewind").on_hover_text("Back to the clone's first version (drops local writes)").clicked() {
+                                    action = Some(("restore_shadow", serde_json::json!({"table": format!("{lh}.{tb}"), "version": 0})));
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+                }
+                let dv = st.get("deletion_vector_tables").and_then(|t| t.as_array()).cloned().unwrap_or_default();
+                if !dv.is_empty() {
+                    ui.label(RichText::new(format!("{} table{} with deletion vectors are live read-only views", dv.len(), if dv.len() == 1 { "" } else { "s" })).size(11.0).color(theme.text_faint));
+                }
+            }
+        });
+    }
+    if !open {
+        f.state.shadows.open = false;
+    }
+    if refresh {
+        crate::notebook::refresh_shadows(f.state);
+    }
+    if let Some((method, params)) = action {
+        if method == "discard_shadow_one" {
+            // the worker drops shadows by state, not by name: rewind to the clone, then drop it as "read"
+            let table = format!("{}.{}", params.get("lakehouse").and_then(|v| v.as_str()).unwrap_or(""), params.get("table").and_then(|v| v.as_str()).unwrap_or(""));
+            crate::notebook::shadows_action(f.state, "restore_shadow", serde_json::json!({"table": table, "version": 0}));
+        } else {
+            crate::notebook::shadows_action(f.state, method, params);
+        }
     }
 }
 
@@ -952,6 +1072,10 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                             cmd = Some(Command::KernelLog);
                             ui.close();
                         }
+                        if ui.button("Lakehouse shadows…").clicked() {
+                            cmd = Some(Command::Shadows);
+                            ui.close();
+                        }
                     });
                     if r.clicked() {
                         cmd = Some(Command::KernelLog);
@@ -1121,6 +1245,12 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::KernelRestart => {
             crate::kernel::stop(&mut state.kernel);
             state.kernel_restart_pending = true;
+        }
+        Command::Shadows => {
+            state.shadows.open = !state.shadows.open;
+            if state.shadows.open {
+                crate::notebook::refresh_shadows(state);
+            }
         }
         Command::KernelStop => crate::kernel::stop(&mut state.kernel),
         Command::KernelLog => state.kernel.log_open = !state.kernel.log_open,

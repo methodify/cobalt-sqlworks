@@ -149,7 +149,14 @@ driver memory UI (the setting exists), per-worker environment variables, a true 
   frames; images (`display_data` PNG) rendered inline.
 - Driver memory and extra Spark confs in settings; environment variables for workers.
 
-### 0.9 — OneLake and Fabric
+### 0.9 — OneLake and Fabric (shipped 2026-10-06 as slate 3; notes below)
+
+Shipped: Cobalt's loopback token endpoint (`crates/cobalt-app/src/onelake_tokens.rs`), lakehouse
+registration and write modes per notebook (`NotebookFabric`, written into `dependencies.lakehouse`),
+the Shadows window, Notebook items in the explorer with open / open-a-copy / save-back through
+`getDefinition` / `updateDefinition` (needs `Item.ReadWrite.All`; blocked on the test tenant's
+registration at the time of writing). Not yet: Files mirror and sync, parameters cell and "Run
+with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client call exists).
 
 - Cobalt's own loopback token endpoint; lakehouse registration from the explorer; default
   lakehouse per notebook; write modes with the Shadows panel; Files mirror and sync.

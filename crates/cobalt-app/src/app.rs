@@ -244,6 +244,13 @@ impl CobaltApp {
     }
 
     fn flush_toasts(&mut self, list: Vec<(ToastKind, String)>) {
+        for (k, m) in &list {
+            tracing::info!(target: "cobalt::toast", "{k:?}: {m}");
+            self.state.recent_toasts.push_back(format!("{k:?}: {m}"));
+            if self.state.recent_toasts.len() > 20 {
+                self.state.recent_toasts.pop_front();
+            }
+        }
         for (kind, msg) in list {
             let t = match kind {
                 ToastKind::Info => self.toasts.info(msg),

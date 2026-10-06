@@ -167,6 +167,38 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::Group { group, is_new };
             }
         }
+        Dialog::ConfirmFabricSave { tab_index } => {
+            let (name, ws) = f.state.tabs.get(tab_index).and_then(|t| t.fabric_item.as_ref()).map(|fi| (fi.item.display_name.clone(), f.state.fabric.workspace(&fi.item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default())).unwrap_or_default();
+            let mut choice = 0;
+            let (_, close) = modal(ctx, theme, "confirm-fabric-save", 420.0, |ui| {
+                ui.heading("Save to Fabric");
+                ui.label(format!("Replace the notebook \"{name}\" in workspace \"{ws}\" with this version? Fabric keeps no history of the previous definition."));
+                ui.add_space(4.0);
+                ui.label(RichText::new("Save As… writes a local .ipynb instead and detaches the tab from Fabric.").size(11.0).color(theme.text_faint));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, theme, "Save to Fabric", true).clicked() {
+                        choice = 1;
+                    }
+                    if ui.button("Save As…").clicked() {
+                        choice = 2;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        choice = 3;
+                    }
+                });
+            });
+            match choice {
+                1 => crate::fabric::save_notebook(f.state, f.cx, tab_index),
+                2 => crate::notebook::save(f.state, f.cx, tab_index, true),
+                3 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::ConfirmFabricSave { tab_index };
+                    }
+                }
+            }
+        }
         Dialog::ConfirmClose { tab_index } => {
             let title = f.state.tabs.get(tab_index).map(|t| t.title.clone()).unwrap_or_default();
             let mut choice = 0;

@@ -87,7 +87,13 @@ progress bar and the first notebook does not wait on Maven.
 like interim frames (`{"id", "event": "stdout", "text": ...}`) before the final response.
 Optional; the final-only form is acceptable for a first release.
 
-## 7. Small things
+## 7. Discard one shadow
+
+`discard_shadow(only)` filters by state (`read` / `written`), not by name. A per-table variant
+(`discard_shadow(table="lakehouse.table")`) would let a UI offer "Discard" next to one clone
+without rewinding it first.
+
+## 8. Small things
 
 - `info` could include `java_home`, `python`, `hadoop_home`, `ivy_dir` as resolved, so the
   host can show them without re-deriving.

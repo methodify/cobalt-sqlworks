@@ -32,6 +32,8 @@ cobalt-fabric.workspace = true
 cobalt-notebook.workspace = true
 cobalt-runtime.workspace = true
 egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }
+tiny_http.workspace = true
+base64.workspace = true
 
 egui.workspace = true
 eframe.workspace = true

@@ -143,6 +143,31 @@ if not __cobalt_hooked:
     print("cobalt: display hook not installed", file=__sys.stderr)
 "#;
 
+/// A session bound to a Fabric workspace: lakehouses become Spark databases, OneLake is read
+/// through the token endpoint, and writes follow `write_mode` (sandbox = shallow clones).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KernelFabric {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    /// `(name, id)` of every lakehouse in the workspace.
+    pub lakehouses: Vec<(String, String)>,
+    pub default_lakehouse: Option<String>,
+    /// `sandbox`, `readonly` or `writethrough`.
+    pub write_mode: String,
+    pub slot: cobalt_core::ProfileId,
+    pub tenant: Option<String>,
+}
+
+impl KernelFabric {
+    pub fn label(&self) -> String {
+        format!("{}{} · {}", self.default_lakehouse.clone().unwrap_or_else(|| "no default lakehouse".into()), if self.workspace_name.is_empty() { String::new() } else { format!(" ({})", self.workspace_name) }, self.write_mode)
+    }
+    /// Same binding (ignoring the account fields).
+    pub fn same_binding(&self, other: &KernelFabric) -> bool {
+        self.workspace_id == other.workspace_id && self.default_lakehouse == other.default_lakehouse && self.write_mode == other.write_mode && self.lakehouses == other.lakehouses
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum KernelState {
     Stopped,
@@ -184,12 +209,15 @@ pub struct RunReq {
 enum Cmd {
     Start { cfg: WorkerConfig, bootstrap: String },
     Run(RunReq),
+    /// Any other worker method (shadow_status, discard_shadow, restore_shadow, info…).
+    Call { tag: String, method: String, params: Value },
     Shutdown,
 }
 
 pub enum KernelEvent {
     Ready(Value),
     Log(String),
+    CallResult { tag: String, result: Result<Value, String> },
     /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback…), or a
     /// transport-level error.
     Done { req: RunReq, result: Result<Value, String> },
@@ -211,25 +239,51 @@ pub struct KernelUi {
     cancel: Arc<AtomicBool>,
     /// Arrow files written by the worker, cleared when a cell's outputs are consumed.
     pub out_dir: Option<PathBuf>,
+    /// The Fabric binding this session was started with (None = plain local session).
+    pub fabric: Option<KernelFabric>,
+    /// A Fabric-bound start waiting for its OneLake token (interactive sign-in may be running).
+    pub pending_fabric_start: Option<KernelFabric>,
+    token_server: Option<crate::onelake_tokens::TokenServer>,
+    /// Notebooks already warned that their binding differs from the running session's.
+    pub binding_warned: std::collections::HashSet<TabId>,
 }
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default() }
+    }
+}
+
+impl KernelUi {
+    pub fn token_requests(&self) -> Option<u64> {
+        self.token_server.as_ref().map(|t| t.served.load(Ordering::Relaxed))
+    }
+    pub fn token_error(&self) -> Option<String> {
+        self.token_server.as_ref().and_then(|t| t.last_error.lock().clone())
     }
 }
 
 /// Why a start was refused.
 pub enum StartError {
     NotProvisioned,
+    /// The catalog/token-provider jar is missing from the environment.
+    NoJar,
+    TokenServer(String),
 }
 
 fn python_bootstrap(out_dir: &std::path::Path, limit: u64) -> String {
     BOOTSTRAP.replace("{out_dir}", &out_dir.to_string_lossy()).replace("{limit}", &limit.to_string())
 }
 
+/// Everything a Fabric-bound start needs from the app besides the settings.
+pub struct FabricStart {
+    pub fabric: KernelFabric,
+    pub resolver: Arc<cobalt_auth::CredentialResolver>,
+    pub handle: tokio::runtime::Handle,
+}
+
 /// Start the worker on its thread (no-op when starting or ready).
-pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egui::Context) -> Result<(), StartError> {
+pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egui::Context, fabric: Option<FabricStart>) -> Result<(), StartError> {
     if k.state.is_starting() || k.state.is_ready() {
         return Ok(());
     }
@@ -242,7 +296,26 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
     let jdk = settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from).or(rec.jdk_home);
     let out_dir = dirs.state_dir().join("outputs");
     let _ = std::fs::create_dir_all(&out_dir);
-    let cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, Default::default());
+    let mut extra = serde_json::Map::new();
+    k.token_server = None;
+    k.fabric = None;
+    if let Some(fs) = fabric {
+        let scala = cobalt_runtime::Manifest::embedded().profile(&profile).map(|p| p.scala.clone()).unwrap_or_else(|_| "2.13".into());
+        let jar = cobalt_runtime::detect::package_jar(&dirs.env_dir(&profile), &scala).ok_or(StartError::NoJar)?;
+        let ts = crate::onelake_tokens::TokenServer::start(fs.resolver.clone(), fs.fabric.slot, fs.fabric.tenant.clone(), fs.handle.clone()).map_err(|e| StartError::TokenServer(e.to_string()))?;
+        extra.insert("onelake".into(), json!({"endpoint": ts.url, "secret": ts.secret, "jar_path": jar.to_string_lossy()}));
+        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id})).collect()));
+        if let Some(d) = &fs.fabric.default_lakehouse {
+            extra.insert("default_lakehouse".into(), Value::String(d.clone()));
+        }
+        extra.insert("write_mode".into(), Value::String(fs.fabric.write_mode.clone()));
+        extra.insert("persist_shadow".into(), Value::Bool(false));
+        extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
+        k.token_server = Some(ts);
+        k.fabric = Some(fs.fabric);
+    }
+    k.binding_warned.clear();
+    let cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
     let bootstrap = python_bootstrap(&out_dir, settings.notebooks.spark_row_limit.max(1));
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();
@@ -342,6 +415,14 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                 }
                 egui.request_repaint();
             }
+            Cmd::Call { tag, method, params } => {
+                let result = match worker.as_mut() {
+                    Some(w) => w.call(&method, params, Duration::from_secs(600)).map_err(|e| e.to_string()),
+                    None => Err("the Spark kernel is not running".into()),
+                };
+                let _ = tx.send(KernelEvent::CallResult { tag, result });
+                egui.request_repaint();
+            }
             Cmd::Shutdown => {
                 if let Some(w) = worker.take() {
                     w.shutdown();
@@ -369,6 +450,17 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
     k.waiting.push(req);
 }
 
+/// Any worker method; the answer arrives as `PollOut::calls` under `tag`.
+pub fn call(k: &mut KernelUi, tag: &str, method: &str, params: Value) -> bool {
+    match (&k.tx, k.state.is_ready()) {
+        (Some(tx), true) => {
+            let _ = tx.send(Cmd::Call { tag: tag.into(), method: method.into(), params });
+            true
+        }
+        _ => false,
+    }
+}
+
 /// Abort the running cell (kills the worker; the next cell starts a new session) or a start.
 pub fn interrupt(k: &mut KernelUi) {
     k.cancel.store(true, Ordering::Relaxed);
@@ -393,6 +485,7 @@ pub struct PollOut {
     pub ready_now: bool,
     /// The session ended (stopped or failed) — cells still marked running must be failed.
     pub broke: Option<String>,
+    pub calls: Vec<(String, Result<Value, String>)>,
 }
 
 /// Drain events. Finished cells go back to the notebook layer; when the kernel just became
@@ -401,7 +494,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
     let mut done = Vec::new();
     let mut ready_now = false;
     let mut broke = None;
-    let Some(rx) = &k.rx else { return PollOut { done, ready_now, broke } };
+    let mut calls = Vec::new();
+    let Some(rx) = &k.rx else { return PollOut { done, ready_now, broke, calls } };
     let mut events = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         events.push(ev);
@@ -418,6 +512,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                     k.log.drain(..1000);
                 }
             }
+            KernelEvent::CallResult { tag, result } => calls.push((tag, result)),
             KernelEvent::Done { req, result } => {
                 if k.busy.as_ref().map(|(t, c)| *t == req.tab && *c == req.cell_id).unwrap_or(false) {
                     k.busy = None;
@@ -429,6 +524,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.busy = None;
                 k.tx = None;
                 k.waiting.clear();
+                k.token_server = None;
+                k.fabric = None;
                 broke = Some("the local Spark session stopped".to_string());
             }
             KernelEvent::Failed(e) => {
@@ -436,6 +533,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.busy = None;
                 k.tx = None;
                 k.waiting.clear();
+                k.token_server = None;
+                k.fabric = None;
                 broke = Some(e);
             }
         }
@@ -446,7 +545,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
             run(k, req);
         }
     }
-    PollOut { done, ready_now, broke }
+    PollOut { done, ready_now, broke, calls }
 }
 
 /// Split a worker `ExecResult` into messages and Arrow result sets for a cell.

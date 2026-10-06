@@ -49,3 +49,6 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
 - 0.8 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
   Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
   restarts the session because the protocol has no interrupt.
+- 0.9 (2026-10-06): the OneLake token endpoint lives in Cobalt and serves the Fabric account's
+  token; sessions bind to one workspace/lakehouse/write mode at start (restart to rebind); the
+  Fabric definition APIs need `Item.ReadWrite.All` on the app registration.

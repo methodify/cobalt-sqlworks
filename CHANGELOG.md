@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — 0.9.0 (notebooks, slate 3: OneLake and Fabric)
+
+- **Lakehouse-bound Spark sessions.** A notebook on the Local Spark kernel can be bound to a
+  Fabric workspace, a default lakehouse and a write mode (lakehouse button on the toolbar;
+  Fabric notebooks pick it up from their metadata and write it back). The session registers every
+  lakehouse in the workspace as a Spark database, so `test.sales_import` or `spark.table(...)`
+  just work; OneLake is read through a token endpoint inside Cobalt that serves the signed-in
+  Fabric account's storage token to the JVM (loopback only, per-start secret, no `az login`).
+  The first touch of a table makes a Delta **shallow clone** under the runtime folder:
+  **Sandbox** (default) reads and writes the clone and never touches OneLake; **Read only**
+  refuses writes; **Write through** makes tables external OneLake tables so writes land in the
+  lakehouse. A session keeps its binding until restarted; the toolbar warns when a notebook's
+  binding differs and offers the restart.
+- **Lakehouse shadows** (kernel menu, Query → Lakehouse Shadows…, or the lakehouse button): the
+  clones in the running session with their state (read / written) and version; Discard all,
+  Discard written, per-table Discard and Rewind to the clone's first version.
+- **Fabric notebooks in the explorer.** Workspaces list their Notebook items; double-click opens
+  one bound to the item (Save writes back after a confirmation through `updateDefinition`; Save
+  As… makes a local copy and detaches), "Open a copy" opens it detached, plus Open in Fabric
+  portal. Both the `.ipynb` and the Git `.py` definition forms are read. **Needs the delegated
+  permission `Item.ReadWrite.All` on the app registration** (reading and writing item definitions);
+  listing works with `Item.Read.All`, and the error says what to add when the scope is missing.
+- Fabric client: generic item listing, POST with long-running-operation polling,
+  `getDefinition` / `updateDefinition` / create notebook. Agent: `fabric_notebooks`,
+  `notebook {open_fabric|save_fabric|set_lakehouse}`, `shadows`, `fabric_scopes`; `state.toasts`.
+
 ## Unreleased — 0.8.0 (notebooks, slate 2: PySpark cells)
 
 - **Local Spark kernel**: a notebook's kernel button (toolbar, right) now offers *Local Spark*

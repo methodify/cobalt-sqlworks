@@ -288,6 +288,38 @@ The manifest (`crates/cobalt-runtime/manifest.json`) mirrors local-spark-mcp's `
 until that project publishes a machine-readable one; the asks are in
 `docs/requests/local-spark-mcp.md`. Agent: `runtime {action: status|install|smoke|cancel|remove|refresh}`.
 
+## OneLake-bound sessions, shadows, Fabric notebooks (0.9)
+
+On a Spark-kernel notebook the **lakehouse button** (toolbar, right) binds the session: workspace,
+default lakehouse, write mode. The binding is written into the notebook's metadata
+(`dependencies.lakehouse`), the same place Fabric keeps it, so a notebook opened from Fabric comes
+pre-bound and a notebook saved here opens in Fabric with the same default lakehouse. The first
+cell starts a session bound that way: Cobalt starts a loopback token endpoint that answers the
+JVM's token requests with the Fabric account's OneLake token (`OneLake.ReadWrite.All` on the
+Fabric API token, or an Azure Storage token when the registration has it), registers the
+workspace's lakehouses as databases and selects the default one. Tested live on the test tenant
+(2026-10-06): `SELECT COUNT(*) FROM test.sales_import` cloned the 20,000-row table in 12 s on
+first touch, `spark.table` + `display` showed it in the grid, an INSERT in sandbox mode made the
+clone "written" (version 1), Rewind took it back to version 0, Discard re-cloned on the next
+query, and in write-through mode `CREATE TABLE test.cobalt_nb_writethrough` landed in OneLake —
+a fresh sandbox session read it back from there (it is still in the lakehouse; drop it from the
+portal or a write-through cell when you no longer want it).
+
+**Shadows window** (kernel menu on the status bar, lakehouse button, Query → Lakehouse Shadows…):
+the clones in the running session, read vs written, version; Discard all / Discard written /
+per-table Discard and Rewind. A session keeps its binding until it is restarted; when the active
+notebook's binding differs, a warning chip on the toolbar restarts the session with it.
+
+**Fabric notebooks.** Workspaces in the Fabric panel now list their notebooks; double-click opens
+one bound to the item, Ctrl+S saves back after a confirmation (Fabric keeps no history, so the
+dialog says so), Save As… writes a local `.ipynb` and detaches. "Open a copy" opens it detached.
+**Blocked on this tenant until the app registration gets the delegated permission
+`Item.ReadWrite.All`** (Power BI Service / Fabric API): listing items works with
+`Item.Read.All`, but `getDefinition` and `updateDefinition` return 403 InsufficientScopes without
+it. After adding and consenting, sign out and in on the Fabric panel so the refresh token carries
+the new scope; `fabric_scopes` (agent) shows what the token has.
+Agent: `notebook {action: set_lakehouse, workspace, lakehouse?, write_mode?}`, `shadows {action: status|discard|discard_written|restore, table?}`, `fabric_notebooks {workspace?}`, `notebook {action: open_fabric, item, copy?}`, `notebook {action: save_fabric}`.
+
 ## Import Data from File
 
 Destination: a table in the tab's database, or *File or lakehouse…* to convert the file into any

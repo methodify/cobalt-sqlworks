@@ -219,6 +219,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                                 });
                             }
                         }
+                        // notebooks (open in a notebook tab; run on the local Spark session)
+                        if let Some(Loadable::Loaded(nbs)) = state.fabric.notebooks.get(&w.id) {
+                            for nb in nbs.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)) {
+                                notebook_row(ui, theme, nb, &mut actions);
+                            }
+                        }
                     }
                 }
             }
@@ -234,6 +240,28 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
         }
     });
     actions
+}
+
+fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, actions: &mut Vec<FabricAction>) {
+    let r = tree_row(ui, theme, 1, false, icons::NOTEBOOK, &nb.display_name, "notebook", &format!("fabric notebook {}", nb.display_name));
+    if r.double_clicked() {
+        actions.push(FabricAction::OpenNotebook { item_id: nb.id.clone(), copy: false });
+    }
+    r.context_menu(|ui| {
+        if ui.button("Open notebook").on_hover_text("Opens bound to the Fabric item: Save writes back").clicked() {
+            actions.push(FabricAction::OpenNotebook { item_id: nb.id.clone(), copy: false });
+            ui.close();
+        }
+        if ui.button("Open a copy").on_hover_text("A detached local notebook; saving never touches Fabric").clicked() {
+            actions.push(FabricAction::OpenNotebook { item_id: nb.id.clone(), copy: true });
+            ui.close();
+        }
+        if ui.button(format!("{} Open in Fabric portal", icons::ARROW_SQUARE_OUT)).clicked() {
+            let _ = open::that(nb.portal_url());
+            ui.close();
+        }
+    });
+    r.on_hover_text("Double-click: open in a notebook tab (PySpark cells run on the local Spark session, bound to this workspace's lakehouses)");
 }
 
 fn section(ui: &mut Ui, theme: &Theme, label: &str) {

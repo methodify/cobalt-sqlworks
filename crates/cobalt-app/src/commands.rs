@@ -34,6 +34,7 @@ pub enum Command {
     KernelRestart,
     KernelStop,
     KernelLog,
+    Shadows,
     Quit,
     // connections
     NewConnection,
@@ -173,6 +174,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::KernelRestart, id: "notebook.kernel_restart", label: "Restart Local Spark Session", category: Category::Query, default_key: None },
     CommandInfo { cmd: Command::KernelStop, id: "notebook.kernel_stop", label: "Stop Local Spark Session", category: Category::Query, default_key: None },
     CommandInfo { cmd: Command::KernelLog, id: "notebook.kernel_log", label: "Local Spark Session Log", category: Category::View, default_key: None },
+    CommandInfo { cmd: Command::Shadows, id: "notebook.shadows", label: "Lakehouse Shadows…", category: Category::View, default_key: None },
     CommandInfo { cmd: Command::SaveFile, id: "file.save", label: "Save", category: Category::File, default_key: sc(CTRL, Key::S) },
     CommandInfo { cmd: Command::SaveFileAs, id: "file.save_as", label: "Save As…", category: Category::File, default_key: sc(CTRL_SHIFT, Key::S) },
     CommandInfo { cmd: Command::CloseTab, id: "file.close_tab", label: "Close Tab", category: Category::File, default_key: sc(CTRL, Key::W) },

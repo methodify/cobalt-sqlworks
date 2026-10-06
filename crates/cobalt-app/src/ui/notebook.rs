@@ -6,6 +6,7 @@ use crate::commands::Command;
 use crate::notebook as nbops;
 use crate::ops;
 use crate::state::*;
+use crate::kernel::KernelState;
 use crate::ui::editor::{self, EditorHost, EditorLayout};
 use crate::ui::results::grid::{self, GridAction, GridArgs, HEADER_H, ROW_H};
 use crate::ui::results::viewer::ViewerState;
@@ -28,6 +29,8 @@ enum NbAction {
     SetKind(usize, CellKind),
     SetLanguage(usize, Option<CellLanguage>),
     SetKernel(NotebookKernel),
+    SetFabric(Option<NotebookFabric>),
+    LoadWorkspace(String),
     Cancel,
     ClearOutputs(Option<usize>),
     Results(usize, ResultsAction),
@@ -58,6 +61,20 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let kernel_state = f.state.kernel.state.clone();
     let kernel_busy = f.state.kernel.busy.is_some();
     let spark_profile = settings.spark.profile.clone();
+    let nb_fabric = f.state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone());
+    let fabric_item = f.state.tabs[idx].fabric_item.as_ref().map(|fi| (fi.item.display_name.clone(), fi.saving, f.state.fabric.workspace(&fi.item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default()));
+    let session_fabric = f.state.kernel.fabric.clone();
+    // names for the chip
+    let (ws_name, lh_name) = match &nb_fabric {
+        Some(b) => (
+            f.state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_else(|| b.workspace_id.chars().take(8).collect()),
+            b.lakehouse_id.as_ref().map(|id| f.state.fabric.lakehouses(&b.workspace_id).and_then(|v| v.into_iter().find(|(_, i)| i == id).map(|(n, _)| n)).unwrap_or_else(|| id.chars().take(8).collect())),
+        ),
+        None => (String::new(), None),
+    };
+    let workspaces: Vec<(String, String)> = f.state.fabric.workspaces.get().map(|v| v.iter().map(|w| (w.id.clone(), w.display_name.clone())).collect()).unwrap_or_default();
+    let ws_lakehouses: Option<Vec<(String, String)>> = nb_fabric.as_ref().and_then(|b| f.state.fabric.lakehouses(&b.workspace_id));
+    let fabric_signed_in = f.state.fabric.slot.is_some();
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = icon_button(ui, icons::PLAY, "Run cell (Ctrl+Enter) · Shift+Enter runs and moves on", !running);
@@ -154,6 +171,108 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 });
                 if let Some(k) = pick {
                     actions.push(NbAction::SetKernel(k));
+                }
+                // lakehouse binding (Spark kernel only)
+                if nb_kernel == NotebookKernel::Spark {
+                    let (label, color) = match &nb_fabric {
+                        Some(b) => (format!("{} {}{} · {}", icons::DROP, lh_name.clone().unwrap_or_else(|| "no default lakehouse".into()), if ws_name.is_empty() { String::new() } else { format!(" ({ws_name})") }, b.write_mode), if b.write_mode == "writethrough" { theme.warning } else { theme.text }),
+                        None => (format!("{} no lakehouse", icons::DROP), theme.text_muted),
+                    };
+                    let r = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(color)).small());
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "notebook lakehouse"));
+                    let r = r.on_hover_text("Which workspace's lakehouses the Spark session sees, the default lakehouse for unqualified names, and the write mode. Changing it takes effect at the next session start.");
+                    let mut set: Option<Option<NotebookFabric>> = None;
+                    let mut load_ws: Option<String> = None;
+                    let mut open_shadows = false;
+                    egui::Popup::menu(&r).id(r.id.with("lakehouse-menu")).show(|ui| {
+                        ui.set_min_width(320.0);
+                        if !fabric_signed_in {
+                            ui.label(RichText::new("Sign in on the Fabric panel to bind a lakehouse.").color(theme.text_muted));
+                        }
+                        ui.label(RichText::new("Workspace").strong());
+                        let cur_ws = nb_fabric.as_ref().map(|b| b.workspace_id.clone());
+                        if ui.selectable_label(cur_ws.is_none(), "None — plain local Spark").clicked() {
+                            set = Some(None);
+                            ui.close();
+                        }
+                        for (id, name) in &workspaces {
+                            if ui.selectable_label(cur_ws.as_deref() == Some(id.as_str()), name).clicked() {
+                                set = Some(Some(NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: nb_fabric.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()) }));
+                                load_ws = Some(id.clone());
+                                ui.close();
+                            }
+                        }
+                        if workspaces.is_empty() && fabric_signed_in {
+                            ui.label(RichText::new("Loading workspaces…").size(11.0).color(theme.text_faint));
+                        }
+                        if let Some(b) = &nb_fabric {
+                            ui.separator();
+                            ui.label(RichText::new("Default lakehouse").strong());
+                            match &ws_lakehouses {
+                                Some(lhs) => {
+                                    if ui.selectable_label(b.lakehouse_id.is_none(), "None").clicked() {
+                                        set = Some(Some(NotebookFabric { lakehouse_id: None, ..b.clone() }));
+                                        ui.close();
+                                    }
+                                    for (name, id) in lhs {
+                                        if ui.selectable_label(b.lakehouse_id.as_deref() == Some(id.as_str()), name).clicked() {
+                                            set = Some(Some(NotebookFabric { lakehouse_id: Some(id.clone()), ..b.clone() }));
+                                            ui.close();
+                                        }
+                                    }
+                                    if lhs.is_empty() {
+                                        ui.label(RichText::new("No lakehouses in this workspace").size(11.0).color(theme.text_faint));
+                                    }
+                                }
+                                None => {
+                                    ui.label(RichText::new("Loading lakehouses…").size(11.0).color(theme.text_faint));
+                                    load_ws = Some(b.workspace_id.clone());
+                                }
+                            }
+                            ui.separator();
+                            ui.label(RichText::new("Write mode").strong());
+                            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads come from OneLake; any write errors."), ("writethrough", "Write through — writes reach OneLake", "Tables are external OneLake tables: INSERT/CREATE change the lakehouse.")] {
+                                if ui.selectable_label(b.write_mode == mode, label).on_hover_text(hint).clicked() {
+                                    set = Some(Some(NotebookFabric { write_mode: mode.into(), ..b.clone() }));
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            if ui.button("Lakehouse shadows…").clicked() {
+                                open_shadows = true;
+                                ui.close();
+                            }
+                        }
+                    });
+                    if let Some(s) = set {
+                        actions.push(NbAction::SetFabric(s));
+                    }
+                    if let Some(w) = load_ws {
+                        actions.push(NbAction::LoadWorkspace(w));
+                    }
+                    if open_shadows {
+                        actions.push(NbAction::Command(Command::Shadows));
+                    }
+                    // the running session's binding, when it differs
+                    if let (Some(sf), KernelState::Ready { .. }) = (&session_fabric, &kernel_state) {
+                        let want = nb_fabric.as_ref().map(|b| (b.workspace_id.clone(), b.lakehouse_id.clone(), b.write_mode.clone()));
+                        let have = (sf.workspace_id.clone(), sf.default_lakehouse.as_ref().and_then(|n| sf.lakehouses.iter().find(|(nm, _)| nm == n).map(|(_, id)| id.clone())), sf.write_mode.clone());
+                        if want.as_ref() != Some(&have) {
+                            let r = ui.add(egui::Button::new(RichText::new(format!("{} session: {}", icons::WARNING, sf.label())).size(11.0).color(theme.warning)).small());
+                            if r.on_hover_text("The running session was started with a different binding. Click to restart it with this notebook's.").clicked() {
+                                actions.push(NbAction::Command(Command::KernelRestart));
+                            }
+                        }
+                    } else if session_fabric.is_none() && nb_fabric.is_some() && kernel_state.is_ready() {
+                        let r = ui.add(egui::Button::new(RichText::new(format!("{} session has no lakehouse", icons::WARNING)).size(11.0).color(theme.warning)).small());
+                        if r.on_hover_text("Restart the session to bind this notebook's lakehouse").clicked() {
+                            actions.push(NbAction::Command(Command::KernelRestart));
+                        }
+                    }
+                }
+                if let Some((name, saving, ws)) = &fabric_item {
+                    let r = ui.label(RichText::new(format!("{} Fabric: {name}{}", icons::CLOUD, if *saving { " · saving…" } else { "" })).size(12.0).color(theme.accent));
+                    r.on_hover_text(format!("Opened from workspace {ws}. Save (Ctrl+S) writes back to Fabric after confirmation; Save As… makes a local copy."));
                 }
                 if change_conn {
                     actions.push(NbAction::Command(Command::ChangeConnection));
@@ -664,6 +783,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::SetKind(i, k) => nbops::set_kind(f.state, idx, i, k),
             NbAction::SetLanguage(i, l) => nbops::set_language(f.state, idx, i, l),
             NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
+            NbAction::SetFabric(b) => nbops::set_fabric(f.state, idx, b),
+            NbAction::LoadWorkspace(ws) => {
+                if f.state.fabric.workspaces.get().is_none() {
+                    crate::fabric::load_workspaces(f.state, f.cx);
+                }
+                if !f.state.fabric.items.contains_key(&ws) {
+                    crate::fabric::load_items(f.state, f.cx, &ws);
+                }
+            }
             NbAction::Cancel => nbops::cancel(f.state, cx, idx),
             NbAction::ClearOutputs(only) => nbops::clear_outputs(f.state, idx, only),
             NbAction::Results(cell, action) => nbops::results_action(f.state, cx, idx, cell, action),

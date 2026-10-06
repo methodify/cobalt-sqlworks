@@ -2150,7 +2150,7 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
 
 /// OneLake accepts an Azure Storage token; when the registration lacks that permission the Fabric
 /// API token (with OneLake.ReadWrite.All) works too. Silent first, then the browser as a last resort.
-async fn onelake_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenant: Option<String>, hint: Option<String>, prompter: UiPrompter) -> Result<String, String> {
+pub(crate) async fn onelake_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenant: Option<String>, hint: Option<String>, prompter: UiPrompter) -> Result<String, String> {
     use cobalt_auth::provider::{FABRIC_API_RESOURCE, ONELAKE_RESOURCE};
     if let Ok(Some(ts)) = resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant.as_deref()).await {
         return Ok(ts.access.token.expose().to_string());
