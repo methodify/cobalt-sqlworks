@@ -885,7 +885,7 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
     // keep a restorable snapshot
-    let text = if t.is_notebook() { crate::notebook::document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).map(|d| d.to_ipynb()).unwrap_or_default() } else { t.text.clone() };
+    let text = if t.is_notebook() { snapshot_document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).unwrap_or_default() } else { t.text.clone() };
     let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
     snap.database = t.conn.database().map(str::to_string);
@@ -914,11 +914,36 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
     t.text = snap.text;
     t.file_path = snap.file_path;
     t.editor.pending_edit = Some(PendingEdit::SetCursor(snap.cursor));
+    let is_nb = t.file_path.as_ref().map(|p| crate::notebook::is_notebook_path(p)).unwrap_or(false) || cobalt_notebook::Notebook::looks_like_ipynb(&t.text);
+    if is_nb && crate::notebook::restore_from_snapshot(t) {
+        if let Some(nb) = t.notebook.as_deref_mut() {
+            nb.dirty = true; // closed without saving: still unsaved
+        }
+        t.snapshot_hash = hash_text("");
+        let tab_id = t.id;
+        if let Some(pid) = snap.profile_id.and_then(|id| state.library.profile(id).cloned()) {
+            state.tabs[idx].profile = Some(pid);
+            let _ = tab_id;
+        }
+        return;
+    }
     t.mark_saved();
     let tab_id = t.id;
     if let Some(pid) = snap.profile_id.and_then(|id| state.library.profile(id).cloned()) {
         begin_connect(state, cx, pid, ConnectPurpose::Tab { tab: tab_id, database: snap.database });
     }
+}
+
+/// The notebook document for a hot-exit snapshot: the Fabric item it came from rides along in
+/// `metadata.cobalt` so the binding survives a restart (stripped again on restore).
+pub(crate) fn snapshot_document(t: &mut EditorTab, max_rows: u64, fmt: &cobalt_results::CellFormatter) -> Option<String> {
+    let mut doc = crate::notebook::document(t, max_rows, fmt)?;
+    if let Some(fi) = &t.fabric_item {
+        let mut c = serde_json::Map::new();
+        c.insert("fabric_item".into(), serde_json::json!({"id": fi.item.id, "workspace_id": fi.item.workspace_id, "display_name": fi.item.display_name, "item_type": fi.item.item_type, "platform": fi.platform}));
+        doc.metadata.insert("cobalt".into(), serde_json::Value::Object(c));
+    }
+    Some(doc.to_ipynb())
 }
 
 /// Persist unsaved tab contents (hot exit). Cheap: only tabs whose text changed since the last snapshot.
@@ -930,8 +955,8 @@ pub fn snapshot_tabs(state: &mut AppState, cx: &Ctx, force: bool) {
             if !force && !t.is_dirty() && t.snapshot_hash != hash_text("") {
                 continue;
             }
-            match crate::notebook::document(t, max_rows, &fmt) {
-                Some(doc) => doc.to_ipynb(),
+            match snapshot_document(t, max_rows, &fmt) {
+                Some(text) => text,
                 None => continue,
             }
         } else {

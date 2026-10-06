@@ -24,6 +24,82 @@ pub fn primary_button(ui: &mut Ui, theme: &Theme, label: &str, enabled: bool) ->
     ui.add_enabled(enabled, egui::Button::new(RichText::new(label).color(theme.text_on_accent)).fill(theme.accent).min_size(Vec2::new(80.0, 26.0)))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyle {
+    Primary,
+    Normal,
+    Danger,
+    Warning,
+}
+
+/// A modal button with a Windows-style mnemonic: `&Save` underlines the S and fires on Alt+S;
+/// `extra` adds a plain key (Enter for the default action, Escape for Cancel). Returns true when
+/// the button was clicked or a key fired it (keys only while enabled).
+pub fn mnemonic_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonStyle, enabled: bool, extra: Option<egui::Key>) -> bool {
+    // split "Do&n't save" into ("Do", 'n', "'t save")
+    let (before, letter, after) = match label.find('&').filter(|i| label[i + 1..].chars().next().map(|c| c != '&').unwrap_or(false)) {
+        Some(i) => {
+            let c = label[i + 1..].chars().next().unwrap();
+            (&label[..i], Some(c), &label[i + 1 + c.len_utf8()..])
+        }
+        None => (label, None, ""),
+    };
+    let plain = format!("{before}{}{after}", letter.map(|c| c.to_string()).unwrap_or_default());
+    let (fill, color) = match style {
+        ButtonStyle::Primary => (Some(theme.accent), theme.text_on_accent),
+        ButtonStyle::Danger => (Some(theme.error), Color32::WHITE),
+        ButtonStyle::Warning => (Some(theme.warning), Color32::WHITE),
+        ButtonStyle::Normal => (None, if enabled { theme.text } else { theme.text_faint }),
+    };
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let mut job = egui::text::LayoutJob::default();
+    let fmt = egui::text::TextFormat { font_id: font.clone(), color, ..Default::default() };
+    let mut ufmt = fmt.clone();
+    ufmt.underline = egui::Stroke::new(1.0, color);
+    job.append(before, 0.0, fmt.clone());
+    if let Some(c) = letter {
+        job.append(&c.to_string(), 0.0, ufmt);
+    }
+    job.append(after, 0.0, fmt);
+    let mut b = egui::Button::new(job).min_size(Vec2::new(80.0, 26.0));
+    if let Some(f) = fill {
+        b = b.fill(f);
+    }
+    let r = ui.add_enabled(enabled, b);
+    let a11y = plain.clone();
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, a11y.clone()));
+    let mut hint = String::new();
+    let mut hit = r.clicked();
+    if let Some(c) = letter {
+        let name = c.to_ascii_uppercase().to_string();
+        hint.push_str(&format!("Alt+{name}"));
+        if enabled {
+            if let Some(k) = egui::Key::from_name(&name) {
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::ALT, k)) {
+                    hit = true;
+                }
+            }
+        }
+    }
+    if let Some(k) = extra {
+        if !hint.is_empty() {
+            hint.push_str(" · ");
+        }
+        hint.push_str(match k {
+            egui::Key::Enter => "Enter",
+            egui::Key::Escape => "Esc",
+            _ => "",
+        });
+        if enabled && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k)) {
+            hit = true;
+        }
+    }
+    if !hint.is_empty() {
+        r.on_hover_text(hint);
+    }
+    hit
+}
+
 /// A tree row: indent, caret, icon, label. Returns (row response, caret clicked).
 pub struct TreeRow<'a> {
     pub depth: usize,

@@ -6,7 +6,7 @@ use crate::ops::{self, AUTH_LABELS, FORMAT_LABELS};
 use crate::state::*;
 use crate::ui::shell::Frame;
 use crate::ui::theme::Theme;
-use crate::ui::widgets::{key_chip, primary_button};
+use crate::ui::widgets::{key_chip, mnemonic_button, primary_button, ButtonStyle};
 use cobalt_core::*;
 use egui::{Key, RichText, Ui, Vec2};
 use egui_phosphor::regular as icons;
@@ -177,13 +177,13 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.label(RichText::new("Save As… writes a local .ipynb instead and detaches the tab from Fabric.").size(11.0).color(theme.text_faint));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if primary_button(ui, theme, "Save to Fabric", true).clicked() {
+                    if mnemonic_button(ui, theme, "&Save to Fabric", ButtonStyle::Primary, true, Some(Key::Enter)) {
                         choice = 1;
                     }
-                    if ui.button("Save As…").clicked() {
+                    if mnemonic_button(ui, theme, "Save &As…", ButtonStyle::Normal, true, None) {
                         choice = 2;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
                         choice = 3;
                     }
                 });
@@ -209,13 +209,13 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.label(RichText::new("Closed tabs can be restored with Ctrl+Shift+T for a while.").size(11.0).color(theme.text_faint));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if primary_button(ui, theme, "Save", true).clicked() {
+                    if mnemonic_button(ui, theme, "&Save", ButtonStyle::Primary, true, Some(Key::Enter)) {
                         choice = 1;
                     }
-                    if ui.button("Don't save").clicked() {
+                    if mnemonic_button(ui, theme, "Do&n't save", ButtonStyle::Normal, true, None) {
                         choice = 2;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
                         choice = 3;
                     }
                 });
@@ -244,10 +244,10 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(10.0);
                 let mut c = 0;
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Delete").color(egui::Color32::WHITE)).fill(theme.error)).clicked() {
+                    if mnemonic_button(ui, theme, "&Delete", ButtonStyle::Danger, true, None) {
                         c = 1;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
                         c = 2;
                     }
                 });
@@ -271,10 +271,10 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(10.0);
                 let mut c = 0;
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Delete").color(egui::Color32::WHITE)).fill(theme.error)).clicked() {
+                    if mnemonic_button(ui, theme, "&Delete", ButtonStyle::Danger, true, None) {
                         c = 1;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
                         c = 2;
                     }
                 });
@@ -299,10 +299,10 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(10.0);
                 let mut c = 0;
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Run anyway").color(egui::Color32::WHITE)).fill(theme.warning)).clicked() {
+                    if mnemonic_button(ui, theme, "&Run anyway", ButtonStyle::Warning, true, None) {
                         c = 1;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
                         c = 2;
                     }
                 });

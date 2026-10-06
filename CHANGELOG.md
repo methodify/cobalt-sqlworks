@@ -2,6 +2,14 @@
 
 ## Unreleased — 0.9.0 (notebooks, slate 3: OneLake and Fabric)
 
+- **Modal hotkeys**: the confirmation dialogs (unsaved changes, save to Fabric, delete
+  connection/group, read-only guard) take Windows-style mnemonics — the underlined letter with
+  Alt (Alt+S Save, Alt+N Don't save, Alt+D Delete, Alt+R Run anyway), Enter for the default
+  action where it is safe (Save), Esc for Cancel — so closing a stack of dirty tabs is
+  Ctrl+W, Alt+N, Ctrl+W, Alt+N.
+- Reopen Closed Tab (Ctrl+Shift+T) brings a notebook back as a notebook, and a notebook opened
+  from Fabric keeps its item binding across hot exit and reopen.
+
 - **Lakehouse-bound Spark sessions.** A notebook on the Local Spark kernel can be bound to a
   Fabric workspace, a default lakehouse and a write mode (lakehouse button on the toolbar;
   Fabric notebooks pick it up from their metadata and write it back). The session registers every

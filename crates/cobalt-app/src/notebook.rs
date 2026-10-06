@@ -94,7 +94,24 @@ pub fn restore_from_snapshot(t: &mut EditorTab) -> bool {
     if !Notebook::looks_like_ipynb(&t.text) {
         return false;
     }
-    let Ok(nb) = Notebook::parse(&t.text) else { return false };
+    let Ok(mut nb) = Notebook::parse(&t.text) else { return false };
+    // the Fabric item a snapshot came from (see ops::snapshot_document)
+    if let Some(serde_json::Value::Object(c)) = nb.metadata.remove("cobalt") {
+        if let Some(fi) = c.get("fabric_item") {
+            let item = cobalt_fabric::FabricItem {
+                id: fi.get("id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                workspace_id: fi.get("workspace_id").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                display_name: fi.get("display_name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                description: String::new(),
+                item_type: fi.get("item_type").and_then(|v| v.as_str()).unwrap_or("Notebook").to_string(),
+                folder_id: None,
+            };
+            if !item.id.is_empty() {
+                let platform = fi.get("platform").cloned().and_then(|p| serde_json::from_value(p).ok());
+                t.fabric_item = Some(FabricItemRef { item, platform, saving: false });
+            }
+        }
+    }
     let mut nbs = NotebookState::new(nb);
     for (i, cell) in nbs.nb.cells.iter().enumerate() {
         let (run, extra) = load_outputs(cell, i);
