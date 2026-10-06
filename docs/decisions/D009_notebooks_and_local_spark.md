@@ -24,8 +24,9 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
 - OneLake access uses the signed-in user's Entra token, served to the JVM from a loopback
   endpoint inside Cobalt. Writes default to **sandbox** (shallow clones); write-through is an
   explicit switch.
-- Delivery in three releases: 0.7 SQL notebooks + runtime manager, 0.8 PySpark cells with Arrow
-  results, 0.9 OneLake/Fabric notebooks and shadows.
+- Delivery in three slates (planned as 0.7 / 0.8 / 0.9, shipped together as 0.7.0 on
+  2026-10-06): SQL notebooks + runtime manager, PySpark cells with Arrow results, OneLake/Fabric
+  notebooks and shadows.
 
 ## Consequences
 
@@ -46,10 +47,10 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
   and bootstraps Python and the JDK from it.
 - The runtime manager ships in 0.7 with SQL notebooks (done: `cobalt-runtime`, Settings → Spark
   runtime, verified end to end on the founder's machine).
-- 0.8 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
+- Slate 2 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
   Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
   restarts the session because the protocol has no interrupt.
-- 0.9 (2026-10-06): the OneLake token endpoint lives in Cobalt and serves the Fabric account's
+- Slate 3 (2026-10-06): the OneLake token endpoint lives in Cobalt and serves the Fabric account's
   token; sessions bind to one workspace/lakehouse/write mode at start (restart to rebind); the
   Fabric definition APIs need `Item.ReadWrite.All` on the app registration (added 2026-10-06;
   open and save-back verified live).

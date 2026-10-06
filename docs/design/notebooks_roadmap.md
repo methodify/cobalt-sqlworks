@@ -120,7 +120,7 @@ go to a `kernel_actor` per runtime with the same event style (`CellStarted`, `Ce
 
 ## 5. Phases
 
-### 0.7 — SQL notebooks (first slate, proposed)
+### Slate 1 — SQL notebooks (planned as 0.7; shipped in 0.7.0 on 2026-10-06)
 
 1. `cobalt-notebook`: nbformat read/write with Fabric metadata, Git `.py` import, output
    model, HTML/Markdown export; unit-tested against notebooks exported from the Fabric test
@@ -132,9 +132,9 @@ go to a `kernel_actor` per runtime with the same event style (`CellStarted`, `Ce
 4. Settings → Spark runtime: detection and **Install for me** for uv, Python 3.11, the
    `fabric-1.3` environment and the JDK, with the smoke test (the kernel host speaking `init` +
    `run_sql`). This de-risks the plumbing a release early; PySpark cells stay disabled in the
-   picker until 0.8.
+   picker until slate 2.
 
-### 0.8 — PySpark cells (shipped 2026-10-06 as slate 2; notes below)
+### Slate 2 — PySpark cells (planned as 0.8; shipped in 0.7.0 on 2026-10-06, notes below)
 
 Shipped: the kernel actor (`crates/cobalt-app/src/kernel.rs`, a thread owning one worker), the
 kernel picker per notebook, Python + `%%sql` cells, stdout/stderr/tracebacks, stop (as a session
@@ -149,7 +149,7 @@ driver memory UI (the setting exists), per-worker environment variables, a true 
   frames; images (`display_data` PNG) rendered inline.
 - Driver memory and extra Spark confs in settings; environment variables for workers.
 
-### 0.9 — OneLake and Fabric (shipped 2026-10-06 as slate 3; notes below)
+### Slate 3 — OneLake and Fabric (planned as 0.9; shipped in 0.7.0 on 2026-10-06, notes below)
 
 Shipped: Cobalt's loopback token endpoint (`crates/cobalt-app/src/onelake_tokens.rs`), lakehouse
 registration and write modes per notebook (`NotebookFabric`, written into `dependencies.lakehouse`),
@@ -182,7 +182,7 @@ with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client ca
   provisioning and cache under the runtime folder so later sessions are offline-safe.
 - **Windows Python**: 3.11 is mandatory for workers; the manifest fixes it so users never see
   the issue.
-- **Interrupt**: not in the worker today; needs the upstream change before 0.8.
+- **Interrupt**: not in the worker today; Stop restarts the session until the upstream change lands.
 - **Memory**: the default 8 GB driver is too much for small laptops; detect RAM and size the
   driver, expose it in settings.
 - **Security**: notebooks run arbitrary code as the user, like every notebook tool. The token

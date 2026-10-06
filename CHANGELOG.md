@@ -1,75 +1,12 @@
 # Changelog
 
-## Unreleased — 0.9.0 (notebooks, slate 3: OneLake and Fabric)
+## 0.7.0 — 2026-10-06 — Notebooks and local Spark
 
-- **Modal hotkeys**: the confirmation dialogs (unsaved changes, save to Fabric, delete
-  connection/group, read-only guard) take Windows-style mnemonics — the underlined letter with
-  Alt (Alt+S Save, Alt+N Don't save, Alt+D Delete, Alt+R Run anyway), Enter for the default
-  action where it is safe (Save), Esc for Cancel — so closing a stack of dirty tabs is
-  Ctrl+W, Alt+N, Ctrl+W, Alt+N.
-- Reopen Closed Tab (Ctrl+Shift+T) brings a notebook back as a notebook, and a notebook opened
-  from Fabric keeps its item binding across hot exit and reopen.
-- A result grid in a notebook cell no longer paints over the tab strip and toolbar when the
-  notebook is scrolled past it (the grid is clipped to the notebook's viewport; the same clip
-  applies to the results pane). A notebook bound to a lakehouse resolves the workspace and
-  lakehouse names itself instead of showing ids until the Fabric panel is opened. Agent:
-  `pointer {action: scroll, x, y, dy}`.
-- Notebook cell layout: the editor is a bordered box whose line-number band ends with the code
-  (it used to spill into the output), and outputs sit in an indented block under it with a rule
-  on the left — consecutive lines of PRINT/stdout as one text block, errors as a red block, result
-  grids below with their row count and timing.
+The notebooks release (`docs/design/notebooks_roadmap.md`, D009), built as three slates and
+shipped together: SQL notebooks and the Cobalt-managed local Spark runtime, PySpark cells on
+that runtime, and OneLake-bound sessions with Fabric notebooks in the explorer.
 
-- **Lakehouse-bound Spark sessions.** A notebook on the Local Spark kernel can be bound to a
-  Fabric workspace, a default lakehouse and a write mode (lakehouse button on the toolbar;
-  Fabric notebooks pick it up from their metadata and write it back). The session registers every
-  lakehouse in the workspace as a Spark database, so `test.sales_import` or `spark.table(...)`
-  just work; OneLake is read through a token endpoint inside Cobalt that serves the signed-in
-  Fabric account's storage token to the JVM (loopback only, per-start secret, no `az login`).
-  The first touch of a table makes a Delta **shallow clone** under the runtime folder:
-  **Sandbox** (default) reads and writes the clone and never touches OneLake; **Read only**
-  refuses writes; **Write through** makes tables external OneLake tables so writes land in the
-  lakehouse. A session keeps its binding until restarted; the toolbar warns when a notebook's
-  binding differs and offers the restart.
-- **Lakehouse shadows** (kernel menu, Query → Lakehouse Shadows…, or the lakehouse button): the
-  clones in the running session with their state (read / written) and version; Discard all,
-  Discard written, per-table Discard and Rewind to the clone's first version.
-- **Fabric notebooks in the explorer.** Workspaces list their Notebook items; double-click opens
-  one bound to the item (Save writes back after a confirmation through `updateDefinition`; Save
-  As… makes a local copy and detaches), "Open a copy" opens it detached, plus Open in Fabric
-  portal. Both the `.ipynb` and the Git `.py` definition forms are read. Needs the delegated
-  permission `Item.ReadWrite.All` on the app registration (reading and writing item definitions);
-  listing works with `Item.Read.All`, and the error says what to add when the scope is missing.
-- Fabric client: generic item listing, POST with long-running-operation polling,
-  `getDefinition` / `updateDefinition` / create notebook. Agent: `fabric_notebooks`,
-  `notebook {open_fabric|save_fabric|set_lakehouse}`, `shadows`, `fabric_scopes`; `state.toasts`.
-
-## Unreleased — 0.8.0 (notebooks, slate 2: PySpark cells)
-
-- **Local Spark kernel**: a notebook's kernel button (toolbar, right) now offers *Local Spark*
-  next to the tab's connection; PySpark notebooks pick it by default. Code cells run on the
-  runtime from Settings → Spark runtime through local-spark-mcp's worker: Python cells via
-  `run_code` with a persistent IPython namespace (`spark`, `F`, `T`, `notebookutils`…), SQL and
-  `%%sql` cells via `spark.sql` (several statements per cell; the last one is shown). The first
-  cell starts the session (about 25 s here) and the status bar shows it: version, uptime, running;
-  click for restart / stop / the session log (Spark, py4j and Ivy output). Query menu: Restart /
-  Stop Local Spark Session, Local Spark Session Log.
-- **DataFrames in the grid**: `display(df)`, a bare DataFrame expression, pandas DataFrames and
-  `%%sql` results arrive as Arrow (typed, not JSON rows) and open in the normal results grid with
-  everything that implies (sort/filter, copy, exports, Save as table…). `display()` shows 1,000 rows
-  like Fabric unless given `limit=`; bare expressions and `%%sql` use Settings → Notebooks → "Rows a
-  Spark DataFrame brings back" (10,000). Outputs save into the `.ipynb` like SQL results.
-- **Errors and output**: stdout, stderr (Spark log noise filtered), IPython's traceback for the
-  failing line, and a failing cell stops the queue. Stop / Alt+C interrupts the running cell — the
-  worker protocol has no interrupt yet, so the session is killed and the next cell starts a fresh
-  one (asked of local-spark-mcp in `docs/requests/local-spark-mcp.md`).
-- Agent: `kernel {action: status|start|stop|restart|interrupt|log}`, `notebook set_kernel`,
-  `state.kernel`.
-
-## Unreleased — 0.7.0 (notebooks, slate 1)
-
-The first of three notebook releases (`docs/design/notebooks_roadmap.md`, D009): SQL notebooks and
-the Cobalt-managed local Spark runtime. PySpark cells come in 0.8; OneLake shallow clones and
-Fabric notebook open/save in 0.9.
+### SQL notebooks and the Spark runtime
 
 - **Notebooks**: File → New Notebook (Ctrl+Shift+N), or open any `.ipynb` (Azure Data Studio SQL
   notebooks and Fabric notebooks included) or a Fabric Git `notebook-content.py`. Markdown cells
@@ -96,6 +33,74 @@ Fabric notebook open/save in 0.9.
   export) and `cobalt-runtime` (manifest, detection, provisioning, worker protocol client); the
   editor widget is now hosted (`EditorHost`) so a query tab and a notebook cell share one editor.
   Agent verbs `notebook {…}` and `runtime {…}`; `state` tabs carry `kind` and `cells`.
+
+### PySpark cells on the local Spark kernel
+
+- **Local Spark kernel**: a notebook's kernel button (toolbar, right) now offers *Local Spark*
+  next to the tab's connection; PySpark notebooks pick it by default. Code cells run on the
+  runtime from Settings → Spark runtime through local-spark-mcp's worker: Python cells via
+  `run_code` with a persistent IPython namespace (`spark`, `F`, `T`, `notebookutils`…), SQL and
+  `%%sql` cells via `spark.sql` (several statements per cell; the last one is shown). The first
+  cell starts the session (about 25 s here) and the status bar shows it: version, uptime, running;
+  click for restart / stop / the session log (Spark, py4j and Ivy output). Query menu: Restart /
+  Stop Local Spark Session, Local Spark Session Log.
+- **DataFrames in the grid**: `display(df)`, a bare DataFrame expression, pandas DataFrames and
+  `%%sql` results arrive as Arrow (typed, not JSON rows) and open in the normal results grid with
+  everything that implies (sort/filter, copy, exports, Save as table…). `display()` shows 1,000 rows
+  like Fabric unless given `limit=`; bare expressions and `%%sql` use Settings → Notebooks → "Rows a
+  Spark DataFrame brings back" (10,000). Outputs save into the `.ipynb` like SQL results.
+- **Errors and output**: stdout, stderr (Spark log noise filtered), IPython's traceback for the
+  failing line, and a failing cell stops the queue. Stop / Alt+C interrupts the running cell — the
+  worker protocol has no interrupt yet, so the session is killed and the next cell starts a fresh
+  one (asked of local-spark-mcp in `docs/requests/local-spark-mcp.md`).
+- Agent: `kernel {action: status|start|stop|restart|interrupt|log}`, `notebook set_kernel`,
+  `state.kernel`.
+
+### OneLake-bound sessions, shadows and Fabric notebooks
+
+- **Lakehouse-bound Spark sessions.** A notebook on the Local Spark kernel can be bound to a
+  Fabric workspace, a default lakehouse and a write mode (lakehouse button on the toolbar;
+  Fabric notebooks pick it up from their metadata and write it back). The session registers every
+  lakehouse in the workspace as a Spark database, so `test.sales_import` or `spark.table(...)`
+  just work; OneLake is read through a token endpoint inside Cobalt that serves the signed-in
+  Fabric account's storage token to the JVM (loopback only, per-start secret, no `az login`).
+  The first touch of a table makes a Delta **shallow clone** under the runtime folder:
+  **Sandbox** (default) reads and writes the clone and never touches OneLake; **Read only**
+  refuses writes; **Write through** makes tables external OneLake tables so writes land in the
+  lakehouse. A session keeps its binding until restarted; the toolbar warns when a notebook's
+  binding differs and offers the restart.
+- **Lakehouse shadows** (kernel menu, Query → Lakehouse Shadows…, or the lakehouse button): the
+  clones in the running session with their state (read / written) and version; Discard all,
+  Discard written, per-table Discard and Rewind to the clone's first version.
+- **Fabric notebooks in the explorer.** Workspaces list their Notebook items; double-click opens
+  one bound to the item (Save writes back after a confirmation through `updateDefinition`; Save
+  As… makes a local copy and detaches), "Open a copy" opens it detached, plus Open in Fabric
+  portal. Both the `.ipynb` and the Git `.py` definition forms are read. Needs the delegated
+  permission `Item.ReadWrite.All` on the app registration (reading and writing item definitions);
+  listing works with `Item.Read.All`, and the error says what to add when the scope is missing.
+- Fabric client: generic item listing, POST with long-running-operation polling,
+  `getDefinition` / `updateDefinition` / create notebook. Agent: `fabric_notebooks`,
+  `notebook {open_fabric|save_fabric|set_lakehouse}`, `shadows`, `fabric_scopes`; `state.toasts`.
+
+### Polish
+
+- **Modal hotkeys**: the confirmation dialogs (unsaved changes, save to Fabric, delete
+  connection/group, read-only guard) take Windows-style mnemonics — the underlined letter with
+  Alt (Alt+S Save, Alt+N Don't save, Alt+D Delete, Alt+R Run anyway), Enter for the default
+  action where it is safe (Save), Esc for Cancel — so closing a stack of dirty tabs is
+  Ctrl+W, Alt+N, Ctrl+W, Alt+N.
+- Reopen Closed Tab (Ctrl+Shift+T) brings a notebook back as a notebook, and a notebook opened
+  from Fabric keeps its item binding across hot exit and reopen.
+- A result grid in a notebook cell no longer paints over the tab strip and toolbar when the
+  notebook is scrolled past it (the grid is clipped to the notebook's viewport; the same clip
+  applies to the results pane). A notebook bound to a lakehouse resolves the workspace and
+  lakehouse names itself instead of showing ids until the Fabric panel is opened. Agent:
+  `pointer {action: scroll, x, y, dy}`.
+- Notebook cell layout: the editor is a bordered box whose line-number band ends with the code
+  (it used to spill into the output), and outputs sit in an indented block under it with a rule
+  on the left — consecutive lines of PRINT/stdout as one text block, errors as a red block, result
+  grids below with their row count and timing.
+
 
 ## 0.6.1 — 2026-10-05
 

@@ -232,7 +232,7 @@ dev build: `COBALT_PERF=1` logs fps and frame cost every 2 s; the agent verbs `p
 and `viewport {w,h}` measure the real maximum frame rate; `COBALT_ADAPTER=<name substring>` forces an
 adapter (`basic render` = WARP) to reproduce the VM locally.
 
-## Notebooks (0.7)
+## Notebooks (0.7.0)
 
 File → New Notebook (Ctrl+Shift+N), the Files sidebar (`.ipynb` files, "New notebook here"), or
 Open File. ADS SQL notebooks and Fabric notebooks open as they are; Fabric's Git form
@@ -249,7 +249,7 @@ marked "saved with the notebook". Export as HTML or Markdown from the toolbar or
 
 Agent: `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit|set_kernel}`.
 
-## PySpark cells on the local Spark kernel (0.8)
+## PySpark cells on the local Spark kernel (0.7.0)
 
 The kernel button on the notebook toolbar picks where code cells run: the tab's connection (SQL
 cells) or **Local Spark** (PySpark and Spark SQL cells). New PySpark notebooks (Settings →
@@ -288,7 +288,7 @@ The manifest (`crates/cobalt-runtime/manifest.json`) mirrors local-spark-mcp's `
 until that project publishes a machine-readable one; the asks are in
 `docs/requests/local-spark-mcp.md`. Agent: `runtime {action: status|install|smoke|cancel|remove|refresh}`.
 
-## OneLake-bound sessions, shadows, Fabric notebooks (0.9)
+## OneLake-bound sessions, shadows, Fabric notebooks (0.7.0)
 
 On a Spark-kernel notebook the **lakehouse button** (toolbar, right) binds the session: workspace,
 default lakehouse, write mode. The binding is written into the notebook's metadata
