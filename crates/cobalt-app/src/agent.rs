@@ -538,7 +538,7 @@ impl AgentApp for CobaltApp {
                 ActionResult::ok()
             }
             "pointer" => {
-                // {action: click|rclick|dblclick|drag|move, x, y, x2?, y2?, shift?, ctrl?, alt?} in screenshot pixels.
+                // {action: click|rclick|dblclick|drag|move|scroll, x, y, x2?, y2?, dy?, dx?, shift?, ctrl?, alt?} in screenshot pixels.
                 // Each step lands in its own frame via raw_input_hook, so egui treats it like a real mouse.
                 let act = arg_str(args, "action").unwrap_or_else(|| "click".into());
                 let num = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_f64());
@@ -552,6 +552,12 @@ impl AgentApp for CobaltApp {
                 let mut steps: Vec<Vec<egui::Event>> = vec![vec![egui::Event::PointerMoved(at(x, y))]];
                 match act.as_str() {
                     "move" => {}
+                    // scroll: a mouse wheel at (x, y); dy in points, positive scrolls the content down
+                    "scroll" => {
+                        let dy = args.and_then(|a| a.get("dy")).and_then(|v| v.as_f64()).unwrap_or(300.0) as f32;
+                        let dx = args.and_then(|a| a.get("dx")).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+                        steps.push(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-dx, -dy), modifiers, phase: egui::TouchPhase::Move }]);
+                    }
                     "click" | "rclick" => {
                         steps.push(vec![press(at(x, y), true)]);
                         steps.push(vec![press(at(x, y), false)]);

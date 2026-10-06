@@ -225,7 +225,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         let grid_h = (grid_h - find_h).max(60.0);
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), grid_h), egui::Sense::hover());
                         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("rs-child", run.id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-                        child.set_clip_rect(rect);
+                        child.set_clip_rect(rect.intersect(ui.clip_rect()));
                         let grid_actions = grid::show(
                             &mut child,
                             grid::GridArgs {

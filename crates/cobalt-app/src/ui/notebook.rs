@@ -75,6 +75,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let workspaces: Vec<(String, String)> = f.state.fabric.workspaces.get().map(|v| v.iter().map(|w| (w.id.clone(), w.display_name.clone())).collect()).unwrap_or_default();
     let ws_lakehouses: Option<Vec<(String, String)>> = nb_fabric.as_ref().and_then(|b| f.state.fabric.lakehouses(&b.workspace_id));
     let fabric_signed_in = f.state.fabric.slot.is_some();
+    // a bound notebook resolves its workspace and lakehouse names on its own
+    if let Some(b) = &nb_fabric {
+        let ws_known = f.state.fabric.workspace(&b.workspace_id).is_some();
+        if f.state.fabric.status.is_none() {
+            crate::fabric::on_panel_shown(f.state, f.cx);
+        } else if fabric_signed_in && (!ws_known || ws_lakehouses.is_none()) {
+            actions.push(NbAction::LoadWorkspace(b.workspace_id.clone()));
+        }
+    }
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = icon_button(ui, icons::PLAY, "Run cell (Ctrl+Enter) · Shift+Enter runs and moves on", !running);
@@ -538,7 +547,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                     let h = HEADER_H + shown_rows as f32 * ROW_H + 14.0;
                                     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
                                     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("nb-rs-child", run_id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
-                                    child.set_clip_rect(rect);
+                                    child.set_clip_rect(rect.intersect(ui.clip_rect()));
                                     let ga = grid::show(
                                         &mut child,
                                         GridArgs {
@@ -815,7 +824,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
             NbAction::SetFabric(b) => nbops::set_fabric(f.state, idx, b),
             NbAction::LoadWorkspace(ws) => {
-                if f.state.fabric.workspaces.get().is_none() {
+                if matches!(f.state.fabric.workspaces, Loadable::NotLoaded | Loadable::Failed(_)) {
                     crate::fabric::load_workspaces(f.state, f.cx);
                 }
                 if !f.state.fabric.items.contains_key(&ws) {

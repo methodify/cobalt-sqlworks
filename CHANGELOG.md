@@ -9,6 +9,11 @@
   Ctrl+W, Alt+N, Ctrl+W, Alt+N.
 - Reopen Closed Tab (Ctrl+Shift+T) brings a notebook back as a notebook, and a notebook opened
   from Fabric keeps its item binding across hot exit and reopen.
+- A result grid in a notebook cell no longer paints over the tab strip and toolbar when the
+  notebook is scrolled past it (the grid is clipped to the notebook's viewport; the same clip
+  applies to the results pane). A notebook bound to a lakehouse resolves the workspace and
+  lakehouse names itself instead of showing ids until the Fabric panel is opened. Agent:
+  `pointer {action: scroll, x, y, dy}`.
 - Notebook cell layout: the editor is a bordered box whose line-number band ends with the code
   (it used to spill into the output), and outputs sit in an indented block under it with a rule
   on the left — consecutive lines of PRINT/stdout as one text block, errors as a red block, result
