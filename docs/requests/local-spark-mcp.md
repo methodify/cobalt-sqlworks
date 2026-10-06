@@ -4,7 +4,7 @@ Cobalt SQL Works (CSW) embeds local-spark-mcp as its PySpark engine: CSW spawns
 `python -m local_spark_mcp.worker --port N` from a CSW-managed environment and speaks
 the length-prefixed JSON socket protocol directly (the MCP/stdio layer is unused). The
 items below would let CSW drop the workarounds it carries today. Pinned today:
-`local-spark-mcp @ git+https://github.com/methodify/local-spark-mcp@v0.3.4` (0.3.5 since 2026-10-06).
+`local-spark-mcp @ git+https://github.com/methodify/local-spark-mcp@v0.3.4` (0.3.5, then 0.4.0, since 2026-10-06).
 
 ## 1. Machine-readable runtime manifest (needed first)
 
@@ -117,4 +117,6 @@ a single artifact itself.
 
 Cobalt's reply to the team's 0.3.5 response — adoption notes, answers to the 0.4.0 open questions,
 and the two new asks (preload credential, schema-enabled lakehouses) — is in
-`local-spark-mcp-0.3.5-reply.md`.
+`local-spark-mcp-0.3.5-reply.md`; the reply to 0.4.0 (interrupt, streaming adopted; findings
+on the interrupt acknowledgement, healthcheck, bare-expression Arrow) is in
+`local-spark-mcp-0.4.0-reply.md`.

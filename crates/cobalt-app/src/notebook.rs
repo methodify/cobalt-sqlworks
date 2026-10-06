@@ -677,7 +677,11 @@ pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
             r.state = RunViewState::Cancelling;
         }
         if spark {
-            crate::kernel::interrupt(&mut state.kernel);
+            match crate::kernel::interrupt(&mut state.kernel) {
+                crate::kernel::InterruptAction::Sent => cx.toast(ToastKind::Info, "Interrupting the cell — Spark jobs are being cancelled. Stop again to end the session."),
+                crate::kernel::InterruptAction::Killed => cx.toast(ToastKind::Info, "Stopping the Spark session; the next cell starts a new one."),
+                crate::kernel::InterruptAction::Nothing => {}
+            }
         } else {
             cx.session.send(Command::Cancel { tab: t.id });
         }
@@ -892,6 +896,26 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         state.shadows.preload = None;
         state.shadows.loading = false;
     }
+    // streamed output lands on the running cell as it is produced; the final reply replaces it
+    for (tab, cell_id, stream, text) in out.outputs {
+        let Some(idx) = state.tab_index(tab) else { continue };
+        let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
+        let Some(ci) = nb.cell_index(&cell_id) else { continue };
+        let Some(run) = nb.cells[ci].run.as_mut() else { continue };
+        if !run.is_live() {
+            continue;
+        }
+        for line in text.lines() {
+            let t = line.trim_end();
+            if t.contains(crate::kernel::ARROW_MARK) {
+                continue;
+            }
+            if stream == "stderr" && (t.is_empty() || t.contains(" WARN ") || t.contains(" INFO ") || t.starts_with('[') && t.contains("Stage ")) {
+                continue;
+            }
+            run.messages.push(msg(t.to_string(), false));
+        }
+    }
     let mut followups = Vec::new();
     let mut pumps: Vec<(TabId, bool)> = Vec::new();
     for (req, result) in out.done {
@@ -901,8 +925,10 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         let o = crate::kernel::outcome(&result);
         let cs = &mut nb.cells[ci];
         let Some(run) = cs.run.as_mut() else { continue };
-        let interrupted = matches!(&result, Err(e) if e.starts_with("interrupted"));
+        let interrupted = o.interrupted || matches!(&result, Err(e) if e.starts_with("interrupted"));
         run.elapsed = run.started.elapsed();
+        // the reply carries the complete stdout: the streamed lines are replaced
+        run.messages.clear();
         for rs in o.result_sets {
             run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
         }

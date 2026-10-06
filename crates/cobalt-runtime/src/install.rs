@@ -466,7 +466,7 @@ pub fn worker_config(dirs: &RuntimeDirs, profile_name: &str, jdk_home: Option<&P
     if let Some(j) = jdk_home {
         env.push(("JAVA_HOME".into(), j.to_string_lossy().to_string()));
     }
-    WorkerConfig { python: dirs.env_python(profile_name), env, init: serde_json::Value::Object(init), startup_timeout: Duration::from_secs(60 * 20) }
+    WorkerConfig { python: dirs.env_python(profile_name), env, init: serde_json::Value::Object(init), startup_timeout: Duration::from_secs(60 * 20), control: false }
 }
 
 /// Start a worker, run `SELECT 1`, report versions. The first run pulls Delta and hadoop-azure

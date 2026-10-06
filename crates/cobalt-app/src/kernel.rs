@@ -8,7 +8,7 @@
 use crate::state::*;
 use cobalt_core::{Settings, TabId};
 use cobalt_runtime::install;
-use cobalt_runtime::worker::{Worker, WorkerConfig};
+use cobalt_runtime::worker::{ControlHandle, Worker, WorkerConfig};
 use cobalt_runtime::{Installed, RuntimeError};
 use cobalt_store::AppPaths;
 use crossbeam_channel::{Receiver, Sender};
@@ -218,8 +218,12 @@ enum Cmd {
 }
 
 pub enum KernelEvent {
-    Ready(Value),
+    Ready { info: Value, control: Option<ControlHandle> },
     Log(String),
+    /// Streamed output of the running cell (protocol 2): `stream` is `stdout` or `stderr`.
+    CellOutput { tab: TabId, cell_id: String, stream: String, text: String },
+    /// The control socket answered an `interrupt`.
+    Interrupted(Result<Value, String>),
     CallResult { tag: String, result: Result<Value, String> },
     /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback…), or a
     /// transport-level error.
@@ -249,6 +253,11 @@ pub struct KernelUi {
     token_server: Option<crate::onelake_tokens::TokenServer>,
     /// Notebooks already warned that their binding differs from the running session's.
     pub binding_warned: std::collections::HashSet<TabId>,
+    /// The worker's control socket (protocol 2): interrupts go here while a cell runs.
+    pub control: Option<ControlHandle>,
+    /// An `interrupt` was sent for the running cell at this time; a second Stop kills the session.
+    pub interrupting: Option<Instant>,
+    ev_tx: Option<Sender<KernelEvent>>,
     /// A preload driven from the app: table lists come from the Fabric REST API (the worker's
     /// own discovery needs an Azure credential this process does not give it), then
     /// `mount_tables` runs chunk by chunk so cells can interleave.
@@ -291,7 +300,7 @@ impl Preload {
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), preload: None }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, ev_tx: None, preload: None }
     }
 }
 
@@ -373,7 +382,13 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         extra.insert("extra_packages".into(), Value::Array(libs.packages.iter().map(|p| Value::String(p.clone())).collect()));
         k.log.push_back(format!("cobalt: {} Maven package{} for the session (Ivy resolves them at start)", libs.packages.len(), if libs.packages.len() == 1 { "" } else { "s" }));
     }
-    let cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
+    let mut cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
+    // the control socket exists from local-spark-mcp 0.4.0 (protocol 2); an older worker would
+    // reject the argument
+    cfg.control = rec.package_version.as_deref().map(|v| version_at_least(v, 0, 4)).unwrap_or(false);
+    if !cfg.control {
+        k.log.push_back("cobalt: local-spark-mcp before 0.4.0 — Stop ends the session instead of interrupting the cell (update the runtime on the Spark runtime page)".into());
+    }
     let bootstrap = python_bootstrap(&out_dir, settings.notebooks.spark_row_limit.max(1));
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();
@@ -381,6 +396,9 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
     k.cancel = cancel.clone();
     k.tx = Some(ctx_tx.clone());
     k.rx = Some(ev_rx);
+    k.ev_tx = Some(ev_tx.clone());
+    k.control = None;
+    k.interrupting = None;
     k.out_dir = Some(out_dir);
     k.profile = profile;
     k.state = KernelState::Starting { since: Instant::now() };
@@ -421,7 +439,12 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                                 continue;
                             }
                         }
-                        let _ = tx.send(KernelEvent::Ready(w.info.clone()));
+                        if let Some(pw) = w.info.get("profile_warnings").and_then(Value::as_array) {
+                            for x in pw.iter().filter_map(Value::as_str) {
+                                let _ = tx.send(KernelEvent::Log(format!("cobalt: profile warning: {x}")));
+                            }
+                        }
+                        let _ = tx.send(KernelEvent::Ready { info: w.info.clone(), control: w.control() });
                         worker = Some(w);
                     }
                     Err(RuntimeError::Cancelled) => {
@@ -440,7 +463,15 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                     continue;
                 };
                 cancel.store(false, Ordering::Relaxed);
-                let r = w.call_cancellable("run_code", json!({"code": req.code}), Duration::from_secs(60 * 60 * 24), &cancel);
+                let stream = w.protocol_version >= 2;
+                let (tab, cell_id) = (req.tab, req.cell_id.clone());
+                let ev_tx = tx.clone();
+                let ev_egui = egui.clone();
+                let mut on_event = |ev: &str, text: &str| {
+                    let _ = ev_tx.send(KernelEvent::CellOutput { tab, cell_id: cell_id.clone(), stream: ev.to_string(), text: text.to_string() });
+                    ev_egui.request_repaint_after(Duration::from_millis(100));
+                };
+                let r = w.call_streaming("run_code", json!({"code": req.code, "stream": stream}), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_event);
                 match r {
                     Ok(v) => {
                         let _ = tx.send(KernelEvent::Done { req, result: Ok(v) });
@@ -450,7 +481,7 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                         if let Some(w) = worker.take() {
                             w.kill();
                         }
-                        let _ = tx.send(KernelEvent::Done { req, result: Err("interrupted — the local Spark session was stopped (the worker protocol has no interrupt yet; the next cell starts a new session)".into()) });
+                        let _ = tx.send(KernelEvent::Done { req, result: Err("interrupted — the local Spark session was stopped (the next cell starts a new session)".into()) });
                         let _ = tx.send(KernelEvent::Stopped);
                     }
                     Err(RuntimeError::WorkerFatal(e)) => {
@@ -540,10 +571,58 @@ pub fn call(k: &mut KernelUi, tag: &str, method: &str, params: Value) -> bool {
     }
 }
 
-/// Abort the running cell (kills the worker; the next cell starts a new session) or a start.
-pub fn interrupt(k: &mut KernelUi) {
-    k.cancel.store(true, Ordering::Relaxed);
+/// What `interrupt` did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InterruptAction {
+    /// `interrupt` went out on the control socket; the cell returns `interrupted` shortly.
+    Sent,
+    /// The worker is being killed (no control socket, a second Stop, or a start in progress).
+    Killed,
+    Nothing,
+}
+
+/// Stop the running cell. With a control socket (local-spark-mcp 0.4.0+) the first call sends
+/// `interrupt` — Spark jobs are cancelled and the cell raises KeyboardInterrupt, the session
+/// survives; a second call while that is pending kills the worker. Without one, or during a
+/// start, the worker is killed and the next cell starts a new session.
+pub fn interrupt(k: &mut KernelUi) -> InterruptAction {
     k.waiting.clear();
+    if k.state.is_starting() {
+        k.cancel.store(true, Ordering::Relaxed);
+        return InterruptAction::Killed;
+    }
+    if k.busy.is_none() {
+        return InterruptAction::Nothing;
+    }
+    match (&k.control, k.interrupting) {
+        (Some(ctl), None) => {
+            k.interrupting = Some(Instant::now());
+            let ctl = ctl.clone();
+            let ev = k.ev_tx.clone();
+            std::thread::Builder::new()
+                .name("spark-interrupt".into())
+                .spawn(move || {
+                    let r = ctl.interrupt().map_err(|e| e.to_string());
+                    if let Some(ev) = ev {
+                        let _ = ev.send(KernelEvent::Interrupted(r));
+                    }
+                })
+                .ok();
+            InterruptAction::Sent
+        }
+        _ => {
+            k.interrupting = None;
+            k.cancel.store(true, Ordering::Relaxed);
+            InterruptAction::Killed
+        }
+    }
+}
+
+/// `v` (`major.minor[.patch]`) is at least `maj.min`.
+pub fn version_at_least(v: &str, maj: u64, min: u64) -> bool {
+    let mut it = v.trim().split(|c: char| c == '.' || c == '-' || c == '+').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0));
+    let (a, b) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
+    (a, b) >= (maj, min)
 }
 
 pub fn stop(k: &mut KernelUi) {
@@ -561,6 +640,8 @@ pub fn stop(k: &mut KernelUi) {
 
 pub struct PollOut {
     pub done: Vec<(RunReq, Result<Value, String>)>,
+    /// Streamed output for running cells: `(tab, cell id, stream, text)`.
+    pub outputs: Vec<(TabId, String, String, String)>,
     pub ready_now: bool,
     /// The session ended (stopped or failed) — cells still marked running must be failed.
     pub broke: Option<String>,
@@ -574,16 +655,26 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
     let mut ready_now = false;
     let mut broke = None;
     let mut calls = Vec::new();
-    let Some(rx) = &k.rx else { return PollOut { done, ready_now, broke, calls } };
+    let mut outputs = Vec::new();
+    let Some(rx) = &k.rx else { return PollOut { done, outputs, ready_now, broke, calls } };
     let mut events = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         events.push(ev);
     }
     for ev in events {
         match ev {
-            KernelEvent::Ready(info) => {
+            KernelEvent::Ready { info, control } => {
                 k.state = KernelState::Ready { info, since: Instant::now() };
+                k.control = control;
                 ready_now = true;
+            }
+            KernelEvent::CellOutput { tab, cell_id, stream, text } => outputs.push((tab, cell_id, stream, text)),
+            KernelEvent::Interrupted(r) => {
+                k.log.push_back(match &r {
+                    Ok(v) => format!("cobalt: interrupt → {}", v.get("state").and_then(Value::as_str).unwrap_or("?")),
+                    Err(e) if e.contains("timed out") => "cobalt: interrupt sent; the worker's acknowledgement did not arrive in time (the cell is still being cancelled — Stop again to end the session)".to_string(),
+                    Err(e) => format!("cobalt: interrupt failed: {e}"),
+                });
             }
             KernelEvent::Log(s) => {
                 k.log.push_back(s);
@@ -596,6 +687,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 if k.busy.as_ref().map(|(t, c)| *t == req.tab && *c == req.cell_id).unwrap_or(false) {
                     k.busy = None;
                 }
+                k.interrupting = None;
                 done.push((req, result));
             }
             KernelEvent::Stopped => {
@@ -606,6 +698,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.token_server = None;
                 k.fabric = None;
                 k.preload = None;
+                k.control = None;
+                k.interrupting = None;
                 broke = Some("the local Spark session stopped".to_string());
             }
             KernelEvent::Failed(e) => {
@@ -616,6 +710,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.token_server = None;
                 k.fabric = None;
                 k.preload = None;
+                k.control = None;
+                k.interrupting = None;
                 broke = Some(e);
             }
         }
@@ -626,7 +722,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
             run(k, req);
         }
     }
-    PollOut { done, ready_now, broke, calls }
+    PollOut { done, outputs, ready_now, broke, calls }
 }
 
 /// Split a worker `ExecResult` into messages and Arrow result sets for a cell.
@@ -634,10 +730,12 @@ pub struct CellOutcome {
     pub messages: Vec<MessageLine>,
     pub result_sets: Vec<Arc<cobalt_results::ResultSet>>,
     pub failed: bool,
+    /// The cell was stopped by `interrupt` (protocol 2): not a failure, outputs so far kept.
+    pub interrupted: bool,
 }
 
 pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
-    let mut out = CellOutcome { messages: Vec::new(), result_sets: Vec::new(), failed: false };
+    let mut out = CellOutcome { messages: Vec::new(), result_sets: Vec::new(), failed: false, interrupted: false };
     let msg = |text: String, is_error: bool| MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path: None };
     match result {
         Err(e) => {
@@ -646,9 +744,14 @@ pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
         }
         Ok(v) => {
             let stdout = v.get("stdout").and_then(Value::as_str).unwrap_or("");
-            let failed = v.get("ok").and_then(Value::as_bool) == Some(false) || v.get("error").and_then(Value::as_str).map(|e| !e.is_empty()).unwrap_or(false);
+            let interrupted = v.get("interrupted").and_then(Value::as_bool) == Some(true);
+            let failed = !interrupted && (v.get("ok").and_then(Value::as_bool) == Some(false) || v.get("error").and_then(Value::as_str).map(|e| !e.is_empty()).unwrap_or(false));
             let mut in_traceback = false;
             for line in stdout.lines() {
+                // an interrupted cell's KeyboardInterrupt traceback is noise: keep what it printed before
+                if interrupted && line.starts_with("-----") {
+                    break;
+                }
                 // a DataFrame marker may follow IPython's "Out[n]: " prefix
                 if let Some(pos) = line.find(ARROW_MARK) {
                     let rest = &line[pos + ARROW_MARK.len()..];
@@ -674,7 +777,9 @@ pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
                     out.messages.push(msg(line.to_string(), in_traceback));
                 }
             }
-            let stderr = v.get("stderr").and_then(Value::as_str).unwrap_or("");
+            // an interrupted cell's stderr is the cancellation itself (py4j errors from the
+            // cancelled jobs), not the user's output
+            let stderr = if interrupted { "" } else { v.get("stderr").and_then(Value::as_str).unwrap_or("") };
             for line in stderr.lines() {
                 let t = line.trim_end();
                 if t.is_empty() || t.contains(" WARN ") || t.contains(" INFO ") || t.starts_with('[') && t.contains("Stage ") {
@@ -694,6 +799,12 @@ pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
                 for x in n.iter().filter_map(Value::as_str) {
                     out.messages.push(msg(format!("notice: {x}"), false));
                 }
+            }
+            if interrupted {
+                out.interrupted = true;
+                let err = v.get("error").and_then(Value::as_str).unwrap_or("");
+                let detail = if err.contains("Spark jobs cancelled") { " (Spark jobs cancelled)" } else { "" };
+                out.messages.push(msg(format!("Interrupted{detail}"), false));
             }
         }
     }
@@ -741,5 +852,12 @@ mod tests {
         assert!(o.messages.iter().any(|m| m.text.contains("Could not read the DataFrame file")));
         let o = outcome(&Err("interrupted".into()));
         assert!(o.failed && o.messages[0].is_error);
+        // protocol 2: an interrupted cell is not a failure and its traceback is dropped
+        let v = json!({"ok": false, "interrupted": true, "stdout": "step 1\n---------------------------------\nKeyboardInterrupt  Traceback\n", "stderr": "ERROR:root:Exception while sending command.\npy4j.protocol.Py4JNetworkError: x\n", "error": "KeyboardInterrupt: interrupted (Spark jobs cancelled)", "traceback": "Traceback...", "notices": []});
+        let o = outcome(&Ok(v));
+        assert!(o.interrupted && !o.failed);
+        let texts: Vec<&str> = o.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["step 1", "Interrupted (Spark jobs cancelled)"]);
+        assert!(version_at_least("0.4.0", 0, 4) && version_at_least("1.0", 0, 4) && !version_at_least("0.3.5", 0, 4));
     }
 }

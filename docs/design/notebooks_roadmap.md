@@ -182,7 +182,8 @@ with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client ca
   provisioning and cache under the runtime folder so later sessions are offline-safe.
 - **Windows Python**: 3.11 is mandatory for workers; the manifest fixes it so users never see
   the issue.
-- **Interrupt**: not in the worker today; Stop restarts the session until the upstream change lands.
+- **Interrupt**: done in local-spark-mcp 0.4.0 (control socket); a cell blocked in pure Python on
+  Windows returns only when the call ends — Stop twice kills the worker as the escape hatch.
 - **Memory**: the default 8 GB driver is too much for small laptops; detect RAM and size the
   driver, expose it in settings.
 - **Security**: notebooks run arbitrary code as the user, like every notebook tool. The token

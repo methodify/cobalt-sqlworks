@@ -200,6 +200,9 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "fabric": k.fabric.as_ref().map(|f| json!({"workspace_id": f.workspace_id, "workspace": f.workspace_name, "lakehouses": f.lakehouses, "default_lakehouse": f.default_lakehouse, "write_mode": f.write_mode})),
         "pending_fabric_start": k.pending_fabric_start.is_some(),
         "preload": k.preload.as_ref().map(|p| p.as_json()),
+        "control": k.control.is_some(),
+        "interrupting": k.interrupting.map(|t| t.elapsed().as_secs()),
+        "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },
         "token_requests": k.token_requests(),
         "token_error": k.token_error(),
     })
@@ -1119,7 +1122,10 @@ impl AgentApp for CobaltApp {
                     }
                     "stop" => crate::kernel::stop(&mut self.state.kernel),
                     "restart" => self.run_command(egui, Command::KernelRestart),
-                    "interrupt" => crate::kernel::interrupt(&mut self.state.kernel),
+                    "interrupt" => {
+                        let a = crate::kernel::interrupt(&mut self.state.kernel);
+                        self.state.recent_toasts.push_back(format!("interrupt: {a:?}"));
+                    }
                     "log" => self.state.kernel.log_open = !self.state.kernel.log_open,
                     other => return ActionResult::BadArgs(format!("unknown kernel action {other}")),
                 }

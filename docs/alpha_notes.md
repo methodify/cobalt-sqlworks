@@ -265,10 +265,17 @@ expression, and `%%sql` → the results grid. Behind the scenes a hook installed
 writes the frame as an Arrow IPC file under the runtime's `state/outputs/` and prints a marker
 that Cobalt swaps for the grid — an interim path until local-spark-mcp exposes Arrow natively.
 `display()` caps at 1,000 rows (Fabric parity) unless given `limit=`; bare expressions and `%%sql`
-use Settings → Notebooks → "Rows a Spark DataFrame brings back". Stop (toolbar) or Alt+C on a
-running cell kills the worker (there is no interrupt in the protocol yet); the next cell starts
-a new session and loses the namespace. `%pip install x` works (IPython's pip magic against the
-runtime's environment) but is not recorded anywhere. Agent: `kernel {action: status|start|stop|restart|interrupt|log}`.
+use Settings → Notebooks → "Rows a Spark DataFrame brings back". Stop (toolbar, the cell's
+button, Alt+C) on a running cell sends `interrupt` on the worker's control socket
+(local-spark-mcp 0.4.0+): Spark jobs are cancelled, the cell ends as *cancelled* with
+"Interrupted (Spark jobs cancelled)" under what it printed so far, and the session and its
+namespace survive. Stop again while that is pending kills the worker (the next cell starts a
+new session) — the escape hatch for a cell blocked in pure Python, which Windows interrupts only
+when the blocking call returns. On a pre-0.4.0 environment Stop kills the worker straight away
+and the session log says so. Cell output streams while the cell runs (0.4.0's `stream: true`);
+the final reply replaces the streamed lines. `%pip install x` works (IPython's pip magic against
+the runtime's environment) but is not recorded anywhere. Agent: `kernel {action: status|start|stop|restart|interrupt|log}`;
+`kernel` state carries `protocol_version`, `control` and `interrupting`.
 
 ## Spark runtime (Settings → Spark runtime)
 

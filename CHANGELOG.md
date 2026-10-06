@@ -2,6 +2,16 @@
 
 ## Unreleased — 0.7.3
 
+- **local-spark-mcp 0.4.0: Stop interrupts the cell, the session survives.** The runtime pin moves
+  to 0.4.0 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
+  control socket: Spark jobs are cancelled within seconds, the cell ends as *cancelled* with what
+  it printed so far plus "Interrupted (Spark jobs cancelled)", and the session, its namespace and
+  its lakehouse clones stay. Stop again while that is pending ends the session (for a cell stuck
+  in pure Python, which Windows cannot interrupt mid-call). Cell output **streams** as the cell
+  runs instead of arriving at the end. Replies are checked against their request id on both
+  sockets; a mismatch restarts the worker instead of misattributing results. The environment is
+  brought to 0.4.0 by "Reinstall / update" on the Spark runtime page; on an older environment
+  Stop keeps killing the worker and the session log says why.
 - **local-spark-mcp 0.3.5.** The runtime pin moves to 0.3.5, which shipped most of Cobalt's
   requests: user jars and Maven coordinates now go to the session as `extra_jars` and
   `extra_packages` (Ivy resolves Maven packages with their dependencies, so a coordinate alone

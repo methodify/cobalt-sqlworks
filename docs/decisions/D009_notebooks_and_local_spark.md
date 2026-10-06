@@ -49,7 +49,11 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
   runtime, verified end to end on the founder's machine).
 - Slate 2 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
   Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
-  restarts the session because the protocol has no interrupt.
+  restarted the session because the protocol had no interrupt.
+- 0.7.3 (2026-10-06): local-spark-mcp 0.4.0 — protocol 2. Stop sends `interrupt` on the worker's
+  control socket and the session survives; cell output streams; replies are checked by id
+  (mismatch = respawn). The display hook stays until the worker can capture a cell's
+  last-expression DataFrame natively (asked in `docs/requests/local-spark-mcp-0.4.0-reply.md`).
 - Slate 3 (2026-10-06): the OneLake token endpoint lives in Cobalt and serves the Fabric account's
   token; sessions bind to one workspace/lakehouse/write mode at start (restart to rebind); the
   Fabric definition APIs need `Item.ReadWrite.All` on the app registration (added 2026-10-06;
