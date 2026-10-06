@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.7.1
+## 0.7.1 — 2026-10-06
 
 - **Permissions that grow with the app.** A sign-in only ever carries the permissions consented
   at the time, so a refresh token from an older Cobalt could never pick up a permission the app
