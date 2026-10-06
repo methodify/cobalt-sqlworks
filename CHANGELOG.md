@@ -9,6 +9,10 @@
   Ctrl+W, Alt+N, Ctrl+W, Alt+N.
 - Reopen Closed Tab (Ctrl+Shift+T) brings a notebook back as a notebook, and a notebook opened
   from Fabric keeps its item binding across hot exit and reopen.
+- Notebook cell layout: the editor is a bordered box whose line-number band ends with the code
+  (it used to spill into the output), and outputs sit in an indented block under it with a rule
+  on the left — consecutive lines of PRINT/stdout as one text block, errors as a red block, result
+  grids below with their row count and timing.
 
 - **Lakehouse-bound Spark sessions.** A notebook on the Local Spark kernel can be bound to a
   Fabric workspace, a default lakehouse and a write mode (lakehouse button on the toolbar;

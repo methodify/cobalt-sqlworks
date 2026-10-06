@@ -409,7 +409,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             let host_id = egui::Id::new(("cobalt-cell", tab_id, cell_id.as_str()));
                             let cs = &mut nb.cells[i];
                             let mut host = EditorHost { id: host_id, text: &mut nb.nb.cells[i].source, editor: &mut cs.editor, catalog: if cell_kind == CellKind::Code { catalog } else { None }, databases };
-                            let out = editor::show_host(ui, &mut host, Vec::new(), EditorLayout::Auto { min_rows: if cell_kind == CellKind::Markdown { 3 } else { 2 } }, theme, settings);
+                            let out = egui::Frame::new()
+                                .fill(theme.bg_editor)
+                                .stroke(egui::Stroke::new(1.0, theme.border))
+                                .corner_radius(3.0)
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    editor::show_host(ui, &mut host, Vec::new(), EditorLayout::Auto { min_rows: if cell_kind == CellKind::Markdown { 3 } else { 2 } }, theme, settings)
+                                })
+                                .inner;
                             if out.changed {
                                 nb.dirty = true;
                             }
@@ -442,10 +450,18 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 nb.selected = i;
                             }
                         }
-                        // outputs
-                        if cell_kind == CellKind::Code && !nb.cells[i].outputs_collapsed {
+                        // outputs: an indented block under the editor with a rule on the left, like a
+                        // notebook's Out[] area; text comes as blocks, result sets as grids
+                        let has_outputs = nb.cells[i].run.is_some() || !nb.cells[i].extra_outputs.is_empty();
+                        if cell_kind == CellKind::Code && !nb.cells[i].outputs_collapsed && has_outputs {
                             let cached = nb.cells[i].cached;
                             let extra = nb.cells[i].extra_outputs.clone();
+                            ui.add_space(4.0);
+                            let block = ui.horizontal_top(|ui| {
+                            ui.add_space(10.0);
+                            ui.vertical(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.spacing_mut().item_spacing.y = 4.0;
                             if let Some(run) = nb.cells[i].run.as_mut() {
                                 let state_text = match run.state {
                                     RunViewState::Running => Some((format!("{} Executing…", icons::CIRCLE_NOTCH), theme.text_muted)),
@@ -459,12 +475,21 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 // messages: errors and PRINT output; the row counts and timing live on the grid header
                                 let has_grid = run.result_sets.iter().any(|s| !s.is_plan);
                                 let elapsed = run.messages.iter().find_map(|m| m.text.strip_prefix("Total execution time: ").map(str::to_string));
+                                // consecutive lines of one kind form one block (stdout / errors)
+                                let mut blocks: Vec<(bool, Vec<String>)> = Vec::new();
                                 for m in run.messages.iter().filter(|m| !m.is_batch_header) {
                                     if m.text.starts_with("Total execution time: ") || (has_grid && m.text.starts_with('(') && m.text.ends_with("returned)")) {
                                         continue;
                                     }
-                                    let color = if m.is_error { theme.error } else { theme.text_muted };
-                                    ui.add(egui::Label::new(RichText::new(&m.text).size(12.0).color(color).monospace()).wrap());
+                                    match blocks.last_mut() {
+                                        Some((err, lines)) if *err == m.is_error => lines.push(m.text.clone()),
+                                        _ => blocks.push((m.is_error, vec![m.text.clone()])),
+                                    }
+                                }
+                                for (is_err, lines) in blocks {
+                                    let text = lines.join("\n");
+                                    let color = if is_err { theme.error } else { theme.text };
+                                    ui.add(egui::Label::new(RichText::new(text).size(12.0).color(color).monospace()).wrap());
                                 }
                                 if !has_grid && !run.is_live() {
                                     if let Some(e) = &elapsed {
@@ -632,6 +657,11 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             for o in &extra {
                                 render_extra_output(ui, theme, o);
                             }
+                            });
+                            });
+                            // the rule on the left of the output block
+                            let r = block.response.rect;
+                            ui.painter().line_segment([egui::pos2(r.left() + 3.0, r.top() + 2.0), egui::pos2(r.left() + 3.0, r.bottom() - 2.0)], egui::Stroke::new(2.0, theme.border_strong));
                         } else if cell_kind == CellKind::Code && nb.cells[i].outputs_collapsed {
                             let k = nb.cells[i].run.as_ref().map(|r| r.result_sets.len()).unwrap_or(0) + nb.cells[i].extra_outputs.len();
                             if k > 0 {

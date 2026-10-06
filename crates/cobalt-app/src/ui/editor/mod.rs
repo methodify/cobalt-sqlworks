@@ -330,8 +330,10 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                 }
 
                 // gutter: line numbers
-                gutter_painter.rect_filled(Rect::from_min_size(gutter_rect.min, Vec2::new(gutter_w, galley.size().y.max(avail.y) + 8.0)), 0.0, theme.bg_sidebar);
-                gutter_painter.line_segment([Pos2::new(gutter_rect.right(), gutter_rect.top()), Pos2::new(gutter_rect.right(), gutter_rect.top() + galley.size().y.max(avail.y) + 8.0)], Stroke::new(1.0, theme.border));
+                // the band spans the editor; the query tab's scroll area gets a little slack below
+                let band_h = galley.size().y.max(avail.y) + if auto_rows.is_some() { 0.0 } else { 8.0 };
+                gutter_painter.rect_filled(Rect::from_min_size(gutter_rect.min, Vec2::new(gutter_w, band_h)), 0.0, theme.bg_sidebar);
+                gutter_painter.line_segment([Pos2::new(gutter_rect.right(), gutter_rect.top()), Pos2::new(gutter_rect.right(), gutter_rect.top() + band_h)], Stroke::new(1.0, theme.border));
                 let mut line_no = 1usize;
                 let cur_line = h.editor.line;
                 let mut new_line = true;
