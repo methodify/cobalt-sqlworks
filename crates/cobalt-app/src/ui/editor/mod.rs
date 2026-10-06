@@ -33,7 +33,159 @@ pub struct EditorOutput {
     pub focused: bool,
 }
 
-/// Build a highlighted layout job for `text`.
+/// What the editor is editing: decides highlighting, completion and statement tracking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Syntax {
+    #[default]
+    Sql,
+    Python,
+    /// Markdown and anything else: no highlighting.
+    Plain,
+}
+
+/// Build a highlighted layout job for `text` in the given syntax.
+pub fn layout_job_for(syntax: Syntax, text: &str, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
+    match syntax {
+        Syntax::Sql => layout_job(text, colors, font, wrap_width),
+        Syntax::Python => python_layout_job(text, colors, font, wrap_width),
+        Syntax::Plain => {
+            let mut job = LayoutJob::default();
+            job.wrap.max_width = wrap_width;
+            job.append(text, 0.0, TextFormat { font_id: font, color: colors.identifier, ..Default::default() });
+            job
+        }
+    }
+}
+
+const PY_KEYWORDS: &[&str] = &["False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while", "with", "yield", "match", "case"];
+const PY_BUILTINS: &[&str] = &["print", "len", "range", "int", "str", "float", "bool", "list", "dict", "set", "tuple", "type", "isinstance", "enumerate", "zip", "map", "filter", "sorted", "sum", "min", "max", "abs", "round", "open", "display", "spark", "sc", "F", "T", "Window", "notebookutils", "mssparkutils", "self"];
+
+/// A small Python tokenizer for highlighting: comments, strings (with prefixes and triple
+/// quotes), numbers, keywords, builtins, decorators. Good enough for cells; not a parser.
+pub fn python_layout_job(text: &str, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    job.wrap.max_width = wrap_width;
+    let push = |job: &mut LayoutJob, s: &str, color: Color32, italics: bool| {
+        if !s.is_empty() {
+            job.append(s, 0.0, TextFormat { font_id: font.clone(), color, italics, ..Default::default() });
+        }
+    };
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    let mut i = 0;
+    let mut plain_start = 0;
+    while i < n {
+        let c = bytes[i];
+        // comment to end of line
+        if c == b'#' {
+            push(&mut job, &text[plain_start..i], colors.identifier, false);
+            let end = text[i..].find('\n').map(|k| i + k).unwrap_or(n);
+            push(&mut job, &text[i..end], colors.comment, true);
+            i = end;
+            plain_start = i;
+            continue;
+        }
+        // string, possibly with a prefix (r, b, f, u, rb, br, fr, rf)
+        if c == b'\'' || c == b'"' || (c.is_ascii_alphabetic() && i + 1 < n && {
+            let mut j = i;
+            while j < n && j - i < 2 && bytes[j].is_ascii_alphabetic() && b"rbfuRBFU".contains(&bytes[j]) {
+                j += 1;
+            }
+            j > i && j < n && (bytes[j] == b'\'' || bytes[j] == b'"') && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_'))
+        }) {
+            let mut q = i;
+            while bytes[q] != b'\'' && bytes[q] != b'"' {
+                q += 1;
+            }
+            let quote = bytes[q];
+            let triple = q + 2 < n && bytes[q + 1] == quote && bytes[q + 2] == quote;
+            let mut k = if triple { q + 3 } else { q + 1 };
+            let mut closed = false;
+            while k < n {
+                if bytes[k] == b'\\' {
+                    k += 2;
+                    continue;
+                }
+                if triple {
+                    if bytes[k] == quote && k + 2 < n + 0 && k + 2 <= n - 1 && bytes[k + 1] == quote && bytes[k + 2] == quote {
+                        k += 3;
+                        closed = true;
+                        break;
+                    }
+                } else if bytes[k] == quote {
+                    k += 1;
+                    closed = true;
+                    break;
+                } else if bytes[k] == b'\n' {
+                    break; // an unterminated single-line string stops at the line end
+                }
+                k += 1;
+            }
+            let _ = closed;
+            let k = k.min(n);
+            // keep on a char boundary
+            let mut end = k;
+            while end < n && !text.is_char_boundary(end) {
+                end += 1;
+            }
+            push(&mut job, &text[plain_start..i], colors.identifier, false);
+            push(&mut job, &text[i..end], colors.string, false);
+            i = end;
+            plain_start = i;
+            continue;
+        }
+        // numbers
+        if c.is_ascii_digit() && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) {
+            let mut k = i + 1;
+            while k < n && (bytes[k].is_ascii_alphanumeric() || bytes[k] == b'.' || bytes[k] == b'_') {
+                k += 1;
+            }
+            push(&mut job, &text[plain_start..i], colors.identifier, false);
+            push(&mut job, &text[i..k], colors.number, false);
+            i = k;
+            plain_start = i;
+            continue;
+        }
+        // words
+        if c.is_ascii_alphabetic() || c == b'_' {
+            let mut k = i + 1;
+            while k < n && (bytes[k].is_ascii_alphanumeric() || bytes[k] == b'_') {
+                k += 1;
+            }
+            let word = &text[i..k];
+            let color = if PY_KEYWORDS.contains(&word) {
+                Some(colors.keyword)
+            } else if PY_BUILTINS.contains(&word) {
+                Some(colors.function)
+            } else if i > 0 && bytes[i - 1] == b'@' {
+                Some(colors.variable)
+            } else {
+                None
+            };
+            if let Some(col) = color {
+                push(&mut job, &text[plain_start..i], colors.identifier, false);
+                push(&mut job, word, col, false);
+                plain_start = k;
+            }
+            i = k;
+            continue;
+        }
+        if c == b'%' && (i == 0 || bytes[i - 1] == b'\n') {
+            // a cell or line magic
+            push(&mut job, &text[plain_start..i], colors.identifier, false);
+            let end = text[i..].find('\n').map(|k| i + k).unwrap_or(n);
+            push(&mut job, &text[i..end], colors.variable, false);
+            i = end;
+            plain_start = i;
+            continue;
+        }
+        i += 1;
+    }
+    push(&mut job, &text[plain_start..], colors.identifier, false);
+    job
+}
+
+/// Build a highlighted layout job for `text` (T-SQL).
 pub fn layout_job(text: &str, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_width;
@@ -158,6 +310,7 @@ pub struct EditorHost<'a> {
     pub editor: &'a mut EditorState,
     pub catalog: Option<&'a cobalt_core::DatabaseCatalog>,
     pub databases: &'a Loadable<Vec<DatabaseInfo>>,
+    pub syntax: Syntax,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,7 +323,7 @@ pub enum EditorLayout {
 
 impl EditorTab {
     pub fn host(&mut self) -> EditorHost<'_> {
-        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases }
+        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax: Syntax::Sql }
     }
 }
 
@@ -273,8 +426,10 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                 let scroll_to_cursor = std::mem::take(&mut h.editor.scroll_to_cursor);
                 let find_mode = core::MatchMode { case_sensitive: h.editor.find_case, whole_word: false };
                 let ed = &mut *h.editor;
+                let syntax = h.syntax;
                 let output = widget::CodeEditor {
                     id,
+                    syntax,
                     text: &mut *h.text,
                     cursors: &mut ed.cursors,
                     undo: &mut ed.undo,
@@ -313,9 +468,9 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                 h.editor.col = col;
                 h.editor.line_count = text.matches('\n').count() + 1;
 
-                // current statement highlight
-                h.editor.statement_range = cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end));
-                if highlight_statement && out.focused {
+                // current statement highlight (SQL only)
+                h.editor.statement_range = if syntax == Syntax::Sql { cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end)) } else { None };
+                if highlight_statement && out.focused && syntax == Syntax::Sql {
                     if let Some((s, e)) = h.editor.statement_range {
                         let cs = byte_to_char(text, s);
                         let ce = byte_to_char(text, e);
@@ -359,7 +514,7 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                     h.editor.completion = None;
                     // not while a snippet's placeholders are being filled in: Tab must stay the
                     // way to the next stop (Ctrl+Space still opens suggestions on demand)
-                    if output.typed && h.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
+                    if output.typed && syntax == Syntax::Sql && h.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
                         let before = text[..out.cursor_byte].chars().next_back();
                         if matches!(before, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '@' || c == '#') {
                             let anchor = gpos + widget::caret_rect(galley, h.editor.cursor, row_h).left_bottom().to_vec2();
@@ -663,7 +818,8 @@ pub fn toggle_line_comment(h: &mut EditorHost<'_>) {
             _ => merged.push(b),
         }
     }
-    let all_commented = merged.iter().flat_map(|&(a, b)| chars[a..b].iter().collect::<String>().lines().map(str::to_string).collect::<Vec<_>>()).filter(|l| !l.trim().is_empty()).all(|l| l.trim_start().starts_with("--"));
+    let marker = if h.syntax == Syntax::Python { "#" } else { "--" };
+    let all_commented = merged.iter().flat_map(|&(a, b)| chars[a..b].iter().collect::<String>().lines().map(str::to_string).collect::<Vec<_>>()).filter(|l| !l.trim().is_empty()).all(|l| l.trim_start().starts_with(marker));
     let reps: Vec<Replace> = merged
         .iter()
         .map(|&(a, b)| {
@@ -677,7 +833,7 @@ pub fn toggle_line_comment(h: &mut EditorHost<'_>) {
                     };
                     if all_commented {
                         let trimmed = body.trim_start();
-                        if let Some(rest) = trimmed.strip_prefix("--") {
+                        if let Some(rest) = trimmed.strip_prefix(marker) {
                             let indent = &body[..body.len() - trimmed.len()];
                             format!("{indent}{}{nl}", rest.strip_prefix(' ').unwrap_or(rest))
                         } else {
@@ -686,7 +842,7 @@ pub fn toggle_line_comment(h: &mut EditorHost<'_>) {
                     } else if body.trim().is_empty() {
                         format!("{body}{nl}")
                     } else {
-                        format!("-- {body}{nl}")
+                        format!("{marker} {body}{nl}")
                     }
                 })
                 .collect();
@@ -760,4 +916,41 @@ pub fn set_text_keep_line(h: &mut EditorHost<'_>, new_text: String) {
 
 pub fn color_hex(c: Color32) -> String {
     format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
+}
+
+#[cfg(test)]
+mod syntax_tests {
+    use super::*;
+
+    fn colors() -> TokenColors {
+        crate::ui::theme::Theme::for_choice(cobalt_core::ThemeChoice::Light, false).tokens.clone()
+    }
+
+    /// The colour of the section that contains byte `at`.
+    fn color_at(job: &LayoutJob, at: usize) -> Color32 {
+        job.sections.iter().find(|s| s.byte_range.start.0 <= at && at < s.byte_range.end.0).map(|s| s.format.color).expect("section")
+    }
+
+    #[test]
+    fn python_comment_with_apostrophe_does_not_open_a_string() {
+        let text = r#"# One display value (PO 2026-10-01): F&O receives a value's registry LABEL
+rollup = spark.sql(f"""SELECT 1""")
+x = 'done'"#;
+        let c = colors();
+        let job = python_layout_job(text, &c, FontId::monospace(12.0), f32::INFINITY);
+        assert_eq!(color_at(&job, 10), c.comment);
+        let rollup = text.find("rollup").unwrap();
+        assert_eq!(color_at(&job, rollup), c.identifier);
+        let sel = text.find("SELECT").unwrap();
+        assert_eq!(color_at(&job, sel), c.string);
+        let done = text.find("'done'").unwrap();
+        assert_eq!(color_at(&job, done + 1), c.string);
+        assert_eq!(color_at(&job, text.find("spark").unwrap()), c.function);
+    }
+
+    #[test]
+    fn plain_syntax_has_one_section() {
+        let job = layout_job_for(Syntax::Plain, "# not a comment 'x", &colors(), FontId::monospace(12.0), f32::INFINITY);
+        assert_eq!(job.sections.len(), 1);
+    }
 }

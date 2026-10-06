@@ -431,9 +431,14 @@ impl EditorTab {
             Some(nb) if !nb.cells.is_empty() => {
                 let i = nb.selected.min(nb.cells.len() - 1);
                 let cell = &mut nb.cells[i];
-                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases }
+                let syntax = match (nb.nb.cells[i].kind, nb.nb.cell_language(&nb.nb.cells[i])) {
+                    (cobalt_notebook::CellKind::Code, cobalt_notebook::CellLanguage::Sql) => crate::ui::editor::Syntax::Sql,
+                    (cobalt_notebook::CellKind::Code, cobalt_notebook::CellLanguage::Python) => crate::ui::editor::Syntax::Python,
+                    _ => crate::ui::editor::Syntax::Plain,
+                };
+                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax }
             }
-            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases },
+            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: crate::ui::editor::Syntax::Sql },
         }
     }
 

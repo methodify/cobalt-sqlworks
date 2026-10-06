@@ -475,7 +475,12 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         if editing {
                             let host_id = egui::Id::new(("cobalt-cell", tab_id, cell_id.as_str()));
                             let cs = &mut nb.cells[i];
-                            let mut host = EditorHost { id: host_id, text: &mut nb.nb.cells[i].source, editor: &mut cs.editor, catalog: if cell_kind == CellKind::Code { catalog } else { None }, databases };
+                            let syntax = match (cell_kind, &lang) {
+                                (CellKind::Code, CellLanguage::Sql) => editor::Syntax::Sql,
+                                (CellKind::Code, CellLanguage::Python) => editor::Syntax::Python,
+                                _ => editor::Syntax::Plain,
+                            };
+                            let mut host = EditorHost { id: host_id, text: &mut nb.nb.cells[i].source, editor: &mut cs.editor, catalog: if cell_kind == CellKind::Code { catalog } else { None }, databases, syntax };
                             let out = egui::Frame::new()
                                 .fill(theme.bg_editor)
                                 .stroke(egui::Stroke::new(1.0, theme.border))

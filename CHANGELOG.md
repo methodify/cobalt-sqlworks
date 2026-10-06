@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — 0.7.3
+
+- **PySpark cells are highlighted as Python**, not T-SQL: `#` comments (an apostrophe in one no
+  longer opens a string that swallows the rest of the cell), string prefixes and triple quotes,
+  numbers, keywords, common builtins (`spark`, `display`, `F`, `T`…), decorators and `%magics`.
+  SQL completion and current-statement tracking stay on SQL cells; Markdown cells edit as plain
+  text; Toggle Line Comment uses `#` in Python cells.
+
 ## 0.7.2 — 2026-10-06
 
 - **Libraries for the Spark environment** (Settings → Notebooks & Spark → Libraries). Python

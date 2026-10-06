@@ -66,6 +66,7 @@ pub struct CodeEditor<'a> {
     pub snippet: &'a mut Option<SnippetSession>,
     pub font: FontId,
     pub colors: &'a TokenColors,
+    pub syntax: super::Syntax,
     pub text_color: Color32,
     pub cursor_color: Color32,
     pub word_wrap: bool,
@@ -137,7 +138,7 @@ fn first_nonblank_in_row(galley: &Galley, text_chars: &[char], row: usize) -> us
 
 impl<'a> CodeEditor<'a> {
     pub fn show(self, ui: &mut Ui) -> CodeEditorOutput {
-        let CodeEditor { id, text, cursors, undo, snippet, font, colors, text_color, cursor_color, word_wrap, tab_size, insert_spaces, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
+        let CodeEditor { id, text, cursors, undo, snippet, font, colors, syntax, text_color, cursor_color, word_wrap, tab_size, insert_spaces, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
         let mut mem: Mem = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0')).max(1.0);
@@ -149,7 +150,7 @@ impl<'a> CodeEditor<'a> {
         let margin_h = (margin.top + margin.bottom) as f32;
         let wrap_width = if word_wrap { (ui.available_width() - margin_w).max(40.0) } else { f32::INFINITY };
         let layout = |ui: &Ui, text: &str| -> Arc<Galley> {
-            let job = super::layout_job(text, colors, font.clone(), wrap_width);
+            let job = super::layout_job_for(syntax, text, colors, font.clone(), wrap_width);
             ui.fonts_mut(|f| f.layout_job(job))
         };
         let mut galley = layout(ui, text);
