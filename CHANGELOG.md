@@ -19,8 +19,8 @@
 - **Fabric notebooks in the explorer.** Workspaces list their Notebook items; double-click opens
   one bound to the item (Save writes back after a confirmation through `updateDefinition`; Save
   As… makes a local copy and detaches), "Open a copy" opens it detached, plus Open in Fabric
-  portal. Both the `.ipynb` and the Git `.py` definition forms are read. **Needs the delegated
-  permission `Item.ReadWrite.All` on the app registration** (reading and writing item definitions);
+  portal. Both the `.ipynb` and the Git `.py` definition forms are read. Needs the delegated
+  permission `Item.ReadWrite.All` on the app registration (reading and writing item definitions);
   listing works with `Item.Read.All`, and the error says what to add when the scope is missing.
 - Fabric client: generic item listing, POST with long-running-operation polling,
   `getDefinition` / `updateDefinition` / create notebook. Agent: `fabric_notebooks`,

@@ -313,11 +313,14 @@ notebook's binding differs, a warning chip on the toolbar restarts the session w
 **Fabric notebooks.** Workspaces in the Fabric panel now list their notebooks; double-click opens
 one bound to the item, Ctrl+S saves back after a confirmation (Fabric keeps no history, so the
 dialog says so), Save As… writes a local `.ipynb` and detaches. "Open a copy" opens it detached.
-**Blocked on this tenant until the app registration gets the delegated permission
-`Item.ReadWrite.All`** (Power BI Service / Fabric API): listing items works with
-`Item.Read.All`, but `getDefinition` and `updateDefinition` return 403 InsufficientScopes without
-it. After adding and consenting, sign out and in on the Fabric panel so the refresh token carries
-the new scope; `fabric_scopes` (agent) shows what the token has.
+Needs the delegated permission `Item.ReadWrite.All` on the app registration (listing works
+with `Item.Read.All`; without the write scope `getDefinition` and `updateDefinition` return 403
+InsufficientScopes and the error says what to add). Added to the test tenant on 2026-10-06; the
+next token refresh picked it up without a new sign-in. Verified live: your `Notebook_1` opened
+from the Fabric test workspace bound to lakehouse `test`, ran a `%%sql` count over
+`test.sales_import` and two sandbox writes, saved back through `updateDefinition`, and "Open a
+copy" fetched the saved version with the new cells and their outputs. `fabric_scopes` (agent)
+shows what the token has.
 Agent: `notebook {action: set_lakehouse, workspace, lakehouse?, write_mode?}`, `shadows {action: status|discard|discard_written|restore, table?}`, `fabric_notebooks {workspace?}`, `notebook {action: open_fabric, item, copy?}`, `notebook {action: save_fabric}`.
 
 ## Import Data from File

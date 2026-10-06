@@ -51,4 +51,5 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
   restarts the session because the protocol has no interrupt.
 - 0.9 (2026-10-06): the OneLake token endpoint lives in Cobalt and serves the Fabric account's
   token; sessions bind to one workspace/lakehouse/write mode at start (restart to rebind); the
-  Fabric definition APIs need `Item.ReadWrite.All` on the app registration.
+  Fabric definition APIs need `Item.ReadWrite.All` on the app registration (added 2026-10-06;
+  open and save-back verified live).
