@@ -81,7 +81,7 @@ impl CobaltApp {
                     "cells": cells,
                     "selected_cell": t.notebook.as_deref().map(|nb| nb.selected),
                     "kernel": t.notebook.as_deref().map(|nb| if nb.kernel == crate::state::NotebookKernel::Spark { "spark" } else { "connection" }),
-                    "lakehouse": t.notebook.as_deref().and_then(|nb| nb.fabric.as_ref()).map(|b| json!({"workspace_id": b.workspace_id, "lakehouse_id": b.lakehouse_id, "write_mode": b.write_mode})),
+                    "lakehouse": t.notebook.as_deref().and_then(|nb| nb.fabric.as_ref()).map(|b| json!({"workspace_id": b.workspace_id, "lakehouse_id": b.lakehouse_id, "write_mode": b.write_mode, "preload": b.preload})),
                     "fabric_item": t.fabric_item.as_ref().map(|fi| json!({"id": fi.item.id, "name": fi.item.display_name, "workspace_id": fi.item.workspace_id, "saving": fi.saving})),
                     "active": self.state.active_tab == Some(i),
                     "dirty": t.is_dirty(),
@@ -199,6 +199,7 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "log_tail": k.log.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
         "fabric": k.fabric.as_ref().map(|f| json!({"workspace_id": f.workspace_id, "workspace": f.workspace_name, "lakehouses": f.lakehouses, "default_lakehouse": f.default_lakehouse, "write_mode": f.write_mode})),
         "pending_fabric_start": k.pending_fabric_start.is_some(),
+        "preload": k.preload.as_ref().map(|p| p.as_json()),
         "token_requests": k.token_requests(),
         "token_error": k.token_error(),
     })
@@ -898,7 +899,8 @@ impl AgentApp for CobaltApp {
                         };
                         let current_mode = self.state.tabs[i].notebook.as_deref().and_then(|nb| nb.fabric.as_ref().map(|f| f.write_mode.clone())).unwrap_or_else(|| "sandbox".into());
                         let write_mode = arg_str(args, "write_mode").unwrap_or(current_mode);
-                        crate::notebook::set_fabric(&mut self.state, i, Some(crate::state::NotebookFabric { workspace_id: ws_id, lakehouse_id: lh_id, write_mode }));
+                        let preload = args.and_then(|a| a.get("preload")).and_then(|v| v.as_bool()).unwrap_or(false);
+                        crate::notebook::set_fabric(&mut self.state, i, Some(crate::state::NotebookFabric { workspace_id: ws_id, lakehouse_id: lh_id, write_mode, preload }));
                         ActionResult::ok()
                     }
                     "save_fabric" => {
@@ -1086,6 +1088,13 @@ impl AgentApp for CobaltApp {
                 let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
                 match action.as_str() {
                     "status" => crate::notebook::refresh_shadows(&mut self.state),
+                    "preload_status" => {
+                        self.state.shadows.preload = self.state.kernel.preload.as_ref().map(|p| p.as_json());
+                    }
+                    "discard_table" => {
+                        let Some(t) = arg_str(args, "table") else { return ActionResult::BadArgs("table is required".into()) };
+                        crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({"table": t}));
+                    }
                     "discard" => crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({})),
                     "discard_written" => crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({"only": "written"})),
                     "restore" => {
@@ -1152,6 +1161,7 @@ impl AgentApp for CobaltApp {
                         "uv": comp(&s.uv), "python": comp(&s.python), "env": comp(&s.env), "jdk": comp(&s.jdk),
                         "jdk_candidates": s.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),
                         "disk_bytes": s.disk_bytes, "last_error": s.last_error,
+                        "health": s.health.as_ref().map(|h| json!({"ok": h.ok, "problems": h.problems, "warnings": h.warnings, "profile": h.profile, "protocol_version": h.protocol_version})),
                     })),
                     "job": r.job.as_ref().map(|j| json!({"kind": format!("{:?}", j.kind), "step": j.step.as_ref().map(|(s, l)| format!("{s:?}: {l}")), "bytes": j.bytes, "elapsed_s": j.started.elapsed().as_secs(), "log_tail": j.log.iter().rev().take(15).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()})),
                     "last_result": r.last_result.as_ref().map(|x| match x { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }),

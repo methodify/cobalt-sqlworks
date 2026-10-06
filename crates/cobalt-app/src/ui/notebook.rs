@@ -263,7 +263,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         }
                         for (id, name) in &workspaces {
                             if ui.selectable_label(cur_ws.as_deref() == Some(id.as_str()), name).clicked() {
-                                set = Some(Some(NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: nb_fabric.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()) }));
+                                set = Some(Some(NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: nb_fabric.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()), preload: nb_fabric.as_ref().map(|b| b.preload).unwrap_or(false) }));
                                 load_ws = Some(id.clone());
                                 ui.close();
                             }
@@ -302,6 +302,11 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                     set = Some(Some(NotebookFabric { write_mode: mode.into(), ..b.clone() }));
                                     ui.close();
                                 }
+                            }
+                            ui.separator();
+                            let mut pre = b.preload;
+                            if ui.checkbox(&mut pre, "Preload the default lakehouse's tables at session start").on_hover_text("Clones every table in the background right after the session starts (about 1.5–2 s per table, 32 at a time), so first queries do not wait on first-touch clones. Progress shows in Lakehouse shadows.").changed() {
+                                set = Some(Some(NotebookFabric { preload: pre, ..b.clone() }));
                             }
                             ui.separator();
                             if ui.button("Lakehouse shadows…").clicked() {

@@ -282,6 +282,8 @@ pub struct NotebookFabric {
     pub lakehouse_id: Option<String>,
     /// `sandbox` (default), `readonly` or `writethrough`.
     pub write_mode: String,
+    /// Clone the default lakehouse's tables in the background when the session starts.
+    pub preload: bool,
 }
 
 /// A notebook opened from (and saved back to) a Fabric workspace item.
@@ -298,6 +300,8 @@ pub struct FabricItemRef {
 pub struct ShadowsUi {
     pub open: bool,
     pub status: Option<serde_json::Value>,
+    /// The session's `preload_status` reply.
+    pub preload: Option<serde_json::Value>,
     pub loading: bool,
     pub error: Option<String>,
     pub note: Option<String>,
@@ -365,7 +369,7 @@ impl NotebookState {
         let cells = nb.cells.iter().map(|c| CellState::new(c.id.clone())).collect();
         let counter = nb.cells.iter().filter_map(|c| c.execution_count).max().unwrap_or(0);
         let kernel = if nb.default_language() == cobalt_notebook::CellLanguage::Python { NotebookKernel::Spark } else { NotebookKernel::Connection };
-        let fabric = nb.default_lakehouse().and_then(|lh| lh.workspace_id.map(|ws| NotebookFabric { workspace_id: ws, lakehouse_id: Some(lh.id), write_mode: "sandbox".into() }));
+        let fabric = nb.default_lakehouse().and_then(|lh| lh.workspace_id.map(|ws| NotebookFabric { workspace_id: ws, lakehouse_id: Some(lh.id), write_mode: "sandbox".into(), preload: false }));
         Self { nb, cells, kernel, fabric, loading: None, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
     }
     pub fn is_running(&self) -> bool {

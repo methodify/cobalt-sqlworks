@@ -22,7 +22,8 @@ pub struct TokenServer {
     pub last_error: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
-async fn fetch(resolver: &CredentialResolver, slot: ProfileId, tenant: Option<&str>) -> Result<String, String> {
+/// A token OneLake accepts, silently (also used by the app's own OneLake listing).
+pub(crate) async fn fetch(resolver: &CredentialResolver, slot: ProfileId, tenant: Option<&str>) -> Result<String, String> {
     match resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant).await {
         Ok(Some(ts)) => return Ok(ts.access.token.expose().to_string()),
         Ok(None) => {}

@@ -156,6 +156,9 @@ pub struct KernelFabric {
     pub write_mode: String,
     pub slot: cobalt_core::ProfileId,
     pub tenant: Option<String>,
+    /// Lakehouses whose tables the session clones in the background right after start
+    /// (`["all"]` for every lakehouse in the workspace).
+    pub preload: Vec<String>,
 }
 
 impl KernelFabric {
@@ -164,7 +167,7 @@ impl KernelFabric {
     }
     /// Same binding (ignoring the account fields).
     pub fn same_binding(&self, other: &KernelFabric) -> bool {
-        self.workspace_id == other.workspace_id && self.default_lakehouse == other.default_lakehouse && self.write_mode == other.write_mode && self.lakehouses == other.lakehouses
+        self.workspace_id == other.workspace_id && self.default_lakehouse == other.default_lakehouse && self.write_mode == other.write_mode && self.lakehouses == other.lakehouses && self.preload == other.preload
     }
 }
 
@@ -246,11 +249,49 @@ pub struct KernelUi {
     token_server: Option<crate::onelake_tokens::TokenServer>,
     /// Notebooks already warned that their binding differs from the running session's.
     pub binding_warned: std::collections::HashSet<TabId>,
+    /// A preload driven from the app: table lists come from the Fabric REST API (the worker's
+    /// own discovery needs an Azure credential this process does not give it), then
+    /// `mount_tables` runs chunk by chunk so cells can interleave.
+    pub preload: Option<Preload>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Preload {
+    /// `(lakehouse, tables)` chunks still to mount.
+    pub pending: std::collections::VecDeque<(String, Vec<String>)>,
+    /// A `mount_tables` call is in flight.
+    pub in_flight: bool,
+    pub total: usize,
+    pub done: usize,
+    pub failed: usize,
+    pub errors: Vec<String>,
+    /// Tables in schema folders the catalog cannot mount (not counted in `total`).
+    pub skipped: usize,
+    pub note: Option<String>,
+    /// Lakehouses whose table lists are still being fetched.
+    pub listing: usize,
+    pub started: Option<Instant>,
+    pub finished: Option<Instant>,
+}
+
+impl Preload {
+    pub fn state(&self) -> &'static str {
+        if self.listing > 0 || self.in_flight || !self.pending.is_empty() {
+            "running"
+        } else if self.started.is_some() {
+            "done"
+        } else {
+            "idle"
+        }
+    }
+    pub fn as_json(&self) -> Value {
+        json!({"state": self.state(), "tables_total": self.total, "tables_done": self.done, "tables_failed": self.failed, "tables_skipped": self.skipped, "note": self.note, "errors": self.errors, "seconds": self.started.map(|s| self.finished.unwrap_or_else(Instant::now).duration_since(s).as_secs())})
+    }
 }
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default() }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), preload: None }
     }
 }
 
@@ -310,26 +351,29 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         }
         extra.insert("write_mode".into(), Value::String(fs.fabric.write_mode.clone()));
         extra.insert("persist_shadow".into(), Value::Bool(false));
+        k.preload = if fs.fabric.preload.is_empty() { None } else { Some(Preload::default()) };
         extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
         k.token_server = Some(ts);
         k.fabric = Some(fs.fabric);
     }
     k.binding_warned.clear();
-    let mut cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
-    // user jars on the classpath (driver and executors share the JVM under local[*])
-    let libs = crate::runtime::libraries(settings);
-    let (jars, missing) = cobalt_runtime::libraries::classpath(&dirs, &libs);
-    for m in missing {
+    // the worker checks the installed stack against the profile and refuses a mismatch
+    extra.insert("profile".into(), Value::String(profile.clone()));
+    // user libraries: jar files and Maven packages are the worker's (local-spark-mcp 0.3.5:
+    // `extra_jars` join spark.jars, `extra_packages` are resolved by Ivy with their dependencies)
+    let libs = cobalt_runtime::libraries::for_session(&crate::runtime::libraries(settings));
+    for m in &libs.skipped {
         k.log.push_back(format!("cobalt: library skipped: {m}"));
     }
-    if !jars.is_empty() {
-        let cp = cobalt_runtime::libraries::classpath_string(&jars);
-        if let Some(confs) = cfg.init.get_mut("extra_configs").and_then(|v| v.as_object_mut()) {
-            confs.insert("spark.driver.extraClassPath".into(), Value::String(cp.clone()));
-            confs.insert("spark.executor.extraClassPath".into(), Value::String(cp));
-        }
-        k.log.push_back(format!("cobalt: {} user jar{} on the classpath", jars.len(), if jars.len() == 1 { "" } else { "s" }));
+    if !libs.jars.is_empty() {
+        extra.insert("extra_jars".into(), Value::Array(libs.jars.iter().map(|p| Value::String(p.to_string_lossy().to_string())).collect()));
+        k.log.push_back(format!("cobalt: {} user jar{} for the session", libs.jars.len(), if libs.jars.len() == 1 { "" } else { "s" }));
     }
+    if !libs.packages.is_empty() {
+        extra.insert("extra_packages".into(), Value::Array(libs.packages.iter().map(|p| Value::String(p.clone())).collect()));
+        k.log.push_back(format!("cobalt: {} Maven package{} for the session (Ivy resolves them at start)", libs.packages.len(), if libs.packages.len() == 1 { "" } else { "s" }));
+    }
+    let cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
     let bootstrap = python_bootstrap(&out_dir, settings.notebooks.spark_row_limit.max(1));
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();
@@ -464,6 +508,27 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
     k.waiting.push(req);
 }
 
+/// Send the next preload chunk when none is in flight.
+pub fn preload_pump(k: &mut KernelUi) {
+    let Some(p) = k.preload.as_mut() else { return };
+    if p.in_flight || !k.state.is_ready() {
+        return;
+    }
+    let Some((lakehouse, tables)) = p.pending.pop_front() else {
+        if p.listing == 0 && p.finished.is_none() && p.started.is_some() {
+            p.finished = Some(Instant::now());
+        }
+        return;
+    };
+    p.in_flight = true;
+    let params = json!({"lakehouse": lakehouse, "tables": tables});
+    if let Some(tx) = &k.tx {
+        let _ = tx.send(Cmd::Call { tag: "preload-mount".into(), method: "mount_tables".into(), params });
+    } else {
+        p.in_flight = false;
+    }
+}
+
 /// Any worker method; the answer arrives as `PollOut::calls` under `tag`.
 pub fn call(k: &mut KernelUi, tag: &str, method: &str, params: Value) -> bool {
     match (&k.tx, k.state.is_ready()) {
@@ -540,6 +605,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.waiting.clear();
                 k.token_server = None;
                 k.fabric = None;
+                k.preload = None;
                 broke = Some("the local Spark session stopped".to_string());
             }
             KernelEvent::Failed(e) => {
@@ -549,6 +615,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.waiting.clear();
                 k.token_server = None;
                 k.fabric = None;
+                k.preload = None;
                 broke = Some(e);
             }
         }

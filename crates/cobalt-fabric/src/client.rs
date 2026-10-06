@@ -130,6 +130,33 @@ impl FabricClient {
         Ok(out)
     }
 
+    /// The tables of a lakehouse (managed and external), every page.
+    pub async fn list_lakehouse_tables(&self, workspace_id: &str, lakehouse_id: &str) -> Result<Vec<LakehouseTable>> {
+        let url = format!("{}/workspaces/{workspace_id}/lakehouses/{lakehouse_id}/tables", self.base);
+        let mut out: Vec<LakehouseTable> = Vec::new();
+        let mut next: Option<String> = None;
+        loop {
+            let u = match &next {
+                Some(tok) => format!("{url}?continuationToken={tok}"),
+                None => url.clone(),
+            };
+            let page: serde_json::Value = self.get_json(&u).await?;
+            if let Some(arr) = page.get("data").and_then(|v| v.as_array()) {
+                for t in arr {
+                    if let Ok(x) = serde_json::from_value::<LakehouseTable>(t.clone()) {
+                        out.push(x);
+                    }
+                }
+            }
+            match page.get("continuationToken").and_then(|v| v.as_str()) {
+                Some(t) if !t.is_empty() => next = Some(t.to_string()),
+                _ => break,
+            }
+        }
+        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(out)
+    }
+
     /// POST with a JSON body. Handles 429 once, maps 401/403, and returns the response for the
     /// caller to read (200 body or 202 long-running operation).
     async fn post(&self, url: &str, body: &serde_json::Value) -> Result<reqwest::Response> {

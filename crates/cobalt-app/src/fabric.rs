@@ -127,6 +127,9 @@ pub enum FabricEvent {
     NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
     /// The OneLake token needed before a Fabric-bound Spark session can start.
     OneLakeToken(Result<(), String>),
+    /// Tables of a lakehouse (for the session preload): the ones the session's catalog can
+    /// mount (`Tables/<name>`) and the ones in schema folders (`Tables/<schema>/<name>`) it cannot.
+    LakehouseTables { lakehouse: String, result: Result<(Vec<String>, Vec<String>), String> },
 }
 
 /// What the panel asks for.
@@ -488,7 +491,7 @@ fn sign_out(state: &mut AppState, cx: &Ctx) {
     // forget the account for real: refresh token and cached access tokens, so the next sign-in
     // goes through the browser (and can pick another account or approve new permissions)
     if let Some(slot) = state.fabric.slot {
-        cx.resolver.forget(&slot);
+        let _ = cx.resolver.forget(&slot);
     }
     let _ = cx.store.set_kv(KV_ACCOUNT_SLOT, &"");
     let _ = cx.store.fabric_cache_clear();
@@ -632,6 +635,32 @@ pub fn open_notebook(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) 
             Err(Some(e)) => Err(e),
         };
         let _ = tx.send(FabricEvent::NotebookDefinition { item, copy, result });
+        egui.request_repaint();
+    });
+}
+
+/// List a lakehouse's tables from OneLake (for the preload) — the storage layout is what the
+/// session's catalog mounts, and the Fabric REST tables endpoint refuses schema-enabled
+/// lakehouses. `lakehouse` is the name the session knows; `id` the item id.
+pub fn list_lakehouse_tables(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse: &str, id: &str) {
+    let Some(slot) = state.fabric.slot else { return };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let (ws, lh, lhid) = (workspace_id.to_string(), lakehouse.to_string(), id.to_string());
+    cx.session.spawn(async move {
+        let result = match crate::onelake_tokens::fetch(&resolver, slot, tenant.as_deref()).await {
+            Ok(tok) => match cobalt_fabric::OneLakeClient::new(tok).list_tables(&ws, &lhid).await {
+                Ok(tables) => {
+                    let (plain, schema): (Vec<_>, Vec<_>) = tables.into_iter().partition(|t| t.schema.is_none());
+                    Ok((plain.into_iter().map(|t| t.name).collect(), schema.into_iter().map(|t| t.rel_path()).collect()))
+                }
+                Err(e) => Err(fabric_error_text(&e)),
+            },
+            Err(e) => Err(e),
+        };
+        let _ = tx.send(FabricEvent::LakehouseTables { lakehouse: lh, result });
         egui.request_repaint();
     });
 }
@@ -893,6 +922,26 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                     }
                     Err(e) => cx.toast(ToastKind::Error, format!("Saving to Fabric failed: {e}")),
                 }
+            }
+        }
+        FabricEvent::LakehouseTables { lakehouse, result } => {
+            if let Some(p) = state.kernel.preload.as_mut() {
+                p.listing = p.listing.saturating_sub(1);
+                match result {
+                    Ok((tables, schema_tables)) => {
+                        p.total += tables.len();
+                        for chunk in tables.chunks(8) {
+                            p.pending.push_back((lakehouse.clone(), chunk.to_vec()));
+                        }
+                        if !schema_tables.is_empty() {
+                            p.skipped += schema_tables.len();
+                            p.note = Some(format!("{} table{} in schema folders ({}) cannot be reached through the session's catalog yet and were not cloned.", p.skipped, if p.skipped == 1 { "" } else { "s" }, schema_tables.iter().take(3).cloned().collect::<Vec<_>>().join(", ")));
+                        }
+                    }
+                    Err(e) => p.errors.push(format!("{lakehouse}: {e}")),
+                }
+                crate::kernel::preload_pump(&mut state.kernel);
+                state.shadows.preload = state.kernel.preload.as_ref().map(|p| p.as_json());
             }
         }
         FabricEvent::OneLakeToken(result) => {

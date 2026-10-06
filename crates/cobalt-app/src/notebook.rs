@@ -268,7 +268,7 @@ pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::
         nbs.warnings = warnings;
         // a Fabric notebook's lakehouse lives in its workspace unless the metadata says otherwise
         if nbs.fabric.is_none() {
-            nbs.fabric = Some(NotebookFabric { workspace_id: item.workspace_id.clone(), lakehouse_id: None, write_mode: "sandbox".into() });
+            nbs.fabric = Some(NotebookFabric { workspace_id: item.workspace_id.clone(), lakehouse_id: None, write_mode: "sandbox".into(), preload: false });
         }
     }
     state.flash(format!("Opened {} from Fabric{}", item.display_name, if copy { " as a copy" } else { "" }));
@@ -334,7 +334,8 @@ fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<cr
     if b.lakehouse_id.is_some() && default_lakehouse.is_none() {
         cx.toast(ToastKind::Warning, "The notebook's default lakehouse is not in that workspace any more; pick one from the lakehouse button.");
     }
-    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()) }))
+    let preload = if b.preload { default_lakehouse.clone().map(|d| vec![d]).unwrap_or_else(|| vec!["all".to_string()]) } else { Vec::new() };
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload }))
 }
 
 /// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).
@@ -818,8 +819,45 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
 /// cells; a kernel that died fails the cells still marked running.
 pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     let out = crate::kernel::poll(&mut state.kernel);
+    // the preload starts once the session is up: list each requested lakehouse's tables
+    if out.ready_now {
+        if let (Some(fabric), Some(p)) = (state.kernel.fabric.clone(), state.kernel.preload.as_mut()) {
+            p.started = Some(std::time::Instant::now());
+            let wanted: Vec<(String, String)> = if fabric.preload.iter().any(|s| s == "all") { fabric.lakehouses.clone() } else { fabric.lakehouses.iter().filter(|(n, _)| fabric.preload.iter().any(|w| w.eq_ignore_ascii_case(n))).cloned().collect() };
+            p.listing = wanted.len();
+            state.shadows.preload = state.kernel.preload.as_ref().map(|p| p.as_json());
+            for (name, id) in wanted {
+                crate::fabric::list_lakehouse_tables(state, cx, &fabric.workspace_id, &name, &id);
+            }
+        }
+    }
     for (tag, result) in out.calls {
         match tag.as_str() {
+            "preload-mount" => {
+                if let Some(p) = state.kernel.preload.as_mut() {
+                    p.in_flight = false;
+                    match result {
+                        Ok(v) => {
+                            let mounted = v.get("mounted").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
+                            let failed = v.get("failed").and_then(|m| m.as_array()).cloned().unwrap_or_default();
+                            p.done += mounted;
+                            p.failed += failed.len();
+                            for f in failed.iter().take(5) {
+                                p.errors.push(format!("{}: {}", f.get("table").and_then(|t| t.as_str()).unwrap_or("?"), f.get("error").and_then(|t| t.as_str()).unwrap_or("?")));
+                            }
+                        }
+                        Err(e) => {
+                            p.failed += 8;
+                            p.errors.push(e);
+                        }
+                    }
+                }
+                crate::kernel::preload_pump(&mut state.kernel);
+                state.shadows.preload = state.kernel.preload.as_ref().map(|p| p.as_json());
+                if state.kernel.preload.as_ref().map(|p| p.state() == "done").unwrap_or(false) && state.shadows.open {
+                    refresh_shadows(state);
+                }
+            }
             "shadows" => {
                 state.shadows.loading = false;
                 match result {
@@ -830,6 +868,15 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
             "shadows-action" => {
                 state.shadows.loading = false;
                 match result {
+                    Ok(v) if v.get("tables_total").is_some() || v.get("lakehouses").map(|l| l.is_object()).unwrap_or(false) => {
+                        // a preload_status reply
+                        let was_running = state.shadows.preload.as_ref().map(|p| p.get("state").and_then(|s| s.as_str()) == Some("running")).unwrap_or(false);
+                        let now_done = v.get("state").and_then(|s| s.as_str()) != Some("running");
+                        state.shadows.preload = Some(v);
+                        if was_running && now_done {
+                            refresh_shadows(state);
+                        }
+                    }
                     Ok(v) => {
                         state.shadows.note = Some(v.to_string());
                         refresh_shadows(state);
@@ -842,6 +889,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     }
     if out.broke.is_some() {
         state.shadows.status = None;
+        state.shadows.preload = None;
         state.shadows.loading = false;
     }
     let mut followups = Vec::new();

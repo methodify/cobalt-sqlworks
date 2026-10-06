@@ -303,10 +303,21 @@ Settings → Notebooks & Spark → **Libraries**. Two lists, saved with the sett
   `spark.executor.extraClassPath` (one JVM under `local[*]`); missing ones are logged and skipped.
   Verified: `tabulate` imported and `org.postgresql.Driver` resolved in a fresh session.
 
-Why the classpath rather than `spark.jars` / `spark.jars.packages`: local-spark-mcp sets those
-itself for the OneLake catalog jar and for Delta / hadoop-azure (`configure_spark_with_delta_pip`),
-and a value in `extra_configs` would be overwritten. A pass-through for extra Maven packages is
-on the request list for that project; until then coordinates resolve to a single jar here.
+Since local-spark-mcp 0.3.5 the session takes jars and Maven coordinates directly
+(`extra_jars`, `extra_packages`): jars join `spark.jars` next to the catalog jar, and Ivy
+resolves the Maven packages with their dependencies when the session starts (the first start
+with a new package waits on the download; the session log shows Ivy's progress). "Install
+Python packages" is the only install step left. The runtime page also runs the package's
+`healthcheck` and shows its problems and warnings; a lakehouse binding has a "Preload …
+tables at session start" option whose progress shows in Lakehouse shadows. The preload is
+Cobalt's own: the worker's preload discovers tables through the Fabric REST API with an Azure
+credential this process does not give it, and that endpoint refuses schema-enabled lakehouses
+anyway, so Cobalt lists `Tables/` on OneLake with the signed-in account's storage token and sends
+`mount_tables` in batches of eight (a cell queued meanwhile runs between batches). Tables in
+schema folders (`Tables/dbo/...`) are listed but not cloned: the session's catalog resolves
+only `Tables/<name>`, so `lakehouse.dbo.table` fails with REQUIRES_SINGLE_PART_NAMESPACE — the
+window says so, and the ask is in `docs/requests/local-spark-mcp.md` (items 5 and 6). Verified
+on the test lakehouse: 3 top-level tables cloned in ~20 s, 5 schema tables reported.
 
 ## Permissions and re-consent (0.7.1)
 

@@ -4,7 +4,7 @@
 //! Spark classpath when a session starts.
 
 use crate::detect;
-use crate::install::{download, run_tool, uv_env, Context, Progress, Step};
+use crate::install::{run_tool, uv_env, Context, Progress, Step};
 use crate::{Result, RuntimeDirs, RuntimeError};
 use std::path::{Path, PathBuf};
 
@@ -52,32 +52,38 @@ pub fn maven_jar_path(dirs: &RuntimeDirs, c: &MavenCoord) -> PathBuf {
     dirs.root.join("jars").join(c.file_name())
 }
 
-/// The jars that are present for the classpath, and the entries that are not (missing files,
-/// Maven jars not fetched yet, unparsable coordinates).
-pub fn classpath(dirs: &RuntimeDirs, libs: &Libraries) -> (Vec<PathBuf>, Vec<String>) {
-    let mut present = Vec::new();
-    let mut missing = Vec::new();
+/// What the worker's `init` gets: jar files that exist (`extra_jars`), Maven coordinates that
+/// parse (`extra_packages`, resolved by Ivy with their dependencies at session start), and the
+/// entries that are skipped with the reason.
+pub struct SessionLibraries {
+    pub jars: Vec<PathBuf>,
+    pub packages: Vec<String>,
+    pub skipped: Vec<String>,
+}
+
+pub fn for_session(libs: &Libraries) -> SessionLibraries {
+    let mut out = SessionLibraries { jars: Vec::new(), packages: Vec::new(), skipped: Vec::new() };
     for j in &libs.jars {
         if j.is_file() {
-            present.push(j.clone());
+            out.jars.push(j.clone());
         } else {
-            missing.push(format!("{} (file not found)", j.display()));
+            out.skipped.push(format!("{} (file not found)", j.display()));
         }
     }
     for m in &libs.maven {
-        match MavenCoord::parse(m) {
-            Some(c) => {
-                let p = maven_jar_path(dirs, &c);
-                if p.is_file() {
-                    present.push(p);
-                } else {
-                    missing.push(format!("{m} (not downloaded yet — Install libraries)"));
-                }
-            }
-            None => missing.push(format!("{m} (not a group:artifact:version coordinate)")),
+        if MavenCoord::parse(m).is_some() {
+            out.packages.push(m.trim().to_string());
+        } else {
+            out.skipped.push(format!("{m} (not a group:artifact:version coordinate)"));
         }
     }
-    (present, missing)
+    out
+}
+
+/// Kept for callers that still want a classpath string (local[*] driver and executors share it).
+pub fn classpath(_dirs: &RuntimeDirs, libs: &Libraries) -> (Vec<PathBuf>, Vec<String>) {
+    let s = for_session(libs);
+    (s.jars, s.skipped)
 }
 
 /// Classpath string for `spark.driver.extraClassPath` on this platform.
@@ -103,8 +109,9 @@ pub fn python_status(env_dir: &Path, specs: &[String]) -> Vec<(String, Option<St
     specs.iter().map(|s| (s.clone(), detect::installed_package_version(env_dir, &python_dist_name(s)))).collect()
 }
 
-/// Install everything: Python specs with uv into the profile's environment, Maven jars into the
-/// runtime folder. Returns a short summary; missing jar files are reported, not fatal.
+/// Install the Python specs with uv into the profile's environment. Jars and Maven packages need
+/// no install step: the worker takes them at session start (`extra_jars` / `extra_packages`,
+/// Ivy resolves the packages). Missing jar files are reported, not fatal.
 pub fn install(cx: &Context, profile: &str, libs: &Libraries) -> Result<String> {
     let mut notes = Vec::new();
     if !libs.python.is_empty() {
@@ -123,23 +130,14 @@ pub fn install(cx: &Context, profile: &str, libs: &Libraries) -> Result<String> 
         run_tool(cx, &uv, &args, &uv_env(cx.dirs))?;
         notes.push(format!("{} Python package{} installed", specs.len(), if specs.len() == 1 { "" } else { "s" }));
     }
-    let mut fetched = 0;
     for m in &libs.maven {
-        let Some(c) = MavenCoord::parse(m) else {
+        if MavenCoord::parse(m).is_none() {
             notes.push(format!("skipped {m}: not a group:artifact:version coordinate"));
-            continue;
-        };
-        let dest = maven_jar_path(cx.dirs, &c);
-        if dest.is_file() {
-            continue;
         }
-        (cx.progress)(Progress::Step { step: Step::Libraries, label: format!("Fetching {m} from Maven Central") });
-        std::fs::create_dir_all(dest.parent().unwrap())?;
-        download(cx, &c.url(), &dest, None)?;
-        fetched += 1;
     }
-    if fetched > 0 {
-        notes.push(format!("{fetched} Maven jar{} fetched", if fetched == 1 { "" } else { "s" }));
+    let n_pk = libs.maven.iter().filter(|m| MavenCoord::parse(m).is_some()).count();
+    if n_pk > 0 {
+        notes.push(format!("{n_pk} Maven package{} will be resolved by the session (with dependencies)", if n_pk == 1 { "" } else { "s" }));
     }
     for j in &libs.jars {
         if !j.is_file() {
@@ -174,12 +172,12 @@ mod tests {
     }
 
     #[test]
-    fn classpath_reports_missing() {
-        let dirs = RuntimeDirs::new(std::env::temp_dir().join("cobalt-cp-test"));
+    fn session_libraries_split() {
         let libs = Libraries { python: vec![], jars: vec![PathBuf::from("Z:/nope.jar")], maven: vec!["a:b:1".into(), "bad".into()] };
-        let (present, missing) = classpath(&dirs, &libs);
-        assert!(present.is_empty());
-        assert_eq!(missing.len(), 3);
+        let s = for_session(&libs);
+        assert!(s.jars.is_empty());
+        assert_eq!(s.packages, vec!["a:b:1".to_string()]);
+        assert_eq!(s.skipped.len(), 2);
         assert!(classpath_string(&[PathBuf::from("a.jar"), PathBuf::from("b.jar")]).contains("a.jar"));
     }
 }

@@ -196,6 +196,18 @@ impl FabricItem {
     }
 }
 
+/// A table of a lakehouse (`GET /workspaces/{ws}/lakehouses/{id}/tables`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LakehouseTable {
+    pub name: String,
+    #[serde(rename = "type", default)]
+    pub table_type: String,
+    #[serde(default)]
+    pub format: String,
+    #[serde(default)]
+    pub location: String,
+}
+
 /// One file of an item definition (`getDefinition` / `updateDefinition`).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DefinitionPart {

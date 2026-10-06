@@ -7,6 +7,8 @@
 
 pub mod client;
 pub mod model;
+pub mod onelake;
 
 pub use client::{FabricClient, FabricError};
 pub use model::*;
+pub use onelake::{OneLakeClient, OneLakeTable};

@@ -2,6 +2,21 @@
 
 ## Unreleased — 0.7.3
 
+- **local-spark-mcp 0.3.5.** The runtime pin moves to 0.3.5, which shipped most of Cobalt's
+  requests: user jars and Maven coordinates now go to the session as `extra_jars` and
+  `extra_packages` (Ivy resolves Maven packages with their dependencies, so a coordinate alone
+  is enough), replacing the classpath workaround and the single-artifact download; the
+  Libraries page's install step is for Python packages only. The package's own **healthcheck**
+  runs on the Spark runtime page (versions, profile, JDK and winutils verdicts, catalog jar).
+  `init` passes the profile so a mismatched environment is refused with a clear message.
+  **Preload**: a lakehouse binding can ask for the default lakehouse's tables to be cloned in the
+  background right after the session starts; Cobalt lists `Tables/` on OneLake with its own token
+  (the Fabric REST tables endpoint refuses schema-enabled lakehouses, and the worker's own
+  discovery needs an Azure credential this process does not give it) and mounts the tables in
+  small batches so cells can run in between. The Shadows window shows the progress and names the
+  tables in schema folders (`Tables/dbo/...`) that the session's catalog cannot reach yet.
+  Per-table **Discard** in the Shadows window uses the new per-table call instead of a rewind. "Reinstall / update" on the
+  runtime page brings an existing environment to 0.3.5.
 - **Cell run queue, visible and cancellable.** Running several cells (Run all, Run cells above,
   Shift+Enter in a row) queues them in notebook order; a waiting cell shows an hourglass in place
   of its play button, and clicking it (or "Cancel queued run" in the cell's menu) takes the cell

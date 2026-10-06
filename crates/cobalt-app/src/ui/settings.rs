@@ -395,7 +395,7 @@ fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {
 
 /// Settings → Notebooks & Spark → Libraries: Python packages and Java libraries for the runtime.
 fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, _paths_info: &str, action: &mut Option<SettingsAction>) {
-    ui.label(RichText::new("Python packages are installed into the runtime's environment with uv and are importable in Spark sessions (restart a running session). Jar files and Maven coordinates go on the Spark classpath when a session starts; Maven coordinates fetch only the artifact itself, so add its dependencies too.").size(12.0).color(theme.text_muted));
+    ui.label(RichText::new("Python packages are installed into the runtime's environment with uv and are importable in Spark sessions (restart a running session). Jar files and Maven coordinates are handed to each Spark session as it starts: jars join spark.jars, Maven packages are resolved by Ivy with their dependencies (the first start with a new package waits on the download).").size(12.0).color(theme.text_muted));
     ui.add_space(4.0);
     let (py_status, jar_status) = {
         // status comes from the saved settings' runtime folder; the lists edited here are the draft
@@ -471,7 +471,8 @@ fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut 
         ui.horizontal(|ui| {
             let ok = jar_status.iter().find(|(s, _)| s == m).map(|(_, ok)| *ok).unwrap_or(false);
             let valid = cobalt_runtime::libraries::MavenCoord::parse(m).is_some();
-            let (icon, color, note) = if !valid { (egui_phosphor::regular::WARNING, theme.error, "not group:artifact:version") } else if ok { (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "fetched") } else { (egui_phosphor::regular::CIRCLE_DASHED, theme.text_faint, "not fetched yet") };
+            let _ = ok;
+            let (icon, color, note) = if !valid { (egui_phosphor::regular::WARNING, theme.error, "not group:artifact:version") } else { (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "resolved at session start") };
             ui.label(RichText::new(icon).color(color));
             ui.label(RichText::new(format!("{} {m}", egui_phosphor::regular::PACKAGE)).monospace().size(12.0));
             ui.label(RichText::new(note).size(11.0).color(theme.text_muted));
@@ -503,10 +504,10 @@ fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut 
     ui.memory_mut(|m| m.data.insert_temp(mvn_input, mtext));
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let any = !draft.spark.python_packages.is_empty() || !draft.spark.maven.is_empty();
-        let b = ui.add_enabled(!busy && any, egui::Button::new("Install libraries"));
+        let any = !draft.spark.python_packages.is_empty();
+        let b = ui.add_enabled(!busy && any, egui::Button::new("Install Python packages"));
         b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install libraries"));
-        if b.on_hover_text("Saves these settings, installs the Python packages into the environment and fetches the Maven jars").clicked() {
+        if b.on_hover_text("Saves these settings and installs the Python packages into the environment (jars and Maven packages need no install step)").clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::InstallLibraries, draft.clone()));
         }
         if let Some(job) = &runtime.job {
@@ -628,6 +629,16 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             });
             if let Some(e) = &st.last_error {
                 ui.label(RichText::new(format!("Last run failed: {e}")).size(12.0).color(theme.error));
+            }
+            if let Some(h) = &st.health {
+                let text = if h.ok { format!("Healthcheck OK{}", h.protocol_version.map(|v| format!(" · worker protocol v{v}")).unwrap_or_default()) } else { format!("Healthcheck: {} problem{}", h.problems.len(), if h.problems.len() == 1 { "" } else { "s" }) };
+                ui.label(RichText::new(text).size(12.0).color(if h.ok { theme.success } else { theme.error }));
+                for p in &h.problems {
+                    ui.label(RichText::new(format!("  {} {p}", egui_phosphor::regular::WARNING)).size(11.0).color(theme.error));
+                }
+                for w in &h.warnings {
+                    ui.label(RichText::new(format!("  {w}")).size(11.0).color(theme.warning));
+                }
             }
         }
     }

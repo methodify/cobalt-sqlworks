@@ -515,6 +515,27 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
             if let Some(n) = &sh.note {
                 ui.label(RichText::new(n).size(11.0).color(theme.text_faint));
             }
+            if let Some(p) = &sh.preload {
+                let state_s = p.get("state").and_then(|v| v.as_str()).unwrap_or("idle");
+                if state_s != "idle" {
+                    let (total, done, failed) = (p.get("tables_total").and_then(|v| v.as_u64()).unwrap_or(0), p.get("tables_done").and_then(|v| v.as_u64()).unwrap_or(0), p.get("tables_failed").and_then(|v| v.as_u64()).unwrap_or(0));
+                    ui.horizontal(|ui| {
+                        if state_s == "running" {
+                            ui.spinner();
+                        }
+                        ui.label(RichText::new(format!("Preload {state_s}: {done} of {total} tables cloned{}", if failed > 0 { format!(", {failed} failed") } else { String::new() })).size(12.0).color(if state_s == "failed" { theme.error } else { theme.text }));
+                    });
+                    if total > 0 {
+                        ui.add(egui::ProgressBar::new(done as f32 / total as f32).desired_width(320.0));
+                    }
+                    for e in p.get("errors").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).take(3).collect::<Vec<_>>()).unwrap_or_default() {
+                        ui.label(RichText::new(e).size(11.0).color(theme.error));
+                    }
+                    if let Some(n) = p.get("note").and_then(|v| v.as_str()) {
+                        ui.label(RichText::new(n).size(11.0).color(theme.text_faint));
+                    }
+                }
+            }
             if let Some(st) = &sh.status {
                 ui.label(RichText::new(format!("write mode {} · shadow root {}", st.get("write_mode").and_then(|v| v.as_str()).unwrap_or("?"), st.get("shadow_root").and_then(|v| v.as_str()).unwrap_or("?"))).size(11.0).color(theme.text_muted));
                 let tables = st.get("tables").and_then(|t| t.as_array()).cloned().unwrap_or_default();
@@ -563,11 +584,19 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     }
     if let Some((method, params)) = action {
         if method == "discard_shadow_one" {
-            // the worker drops shadows by state, not by name: rewind to the clone, then drop it as "read"
             let table = format!("{}.{}", params.get("lakehouse").and_then(|v| v.as_str()).unwrap_or(""), params.get("table").and_then(|v| v.as_str()).unwrap_or(""));
-            crate::notebook::shadows_action(f.state, "restore_shadow", serde_json::json!({"table": table, "version": 0}));
+            crate::notebook::shadows_action(f.state, "discard_shadow", serde_json::json!({"table": table}));
         } else {
             crate::notebook::shadows_action(f.state, method, params);
+        }
+    }
+    // preload progress comes from the app-driven preload; keep the window live while it runs
+    if f.state.shadows.open {
+        if let Some(p) = &f.state.kernel.preload {
+            f.state.shadows.preload = Some(p.as_json());
+            if p.state() == "running" {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
         }
     }
 }

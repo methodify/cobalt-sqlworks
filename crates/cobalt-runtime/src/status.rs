@@ -72,6 +72,43 @@ pub struct RuntimeStatus {
     pub jdk_candidates: Vec<detect::JdkCandidate>,
     pub disk_bytes: u64,
     pub last_error: Option<String>,
+    /// `python -m local_spark_mcp.healthcheck --json` from the environment (None when it is not
+    /// installed or the check could not run).
+    pub health: Option<Health>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Health {
+    pub ok: bool,
+    pub problems: Vec<String>,
+    pub warnings: Vec<String>,
+    pub profile: Option<String>,
+    pub protocol_version: Option<u64>,
+}
+
+/// Run the package's own healthcheck (no Spark): versions, profile verdict, JDK and winutils
+/// resolution, catalog jar. A couple of seconds; `java_home` is passed so the JDK verdict matches
+/// what sessions will use.
+pub fn healthcheck(python: &Path, java_home: Option<&Path>, profile: &str) -> Option<Health> {
+    if !python.is_file() {
+        return None;
+    }
+    let mut cmd = std::process::Command::new(python);
+    cmd.args(["-m", "local_spark_mcp.healthcheck", "--json"]).env("LOCAL_SPARK_PROFILE", profile).env("PYTHONIOENCODING", "utf-8");
+    if let Some(j) = java_home {
+        cmd.env("JAVA_HOME", j).env("LOCAL_SPARK_JAVA_HOME", j);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let start = text.find('{')?;
+    let v: serde_json::Value = serde_json::from_str(text[start..].trim()).ok()?;
+    let strings = |k: &str| v.get(k).and_then(|a| a.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+    Some(Health { ok: v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false), problems: strings("problems"), warnings: strings("warnings"), profile: v.get("profile").and_then(|p| p.as_str()).map(str::to_string), protocol_version: v.get("protocol_version").and_then(|p| p.as_u64()) })
 }
 
 impl RuntimeStatus {
@@ -137,6 +174,15 @@ impl RuntimeStatus {
                 },
             },
         };
+        let health = if env.is_ready() {
+            let jdk_home = match &jdk {
+                ComponentState::Missing { .. } => None,
+                _ => jdk_candidates.first().map(|c| c.home.clone()),
+            };
+            healthcheck(&env_python, jdk_home.as_deref(), profile)
+        } else {
+            None
+        };
         Self {
             profile: profile.to_string(),
             uv,
@@ -148,6 +194,7 @@ impl RuntimeStatus {
             jdk_candidates,
             disk_bytes: crate::dir_size(&dirs.root),
             last_error: record.last_error.clone(),
+            health,
         }
     }
 
