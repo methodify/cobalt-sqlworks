@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — 0.7.1
+
+- **Permissions that grow with the app.** A sign-in only ever carries the permissions consented
+  at the time, so a refresh token from an older Cobalt could never pick up a permission the app
+  registration gained later (Item.ReadWrite.All for notebooks was the first). The Fabric panel now
+  checks the token's scopes against what Cobalt needs and shows a banner naming the missing ones
+  with **Grant permissions…**, which runs the browser flow with `prompt=consent` so Entra shows the
+  permissions screen again. Any 403 InsufficientScopes from Fabric raises the same banner, and the
+  error toasts point at it. When a tenant requires an administrator to approve, the banner offers
+  the admin-consent link to copy. **Sign out** now forgets the account for real (refresh token and
+  cached tokens), and the sign-in after it always goes through the browser with the account
+  picker. Agent: `fabric {action: sign_in|sign_out|grant|refresh}`, `fabric_scopes` reports
+  `missing`.
+- **Settings reorganised** into pages — Appearance, Editor, Query execution, Results & export,
+  Connections, Notebooks & Spark, Keyboard, Advanced — with a navigation list on the left; "Reset
+  this page to defaults" replaces the all-or-nothing reset; the last page is remembered.
+- **Window chrome.** Secondary windows (Settings, cell viewer, column profile, session log,
+  lakehouse shadows, About, shortcuts) share one look: a flat left-aligned title bar with a plain
+  close button, rounded corners and a soft shadow, instead of egui's collapsible window with the
+  centred title and triangle. Menus and popups got the softer shadow too.
+
 ## 0.7.0 — 2026-10-06 — Notebooks and local Spark
 
 The notebooks release (`docs/design/notebooks_roadmap.md`, D009), built as three slates and

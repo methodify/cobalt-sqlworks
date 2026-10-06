@@ -1037,6 +1037,19 @@ impl AgentApp for CobaltApp {
                 let loading: Vec<&String> = self.state.fabric.notebooks.iter().filter(|(_, l)| l.is_loading()).map(|(k, _)| k).collect();
                 ActionResult::with(&json!({"notebooks": list, "loading": loading, "fabric_status": format!("{:?}", self.state.fabric.status()), "workspaces": self.state.fabric.workspaces.get().map(|v| v.iter().map(|w| json!({"id": w.id, "name": w.display_name})).collect::<Vec<_>>())}))
             }
+            "fabric" => {
+                // {action: sign_in|sign_out|grant|refresh}
+                let action = arg_str(args, "action").unwrap_or_else(|| "refresh".into());
+                let a = match action.as_str() {
+                    "sign_in" => crate::fabric::FabricAction::SignIn,
+                    "sign_out" => crate::fabric::FabricAction::SignOut,
+                    "grant" => crate::fabric::FabricAction::GrantPermissions,
+                    "refresh" => crate::fabric::FabricAction::Refresh,
+                    other => return ActionResult::BadArgs(format!("unknown fabric action {other}")),
+                };
+                self.with_ctx(egui, |s, cx| crate::fabric::action(s, cx, a));
+                ActionResult::with(&json!({"status": format!("{:?}", self.state.fabric.status()), "consent_needed": self.state.fabric.consent_needed(), "missing": self.state.fabric.missing_scopes, "dialog": dialog_name(&self.state.dialog)}))
+            }
             "fabric_scopes" => {
                 // the scopes granted on the cached Fabric API token (diagnostics)
                 let Some(slot) = self.state.fabric.slot else { return ActionResult::Rejected("not signed in to Fabric".into()) };
@@ -1044,7 +1057,7 @@ impl AgentApp for CobaltApp {
                 let resolver = self.resolver.clone();
                 let r = self.session.handle().block_on(async move { resolver.resource_token_silent(slot, cobalt_auth::provider::FABRIC_API_RESOURCE, tenant.as_deref()).await });
                 match r {
-                    Ok(Some(ts)) => ActionResult::with(&json!({"scopes": ts.access.scope, "expires_at": ts.access.expires_at.to_rfc3339(), "account": ts.account.username})),
+                    Ok(Some(ts)) => ActionResult::with(&json!({"scopes": ts.access.scope, "missing": cobalt_auth::provider::missing_fabric_scopes(&ts.access.scope), "expires_at": ts.access.expires_at.to_rfc3339(), "account": ts.account.username, "consent_needed": self.state.fabric.consent_needed(), "admin_consent_url": self.state.fabric.admin_consent_url})),
                     Ok(None) => ActionResult::with(&json!({"scopes": null})),
                     Err(e) => ActionResult::Rejected(e.to_string()),
                 }

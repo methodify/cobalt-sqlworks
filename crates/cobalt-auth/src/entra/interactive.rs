@@ -32,7 +32,7 @@ pub(crate) fn authorize_url(
             .append_pair("state", state)
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256")
-            .append_pair("prompt", "select_account");
+            .append_pair("prompt", cfg.prompt.as_deref().unwrap_or("select_account"));
         if let Some(hint) = login_hint.map(str::trim).filter(|h| !h.is_empty()) {
             q.append_pair("login_hint", hint);
         }

@@ -98,6 +98,28 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
         }
         FabricStatus::Ready => {}
     }
+    // permissions banner: an older consent, or a 403 InsufficientScopes from any call
+    if state.fabric.consent_needed() {
+        ui.add_space(6.0);
+        egui::Frame::new().fill(theme.tint(theme.warning, 0.12)).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let what = if state.fabric.missing_scopes.is_empty() { "a permission this sign-in does not carry".to_string() } else { state.fabric.missing_scopes_text() };
+            ui.label(RichText::new(format!("{} Cobalt needs new permissions: {what}.", icons::SHIELD_WARNING)).size(12.0));
+            ui.label(RichText::new("Your sign-in predates them. Approving takes one browser round; nothing else changes.").size(11.0).color(theme.text_muted));
+            ui.horizontal(|ui| {
+                let b = ui.add(egui::Button::new(RichText::new(format!("{} Grant permissions…", icons::SIGN_IN)).color(egui::Color32::WHITE)).fill(theme.accent));
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "fabric grant permissions"));
+                if b.clicked() {
+                    actions.push(FabricAction::GrantPermissions);
+                }
+                if let Some(u) = &state.fabric.admin_consent_url {
+                    if ui.small_button("Copy admin consent link").on_hover_text(format!("Your organisation requires an administrator to approve the permissions. Send them this link:\n{u}")).clicked() {
+                        ui.ctx().copy_text(u.clone());
+                    }
+                }
+            });
+        });
+    }
 
     if let Some(a) = &state.fabric.account {
         ui.horizontal(|ui| {

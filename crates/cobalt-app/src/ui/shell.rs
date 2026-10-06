@@ -474,7 +474,7 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     {
         let sh = &f.state.shadows;
         let k = &f.state.kernel;
-        egui::Window::new("Lakehouse shadows").id(egui::Id::new("shadows-window")).open(&mut open).default_size([640.0, 360.0]).resizable(true).show(ctx, |ui| {
+        crate::ui::chrome::Window::new("Lakehouse shadows").id(egui::Id::new("shadows-window")).open(&mut open).default_size([640.0, 360.0]).resizable(true).show(ctx, theme, |ui| {
             match &k.fabric {
                 Some(fb) => {
                     ui.horizontal(|ui| {
@@ -578,7 +578,7 @@ fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     let theme = f.theme;
     let mut open = true;
     let k = &mut f.state.kernel;
-    egui::Window::new("Local Spark session").id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, |ui| {
+    crate::ui::chrome::Window::new("Local Spark session").id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, theme, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(k.state.label()).strong());
             if let crate::kernel::KernelState::Ready { info, .. } = &k.state {
@@ -820,7 +820,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
             }
             let mut open = true;
             let mut outcome = ViewerOutcome::Open;
-            egui::Window::new(if vs.record { "Record" } else { "Cell value" }).id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), |ui| {
+            crate::ui::chrome::Window::new(if vs.record { "Record" } else { "Cell value" }).id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), theme, |ui| {
                 outcome = crate::ui::results::viewer::show(ui, theme, &mut vs);
             });
             let grid = &mut tab.run.as_mut().unwrap().result_sets[set].grid;

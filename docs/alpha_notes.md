@@ -288,6 +288,22 @@ The manifest (`crates/cobalt-runtime/manifest.json`) mirrors local-spark-mcp's `
 until that project publishes a machine-readable one; the asks are in
 `docs/requests/local-spark-mcp.md`. Agent: `runtime {action: status|install|smoke|cancel|remove|refresh}`.
 
+## Permissions and re-consent (0.7.1)
+
+A Microsoft sign-in carries the permissions you consented to at the time; a refresh token never
+gains new ones. So when Cobalt starts needing a permission the app registration did not have when
+you first signed in (Item.ReadWrite.All for notebooks was the first case), the token silently
+lacks it and Fabric answers 403 InsufficientScopes. The Fabric panel now compares the token's
+scopes with what Cobalt needs (`FABRIC_REQUIRED_SCOPES` in cobalt-auth) and shows a yellow banner
+naming the missing ones; **Grant permissions…** runs the browser flow with `prompt=consent`, which
+makes Entra show the permissions screen even though you are already signed in. A 403 from any
+call raises the same banner. If your tenant requires admin approval, Entra says so in the browser
+and the banner offers "Copy admin consent link" for your administrator. **Sign out** forgets the
+account (refresh token in the keychain and the cached tokens; a saved connection that shared that
+sign-in will ask again), and the next sign-in always goes through the browser with the account
+picker. Agent: `fabric {action: sign_in|sign_out|grant|refresh}`; `fabric_scopes` lists what the
+token has and what is missing.
+
 ## OneLake-bound sessions, shadows, Fabric notebooks (0.7.0)
 
 On a Spark-kernel notebook the **lakehouse button** (toolbar, right) binds the session: workspace,

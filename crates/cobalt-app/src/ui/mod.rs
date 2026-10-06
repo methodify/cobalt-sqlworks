@@ -1,3 +1,4 @@
+pub mod chrome;
 pub mod dialogs;
 pub mod editor;
 pub mod fabric;

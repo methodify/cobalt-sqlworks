@@ -560,13 +560,13 @@ pub fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usiz
         return;
     }
     let mut open = true;
-    egui::Window::new(format!("Column profile · result {}", set + 1))
+    crate::ui::chrome::Window::new(format!("Column profile · result {}", set + 1))
         .id(egui::Id::new(("profile", tab_id, set)))
         .open(&mut open)
         .default_width(860.0)
         .default_height(420.0)
         .resizable(true)
-        .show(ctx, |ui| {
+        .show(ctx, theme, |ui| {
             ui.label(RichText::new(format!("{} rows scanned{}", crate::state::fmt_count(p.rows_scanned as u64), if p.rows_scanned >= profile::SCAN_CAP { " (capped)" } else { "" })).size(11.0).color(theme.text_muted));
             egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new(("profile-grid", tab_id, set)).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {

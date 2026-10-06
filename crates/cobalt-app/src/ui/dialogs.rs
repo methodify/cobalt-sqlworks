@@ -576,7 +576,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
     // non-modal windows
     if f.state.about_open {
         let mut open = true;
-        egui::Window::new("About Cobalt SQL Works").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        crate::ui::chrome::Window::new("About Cobalt SQL Works").open(&mut open).resizable(false).collapsible(false).show(ctx, theme, |ui| {
             ui.label(RichText::new(format!("{}  Cobalt SQL Works", icons::DATABASE)).size(20.0).color(theme.accent));
             ui.label(format!("Version {}", env!("CARGO_PKG_VERSION")));
             ui.label("A fast, focused SQL client for SQL Server, Azure SQL and Microsoft Fabric.");
@@ -587,7 +587,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
     }
     if f.state.shortcuts_open {
         let mut open = true;
-        egui::Window::new("Keyboard shortcuts").open(&mut open).default_size([520.0, 520.0]).show(ctx, |ui| {
+        crate::ui::chrome::Window::new("Keyboard shortcuts").open(&mut open).default_size([520.0, 520.0]).show(ctx, theme, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let mut cat = None;
                 for c in crate::commands::COMMANDS {

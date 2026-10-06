@@ -50,6 +50,26 @@ pub const SQL_RESOURCE: &str = "https://database.windows.net/";
 pub const FABRIC_API_RESOURCE: &str = "https://api.fabric.microsoft.com";
 pub const ONELAKE_RESOURCE: &str = "https://storage.azure.com/";
 
+/// Delegated Fabric API permissions the app relies on, with what each one is for. A token that
+/// lacks one (an older sign-in, before the registration gained it) needs a consent round.
+pub const FABRIC_REQUIRED_SCOPES: &[(&str, &str)] = &[
+    ("Workspace.Read.All", "list your workspaces"),
+    ("Item.Read.All", "list warehouses, lakehouses and notebooks"),
+    ("Item.ReadWrite.All", "open and save notebooks"),
+    ("OneLake.ReadWrite.All", "read and write lakehouse data through OneLake"),
+];
+
+/// Required Fabric scopes missing from a token's granted scope string.
+pub fn missing_fabric_scopes(granted: &str) -> Vec<&'static str> {
+    let have: Vec<&str> = granted.split_whitespace().map(|s| s.rsplit('/').next().unwrap_or(s)).collect();
+    FABRIC_REQUIRED_SCOPES.iter().filter(|(name, _)| !have.iter().any(|h| h.eq_ignore_ascii_case(name))).map(|(name, _)| *name).collect()
+}
+
+/// The tenant-admin consent page for this app (when a tenant blocks user consent).
+pub fn admin_consent_url(client_id: &str, tenant: Option<&str>) -> String {
+    format!("https://login.microsoftonline.com/{}/adminconsent?client_id={}", tenant.filter(|t| !t.trim().is_empty()).unwrap_or("organizations"), client_id.trim())
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UserFlow {
     Interactive,
@@ -229,6 +249,34 @@ impl CredentialResolver {
     /// A token for OneLake / ADLS (`https://storage.azure.com/.default`).
     pub async fn onelake_token(&self, profile_id: ProfileId, tenant: Option<&str>, login_hint: Option<&str>, prompt: &dyn Prompter) -> Result<TokenSet> {
         self.resource_token(profile_id, ONELAKE_RESOURCE, tenant, login_hint, UserFlow::Interactive, prompt).await
+    }
+
+    /// Always interactive: skips the cache and the refresh token so the user sees Entra again.
+    /// `consent` forces the permissions screen (`prompt=consent`), which is how a sign-in picks
+    /// up permissions added to the app registration after it was first granted; otherwise the
+    /// account picker is shown. The new refresh token replaces the stored one.
+    pub async fn interactive_token(&self, id: ProfileId, resource: &str, tenant: Option<&str>, login_hint: Option<&str>, consent: bool, prompt: &dyn Prompter) -> Result<TokenSet> {
+        let cfg = self.config().with_tenant(tenant).with_resource(resource).with_prompt(if consent { "consent" } else { "select_account" });
+        cfg.require_client_id()?;
+        let cancel = CancelToken::new();
+        let run = interactive_login(&cfg, login_hint, |url| prompt.open_browser(url), cancel.clone());
+        let watch_cancel = async {
+            loop {
+                if prompt.cancelled() {
+                    cancel.cancel();
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(150)).await;
+            }
+        };
+        let ts = tokio::select! {
+            r = run => r?,
+            _ = watch_cancel => return Err(AuthError::Cancelled),
+        };
+        // every cached token for this account is stale now (new consent, possibly a new account)
+        self.cache.lock().unwrap().retain(|(pid, _), _| *pid != id);
+        self.remember_for(id, resource, &ts);
+        Ok(ts)
     }
 
     /// Silent-only variant: cached or refreshed, never interactive. `Ok(None)` means sign-in is

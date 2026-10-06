@@ -63,6 +63,9 @@ pub struct EntraConfig {
     pub sql_resource: String,
     /// Send token requests here instead of `{authority}/oauth2/v2.0/token` (tests).
     pub token_endpoint_override: Option<Url>,
+    /// `prompt=` for the interactive flow: `select_account` (default) or `consent` to force the
+    /// permissions screen (after the app registration gained permissions).
+    pub prompt: Option<String>,
 }
 
 impl Default for EntraConfig {
@@ -74,6 +77,7 @@ impl Default for EntraConfig {
             redirect_port: None,
             sql_resource: SQL_RESOURCE.into(),
             token_endpoint_override: None,
+            prompt: None,
         }
     }
 }
@@ -103,6 +107,13 @@ impl EntraConfig {
 
     /// A copy with the tenant replaced when the profile specifies one.
     /// The same settings aimed at another resource (`https://api.fabric.microsoft.com`, …).
+    /// The same configuration with `prompt=` set for the interactive flow.
+    pub fn with_prompt(&self, prompt: &str) -> Self {
+        let mut c = self.clone();
+        c.prompt = Some(prompt.to_string());
+        c
+    }
+
     pub fn with_resource(&self, resource: &str) -> Self {
         let mut c = self.clone();
         c.sql_resource = resource.to_string();

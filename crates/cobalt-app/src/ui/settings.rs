@@ -5,7 +5,9 @@ use crate::runtime::{RuntimeAction, RuntimeUi};
 use crate::ui::theme::Theme;
 use cobalt_core::{ExecOptions, QueryShortcut, ResultLayout, Settings, ThemeChoice};
 use cobalt_runtime::{ComponentState, JdkVendor};
-use egui::{RichText, Ui};
+use crate::ui::widgets::{mnemonic_button, ButtonStyle};
+use egui::{Color32, RichText, Stroke, Ui, Vec2};
+use egui_phosphor::regular as icons;
 
 pub enum SettingsAction {
     Apply(Settings),
@@ -14,12 +16,60 @@ pub enum SettingsAction {
     Runtime(RuntimeAction, Settings),
 }
 
+/// One page of the settings window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Tab {
+    Appearance, Editor, Execution, Results, Connections, Notebooks, Keyboard, Advanced,
+}
+
+const TABS: &[(Tab, &str, &str)] = &[
+    (Tab::Appearance, icons::PALETTE, "Appearance"),
+    (Tab::Editor, icons::CODE, "Editor"),
+    (Tab::Execution, icons::PLAY, "Query execution"),
+    (Tab::Results, icons::TABLE, "Results & export"),
+    (Tab::Connections, icons::PLUGS_CONNECTED, "Connections"),
+    (Tab::Notebooks, icons::NOTEBOOK, "Notebooks & Spark"),
+    (Tab::Keyboard, icons::KEYBOARD, "Keyboard"),
+    (Tab::Advanced, icons::GEAR_SIX, "Advanced"),
+];
+
 pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str, runtime: &mut RuntimeUi, scroll_to: Option<&str>) -> Option<SettingsAction> {
     let mut action = None;
     let mut open = true;
-    egui::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([680.0, 600.0]).resizable(true).show(ctx, |ui| {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(520.0).show(ui, |ui| {
-            section(ui, theme, "Appearance");
+    let tab_key = egui::Id::new("settings-tab");
+    let mut tab: Tab = ctx.memory(|m| m.data.get_temp(tab_key)).unwrap_or(Tab::Appearance);
+    if scroll_to == Some("Spark runtime") {
+        tab = Tab::Notebooks;
+    }
+    crate::ui::chrome::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([860.0, 620.0]).min_size([640.0, 420.0]).resizable(true).show(ctx, theme, |ui| {
+        let total_h = ui.available_height();
+        ui.horizontal_top(|ui| {
+            // navigation
+            ui.allocate_ui_with_layout(Vec2::new(176.0, total_h - 44.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                for (t, icon, label) in TABS {
+                    let selected = tab == *t;
+                    let text = RichText::new(format!("{icon}   {label}")).size(13.0).color(if selected { theme.text } else { theme.text_muted });
+                    let r = ui.add_sized(Vec2::new(168.0, 30.0), egui::Button::new(text).fill(if selected { theme.bg_selection } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(6.0));
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("settings tab {label}")));
+                    if r.clicked() {
+                        tab = *t;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            let sep_x = ui.cursor().left();
+            ui.painter().line_segment([egui::pos2(sep_x, ui.cursor().top()), egui::pos2(sep_x, ui.cursor().top() + total_h - 44.0)], Stroke::new(1.0, theme.border));
+            ui.add_space(12.0);
+            // page
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical().id_salt(("settings-page", tab as u8)).auto_shrink([false, false]).max_height(total_h - 44.0).show(ui, |ui| {
+                    ui.set_width(ui.available_width() - 8.0);
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    match tab {
+                            Tab::Appearance => {
+                            section(ui, theme, "Appearance");
             ui.horizontal(|ui| {
                 ui.label("Theme");
                 for (c, label) in [(ThemeChoice::System, "Follow system"), (ThemeChoice::Light, "Cobalt Light"), (ThemeChoice::Dark, "Cobalt Dark")] {
@@ -39,8 +89,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
 
             ui.checkbox(&mut draft.appearance.spid_in_tab_title, "Show the connection's SPID in tab titles");
             ui.checkbox(&mut draft.appearance.show_welcome, "Show the getting-started pane next to a new empty query tab");
-
-            section(ui, theme, "Editor");
+                            }
+                            Tab::Editor => {
+                            section(ui, theme, "Editor");
             ui.horizontal(|ui| {
                 ui.label("Tab size");
                 ui.add(egui::DragValue::new(&mut draft.editor.tab_size).range(1..=8));
@@ -60,8 +111,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.add(egui::DragValue::new(&mut draft.editor.format_blank_lines).range(0..=3));
             });
             ui.label(egui::RichText::new("Your own snippets: edit snippets.toml next to settings.toml (see the template there); it is reloaded automatically. Tab walks the placeholders.").size(11.0).color(theme.text_muted));
-
-            section(ui, theme, "Execution");
+                            }
+                            Tab::Execution => {
+                            section(ui, theme, "Execution");
             ui.horizontal(|ui| {
                 ui.label("Row cap per result set (0 = unlimited)");
                 ui.add(egui::DragValue::new(&mut draft.execution.row_cap).range(0..=100_000_000).speed(1000));
@@ -89,8 +141,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.end_row();
             });
             lock_and_deadlock(ui, &mut draft.execution.session);
-
-            section(ui, theme, "Query shortcuts");
+                            section(ui, theme, "Query shortcuts");
             ui.label(RichText::new("A key combination runs the SQL in the current tab; {sel} is the selected text or the word at the caret (quotes doubled).").size(11.0).color(theme.text_muted));
             let mut remove: Option<usize> = None;
             egui::Grid::new("query-shortcuts").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
@@ -118,8 +169,101 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     draft.execution.query_shortcuts = QueryShortcut::defaults();
                 }
             });
-
-            section(ui, theme, "Keyboard shortcuts");
+                            }
+                            Tab::Results => {
+                            section(ui, theme, "Results");
+            ui.horizontal(|ui| {
+                ui.label("Layout");
+                ui.selectable_value(&mut draft.results.layout, ResultLayout::Stacked, "Stacked");
+                ui.selectable_value(&mut draft.results.layout, ResultLayout::Tabs, "Tabs");
+            });
+            ui.horizontal(|ui| {
+                ui.label("NULL text");
+                ui.add(egui::TextEdit::singleline(&mut draft.results.null_text).desired_width(80.0));
+                ui.checkbox(&mut draft.results.bit_as_number, "bit as 1/0");
+                ui.checkbox(&mut draft.results.show_row_numbers, "Row numbers");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Max column width");
+                ui.add(egui::DragValue::new(&mut draft.results.max_column_width).range(60.0..=2000.0));
+                ui.label("Date/time format");
+                ui.add(egui::TextEdit::singleline(&mut draft.results.datetime_format).desired_width(180.0));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Copy NULL as");
+                ui.add(egui::TextEdit::singleline(&mut draft.results.copy_null_as).desired_width(80.0));
+            });
+                            section(ui, theme, "Export defaults");
+            ui.horizontal(|ui| {
+                ui.label("CSV delimiter");
+                ui.add(egui::TextEdit::singleline(&mut draft.export.csv_delimiter).desired_width(40.0));
+                ui.checkbox(&mut draft.export.csv_include_headers, "Headers");
+                ui.checkbox(&mut draft.export.csv_bom, "UTF-8 BOM");
+                ui.checkbox(&mut draft.export.csv_quote_all, "Quote all");
+            });
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut draft.export.json_pretty, "Pretty JSON");
+                ui.checkbox(&mut draft.export.excel_freeze_header, "Excel: freeze header");
+                ui.checkbox(&mut draft.export.excel_autofilter, "Excel: autofilter");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Parquet compression");
+                egui::ComboBox::from_id_salt("pq-comp").selected_text(&draft.export.parquet_compression).show_ui(ui, |ui| {
+                    for c in ["zstd", "snappy", "lz4", "none"] {
+                        ui.selectable_value(&mut draft.export.parquet_compression, c.to_string(), c);
+                    }
+                });
+                ui.checkbox(&mut draft.export.open_after_save, "Open file after save");
+            });
+                            }
+                            Tab::Connections => {
+                            section(ui, theme, "Connections");
+            ui.label(RichText::new("Microsoft Entra ID sign-in uses a public-client app registration. Cobalt's default is used when this is empty; set your own if your tenant requires it.").size(11.0).color(theme.text_muted));
+            ui.horizontal(|ui| {
+                ui.label("Entra client ID");
+                ui.add(egui::TextEdit::singleline(&mut draft.connections.entra_client_id).desired_width(300.0).hint_text("00000000-0000-0000-0000-000000000000"));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Default tenant");
+                let mut t = draft.connections.entra_default_tenant.clone().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut t).desired_width(300.0).hint_text("organizations, common, or a tenant ID/domain")).changed() {
+                    draft.connections.entra_default_tenant = if t.trim().is_empty() { None } else { Some(t.trim().to_string()) };
+                }
+            });
+            ui.checkbox(&mut draft.connections.reconnect_on_run, "Reconnect automatically when a run finds the session closed");
+                            section(ui, theme, "History");
+            ui.checkbox(&mut draft.history.capture, "Record query history");
+            ui.horizontal(|ui| {
+                ui.label("Keep for (days)");
+                ui.add(egui::DragValue::new(&mut draft.history.retention_days).range(1..=3650));
+                ui.label("Max entries");
+                ui.add(egui::DragValue::new(&mut draft.history.max_entries).range(100..=1_000_000).speed(100));
+            });
+                            }
+                            Tab::Notebooks => {
+                            section(ui, theme, "Notebooks");
+            ui.horizontal(|ui| {
+                ui.label("New notebooks start as");
+                ui.selectable_value(&mut draft.notebooks.default_language, "sql".to_string(), "SQL");
+                ui.selectable_value(&mut draft.notebooks.default_language, "pyspark".to_string(), "PySpark");
+            });
+            ui.horizontal(|ui| {
+                ui.label("Rows saved per result set in the .ipynb");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.max_output_rows).range(0..=100_000).speed(50));
+                ui.label("Grid height (rows)");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.grid_rows).range(3..=60));
+            });
+            ui.horizontal(|ui| {
+                ui.label("Rows a Spark DataFrame brings back");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.spark_row_limit).range(1..=1_000_000).speed(100));
+                ui.label(RichText::new("(bare expressions and %%sql cells; display(df) shows 1,000 like Fabric unless given limit=)").size(11.0).color(theme.text_muted));
+            });
+            ui.label(RichText::new("Saved rows travel inside the notebook as Arrow (plus HTML/Markdown previews for other tools), so grids come back when the notebook is reopened.").size(11.0).color(theme.text_muted));
+                            section(ui, theme, "Spark runtime");
+            spark_runtime(ui, theme, draft, runtime, &mut action);
+                            }
+                            Tab::Keyboard => {
+                            section(ui, theme, "Keyboard shortcuts");
             ui.label(RichText::new("Type a combination such as Ctrl+Shift+R, F6 or Alt+Enter; clear the box to unbind; Reset returns the default.").size(11.0).color(theme.text_muted));
             egui::Grid::new("keybindings").num_columns(3).spacing([10.0, 3.0]).striped(true).show(ui, |ui| {
                 for c in COMMANDS {
@@ -146,78 +290,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 }
             });
             let _ = commands::info;
-
-            section(ui, theme, "Results");
-            ui.horizontal(|ui| {
-                ui.label("Layout");
-                ui.selectable_value(&mut draft.results.layout, ResultLayout::Stacked, "Stacked");
-                ui.selectable_value(&mut draft.results.layout, ResultLayout::Tabs, "Tabs");
-            });
-            ui.horizontal(|ui| {
-                ui.label("NULL text");
-                ui.add(egui::TextEdit::singleline(&mut draft.results.null_text).desired_width(80.0));
-                ui.checkbox(&mut draft.results.bit_as_number, "bit as 1/0");
-                ui.checkbox(&mut draft.results.show_row_numbers, "Row numbers");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Max column width");
-                ui.add(egui::DragValue::new(&mut draft.results.max_column_width).range(60.0..=2000.0));
-                ui.label("Date/time format");
-                ui.add(egui::TextEdit::singleline(&mut draft.results.datetime_format).desired_width(180.0));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Copy NULL as");
-                ui.add(egui::TextEdit::singleline(&mut draft.results.copy_null_as).desired_width(80.0));
-            });
-
-            section(ui, theme, "Export defaults");
-            ui.horizontal(|ui| {
-                ui.label("CSV delimiter");
-                ui.add(egui::TextEdit::singleline(&mut draft.export.csv_delimiter).desired_width(40.0));
-                ui.checkbox(&mut draft.export.csv_include_headers, "Headers");
-                ui.checkbox(&mut draft.export.csv_bom, "UTF-8 BOM");
-                ui.checkbox(&mut draft.export.csv_quote_all, "Quote all");
-            });
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut draft.export.json_pretty, "Pretty JSON");
-                ui.checkbox(&mut draft.export.excel_freeze_header, "Excel: freeze header");
-                ui.checkbox(&mut draft.export.excel_autofilter, "Excel: autofilter");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Parquet compression");
-                egui::ComboBox::from_id_salt("pq-comp").selected_text(&draft.export.parquet_compression).show_ui(ui, |ui| {
-                    for c in ["zstd", "snappy", "lz4", "none"] {
-                        ui.selectable_value(&mut draft.export.parquet_compression, c.to_string(), c);
-                    }
-                });
-                ui.checkbox(&mut draft.export.open_after_save, "Open file after save");
-            });
-
-            section(ui, theme, "Connections");
-            ui.label(RichText::new("Microsoft Entra ID sign-in uses a public-client app registration. Cobalt's default is used when this is empty; set your own if your tenant requires it.").size(11.0).color(theme.text_muted));
-            ui.horizontal(|ui| {
-                ui.label("Entra client ID");
-                ui.add(egui::TextEdit::singleline(&mut draft.connections.entra_client_id).desired_width(300.0).hint_text("00000000-0000-0000-0000-000000000000"));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Default tenant");
-                let mut t = draft.connections.entra_default_tenant.clone().unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut t).desired_width(300.0).hint_text("organizations, common, or a tenant ID/domain")).changed() {
-                    draft.connections.entra_default_tenant = if t.trim().is_empty() { None } else { Some(t.trim().to_string()) };
-                }
-            });
-            ui.checkbox(&mut draft.connections.reconnect_on_run, "Reconnect automatically when a run finds the session closed");
-
-            section(ui, theme, "History");
-            ui.checkbox(&mut draft.history.capture, "Record query history");
-            ui.horizontal(|ui| {
-                ui.label("Keep for (days)");
-                ui.add(egui::DragValue::new(&mut draft.history.retention_days).range(1..=3650));
-                ui.label("Max entries");
-                ui.add(egui::DragValue::new(&mut draft.history.max_entries).range(100..=1_000_000).speed(100));
-            });
-
-            section(ui, theme, "Updates");
+                            }
+                            Tab::Advanced => {
+                            section(ui, theme, "Updates");
             ui.checkbox(&mut draft.updates.check_on_startup, "Check for updates at start-up (one anonymous request to GitHub)");
             if let Some(v) = draft.updates.skipped_version.clone() {
                 ui.horizontal(|ui| {
@@ -227,33 +302,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     }
                 });
             }
-
-            section(ui, theme, "Notebooks");
-            ui.horizontal(|ui| {
-                ui.label("New notebooks start as");
-                ui.selectable_value(&mut draft.notebooks.default_language, "sql".to_string(), "SQL");
-                ui.selectable_value(&mut draft.notebooks.default_language, "pyspark".to_string(), "PySpark");
-            });
-            ui.horizontal(|ui| {
-                ui.label("Rows saved per result set in the .ipynb");
-                ui.add(egui::DragValue::new(&mut draft.notebooks.max_output_rows).range(0..=100_000).speed(50));
-                ui.label("Grid height (rows)");
-                ui.add(egui::DragValue::new(&mut draft.notebooks.grid_rows).range(3..=60));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Rows a Spark DataFrame brings back");
-                ui.add(egui::DragValue::new(&mut draft.notebooks.spark_row_limit).range(1..=1_000_000).speed(100));
-                ui.label(RichText::new("(bare expressions and %%sql cells; display(df) shows 1,000 like Fabric unless given limit=)").size(11.0).color(theme.text_muted));
-            });
-            ui.label(RichText::new("Saved rows travel inside the notebook as Arrow (plus HTML/Markdown previews for other tools), so grids come back when the notebook is reopened.").size(11.0).color(theme.text_muted));
-
-            let r = section(ui, theme, "Spark runtime");
-            if scroll_to == Some("Spark runtime") {
-                r.scroll_to_me(Some(egui::Align::Min));
-            }
-            spark_runtime(ui, theme, draft, runtime, &mut action);
-
-            section(ui, theme, "Advanced");
+                            section(ui, theme, "Advanced");
             ui.horizontal(|ui| {
                 ui.label("Result memory budget (MB)");
                 let mut mb = (draft.advanced.memory_budget_bytes / (1024 * 1024)) as u64;
@@ -282,20 +331,51 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
             });
             ui.label(RichText::new(format!("Renderer changes apply at the next start. Now: {}{}", crate::gpu::adapter_label().unwrap_or("?"), if crate::gpu::is_software() { " · software rendering" } else { "" })).size(11.0).color(theme.text_faint));
             ui.label(RichText::new(paths_info).size(11.0).color(theme.text_faint));
+                            }
+                    }
+                    ui.add_space(8.0);
+                });
+            });
         });
         ui.separator();
         ui.horizontal(|ui| {
-            if crate::ui::widgets::primary_button(ui, theme, "Save", true).clicked() {
+            if mnemonic_button(ui, theme, "&Save", ButtonStyle::Primary, true, None) {
                 action = Some(SettingsAction::Apply(draft.clone()));
             }
-            if ui.button("Cancel").clicked() {
+            if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(egui::Key::Escape)) {
                 action = Some(SettingsAction::Close);
             }
-            if ui.button("Reset to defaults").clicked() {
-                *draft = Settings::default();
+            if ui.button("Reset this page to defaults").on_hover_text("Only the settings on the current page").clicked() {
+                let d = Settings::default();
+                match tab {
+                    Tab::Appearance => draft.appearance = d.appearance,
+                    Tab::Editor => draft.editor = d.editor,
+                    Tab::Execution => draft.execution = d.execution,
+                    Tab::Results => {
+                        draft.results = d.results;
+                        draft.export = d.export;
+                    }
+                    Tab::Connections => {
+                        draft.connections = d.connections;
+                        draft.history = d.history;
+                    }
+                    Tab::Notebooks => {
+                        draft.notebooks = d.notebooks;
+                        draft.spark = d.spark;
+                    }
+                    Tab::Keyboard => draft.keybindings = d.keybindings,
+                    Tab::Advanced => {
+                        draft.updates = d.updates;
+                        draft.advanced = d.advanced;
+                    }
+                }
             }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(RichText::new("Changes apply when you save").size(11.0).color(theme.text_faint));
+            });
         });
     });
+    ctx.memory_mut(|m| m.data.insert_temp(tab_key, tab));
     if !open {
         action = Some(SettingsAction::Close);
     }
@@ -303,9 +383,11 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
 }
 
 fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {
-    ui.add_space(8.0);
-    let r = ui.label(RichText::new(title).strong().color(theme.accent));
-    ui.separator();
+    ui.add_space(6.0);
+    let r = ui.label(RichText::new(title).size(15.0).strong().color(theme.text));
+    ui.add_space(2.0);
+    ui.painter().line_segment([ui.cursor().left_top(), egui::pos2(ui.cursor().left_top().x + ui.available_width(), ui.cursor().top())], Stroke::new(1.0, theme.border));
+    ui.add_space(6.0);
     r
 }
 

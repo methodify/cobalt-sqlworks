@@ -4,7 +4,7 @@
 
 use crate::ops::{self, Ctx, UiPrompter};
 use crate::state::{AppState, ConnectPurpose, Dialog, Loadable, SidebarView, ToastKind};
-use cobalt_auth::provider::FABRIC_API_RESOURCE;
+use cobalt_auth::provider::{admin_consent_url, missing_fabric_scopes, FABRIC_API_RESOURCE, FABRIC_REQUIRED_SCOPES};
 use cobalt_auth::EntraAccount;
 use cobalt_core::*;
 use cobalt_fabric::{Capacity, FabricClient, FabricError, SqlItem, SqlItemKind, SqlTarget, Workspace};
@@ -56,6 +56,28 @@ pub struct FabricState {
     pub open_after_detail: HashSet<String>,
     /// Item ids for which "save to servers" is queued until the detail arrives.
     pub save_after_detail: HashSet<String>,
+    /// Required Fabric permissions the current sign-in does not carry (older consent).
+    pub missing_scopes: Vec<String>,
+    /// A call came back 403 InsufficientScopes: the sign-in needs a consent round.
+    pub needs_consent: bool,
+    /// After Sign out, the next sign-in must go through the browser (no cached token).
+    pub force_interactive: bool,
+    /// Shown when Entra said the tenant needs an administrator to approve the permissions.
+    pub admin_consent_url: Option<String>,
+}
+
+impl FabricState {
+    pub fn consent_needed(&self) -> bool {
+        self.needs_consent || !self.missing_scopes.is_empty()
+    }
+    /// "Item.ReadWrite.All (open and save notebooks), …" for the banner.
+    pub fn missing_scopes_text(&self) -> String {
+        let parts: Vec<String> = self.missing_scopes.iter().map(|m| match FABRIC_REQUIRED_SCOPES.iter().find(|(n, _)| n == m) {
+            Some((_, what)) => format!("{m} ({what})"),
+            None => m.clone(),
+        }).collect();
+        parts.join(", ")
+    }
 }
 
 impl FabricState {
@@ -89,7 +111,7 @@ impl FabricState {
 
 /// Results from the background tasks.
 pub enum FabricEvent {
-    SignedIn { slot: ProfileId, account: EntraAccount },
+    SignedIn { slot: ProfileId, account: EntraAccount, scope: String },
     SignInFailed(String),
     NeedSignIn,
     Workspaces(Result<Vec<Workspace>, String>),
@@ -126,10 +148,13 @@ pub enum FabricAction {
     Tree(TreeAction),
     /// Open a notebook item as a tab bound to it (`copy` = a detached local notebook).
     OpenNotebook { item_id: String, copy: bool },
+    /// Run the browser flow with `prompt=consent` so new app permissions can be approved.
+    GrantPermissions,
 }
 
 fn fabric_error_text(e: &FabricError) -> String {
     match e {
+        FabricError::Api { code, .. } if code == "InsufficientScopes" => "Fabric refused this call: the sign-in lacks a permission Cobalt now needs (InsufficientScopes). Use Grant permissions on the Fabric panel.".into(),
         FabricError::Unauthorized(_) => "Fabric rejected the token; sign in again.".into(),
         other => other.to_string(),
     }
@@ -227,6 +252,7 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
         }
         FabricAction::TogglePin { item_id } => toggle_pin(state, cx, &item_id),
         FabricAction::OpenNotebook { item_id, copy } => open_notebook(state, cx, &item_id, copy),
+        FabricAction::GrantPermissions => grant_permissions(state, cx),
         FabricAction::SaveToServers { item_id } => match state.fabric.details.get(&item_id).and_then(|d| d.get()).cloned() {
             Some(target) => save_to_servers(state, cx, &item_id, target),
             None => {
@@ -347,7 +373,7 @@ fn try_silent_adopt(state: &mut AppState, cx: &Ctx) {
     cx.session.spawn(async move {
         for id in candidates {
             if let Ok(Some(ts)) = resolver.resource_token_silent(id, FABRIC_API_RESOURCE, tenant.as_deref()).await {
-                let _ = tx.send(FabricEvent::SignedIn { slot: id, account: ts.account });
+                let _ = tx.send(FabricEvent::SignedIn { slot: id, account: ts.account, scope: ts.access.scope });
                 egui.request_repaint();
                 return;
             }
@@ -390,10 +416,15 @@ pub fn sign_in(state: &mut AppState, cx: &Ctx) {
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();
     let tenant = tenant_hint(cx);
+    let force = std::mem::take(&mut state.fabric.force_interactive);
     cx.session.spawn(async move {
-        let r = resolver.fabric_api_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await;
+        let r = if force {
+            resolver.interactive_token(slot, FABRIC_API_RESOURCE, tenant.as_deref(), hint.as_deref(), false, &prompter).await
+        } else {
+            resolver.fabric_api_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await
+        };
         let ev = match r {
-            Ok(ts) => FabricEvent::SignedIn { slot, account: ts.account },
+            Ok(ts) => FabricEvent::SignedIn { slot, account: ts.account, scope: ts.access.scope },
             Err(e) => FabricEvent::SignInFailed(format!("{e}")),
         };
         let _ = tx.send(ev);
@@ -401,10 +432,65 @@ pub fn sign_in(state: &mut AppState, cx: &Ctx) {
     });
 }
 
+/// The browser flow with `prompt=consent`: Entra shows the permissions screen again, including
+/// anything the app registration gained since the first sign-in. Needed because a refresh token
+/// only ever yields the permissions consented at the time it was issued.
+pub fn grant_permissions(state: &mut AppState, cx: &Ctx) {
+    if cx.settings.connections.effective_entra_client_id().is_empty() {
+        cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings → Connections).");
+        return;
+    }
+    let slot = state.fabric.slot.or_else(|| state.library.profiles.iter().find(|p| matches!(p.auth, AuthMethod::EntraInteractive { .. })).map(|p| p.id)).unwrap_or_else(ProfileId::new);
+    let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
+    state.fabric.status = Some(FabricStatus::SigningIn);
+    state.fabric.admin_consent_url = None;
+    let cancel = Arc::new(AtomicBool::new(false));
+    let device = Arc::new(parking_lot::Mutex::new(None));
+    let url = Arc::new(parking_lot::Mutex::new(None));
+    let mut placeholder = ConnectionProfile::new("api.fabric.microsoft.com", AuthMethod::EntraInteractive { tenant: tenant_hint(cx), account_hint: hint.clone() });
+    placeholder.name = Some("Microsoft Fabric".into());
+    state.dialog = Dialog::AuthWaiting {
+        profile: placeholder,
+        purpose: ConnectPurpose::TestOnly,
+        message: "Approve the permissions in your browser… If the page says an administrator must approve, use the admin consent link on the Fabric panel afterwards.".into(),
+        device: device.clone(),
+        url: url.clone(),
+        cancel: cancel.clone(),
+        started: Instant::now(),
+    };
+    let prompter = UiPrompter { cancel, device, url, egui: cx.egui.clone() };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    cx.session.spawn(async move {
+        let r = resolver.interactive_token(slot, FABRIC_API_RESOURCE, tenant.as_deref(), hint.as_deref(), true, &prompter).await;
+        let ev = match r {
+            Ok(ts) => FabricEvent::SignedIn { slot, account: ts.account, scope: ts.access.scope },
+            Err(e) => FabricEvent::SignInFailed(format!("{e}")),
+        };
+        let _ = tx.send(ev);
+        egui.request_repaint();
+    });
+}
+
+/// A 403 InsufficientScopes anywhere means the sign-in predates a permission the app now
+/// needs: show the Grant permissions banner.
+fn note_scope_error(state: &mut AppState, e: &str) {
+    if e.contains("InsufficientScopes") {
+        state.fabric.needs_consent = true;
+    }
+}
+
 fn sign_out(state: &mut AppState, cx: &Ctx) {
+    // forget the account for real: refresh token and cached access tokens, so the next sign-in
+    // goes through the browser (and can pick another account or approve new permissions)
+    if let Some(slot) = state.fabric.slot {
+        cx.resolver.forget(&slot);
+    }
     let _ = cx.store.set_kv(KV_ACCOUNT_SLOT, &"");
     let _ = cx.store.fabric_cache_clear();
-    state.fabric = FabricState { pins: std::mem::take(&mut state.fabric.pins), loaded_once: true, status: Some(FabricStatus::SignedOut), ..Default::default() };
+    state.fabric = FabricState { pins: std::mem::take(&mut state.fabric.pins), loaded_once: true, status: Some(FabricStatus::SignedOut), force_interactive: true, ..Default::default() };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -649,13 +735,18 @@ pub fn load_detail(state: &mut AppState, cx: &Ctx, item_id: &str) {
 
 pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
     match ev {
-        FabricEvent::SignedIn { slot, account } => {
+        FabricEvent::SignedIn { slot, account, scope } => {
             if matches!(state.dialog, Dialog::AuthWaiting { .. }) {
                 state.dialog = Dialog::None;
             }
             state.fabric.slot = Some(slot);
             state.fabric.account = Some(account);
             state.fabric.status = Some(FabricStatus::Ready);
+            state.fabric.missing_scopes = missing_fabric_scopes(&scope).into_iter().map(str::to_string).collect();
+            state.fabric.needs_consent = false;
+            state.fabric.admin_consent_url = None;
+            // notebooks waiting on the account (a Fabric-bound Spark session, a pending open)
+            crate::notebook::pump_all_spark(state, cx);
             let _ = cx.store.set_kv(KV_ACCOUNT_SLOT, &slot.to_string());
             load_workspaces(state, cx);
         }
@@ -663,7 +754,12 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             if matches!(state.dialog, Dialog::AuthWaiting { .. }) {
                 state.dialog = Dialog::None;
             }
-            state.fabric.status = Some(if e.contains("ancelled") { FabricStatus::SignedOut } else { FabricStatus::Error(e) });
+            // AADSTS65001 / "needs admin approval": the tenant blocks user consent
+            if e.contains("65001") || e.to_ascii_lowercase().contains("admin approval") || e.to_ascii_lowercase().contains("consent_required") {
+                state.fabric.admin_consent_url = Some(admin_consent_url(cx.settings.connections.effective_entra_client_id(), tenant_hint(cx).as_deref()));
+                state.fabric.needs_consent = true;
+            }
+            state.fabric.status = Some(if e.contains("ancelled") { if state.fabric.account.is_some() { FabricStatus::Ready } else { FabricStatus::SignedOut } } else { FabricStatus::Error(e) });
         }
         FabricEvent::Account(a) => {
             if a != EntraAccount::default() {
@@ -710,6 +806,9 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             }
         },
         FabricEvent::Items { workspace_id, result } => {
+            if let Err(e) = &result {
+                note_scope_error(state, e);
+            }
             state.fabric.items.insert(workspace_id, match result {
                 Ok(v) => Loadable::Loaded(v),
                 Err(e) => Loadable::Failed(e),
@@ -725,7 +824,12 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
         }
         FabricEvent::NotebookDefinition { item, copy, result } => match result {
             Ok(def) => crate::notebook::install_from_fabric(state, cx, item, def, copy),
-            Err(e) if e.contains("InsufficientScopes") => cx.toast(ToastKind::Error, format!("Could not open {}: the Fabric sign-in lacks the Item.ReadWrite.All permission that reading and writing notebook definitions needs. Add it (delegated, Power BI Service / Fabric) to the app registration, grant consent, then sign out and in on the Fabric panel.", item.display_name)),
+            Err(e) if e.contains("InsufficientScopes") => {
+                state.fabric.needs_consent = true;
+                state.sidebar_visible = true;
+                state.sidebar_view = SidebarView::Fabric;
+                cx.toast(ToastKind::Warning, format!("Could not open {}: this sign-in predates the permission Cobalt needs for notebooks (Item.ReadWrite.All). Click Grant permissions on the Fabric panel to approve it.", item.display_name));
+            }
             Err(e) => cx.toast(ToastKind::Error, format!("Could not open {}: {e}", item.display_name)),
         },
         FabricEvent::NotebookSaved { tab, result } => {
@@ -739,7 +843,12 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                         let name = t.fabric_item.as_ref().map(|f| f.item.display_name.clone()).unwrap_or_default();
                         state.flash(format!("Saved {name} to Fabric"));
                     }
-                    Err(e) if e.contains("InsufficientScopes") => cx.toast(ToastKind::Error, "Saving to Fabric failed: the sign-in lacks Item.ReadWrite.All. Add it to the app registration, grant consent, then sign out and in on the Fabric panel."),
+                    Err(e) if e.contains("InsufficientScopes") => {
+                        state.fabric.needs_consent = true;
+                        state.sidebar_visible = true;
+                        state.sidebar_view = SidebarView::Fabric;
+                        cx.toast(ToastKind::Warning, "Saving to Fabric failed: this sign-in predates the permission Cobalt needs (Item.ReadWrite.All). Click Grant permissions on the Fabric panel to approve it, then save again.");
+                    }
                     Err(e) => cx.toast(ToastKind::Error, format!("Saving to Fabric failed: {e}")),
                 }
             }

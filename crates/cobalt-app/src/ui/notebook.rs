@@ -881,7 +881,7 @@ fn cell_viewer(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     }
     let mut open = true;
     let mut outcome = ViewerOutcome::Open;
-    egui::Window::new(if vs.record { "Record" } else { "Cell value" }).id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), |ui| {
+    crate::ui::chrome::Window::new(if vs.record { "Record" } else { "Cell value" }).id(id).open(&mut open).default_size([560.0, 420.0]).resizable(true).show(ui.ctx(), theme, |ui| {
         outcome = viewer::show(ui, theme, &mut vs);
     });
     let grid = &mut run.result_sets[set].grid;

@@ -270,8 +270,10 @@ impl Theme {
         v.selection.bg_fill = self.bg_selection;
         v.selection.stroke = Stroke::new(1.0, self.accent);
         v.window_stroke = Stroke::new(1.0, self.border);
-        v.window_corner_radius = CornerRadius::same(6);
-        v.menu_corner_radius = CornerRadius::same(6);
+        v.window_corner_radius = CornerRadius::same(10);
+        v.menu_corner_radius = CornerRadius::same(8);
+        v.window_shadow = egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: Color32::from_black_alpha(if self.is_dark() { 110 } else { 45 }) };
+        v.popup_shadow = egui::Shadow { offset: [0, 3], blur: 12, spread: 0, color: Color32::from_black_alpha(if self.is_dark() { 90 } else { 35 }) };
         v.widgets.noninteractive.bg_fill = self.bg_panel;
         v.widgets.noninteractive.weak_bg_fill = self.bg_panel;
         v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, self.border);
