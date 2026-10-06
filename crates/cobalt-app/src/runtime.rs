@@ -22,12 +22,37 @@ pub struct RuntimeUi {
     pub last_result: Option<Result<String, String>>,
     /// The smoke test's `SELECT 1` answer.
     pub last_smoke: Option<String>,
+    /// Library status for the settings page, keyed by the spec list it was computed for.
+    pub lib_cache: Option<(String, Vec<(String, Option<String>)>, Vec<(String, bool)>)>,
+}
+
+impl RuntimeUi {
+    /// Python package versions and jar presence for the settings page (cached per spec list).
+    pub fn library_status(&mut self, settings: &Settings, paths: &AppPaths) -> (Vec<(String, Option<String>)>, Vec<(String, bool)>) {
+        let key = format!("{:?}|{:?}|{:?}|{}", settings.spark.python_packages, settings.spark.jars, settings.spark.maven, settings.spark.profile);
+        if let Some((k, p, j)) = &self.lib_cache {
+            if *k == key {
+                return (p.clone(), j.clone());
+            }
+        }
+        let d = dirs(settings, paths);
+        let libs = libraries(settings);
+        let py = cobalt_runtime::libraries::python_status(&d.env_dir(&settings.spark.profile), &libs.python);
+        let mut jars: Vec<(String, bool)> = libs.jars.iter().map(|j| (j.to_string_lossy().to_string(), j.is_file())).collect();
+        for m in &libs.maven {
+            let ok = cobalt_runtime::libraries::MavenCoord::parse(m).map(|c| cobalt_runtime::libraries::maven_jar_path(&d, &c).is_file()).unwrap_or(false);
+            jars.push((m.clone(), ok));
+        }
+        self.lib_cache = Some((key, py.clone(), jars.clone()));
+        (py, jars)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JobKind {
     Install,
     SmokeTest,
+    Libraries,
 }
 
 pub struct RuntimeJob {
@@ -43,6 +68,7 @@ pub struct RuntimeJob {
 enum JobEvent {
     Progress(Progress),
     Done(Result<Installed, String>),
+    DoneLibraries(Result<(Installed, String), String>),
 }
 
 /// What the settings page asks for.
@@ -55,6 +81,17 @@ pub enum RuntimeAction {
     Remove,
     OpenFolder,
     OpenLog,
+    /// Install the configured Python packages and fetch Maven jars.
+    InstallLibraries,
+}
+
+/// The configured libraries as the runtime crate sees them.
+pub fn libraries(settings: &Settings) -> cobalt_runtime::libraries::Libraries {
+    cobalt_runtime::libraries::Libraries {
+        python: settings.spark.python_packages.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        jars: settings.spark.jars.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).map(PathBuf::from).collect(),
+        maven: settings.spark.maven.iter().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+    }
 }
 
 pub fn dirs(settings: &Settings, paths: &AppPaths) -> RuntimeDirs {
@@ -132,8 +169,51 @@ fn spawn_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &e
     ui.log_open = true;
 }
 
+fn spawn_libraries_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &egui::Context) {
+    if ui.job.is_some() {
+        return;
+    }
+    let dirs = dirs(settings, paths);
+    let profile = settings.spark.profile.clone();
+    let libs = libraries(settings);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = crossbeam_channel::unbounded::<JobEvent>();
+    let ctx = egui.clone();
+    let c2 = cancel.clone();
+    std::thread::Builder::new()
+        .name("runtime-libraries".into())
+        .spawn(move || {
+            let m = Manifest::embedded();
+            let tx2: Sender<JobEvent> = tx.clone();
+            let ctx2 = ctx.clone();
+            let progress = move |p: Progress| {
+                let _ = tx2.send(JobEvent::Progress(p));
+                ctx2.request_repaint();
+            };
+            let cx = install::Context { dirs: &dirs, manifest: &m, progress: &progress, cancel: &c2 };
+            let r = cobalt_runtime::libraries::install(&cx, &profile, &libs).map(|summary| {
+                let mut rec = Installed::load(&dirs);
+                rec.last_error = None;
+                rec.spark_version = rec.spark_version.clone();
+                let _ = rec.save(&dirs);
+                (rec, summary)
+            });
+            let _ = tx.send(match r {
+                Ok((rec, summary)) => JobEvent::DoneLibraries(Ok((rec, summary))),
+                Err(e) => JobEvent::DoneLibraries(Err(e.to_string())),
+            });
+            ctx.request_repaint();
+        })
+        .ok();
+    ui.job = Some(RuntimeJob { rx, cancel, kind: JobKind::Libraries, step: None, bytes: None, log: Vec::new(), started: Instant::now() });
+    ui.last_result = None;
+    ui.log_open = true;
+    ui.lib_cache = None;
+}
+
 pub fn action(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &egui::Context, a: RuntimeAction) -> Option<String> {
     match a {
+        RuntimeAction::InstallLibraries => spawn_libraries_job(ui, settings, paths, egui),
         RuntimeAction::Refresh => refresh_status(ui, settings, paths, egui),
         RuntimeAction::Install => spawn_job(ui, settings, paths, egui, JobKind::Install, Step::ALL.to_vec()),
         RuntimeAction::SmokeTest => spawn_job(ui, settings, paths, egui, JobKind::SmokeTest, vec![Step::Warm]),
@@ -196,6 +276,15 @@ pub fn poll(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &eg
                     if job.log.len() > 2000 {
                         job.log.drain(..500);
                     }
+                }
+                JobEvent::DoneLibraries(r) => {
+                    let secs = job.started.elapsed().as_secs();
+                    ui.last_result = Some(match r {
+                        Ok((_, summary)) => Ok(format!("Libraries: {summary} ({secs}s). Jars apply at the next Spark session start; a running session needs a restart to import new Python packages.")),
+                        Err(e) => Err(e),
+                    });
+                    ui.lib_cache = None;
+                    finished = true;
                 }
                 JobEvent::Done(r) => {
                     let secs = job.started.elapsed().as_secs();

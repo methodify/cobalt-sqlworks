@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.7.2 — 2026-10-06
+
+- **Libraries for the Spark environment** (Settings → Notebooks & Spark → Libraries). Python
+  packages as PyPI requirement specs or wheel files, installed into the runtime's environment
+  with uv and importable in Spark sessions; Java libraries as jar files or Maven coordinates
+  (`group:artifact:version`, fetched from Maven Central into the runtime folder), put on the Spark
+  classpath when a session starts. The page shows what is installed or fetched; **Install
+  libraries** saves the lists and runs the job with a log. Maven coordinates bring only the
+  artifact itself — add its dependencies too.
+- **Opening a notebook from Fabric shows a tab at once** with a spinner and the item's name while
+  the definition is fetched; the explorer row spins too. A failed fetch stays in the tab with the
+  reason, Retry and Close instead of a toast.
+- **Session menu on the notebook toolbar.** The Local Spark chip's menu now manages the session —
+  Start or Restart, Stop, Interrupt the running cell, Session log, Lakehouse shadows — alongside
+  the kernel choice. The status-bar entry keeps the same menu.
+- Agent: `runtime {action: libraries}`.
+
 ## 0.7.1 — 2026-10-06
 
 - **Permissions that grow with the app.** A sign-in only ever carries the permissions consented

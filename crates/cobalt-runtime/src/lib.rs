@@ -13,6 +13,7 @@
 
 pub mod detect;
 pub mod install;
+pub mod libraries;
 pub mod manifest;
 pub mod status;
 pub mod worker;

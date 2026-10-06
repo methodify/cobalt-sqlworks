@@ -186,6 +186,35 @@ pub fn save(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
     }
 }
 
+/// A tab for a notebook that is being fetched from Fabric: a spinner until the definition
+/// arrives, an error with Retry when it does not.
+pub fn open_placeholder(state: &mut AppState, cx: &Ctx, item: &cobalt_fabric::FabricItem, copy: bool) -> usize {
+    let title = if copy { format!("{} (copy).ipynb", item.display_name) } else { item.display_name.clone() };
+    let idx = install(state, cx, Notebook::new(CellLanguage::Python), None, title);
+    let t = &mut state.tabs[idx];
+    if let Some(nbs) = t.notebook.as_deref_mut() {
+        nbs.cells.clear();
+        nbs.nb.cells.clear();
+        nbs.loading = Some(NotebookLoading { item_id: item.id.clone(), copy, message: format!("Fetching {} from Fabric…", item.display_name), failed: false });
+        nbs.dirty = false;
+    }
+    idx
+}
+
+/// The placeholder tab for a fetch, if it is still open.
+fn placeholder_index(state: &AppState, item_id: &str, copy: bool) -> Option<usize> {
+    state.tabs.iter().position(|t| t.notebook.as_deref().and_then(|nb| nb.loading.as_ref()).map(|l| l.item_id == item_id && l.copy == copy).unwrap_or(false))
+}
+
+pub fn placeholder_failed(state: &mut AppState, item_id: &str, copy: bool, message: String) {
+    if let Some(i) = placeholder_index(state, item_id, copy) {
+        if let Some(l) = state.tabs[i].notebook.as_deref_mut().and_then(|nb| nb.loading.as_mut()) {
+            l.failed = true;
+            l.message = message;
+        }
+    }
+}
+
 /// A notebook fetched from Fabric: `copy` opens it as a detached local notebook.
 pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::FabricItem, def: cobalt_fabric::ItemDefinition, copy: bool) {
     use base64::Engine;
@@ -194,7 +223,7 @@ pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::
         match decode(p).ok_or_else(|| "bad base64".to_string()).and_then(|t| Notebook::parse(&t).map_err(|e| e.to_string())) {
             Ok(nb) => (nb, Vec::new()),
             Err(e) => {
-                cx.toast(ToastKind::Error, format!("Could not read {}: {e}", item.display_name));
+                placeholder_failed(state, &item.id, copy, format!("Could not read the notebook: {e}"));
                 return;
             }
         }
@@ -202,17 +231,35 @@ pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::
         match decode(p) {
             Some(t) => Notebook::from_fabric_py(&t),
             None => {
-                cx.toast(ToastKind::Error, format!("Could not read {}: bad base64", item.display_name));
+                placeholder_failed(state, &item.id, copy, "Could not read the notebook: bad base64".into());
                 return;
             }
         }
     } else {
-        cx.toast(ToastKind::Error, format!("{} has no notebook content ({} parts)", item.display_name, def.parts.len()));
+        placeholder_failed(state, &item.id, copy, format!("The item has no notebook content ({} parts)", def.parts.len()));
         return;
     };
     let platform = def.part(".platform").cloned();
     let title = if copy { format!("{} (copy).ipynb", item.display_name) } else { item.display_name.clone() };
-    let idx = install(state, cx, nb, None, title);
+    // fill the placeholder tab when there is one, else open a new tab
+    let idx = match placeholder_index(state, &item.id, copy) {
+        Some(i) => {
+            let mut nbs = NotebookState::new(nb);
+            for (ci, cell) in nbs.nb.cells.iter().enumerate() {
+                let (run, extra) = load_outputs(cell, ci);
+                nbs.cells[ci].run = run;
+                nbs.cells[ci].cached = true;
+                nbs.cells[ci].extra_outputs = extra;
+            }
+            let t = &mut state.tabs[i];
+            t.notebook = Some(Box::new(nbs));
+            t.title = title;
+            t.mark_saved();
+            state.active_tab = Some(i);
+            i
+        }
+        None => install(state, cx, nb, None, title),
+    };
     let t = &mut state.tabs[idx];
     if !copy {
         t.fabric_item = Some(FabricItemRef { item: item.clone(), platform, saving: false });

@@ -64,6 +64,8 @@ pub struct FabricState {
     pub force_interactive: bool,
     /// Shown when Entra said the tenant needs an administrator to approve the permissions.
     pub admin_consent_url: Option<String>,
+    /// Notebook items whose definition is being fetched (spinner on the row).
+    pub opening: HashSet<String>,
 }
 
 impl FabricState {
@@ -605,12 +607,46 @@ pub fn open_notebook(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) 
     };
     let Some(item) = state.fabric.notebook(item_id).cloned() else { return };
     if !copy {
-        if let Some(i) = state.tabs.iter().position(|t| t.fabric_item.as_ref().map(|f| f.item.id == item.id).unwrap_or(false)) {
+        if let Some(i) = state.tabs.iter().position(|t| t.fabric_item.as_ref().map(|f| f.item.id == item.id).unwrap_or(false) || t.notebook.as_deref().and_then(|nb| nb.loading.as_ref()).map(|l| l.item_id == item.id && !l.copy && !l.failed).unwrap_or(false)) {
             state.active_tab = Some(i);
             return;
         }
     }
-    state.flash(format!("Opening {} from Fabric…", item.display_name));
+    // the tab appears at once with a spinner; the definition fills it when it arrives
+    crate::notebook::open_placeholder(state, cx, &item, copy);
+    state.fabric.opening.insert(item.id.clone());
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    cx.session.spawn(async move {
+        let result = match token(&resolver, slot, tenant.as_deref()).await {
+            Ok((tok, _)) => {
+                let client = FabricClient::new(tok);
+                match client.get_item_definition(&item.workspace_id, &item.id, Some("ipynb")).await {
+                    Ok(d) => Ok(d),
+                    Err(e1) => client.get_item_definition(&item.workspace_id, &item.id, None).await.map_err(|e2| format!("{} (ipynb form: {})", fabric_error_text(&e2), fabric_error_text(&e1))),
+                }
+            }
+            Err(None) => Err("Sign in to Fabric first.".into()),
+            Err(Some(e)) => Err(e),
+        };
+        let _ = tx.send(FabricEvent::NotebookDefinition { item, copy, result });
+        egui.request_repaint();
+    });
+}
+
+/// Fetch again for an existing placeholder tab (Retry).
+pub fn open_notebook_again(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) {
+    let Some(slot) = state.fabric.slot else {
+        crate::notebook::placeholder_failed(state, item_id, copy, "Sign in to Fabric first.".into());
+        return;
+    };
+    let Some(item) = state.fabric.notebook(item_id).cloned() else {
+        crate::notebook::placeholder_failed(state, item_id, copy, "The notebook is no longer listed in the workspace.".into());
+        return;
+    };
+    state.fabric.opening.insert(item.id.clone());
     let resolver = cx.resolver.clone();
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();
@@ -822,16 +858,22 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Err(e) => Loadable::Failed(e),
             });
         }
-        FabricEvent::NotebookDefinition { item, copy, result } => match result {
-            Ok(def) => crate::notebook::install_from_fabric(state, cx, item, def, copy),
-            Err(e) if e.contains("InsufficientScopes") => {
-                state.fabric.needs_consent = true;
-                state.sidebar_visible = true;
-                state.sidebar_view = SidebarView::Fabric;
-                cx.toast(ToastKind::Warning, format!("Could not open {}: this sign-in predates the permission Cobalt needs for notebooks (Item.ReadWrite.All). Click Grant permissions on the Fabric panel to approve it.", item.display_name));
+        FabricEvent::NotebookDefinition { item, copy, result } => {
+            state.fabric.opening.remove(&item.id);
+            match result {
+                Ok(def) => crate::notebook::install_from_fabric(state, cx, item, def, copy),
+                Err(e) => {
+                    let scopes = e.contains("InsufficientScopes");
+                    if scopes {
+                        state.fabric.needs_consent = true;
+                        state.sidebar_visible = true;
+                        state.sidebar_view = SidebarView::Fabric;
+                    }
+                    let msg = if scopes { "This sign-in predates the permission Cobalt needs for notebooks (Item.ReadWrite.All). Click Grant permissions on the Fabric panel, then retry.".to_string() } else { e };
+                    crate::notebook::placeholder_failed(state, &item.id, copy, msg);
+                }
             }
-            Err(e) => cx.toast(ToastKind::Error, format!("Could not open {}: {e}", item.display_name)),
-        },
+        }
         FabricEvent::NotebookSaved { tab, result } => {
             if let Some(t) = state.tab_mut(tab) {
                 if let Some(f) = t.fabric_item.as_mut() {

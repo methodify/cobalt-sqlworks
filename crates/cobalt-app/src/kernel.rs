@@ -315,7 +315,21 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         k.fabric = Some(fs.fabric);
     }
     k.binding_warned.clear();
-    let cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
+    let mut cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
+    // user jars on the classpath (driver and executors share the JVM under local[*])
+    let libs = crate::runtime::libraries(settings);
+    let (jars, missing) = cobalt_runtime::libraries::classpath(&dirs, &libs);
+    for m in missing {
+        k.log.push_back(format!("cobalt: library skipped: {m}"));
+    }
+    if !jars.is_empty() {
+        let cp = cobalt_runtime::libraries::classpath_string(&jars);
+        if let Some(confs) = cfg.init.get_mut("extra_configs").and_then(|v| v.as_object_mut()) {
+            confs.insert("spark.driver.extraClassPath".into(), Value::String(cp.clone()));
+            confs.insert("spark.executor.extraClassPath".into(), Value::String(cp));
+        }
+        k.log.push_back(format!("cobalt: {} user jar{} on the classpath", jars.len(), if jars.len() == 1 { "" } else { "s" }));
+    }
     let bootstrap = python_bootstrap(&out_dir, settings.notebooks.spark_row_limit.max(1));
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();

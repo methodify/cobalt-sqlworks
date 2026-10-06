@@ -20,6 +20,8 @@ pub enum Step {
     Env,
     Jdk,
     Warm,
+    /// User libraries (Python packages, Maven jars).
+    Libraries,
 }
 
 impl Step {
@@ -31,6 +33,7 @@ impl Step {
             Step::Env => "Spark environment",
             Step::Jdk => "Java",
             Step::Warm => "First Spark session",
+            Step::Libraries => "Libraries",
         }
     }
 }
@@ -237,7 +240,7 @@ fn find_file(root: &Path, names: &[&str], depth: usize) -> Option<PathBuf> {
     None
 }
 
-fn uv_env(dirs: &RuntimeDirs) -> Vec<(String, String)> {
+pub(crate) fn uv_env(dirs: &RuntimeDirs) -> Vec<(String, String)> {
     vec![
         ("UV_PYTHON_INSTALL_DIR".into(), dirs.python_dir().to_string_lossy().to_string()),
         ("UV_CACHE_DIR".into(), dirs.cache_dir().to_string_lossy().to_string()),
@@ -248,7 +251,7 @@ fn uv_env(dirs: &RuntimeDirs) -> Vec<(String, String)> {
 }
 
 /// Run a tool, streaming its stderr lines to the log. Fails on a non-zero exit.
-fn run_tool(cx: &Context, exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<String> {
+pub(crate) fn run_tool(cx: &Context, exe: &Path, args: &[&str], env: &[(String, String)]) -> Result<String> {
     cx.check_cancel()?;
     let pretty = format!("{} {}", exe.file_name().unwrap_or_default().to_string_lossy(), args.join(" "));
     cx.log(format!("$ {pretty}"));

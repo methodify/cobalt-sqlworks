@@ -303,11 +303,22 @@ pub struct ShadowsUi {
     pub note: Option<String>,
 }
 
+/// A notebook tab that is still being fetched (from Fabric).
+#[derive(Clone, Debug)]
+pub struct NotebookLoading {
+    pub item_id: String,
+    pub copy: bool,
+    pub message: String,
+    pub failed: bool,
+}
+
 pub struct NotebookState {
     pub nb: cobalt_notebook::Notebook,
     pub cells: Vec<CellState>,
     pub kernel: NotebookKernel,
     pub fabric: Option<NotebookFabric>,
+    /// Set while the document is on its way; the tab shows a spinner instead of cells.
+    pub loading: Option<NotebookLoading>,
     /// The current cell (keyboard target, highlighted).
     pub selected: usize,
     /// Cell ids waiting to run, in order; one runs at a time per tab.
@@ -348,7 +359,7 @@ impl NotebookState {
         let counter = nb.cells.iter().filter_map(|c| c.execution_count).max().unwrap_or(0);
         let kernel = if nb.default_language() == cobalt_notebook::CellLanguage::Python { NotebookKernel::Spark } else { NotebookKernel::Connection };
         let fabric = nb.default_lakehouse().and_then(|lh| lh.workspace_id.map(|ws| NotebookFabric { workspace_id: ws, lakehouse_id: Some(lh.id), write_mode: "sandbox".into() }));
-        Self { nb, cells, kernel, fabric, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
+        Self { nb, cells, kernel, fabric, loading: None, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
     }
     pub fn is_running(&self) -> bool {
         !self.queue.is_empty() || self.cells.iter().any(|c| c.run.as_ref().map(|r| r.is_live()).unwrap_or(false))
@@ -445,7 +456,7 @@ impl EditorTab {
     }
     pub fn is_running(&self) -> bool {
         if let Some(nb) = &self.notebook {
-            return nb.is_running();
+            return nb.is_running() || nb.loading.as_ref().map(|l| !l.failed).unwrap_or(false);
         }
         self.run.as_ref().map(|r| r.state == RunViewState::Running || r.state == RunViewState::Paused || r.state == RunViewState::Cancelling).unwrap_or(false)
     }

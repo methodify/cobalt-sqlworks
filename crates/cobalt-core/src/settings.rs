@@ -306,10 +306,16 @@ pub struct SparkSettings {
     pub driver_memory: String,
     /// Where the runtime lives; default is the app's local data folder.
     pub runtime_dir: Option<String>,
+    /// Python packages for the environment: PyPI requirement specs or wheel/sdist paths.
+    pub python_packages: Vec<String>,
+    /// Jar files put on the Spark classpath at session start.
+    pub jars: Vec<String>,
+    /// Maven coordinates (`group:artifact:version`) fetched into the runtime and put on the classpath.
+    pub maven: Vec<String>,
 }
 impl Default for SparkSettings {
     fn default() -> Self {
-        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None }
+        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new() }
     }
 }
 

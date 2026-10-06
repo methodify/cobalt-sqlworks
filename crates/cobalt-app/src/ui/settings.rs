@@ -241,6 +241,8 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
             });
                             }
                             Tab::Notebooks => {
+                            section(ui, theme, "Libraries");
+                            libraries_ui(ui, theme, draft, runtime, paths_info, &mut action);
                             section(ui, theme, "Notebooks");
             ui.horizontal(|ui| {
                 ui.label("New notebooks start as");
@@ -391,6 +393,131 @@ fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {
     r
 }
 
+/// Settings → Notebooks & Spark → Libraries: Python packages and Java libraries for the runtime.
+fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, _paths_info: &str, action: &mut Option<SettingsAction>) {
+    ui.label(RichText::new("Python packages are installed into the runtime's environment with uv and are importable in Spark sessions (restart a running session). Jar files and Maven coordinates go on the Spark classpath when a session starts; Maven coordinates fetch only the artifact itself, so add its dependencies too.").size(12.0).color(theme.text_muted));
+    ui.add_space(4.0);
+    let (py_status, jar_status) = {
+        // status comes from the saved settings' runtime folder; the lists edited here are the draft
+        let paths = crate::runtime::dirs(draft, &cobalt_store::AppPaths::new().unwrap_or_else(|_| cobalt_store::AppPaths::for_test(std::env::temp_dir().join("cobalt-paths"))));
+        let _ = paths;
+        let cache_paths = cobalt_store::AppPaths::new().unwrap_or_else(|_| cobalt_store::AppPaths::for_test(std::env::temp_dir().join("cobalt-paths")));
+        runtime.library_status(draft, &cache_paths)
+    };
+    let busy = runtime.job.is_some();
+    // ---- Python ----
+    ui.label(RichText::new("Python packages").strong());
+    let mut remove: Option<usize> = None;
+    for (i, spec) in draft.spark.python_packages.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            let installed = py_status.iter().find(|(s, _)| s == spec).and_then(|(_, v)| v.clone());
+            let (icon, color) = match &installed {
+                Some(_) => (egui_phosphor::regular::CHECK_CIRCLE, theme.success),
+                None => (egui_phosphor::regular::CIRCLE_DASHED, theme.text_faint),
+            };
+            ui.label(RichText::new(icon).color(color));
+            ui.label(RichText::new(spec).monospace().size(12.0));
+            if let Some(v) = installed {
+                ui.label(RichText::new(format!("installed {v}")).size(11.0).color(theme.text_muted));
+            } else {
+                ui.label(RichText::new("not installed").size(11.0).color(theme.text_faint));
+            }
+            if ui.small_button(egui_phosphor::regular::X).on_hover_text("Remove from the list (does not uninstall)").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        draft.spark.python_packages.remove(i);
+    }
+    let py_input = egui::Id::new("lib-py-input");
+    let mut text: String = ui.memory(|m| m.data.get_temp(py_input)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text("package, package==1.2, or a path to a .whl").desired_width(360.0));
+        let submit = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.small_button("Add").clicked() || submit) && !text.trim().is_empty() {
+            draft.spark.python_packages.push(text.trim().to_string());
+            text.clear();
+        }
+        if ui.small_button("Add wheel…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Python packages", &["whl", "gz", "zip"]).pick_file() {
+                draft.spark.python_packages.push(p.to_string_lossy().to_string());
+            }
+        }
+    });
+    ui.memory_mut(|m| m.data.insert_temp(py_input, text));
+    ui.add_space(6.0);
+    // ---- Java ----
+    ui.label(RichText::new("Java libraries").strong());
+    let mut remove_jar: Option<usize> = None;
+    for (i, j) in draft.spark.jars.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            let ok = jar_status.iter().find(|(s, _)| s == j).map(|(_, ok)| *ok).unwrap_or(false);
+            ui.label(RichText::new(if ok { egui_phosphor::regular::CHECK_CIRCLE } else { egui_phosphor::regular::WARNING }).color(if ok { theme.success } else { theme.warning }));
+            ui.label(RichText::new(j).monospace().size(12.0));
+            if !ok {
+                ui.label(RichText::new("file not found").size(11.0).color(theme.warning));
+            }
+            if ui.small_button(egui_phosphor::regular::X).clicked() {
+                remove_jar = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove_jar {
+        draft.spark.jars.remove(i);
+    }
+    let mut remove_mvn: Option<usize> = None;
+    for (i, m) in draft.spark.maven.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            let ok = jar_status.iter().find(|(s, _)| s == m).map(|(_, ok)| *ok).unwrap_or(false);
+            let valid = cobalt_runtime::libraries::MavenCoord::parse(m).is_some();
+            let (icon, color, note) = if !valid { (egui_phosphor::regular::WARNING, theme.error, "not group:artifact:version") } else if ok { (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "fetched") } else { (egui_phosphor::regular::CIRCLE_DASHED, theme.text_faint, "not fetched yet") };
+            ui.label(RichText::new(icon).color(color));
+            ui.label(RichText::new(format!("{} {m}", egui_phosphor::regular::PACKAGE)).monospace().size(12.0));
+            ui.label(RichText::new(note).size(11.0).color(theme.text_muted));
+            if ui.small_button(egui_phosphor::regular::X).clicked() {
+                remove_mvn = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove_mvn {
+        draft.spark.maven.remove(i);
+    }
+    let mvn_input = egui::Id::new("lib-mvn-input");
+    let mut mtext: String = ui.memory(|m| m.data.get_temp(mvn_input)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        let r = ui.add(egui::TextEdit::singleline(&mut mtext).hint_text("Maven coordinate: group:artifact:version").desired_width(360.0));
+        let submit = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if (ui.small_button("Add").clicked() || submit) && !mtext.trim().is_empty() {
+            draft.spark.maven.push(mtext.trim().to_string());
+            mtext.clear();
+        }
+        if ui.small_button("Add jar…").clicked() {
+            if let Some(files) = rfd::FileDialog::new().add_filter("Java libraries", &["jar"]).pick_files() {
+                for p in files {
+                    draft.spark.jars.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
+    });
+    ui.memory_mut(|m| m.data.insert_temp(mvn_input, mtext));
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let any = !draft.spark.python_packages.is_empty() || !draft.spark.maven.is_empty();
+        let b = ui.add_enabled(!busy && any, egui::Button::new("Install libraries"));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install libraries"));
+        if b.on_hover_text("Saves these settings, installs the Python packages into the environment and fetches the Maven jars").clicked() {
+            *action = Some(SettingsAction::Runtime(RuntimeAction::InstallLibraries, draft.clone()));
+        }
+        if let Some(job) = &runtime.job {
+            if job.kind == crate::runtime::JobKind::Libraries {
+                ui.spinner();
+                ui.label(RichText::new(job.step.as_ref().map(|(_, l)| l.clone()).unwrap_or_else(|| "Working…".into())).size(12.0).color(theme.text_muted));
+            }
+        }
+    });
+}
+
 fn component_row(ui: &mut Ui, theme: &Theme, name: &str, st: &ComponentState) {
     let (icon, color, what) = match st {
         ComponentState::Managed { .. } => (egui_phosphor::regular::CHECK_CIRCLE, theme.success, "installed by Cobalt"),
@@ -408,7 +535,7 @@ fn component_row(ui: &mut Ui, theme: &Theme, name: &str, st: &ComponentState) {
 /// remove, and the live log of the running job.
 fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, action: &mut Option<SettingsAction>) {
     let manifest = cobalt_runtime::Manifest::embedded();
-    ui.label(RichText::new("Cobalt provisions a local Spark that matches a Fabric runtime (uv, Python, pyspark + delta-spark via local-spark-mcp, and a non-Oracle JDK) into its own folder. Nothing is downloaded until you ask. PySpark notebook cells run on it from the next release; today this page installs and verifies the runtime.").size(12.0).color(theme.text_muted));
+    ui.label(RichText::new("Cobalt provisions a local Spark that matches a Fabric runtime (uv, Python, pyspark + delta-spark via local-spark-mcp, and a non-Oracle JDK) into its own folder. Nothing is downloaded until you ask. PySpark and Spark SQL notebook cells run on it (kernel button on the notebook toolbar); this page installs and verifies the runtime.").size(12.0).color(theme.text_muted));
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.label("Runtime profile");

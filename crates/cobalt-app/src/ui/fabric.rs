@@ -244,7 +244,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                         // notebooks (open in a notebook tab; run on the local Spark session)
                         if let Some(Loadable::Loaded(nbs)) = state.fabric.notebooks.get(&w.id) {
                             for nb in nbs.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)) {
-                                notebook_row(ui, theme, nb, &mut actions);
+                                let opening = state.fabric.opening.contains(&nb.id);
+                                notebook_row(ui, theme, nb, opening, &mut actions);
                             }
                         }
                     }
@@ -264,8 +265,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
     actions
 }
 
-fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, actions: &mut Vec<FabricAction>) {
-    let r = tree_row(ui, theme, 1, false, icons::NOTEBOOK, &nb.display_name, "notebook", &format!("fabric notebook {}", nb.display_name));
+fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, opening: bool, actions: &mut Vec<FabricAction>) {
+    let (icon, sub) = if opening { (icons::CIRCLE_NOTCH, "notebook · opening…") } else { (icons::NOTEBOOK, "notebook") };
+    if opening {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
+    }
+    let r = tree_row(ui, theme, 1, false, icon, &nb.display_name, sub, &format!("fabric notebook {}", nb.display_name));
     if r.double_clicked() {
         actions.push(FabricAction::OpenNotebook { item_id: nb.id.clone(), copy: false });
     }

@@ -93,7 +93,17 @@ Optional; the final-only form is acceptable for a first release.
 (`discard_shadow(table="lakehouse.table")`) would let a UI offer "Discard" next to one clone
 without rewinding it first.
 
-## 8. Small things
+## 8. Extra Spark packages and jars
+
+`build_spark` owns `spark.jars` (the catalog jar) and `spark.jars.packages` (through
+`configure_spark_with_delta_pip`), so a host cannot add its own jars or Maven packages through
+`extra_configs` without clobbering them. Ask: `init` parameters `extra_jars: list[str]` (merged
+into `spark.jars`) and `extra_packages: list[str]` (appended to the delta helper's package list,
+with Ivy resolving transitive dependencies). Cobalt currently puts user jars on
+`spark.driver.extraClassPath` / `spark.executor.extraClassPath` and resolves Maven coordinates to
+a single artifact itself.
+
+## 9. Small things
 
 - `info` could include `java_home`, `python`, `hadoop_home`, `ivy_dir` as resolved, so the
   host can show them without re-deriving.

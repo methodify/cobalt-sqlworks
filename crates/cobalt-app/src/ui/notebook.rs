@@ -43,6 +43,40 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let fmt = f.state.formatter.clone();
     let mut actions: Vec<NbAction> = Vec::new();
     let tab_id = f.state.tabs[idx].id;
+    // a notebook still on its way from Fabric
+    if let Some(l) = f.state.tabs[idx].notebook.as_deref().and_then(|nb| nb.loading.clone()) {
+        ui.add_space(ui.available_height() * 0.3);
+        ui.vertical_centered(|ui| {
+            if l.failed {
+                ui.label(RichText::new(icons::WARNING).size(28.0).color(theme.error));
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(RichText::new(&l.message).color(theme.error)).wrap());
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - 200.0).max(0.0) / 2.0);
+                    if ui.button(format!("{} Retry", icons::ARROWS_CLOCKWISE)).clicked() {
+                        let (item_id, copy) = (l.item_id.clone(), l.copy);
+                        if let Some(nb) = f.state.tabs[idx].notebook.as_deref_mut() {
+                            if let Some(ld) = nb.loading.as_mut() {
+                                ld.failed = false;
+                                ld.message = "Fetching from Fabric…".into();
+                            }
+                        }
+                        crate::fabric::open_notebook_again(f.state, f.cx, &item_id, copy);
+                    }
+                    if ui.button("Close tab").clicked() {
+                        ops::close_tab(f.state, f.cx, idx, true);
+                    }
+                });
+            } else {
+                ui.spinner();
+                ui.add_space(6.0);
+                ui.label(RichText::new(&l.message).color(theme.text_muted));
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
+        });
+        return;
+    }
     let connected = f.state.tabs[idx].conn.is_connected();
     let conn_label = {
         let t = &f.state.tabs[idx];
@@ -157,6 +191,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 let mut pick: Option<NotebookKernel> = None;
                 let mut change_conn = false;
                 let mut show_log = false;
+                let mut session_cmd: Option<Command> = None;
                 egui::Popup::menu(&r).id(r.id.with("kernel-menu")).show(|ui| {
                     ui.set_min_width(260.0);
                     ui.label(RichText::new("Kernel").strong());
@@ -173,8 +208,28 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         change_conn = true;
                         ui.close();
                     }
-                    if ui.button("Spark session log").clicked() {
+                    // the local Spark session itself
+                    ui.separator();
+                    ui.label(RichText::new(format!("Session · {}", kernel_state.label())).strong());
+                    let running = kernel_state.is_ready() || kernel_state.is_starting();
+                    if ui.add_enabled(!kernel_state.is_starting(), egui::Button::new(if running { format!("{} Restart session", icons::ARROWS_CLOCKWISE) } else { format!("{} Start session", icons::PLAY) })).clicked() {
+                        session_cmd = Some(Command::KernelRestart);
+                        ui.close();
+                    }
+                    if ui.add_enabled(running, egui::Button::new(format!("{} Stop session", icons::STOP))).clicked() {
+                        session_cmd = Some(Command::KernelStop);
+                        ui.close();
+                    }
+                    if kernel_busy && ui.button(format!("{} Interrupt the running cell", icons::HAND_PALM)).clicked() {
+                        session_cmd = Some(Command::CancelQuery);
+                        ui.close();
+                    }
+                    if ui.button("Session log").clicked() {
                         show_log = true;
+                        ui.close();
+                    }
+                    if ui.button("Lakehouse shadows…").clicked() {
+                        session_cmd = Some(Command::Shadows);
                         ui.close();
                     }
                 });
@@ -288,6 +343,9 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 }
                 if show_log {
                     actions.push(NbAction::Command(Command::KernelLog));
+                }
+                if let Some(c) = session_cmd {
+                    actions.push(NbAction::Command(c));
                 }
                 if running {
                     ui.label(RichText::new(format!("{} running", icons::CIRCLE_NOTCH)).size(12.0).color(theme.accent));

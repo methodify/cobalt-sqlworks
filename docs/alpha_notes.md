@@ -288,6 +288,26 @@ The manifest (`crates/cobalt-runtime/manifest.json`) mirrors local-spark-mcp's `
 until that project publishes a machine-readable one; the asks are in
 `docs/requests/local-spark-mcp.md`. Agent: `runtime {action: status|install|smoke|cancel|remove|refresh}`.
 
+## Libraries for the Spark environment (0.7.2)
+
+Settings → Notebooks & Spark → **Libraries**. Two lists, saved with the settings:
+
+- **Python packages**: PyPI requirement specs (`polars`, `dwlib==0.3.1`) or paths to wheels /
+  sdists (Add wheel…). *Install libraries* runs `uv pip install --python <env> …` into the
+  profile's environment (`envs/fabric-2.0`), so the packages are importable in Spark sessions;
+  a running session needs a restart. Each row shows the installed version or "not installed".
+- **Java libraries**: jar files on this machine (Add jar…) and Maven coordinates
+  (`org.postgresql:postgresql:42.7.3`), which *Install libraries* fetches from Maven Central into
+  the runtime's `jars/` folder (the artifact only — add transitive dependencies as further
+  coordinates). At session start every present jar goes on `spark.driver.extraClassPath` and
+  `spark.executor.extraClassPath` (one JVM under `local[*]`); missing ones are logged and skipped.
+  Verified: `tabulate` imported and `org.postgresql.Driver` resolved in a fresh session.
+
+Why the classpath rather than `spark.jars` / `spark.jars.packages`: local-spark-mcp sets those
+itself for the OneLake catalog jar and for Delta / hadoop-azure (`configure_spark_with_delta_pip`),
+and a value in `extra_configs` would be overwritten. A pass-through for extra Maven packages is
+on the request list for that project; until then coordinates resolve to a single jar here.
+
 ## Permissions and re-consent (0.7.1)
 
 A Microsoft sign-in carries the permissions you consented to at the time; a refresh token never

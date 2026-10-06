@@ -19,7 +19,7 @@
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
 //! - `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit, …}` → notebook tabs; `state` tabs carry `kind` and `cells`
-//! - `runtime {action: status|install|smoke|cancel|remove|refresh}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
+//! - `runtime {action: status|install|smoke|cancel|remove|refresh|libraries}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
 //! - `kernel {action: status|start|stop|restart|interrupt|log}` → the local Spark session notebooks run PySpark cells on; `notebook {action: set_kernel, kernel: connection|spark}`
 
 use crate::app::CobaltApp;
@@ -1108,6 +1108,7 @@ impl AgentApp for CobaltApp {
                     "cancel" => Some(RuntimeAction::Cancel),
                     "remove" => Some(RuntimeAction::Remove),
                     "refresh" => Some(RuntimeAction::Refresh),
+                    "libraries" => Some(RuntimeAction::InstallLibraries),
                     other => return ActionResult::BadArgs(format!("unknown runtime action {other}")),
                 };
                 if let Some(a) = a {
