@@ -316,7 +316,7 @@ anyway, so Cobalt lists `Tables/` on OneLake with the signed-in account's storag
 `mount_tables` in batches of eight (a cell queued meanwhile runs between batches). Tables in
 schema folders (`Tables/dbo/...`) are listed but not cloned: the session's catalog resolves
 only `Tables/<name>`, so `lakehouse.dbo.table` fails with REQUIRES_SINGLE_PART_NAMESPACE — the
-window says so, and the ask is in `docs/requests/local-spark-mcp.md` (items 5 and 6). Verified
+window says so, and the ask is in `docs/requests/local-spark-mcp-0.3.5-reply.md` (items 5 and 6). Verified
 on the test lakehouse: 3 top-level tables cloned in ~20 s, 5 schema tables reported.
 
 ## Permissions and re-consent (0.7.1)
