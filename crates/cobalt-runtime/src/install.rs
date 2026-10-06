@@ -473,14 +473,24 @@ pub fn step_warm(cx: &Context, plan: &Plan, jdk_home: &Path, rec: &mut Installed
     std::fs::create_dir_all(cx.dirs.ivy_dir())?;
     std::fs::create_dir_all(cx.dirs.state_dir())?;
     let cfg = worker_config(cx.dirs, &plan.profile, Some(jdk_home), &plan.driver_memory, Default::default());
-    let log = |s: String| cx.log(format!("  {s}"));
-    let mut w = Worker::start(&cfg, &log, cx.cancel)?;
+    let (ltx, lrx) = std::sync::mpsc::channel::<String>();
+    let log: crate::worker::LogFn = std::sync::Arc::new(move |s: String| {
+        let _ = ltx.send(s);
+    });
+    let mut w = Worker::start(&cfg, log, cx.cancel)?;
+    for s in lrx.try_iter() {
+        cx.log(format!("  {s}"));
+    }
     let info = w.info.clone();
     let spark_version = info.get("spark_version").and_then(|v| v.as_str()).unwrap_or("?").to_string();
     cx.log(format!("Spark {spark_version} up ({})", info.get("profile").and_then(|v| v.as_str()).unwrap_or("")));
     let r = w.run_sql("SELECT 1 AS one, 'ok' AS status", Some(10))?;
     let rows = r.get("rows").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     cx.log(format!("SELECT 1 returned {rows} row(s): {}", r.get("rows").map(|v| v.to_string()).unwrap_or_default()));
+    w.pump();
+    for s in lrx.try_iter() {
+        cx.log(format!("  {s}"));
+    }
     w.shutdown();
     rec.warmed = true;
     rec.spark_version = Some(spark_version.clone());

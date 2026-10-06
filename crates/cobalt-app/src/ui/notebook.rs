@@ -27,6 +27,7 @@ enum NbAction {
     Move(usize, isize),
     SetKind(usize, CellKind),
     SetLanguage(usize, Option<CellLanguage>),
+    SetKernel(NotebookKernel),
     Cancel,
     ClearOutputs(Option<usize>),
     Results(usize, ResultsAction),
@@ -50,10 +51,13 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     };
 
     // ---- toolbar ----
-    let (selected, running, n_cells, has_undo, warnings) = {
+    let (selected, running, n_cells, has_undo, warnings, nb_kernel) = {
         let nb = f.state.tabs[idx].notebook.as_deref().unwrap();
-        (nb.selected, nb.is_running(), nb.cells.len(), nb.undo_delete.is_some(), nb.warnings.clone())
+        (nb.selected, nb.is_running(), nb.cells.len(), nb.undo_delete.is_some(), nb.warnings.clone(), nb.kernel)
     };
+    let kernel_state = f.state.kernel.state.clone();
+    let kernel_busy = f.state.kernel.busy.is_some();
+    let spark_profile = settings.spark.profile.clone();
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = icon_button(ui, icons::PLAY, "Run cell (Ctrl+Enter) · Shift+Enter runs and moves on", !running);
@@ -106,21 +110,56 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         ui.close();
                     }
                 });
-                // kernel: the tab's connection today; local Spark from the next release
-                let kernel = egui::Button::new(RichText::new(format!("{} {conn_label}", if connected { icons::PLUG } else { icons::PLUGS })).size(12.0).color(if connected { theme.text } else { theme.text_muted })).small();
-                let r = ui.add(kernel);
+                // kernel picker: the tab's connection, or the local Spark session
+                let (kicon, klabel, kcolor) = match nb_kernel {
+                    NotebookKernel::Connection => (if connected { icons::PLUG } else { icons::PLUGS }, conn_label.clone(), if connected { theme.text } else { theme.text_muted }),
+                    NotebookKernel::Spark => {
+                        use crate::kernel::KernelState as K;
+                        let (l, c) = match &kernel_state {
+                            K::Ready { .. } if kernel_busy => (format!("Local Spark ({spark_profile}) · running"), theme.accent),
+                            K::Ready { .. } => (format!("Local Spark ({spark_profile}) · ready"), theme.success),
+                            K::Starting { since } => (format!("Local Spark ({spark_profile}) · starting {}s", since.elapsed().as_secs()), theme.warning),
+                            K::Failed(_) => (format!("Local Spark ({spark_profile}) · failed"), theme.error),
+                            K::Stopped => (format!("Local Spark ({spark_profile})"), theme.text_muted),
+                        };
+                        (icons::FIRE, l, c)
+                    }
+                };
+                let r = ui.add(egui::Button::new(RichText::new(format!("{kicon} {klabel}")).size(12.0).color(kcolor)).small());
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "notebook kernel"));
-                let r = r.on_hover_text("SQL cells run on this connection. Click to change it.");
-                r.context_menu(|ui| {
+                let r = r.on_hover_text("Where code cells run. Click to choose: the tab's connection (SQL cells), or the local Spark session (PySpark and Spark SQL cells).");
+                let mut pick: Option<NotebookKernel> = None;
+                let mut change_conn = false;
+                let mut show_log = false;
+                egui::Popup::menu(&r).id(r.id.with("kernel-menu")).show(|ui| {
+                    ui.set_min_width(260.0);
                     ui.label(RichText::new("Kernel").strong());
-                    if ui.button("SQL · this tab's connection").clicked() {
-                        actions.push(NbAction::Command(Command::ChangeConnection));
+                    if ui.selectable_label(nb_kernel == NotebookKernel::Connection, format!("{} SQL · {conn_label}", icons::PLUG)).clicked() {
+                        pick = Some(NotebookKernel::Connection);
                         ui.close();
                     }
-                    ui.add_enabled(false, egui::Button::new("Local Spark (PySpark) — next release")).on_disabled_hover_text("Provision the runtime under Settings → Spark runtime; PySpark cells run there from 0.8.");
+                    if ui.selectable_label(nb_kernel == NotebookKernel::Spark, format!("{} Local Spark ({spark_profile}) · PySpark + Spark SQL", icons::FIRE)).on_hover_text("Runs on the runtime from Settings → Spark runtime. The first cell starts the session (20–60 s).").clicked() {
+                        pick = Some(NotebookKernel::Spark);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui.button("Change connection…").clicked() {
+                        change_conn = true;
+                        ui.close();
+                    }
+                    if ui.button("Spark session log").clicked() {
+                        show_log = true;
+                        ui.close();
+                    }
                 });
-                if r.clicked() {
+                if let Some(k) = pick {
+                    actions.push(NbAction::SetKernel(k));
+                }
+                if change_conn {
                     actions.push(NbAction::Command(Command::ChangeConnection));
+                }
+                if show_log {
+                    actions.push(NbAction::Command(Command::KernelLog));
                 }
                 if running {
                     ui.label(RichText::new(format!("{} running", icons::CIRCLE_NOTCH)).size(12.0).color(theme.accent));
@@ -208,7 +247,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                         actions.push(NbAction::SetKind(i, CellKind::Code));
                                         actions.push(NbAction::SetLanguage(i, if default_lang == CellLanguage::Sql { None } else { Some(CellLanguage::Sql) }));
                                     }
-                                    if ui.selectable_label(cell_kind == CellKind::Code && lang == CellLanguage::Python, "PySpark").on_hover_text("Runs on the local Spark runtime from the next release").clicked() {
+                                    if ui.selectable_label(cell_kind == CellKind::Code && lang == CellLanguage::Python, "PySpark").on_hover_text("Runs on the local Spark session (kernel button on the toolbar)").clicked() {
                                         actions.push(NbAction::SetKind(i, CellKind::Code));
                                         actions.push(NbAction::SetLanguage(i, if default_lang == CellLanguage::Python { None } else { Some(CellLanguage::Python) }));
                                     }
@@ -624,6 +663,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::Move(i, d) => nbops::move_cell(f.state, idx, i, d),
             NbAction::SetKind(i, k) => nbops::set_kind(f.state, idx, i, k),
             NbAction::SetLanguage(i, l) => nbops::set_language(f.state, idx, i, l),
+            NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
             NbAction::Cancel => nbops::cancel(f.state, cx, idx),
             NbAction::ClearOutputs(only) => nbops::clear_outputs(f.state, idx, only),
             NbAction::Results(cell, action) => nbops::results_action(f.state, cx, idx, cell, action),

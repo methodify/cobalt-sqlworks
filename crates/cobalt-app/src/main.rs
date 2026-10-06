@@ -8,6 +8,7 @@ mod commands;
 mod copy;
 mod fabric;
 mod gpu;
+mod kernel;
 mod notebook;
 mod ops;
 mod runtime;

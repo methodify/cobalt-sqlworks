@@ -37,6 +37,18 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             welcome(ui, f);
         }
     });
+    // commands queued by widgets that could not call dispatch themselves (status bar)
+    for c in std::mem::take(&mut f.state.pending_commands) {
+        dispatch(f, c);
+    }
+    // a restart finishes once the old session is gone
+    if f.state.kernel_restart_pending && matches!(f.state.kernel.state, crate::kernel::KernelState::Stopped | crate::kernel::KernelState::Failed(_)) && f.state.kernel.busy.is_none() {
+        f.state.kernel_restart_pending = false;
+        if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut f.state.kernel, f.cx.settings, f.cx.paths, f.cx.egui) {
+            f.cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings → Spark runtime).");
+        }
+    }
+    kernel_log_window(ctx, f);
     // overlays
     if let Some(item) = palette::show(ui, f.state, f.theme, f.keymap) {
         match item {
@@ -126,6 +138,12 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::DisconnectTab);
                 ui.separator();
                 item(ui, &mut cmds, Command::ExecutionOptions);
+                ui.separator();
+                item(ui, &mut cmds, Command::RunAllCells);
+                item(ui, &mut cmds, Command::RunCellsAbove);
+                item(ui, &mut cmds, Command::KernelRestart);
+                item(ui, &mut cmds, Command::KernelStop);
+                item(ui, &mut cmds, Command::KernelLog);
                 item(ui, &mut cmds, Command::RefreshIntelliSense);
             });
             ui.menu_button("Results", |ui| {
@@ -429,6 +447,50 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);
+    }
+}
+
+/// The local Spark session's console (worker stderr: Spark, py4j, Ivy, tracebacks).
+fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
+    if !f.state.kernel.log_open {
+        return;
+    }
+    let theme = f.theme;
+    let mut open = true;
+    let k = &mut f.state.kernel;
+    egui::Window::new("Local Spark session").id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(k.state.label()).strong());
+            if let crate::kernel::KernelState::Ready { info, .. } = &k.state {
+                ui.label(RichText::new(format!("{} · {}", info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("master").and_then(|v| v.as_str()).unwrap_or(""))).size(11.0).color(theme.text_muted));
+            }
+            if let crate::kernel::KernelState::Failed(e) = &k.state {
+                ui.label(RichText::new(e).size(11.0).color(theme.error));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Copy").clicked() {
+                    ui.ctx().copy_text(k.log.iter().cloned().collect::<Vec<_>>().join("\n"));
+                }
+                if ui.small_button("Clear").clicked() {
+                    k.log.clear();
+                }
+            });
+        });
+        egui::Frame::new().fill(theme.bg_editor).inner_margin(6.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("kernel-log-scroll").stick_to_bottom(true).auto_shrink([false, false]).show(ui, |ui| {
+                ui.style_mut().override_font_id = Some(egui::FontId::monospace(11.0));
+                for l in k.log.iter().rev().take(600).collect::<Vec<_>>().into_iter().rev() {
+                    let color = if l.contains(" ERROR ") || l.contains("Traceback") || l.contains("Error:") { theme.error } else if l.contains(" WARN ") { theme.warning } else { theme.text_muted };
+                    ui.add(egui::Label::new(RichText::new(l).color(color)).wrap());
+                }
+                if k.log.is_empty() {
+                    ui.label(RichText::new("Nothing yet.").color(theme.text_faint));
+                }
+            });
+        });
+    });
+    if !open {
+        f.state.kernel.log_open = false;
     }
 }
 
@@ -856,6 +918,49 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // the local Spark kernel, once anything has used it
+                let k = &f.state.kernel;
+                let show_kernel = !matches!(k.state, crate::kernel::KernelState::Stopped) || f.state.tabs.iter().any(|t| t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
+                if show_kernel {
+                    let (color, icon) = match &k.state {
+                        crate::kernel::KernelState::Ready { .. } if k.busy.is_some() => (theme.accent, icons::CIRCLE_NOTCH),
+                        crate::kernel::KernelState::Ready { .. } => (theme.success, icons::CIRCLE),
+                        crate::kernel::KernelState::Starting { .. } => (theme.warning, icons::CIRCLE_NOTCH),
+                        crate::kernel::KernelState::Failed(_) => (theme.error, icons::WARNING),
+                        crate::kernel::KernelState::Stopped => (theme.text_faint, icons::CIRCLE),
+                    };
+                    let label = if k.busy.is_some() { format!("{} · running a cell", k.state.label()) } else { k.state.label() };
+                    let r = ui.add(egui::Button::new(RichText::new(format!("{icon} {label}")).color(color)).frame(false));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark kernel"));
+                    let hover = match &k.state {
+                        crate::kernel::KernelState::Ready { info, .. } => format!("Local Spark session ({})\nprofile {} · app {}\nClick for restart / stop / log", k.profile, info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("app_id").and_then(|v| v.as_str()).unwrap_or("")),
+                        crate::kernel::KernelState::Failed(e) => format!("Local Spark session failed:\n{e}"),
+                        _ => "Local Spark session · click for restart / stop / log".to_string(),
+                    };
+                    let r = r.on_hover_text(hover);
+                    let mut cmd: Option<Command> = None;
+                    r.context_menu(|ui| {
+                        if ui.button("Restart session").clicked() {
+                            cmd = Some(Command::KernelRestart);
+                            ui.close();
+                        }
+                        if ui.button("Stop session").clicked() {
+                            cmd = Some(Command::KernelStop);
+                            ui.close();
+                        }
+                        if ui.button("Show log").clicked() {
+                            cmd = Some(Command::KernelLog);
+                            ui.close();
+                        }
+                    });
+                    if r.clicked() {
+                        cmd = Some(Command::KernelLog);
+                    }
+                    if let Some(c) = cmd {
+                        f.state.pending_commands.push(c);
+                    }
+                    ui.separator();
+                }
                 if let Some(t) = f.state.active() {
                     ui.label(RichText::new("MSSQL").color(theme.text_muted));
                     if crate::gpu::is_software() {
@@ -1013,6 +1118,12 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             state.settings_open = true;
             state.settings_scroll_to = Some("Spark runtime");
         }
+        Command::KernelRestart => {
+            crate::kernel::stop(&mut state.kernel);
+            state.kernel_restart_pending = true;
+        }
+        Command::KernelStop => crate::kernel::stop(&mut state.kernel),
+        Command::KernelLog => state.kernel.log_open = !state.kernel.log_open,
         Command::OpenFile => ops::open_file(state, cx, None),
         Command::OpenPlanFile => {
             if let Some(p) = rfd::FileDialog::new().add_filter("Execution plan", &["sqlplan", "xml"]).pick_file() {

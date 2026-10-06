@@ -34,6 +34,9 @@ pub enum RuntimeError {
     Tool { cmd: String, status: String, stderr: String },
     #[error("worker: {0}")]
     Worker(String),
+    /// The worker or its JVM is gone; the process must be restarted.
+    #[error("worker (fatal): {0}")]
+    WorkerFatal(String),
     #[error("cancelled")]
     Cancelled,
     #[error("{0}")]

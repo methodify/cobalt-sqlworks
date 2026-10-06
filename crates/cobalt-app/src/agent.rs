@@ -20,6 +20,7 @@
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
 //! - `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit, …}` → notebook tabs; `state` tabs carry `kind` and `cells`
 //! - `runtime {action: status|install|smoke|cancel|remove|refresh}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
+//! - `kernel {action: status|start|stop|restart|interrupt|log}` → the local Spark session notebooks run PySpark cells on; `notebook {action: set_kernel, kernel: connection|spark}`
 
 use crate::app::CobaltApp;
 use crate::commands::{Command, COMMANDS};
@@ -59,6 +60,7 @@ impl CobaltApp {
                         "source": cell.source,
                         "execution_count": cell.execution_count,
                         "selected": nb.selected == ci,
+                        "cell_kernel": if nb.kernel == crate::state::NotebookKernel::Spark { "spark" } else { "connection" },
                         "md_editing": c.md_editing,
                         "cached": c.cached,
                         "queued": nb.queue.contains(&c.id),
@@ -78,6 +80,7 @@ impl CobaltApp {
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
                     "selected_cell": t.notebook.as_deref().map(|nb| nb.selected),
+                    "kernel": t.notebook.as_deref().map(|nb| if nb.kernel == crate::state::NotebookKernel::Spark { "spark" } else { "connection" }),
                     "active": self.state.active_tab == Some(i),
                     "dirty": t.is_dirty(),
                     "profile": t.profile.as_ref().map(|p| p.display_name()),
@@ -109,6 +112,7 @@ impl CobaltApp {
             "profiles": self.state.library.profiles.iter().map(|p| json!({"id": p.id.to_string(), "name": p.display_name(), "server": p.server, "auth": p.auth.label(), "database": p.database})).collect::<Vec<_>>(),
             "groups": self.state.library.groups.iter().map(|g| json!({"id": g.id.to_string(), "name": g.name})).collect::<Vec<_>>(),
             "dialog": if self.state.dialog.is_open() { format!("{}", dialog_name(&self.state.dialog)) } else { "none".into() },
+            "kernel": kernel_json(&self.state.kernel),
             "sidebar": format!("{:?}", self.state.sidebar_view),
             "theme": if self.theme.is_dark() { "dark" } else { "light" },
         })
@@ -170,6 +174,26 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
+}
+
+fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
+    use crate::kernel::KernelState as K;
+    let (state, since, info) = match &k.state {
+        K::Stopped => ("stopped", None, None),
+        K::Starting { since } => ("starting", Some(since.elapsed().as_secs()), None),
+        K::Ready { info, since } => ("ready", Some(since.elapsed().as_secs()), Some(info.clone())),
+        K::Failed(_) => ("failed", None, None),
+    };
+    json!({
+        "state": state,
+        "error": if let K::Failed(e) = &k.state { Some(e.clone()) } else { None },
+        "uptime_s": since,
+        "busy": k.busy.as_ref().map(|(t, c)| json!({"tab": t.to_string(), "cell": c})),
+        "waiting": k.waiting.len(),
+        "profile": k.profile,
+        "info": info,
+        "log_tail": k.log.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
+    })
 }
 
 fn arg_str(args: Option<&Value>, key: &str) -> Option<String> {
@@ -832,6 +856,14 @@ impl AgentApp for CobaltApp {
                         ActionResult::with(&json!({"dirty": self.state.tabs[i].is_dirty(), "file_path": self.state.tabs[i].file_path}))
                     }
                     "cells" => ActionResult::with(&self.state_json()["tabs"][idx.unwrap()]["cells"]),
+                    "set_kernel" => {
+                        let k = match arg_str(args, "kernel").as_deref() {
+                            Some("spark") => crate::state::NotebookKernel::Spark,
+                            _ => crate::state::NotebookKernel::Connection,
+                        };
+                        crate::notebook::set_kernel(&mut self.state, idx.unwrap(), k);
+                        ActionResult::ok()
+                    }
                     "set_cell" => {
                         let (Some(ci), Some(text)) = (arg_usize(args, "index"), arg_str(args, "text")) else { return ActionResult::BadArgs("index and text are required".into()) };
                         let nb = self.state.tabs[idx.unwrap()].notebook.as_deref_mut().unwrap();
@@ -937,6 +969,24 @@ impl AgentApp for CobaltApp {
                     }
                     other => ActionResult::BadArgs(format!("unknown notebook action {other}")),
                 }
+            }
+            "kernel" => {
+                let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
+                match action.as_str() {
+                    "status" => {}
+                    "start" => {
+                        if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, egui) {
+                            return ActionResult::Rejected("runtime not provisioned".into());
+                        }
+                    }
+                    "stop" => crate::kernel::stop(&mut self.state.kernel),
+                    "restart" => self.run_command(egui, Command::KernelRestart),
+                    "interrupt" => crate::kernel::interrupt(&mut self.state.kernel),
+                    "log" => self.state.kernel.log_open = !self.state.kernel.log_open,
+                    other => return ActionResult::BadArgs(format!("unknown kernel action {other}")),
+                }
+                egui.request_repaint();
+                ActionResult::with(&kernel_json(&self.state.kernel))
             }
             "runtime" => {
                 use crate::runtime::RuntimeAction;

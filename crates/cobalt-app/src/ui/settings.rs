@@ -240,6 +240,11 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.label("Grid height (rows)");
                 ui.add(egui::DragValue::new(&mut draft.notebooks.grid_rows).range(3..=60));
             });
+            ui.horizontal(|ui| {
+                ui.label("Rows a Spark DataFrame brings back");
+                ui.add(egui::DragValue::new(&mut draft.notebooks.spark_row_limit).range(1..=1_000_000).speed(100));
+                ui.label(RichText::new("(bare expressions and %%sql cells; display(df) shows 1,000 like Fabric unless given limit=)").size(11.0).color(theme.text_muted));
+            });
             ui.label(RichText::new("Saved rows travel inside the notebook as Arrow (plus HTML/Markdown previews for other tools), so grids come back when the notebook is reopened.").size(11.0).color(theme.text_muted));
 
             let r = section(ui, theme, "Spark runtime");

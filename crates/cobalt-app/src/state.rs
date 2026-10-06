@@ -264,9 +264,19 @@ pub struct EditorTab {
 
 /// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay
 /// parallel (same length, same order; `CellState.id == Cell.id`).
+/// Where a notebook's code cells run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotebookKernel {
+    /// SQL cells through the tab's connection (Python cells cannot run).
+    Connection,
+    /// Every code cell on the local Spark worker: Python via `run_code`, SQL via `spark.sql`.
+    Spark,
+}
+
 pub struct NotebookState {
     pub nb: cobalt_notebook::Notebook,
     pub cells: Vec<CellState>,
+    pub kernel: NotebookKernel,
     /// The current cell (keyboard target, highlighted).
     pub selected: usize,
     /// Cell ids waiting to run, in order; one runs at a time per tab.
@@ -305,7 +315,8 @@ impl NotebookState {
     pub fn new(nb: cobalt_notebook::Notebook) -> Self {
         let cells = nb.cells.iter().map(|c| CellState::new(c.id.clone())).collect();
         let counter = nb.cells.iter().filter_map(|c| c.execution_count).max().unwrap_or(0);
-        Self { nb, cells, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
+        let kernel = if nb.default_language() == cobalt_notebook::CellLanguage::Python { NotebookKernel::Spark } else { NotebookKernel::Connection };
+        Self { nb, cells, kernel, selected: 0, queue: Default::default(), dirty: false, counter, warnings: Vec::new(), md_cache: Default::default(), undo_delete: None }
     }
     pub fn is_running(&self) -> bool {
         !self.queue.is_empty() || self.cells.iter().any(|c| c.run.as_ref().map(|r| r.is_live()).unwrap_or(false))
@@ -832,6 +843,12 @@ pub struct AppState {
     pub theme_override: Option<ThemeChoice>,
     /// Settings → Spark runtime: status snapshot and the running install job.
     pub runtime: crate::runtime::RuntimeUi,
+    /// The local Spark kernel notebooks run PySpark (and Spark SQL) cells on.
+    pub kernel: crate::kernel::KernelUi,
+    /// Restart requested: start again once the old session has stopped.
+    pub kernel_restart_pending: bool,
+    /// Commands raised by widgets drawn outside `dispatch`'s reach (status bar); run next frame.
+    pub pending_commands: Vec<crate::commands::Command>,
     /// Synthetic input from the agent (`press` / `type_text` verbs), injected next frame.
     pub injected_events: Vec<egui::Event>,
     /// Agent-injected pointer input, one frame per entry. Fed through eframe's `raw_input_hook`
@@ -1056,6 +1073,9 @@ impl AppState {
             settings_draft: None,
             settings_scroll_to: None,
             runtime: Default::default(),
+            kernel: Default::default(),
+            kernel_restart_pending: false,
+            pending_commands: Vec::new(),
             theme_override: None,
             injected_events: Vec::new(),
             injected_pointer: std::collections::VecDeque::new(),

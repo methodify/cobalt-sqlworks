@@ -287,8 +287,9 @@ impl CobaltApp {
             if let Some(launch) = self.launch.take() {
                 ops::apply_launch(&mut self.state, &cx, launch);
             }
-            // Spark runtime jobs (Settings → Spark runtime)
+            // Spark runtime jobs (Settings → Spark runtime) and the Spark kernel
             crate::runtime::poll(&mut self.state.runtime, &self.settings, &self.paths, ctx);
+            crate::notebook::poll_kernel(&mut self.state, &cx);
             // session events
             let events = self.session.drain();
             let mut followups = Vec::new();
@@ -533,7 +534,7 @@ impl eframe::App for CobaltApp {
         self.toasts.show(&ctx);
 
         // keep animating while anything is live
-        let live = self.state.tabs.iter().any(|t| t.is_running() || matches!(t.conn, crate::state::ConnState::Connecting));
+        let live = self.state.tabs.iter().any(|t| t.is_running() || matches!(t.conn, crate::state::ConnState::Connecting)) || self.state.kernel.state.is_starting() || self.state.kernel.busy.is_some();
         if live {
             ctx.request_repaint_after(Duration::from_millis(100));
         }

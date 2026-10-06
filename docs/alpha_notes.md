@@ -247,8 +247,28 @@ as table, pop out to a tab). Saving writes the outputs into the file: an Arrow I
 capped by Settings → Notebooks) plus HTML/Markdown/text previews; reopening shows the saved grids
 marked "saved with the notebook". Export as HTML or Markdown from the toolbar or the File menu.
 
-PySpark cells are selectable (cell type menu) but do not run yet — that is 0.8, on the runtime
-below. Agent: `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit}`.
+Agent: `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit|set_kernel}`.
+
+## PySpark cells on the local Spark kernel (0.8)
+
+The kernel button on the notebook toolbar picks where code cells run: the tab's connection (SQL
+cells) or **Local Spark** (PySpark and Spark SQL cells). New PySpark notebooks (Settings →
+Notebooks → "New notebooks start as", or `notebook new {language: pyspark}`) and Fabric notebooks
+default to Local Spark. The first cell starts the session on the runtime from Settings → Spark
+runtime (≈25 s on this machine, longer on the very first run while Ivy resolves jars); the status
+bar shows `Spark 4.1.1 · up 3m` and turns busy while a cell runs; click it for Restart / Stop /
+the session log. Cells run one at a time in a persistent IPython namespace (the same session
+across notebooks); a failing cell stops the queue.
+
+What comes back: `print` → text under the cell; `display(df)`, a bare DataFrame or pandas
+expression, and `%%sql` → the results grid. Behind the scenes a hook installed at session start
+writes the frame as an Arrow IPC file under the runtime's `state/outputs/` and prints a marker
+that Cobalt swaps for the grid — an interim path until local-spark-mcp exposes Arrow natively.
+`display()` caps at 1,000 rows (Fabric parity) unless given `limit=`; bare expressions and `%%sql`
+use Settings → Notebooks → "Rows a Spark DataFrame brings back". Stop (toolbar) or Alt+C on a
+running cell kills the worker (there is no interrupt in the protocol yet); the next cell starts
+a new session and loses the namespace. `%pip install x` works (IPython's pip magic against the
+runtime's environment) but is not recorded anywhere. Agent: `kernel {action: status|start|stop|restart|interrupt|log}`.
 
 ## Spark runtime (Settings → Spark runtime)
 

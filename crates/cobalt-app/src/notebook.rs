@@ -362,7 +362,7 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
             }
         }
     };
-    if !t.conn.is_connected() {
+    if !t.conn.is_connected() && nb.kernel != NotebookKernel::Spark {
         t.pending_run = Some(RunMode::All);
         match t.profile.clone() {
             Some(p) => {
@@ -379,9 +379,12 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
         return;
     }
     let lang = nb.language_of(cell_idx);
+    if nb.kernel == NotebookKernel::Spark {
+        return pump_spark(state, cx, idx, cell_idx);
+    }
     if lang != CellLanguage::Sql {
         nb.queue.pop_front();
-        cx.toast(ToastKind::Warning, format!("{} cells run on the local Spark runtime, which arrives in the next release. Only SQL cells run today.", lang.label()));
+        cx.toast(ToastKind::Warning, format!("{} cells need the Local Spark kernel: pick it from the kernel button on the notebook toolbar.", lang.label()));
         let tab = t.id;
         return pump(state, cx, tab, false);
     }
@@ -433,11 +436,173 @@ pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
     let Some(t) = state.tabs.get_mut(idx) else { return };
     let Some(nb) = t.notebook.as_deref_mut() else { return };
     nb.queue.clear();
+    let spark = nb.kernel == NotebookKernel::Spark;
     if let Some(i) = nb.running_cell() {
         if let Some(r) = nb.cells[i].run.as_mut() {
             r.state = RunViewState::Cancelling;
         }
-        cx.session.send(Command::Cancel { tab: t.id });
+        if spark {
+            crate::kernel::interrupt(&mut state.kernel);
+        } else {
+            cx.session.send(Command::Cancel { tab: t.id });
+        }
+    } else if spark && state.kernel.state.is_starting() {
+        crate::kernel::interrupt(&mut state.kernel);
+    }
+}
+
+/// Switch a notebook between the tab's connection and the local Spark kernel.
+pub fn set_kernel(state: &mut AppState, idx: usize, kernel: NotebookKernel) {
+    if let Some(nb) = state.tabs.get_mut(idx).and_then(|t| t.notebook.as_deref_mut()) {
+        if nb.is_running() {
+            return;
+        }
+        nb.kernel = kernel;
+    }
+}
+
+/// A Python string literal for `code`.
+fn py_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Run the next queued cell on the local Spark kernel (starting it when needed).
+fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize) {
+    use crate::kernel::{self, KernelState, RunReq, StartError};
+    let tab = state.tabs[idx].id;
+    // the kernel must be up or starting
+    match &state.kernel.state {
+        KernelState::Stopped | KernelState::Failed(_) => {
+            if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui) {
+                if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+                    nb.queue.clear();
+                }
+                cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime, then run the cell again.");
+                state.settings_open = true;
+                state.settings_scroll_to = Some("Spark runtime");
+                return;
+            }
+        }
+        _ => {}
+    }
+    let t = &mut state.tabs[idx];
+    let nb = t.notebook.as_deref_mut().unwrap();
+    let lang = nb.language_of(cell_idx);
+    let cell = &nb.nb.cells[cell_idx];
+    let (magic, body) = cell.split_magic();
+    let limit = cx.settings.notebooks.spark_row_limit.max(1);
+    let code = match lang {
+        CellLanguage::Sql => format!("__cobalt_sql({}, {limit})", py_literal(body)),
+        CellLanguage::Python => match magic.as_deref() {
+            Some("pyspark") | Some("python") => body.to_string(),
+            _ => cell.source.clone(),
+        },
+        other => {
+            nb.queue.pop_front();
+            cx.toast(ToastKind::Warning, format!("{} cells are not supported on the local Spark kernel (Python and SQL are).", other.label()));
+            return pump(state, cx, tab, false);
+        }
+    };
+    nb.queue.pop_front();
+    if code.trim().is_empty() {
+        return pump(state, cx, tab, false);
+    }
+    let run_id = cx.session.new_run();
+    let mut view = RunView::new(run_id, PlanMode::None);
+    view.script_hash = hash_text(&code);
+    if cx.settings.history.capture {
+        let mut e = NewHistoryEntry::new(format!("Local Spark ({})", cx.settings.spark.profile), cell.source.clone());
+        e.tab_id = Some(t.id);
+        view.history_id = cx.store.add_history(&e).ok();
+    }
+    nb.counter += 1;
+    nb.nb.cells[cell_idx].execution_count = Some(nb.counter);
+    nb.nb.cells[cell_idx].outputs.clear();
+    let cs = &mut nb.cells[cell_idx];
+    cs.run = Some(view);
+    cs.cached = false;
+    cs.extra_outputs.clear();
+    cs.outputs_collapsed = false;
+    let cell_id = cs.id.clone();
+    nb.dirty = true;
+    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code });
+    state.history.loaded = false;
+}
+
+/// Each frame: finished Spark cells become outputs; a kernel that just came up gets the queued
+/// cells; a kernel that died fails the cells still marked running.
+pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
+    let out = crate::kernel::poll(&mut state.kernel);
+    let mut followups = Vec::new();
+    let mut pumps: Vec<(TabId, bool)> = Vec::new();
+    for (req, result) in out.done {
+        let Some(idx) = state.tab_index(req.tab) else { continue };
+        let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
+        let Some(ci) = nb.cell_index(&req.cell_id) else { continue };
+        let o = crate::kernel::outcome(&result);
+        let cs = &mut nb.cells[ci];
+        let Some(run) = cs.run.as_mut() else { continue };
+        let interrupted = matches!(&result, Err(e) if e.starts_with("interrupted"));
+        run.elapsed = run.started.elapsed();
+        for rs in o.result_sets {
+            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+        }
+        run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
+        run.messages.extend(o.messages);
+        run.state = if interrupted {
+            RunViewState::Cancelled
+        } else if o.failed {
+            RunViewState::Failed
+        } else {
+            RunViewState::Done
+        };
+        if !interrupted {
+            run.messages.push(msg(format!("Total execution time: {}", fmt_duration(run.elapsed)), false));
+        }
+        followups.push(Followup::FinishHistory { history_id: run.history_id, elapsed: run.elapsed, rows: run.total_rows, cancelled: interrupted, failed: o.failed, error: run.messages.iter().find(|m| m.is_error).map(|m| m.text.clone()) });
+        pumps.push((req.tab, o.failed || interrupted));
+    }
+    if let Some(err) = &out.broke {
+        for t in state.tabs.iter_mut() {
+            if let Some(nb) = t.notebook.as_deref_mut() {
+                if nb.kernel != NotebookKernel::Spark {
+                    continue;
+                }
+                nb.queue.clear();
+                for cs in nb.cells.iter_mut() {
+                    if let Some(r) = cs.run.as_mut() {
+                        if r.is_live() {
+                            r.state = RunViewState::Failed;
+                            r.elapsed = r.started.elapsed();
+                            r.messages.push(msg(err.clone(), true));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    ops::handle_followups(state, cx, followups);
+    for (tab, failed) in pumps {
+        pump(state, cx, tab, failed);
+    }
+    if out.ready_now {
+        let tabs: Vec<TabId> = state.tabs.iter().filter(|t| t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark && !nb.queue.is_empty()).unwrap_or(false)).map(|t| t.id).collect();
+        for tab in tabs {
+            pump(state, cx, tab, false);
+        }
     }
 }
 
@@ -520,7 +685,7 @@ pub fn load_outputs(cell: &Cell, _index: usize) -> (Option<RunView>, Vec<Output>
     (Some(run), extra)
 }
 
-fn result_set_from_ipc(bytes: &[u8], index: usize) -> Result<Arc<ResultSet>, String> {
+pub(crate) fn result_set_from_ipc(bytes: &[u8], index: usize) -> Result<Arc<ResultSet>, String> {
     let reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None).map_err(|e| e.to_string())?;
     let schema = reader.schema();
     let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
@@ -579,18 +744,31 @@ pub fn outputs_from_run(run: &RunView, count: Option<u64>, max_rows: u64, fmt: &
             out.push(Output::stdout(std::mem::take(stdout)));
         }
     };
+    // consecutive error lines (a traceback) become one error output
+    let mut err_lines: Vec<String> = Vec::new();
+    let flush_err = |err_lines: &mut Vec<String>, out: &mut Vec<Output>| {
+        if err_lines.is_empty() {
+            return;
+        }
+        let last = err_lines.last().cloned().unwrap_or_default();
+        let tb = if err_lines.len() > 1 { std::mem::take(err_lines) } else { Vec::new() };
+        err_lines.clear();
+        out.push(Output::error("Error", last, tb));
+    };
     for m in &run.messages {
         if m.is_batch_header {
             continue;
         }
         if m.is_error {
             flush(&mut stdout, &mut out);
-            out.push(Output::error("Error", m.text.clone(), Vec::new()));
+            err_lines.push(m.text.clone());
         } else {
+            flush_err(&mut err_lines, &mut out);
             stdout.push_str(&m.text);
             stdout.push('\n');
         }
     }
+    flush_err(&mut err_lines, &mut out);
     flush(&mut stdout, &mut out);
     for v in run.result_sets.iter().filter(|s| !s.is_plan) {
         match table_output(&v.rs, count, max_rows, fmt) {

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — 0.8.0 (notebooks, slate 2: PySpark cells)
+
+- **Local Spark kernel**: a notebook's kernel button (toolbar, right) now offers *Local Spark*
+  next to the tab's connection; PySpark notebooks pick it by default. Code cells run on the
+  runtime from Settings → Spark runtime through local-spark-mcp's worker: Python cells via
+  `run_code` with a persistent IPython namespace (`spark`, `F`, `T`, `notebookutils`…), SQL and
+  `%%sql` cells via `spark.sql` (several statements per cell; the last one is shown). The first
+  cell starts the session (about 25 s here) and the status bar shows it: version, uptime, running;
+  click for restart / stop / the session log (Spark, py4j and Ivy output). Query menu: Restart /
+  Stop Local Spark Session, Local Spark Session Log.
+- **DataFrames in the grid**: `display(df)`, a bare DataFrame expression, pandas DataFrames and
+  `%%sql` results arrive as Arrow (typed, not JSON rows) and open in the normal results grid with
+  everything that implies (sort/filter, copy, exports, Save as table…). `display()` shows 1,000 rows
+  like Fabric unless given `limit=`; bare expressions and `%%sql` use Settings → Notebooks → "Rows a
+  Spark DataFrame brings back" (10,000). Outputs save into the `.ipynb` like SQL results.
+- **Errors and output**: stdout, stderr (Spark log noise filtered), IPython's traceback for the
+  failing line, and a failing cell stops the queue. Stop / Alt+C interrupts the running cell — the
+  worker protocol has no interrupt yet, so the session is killed and the next cell starts a fresh
+  one (asked of local-spark-mcp in `docs/requests/local-spark-mcp.md`).
+- Agent: `kernel {action: status|start|stop|restart|interrupt|log}`, `notebook set_kernel`,
+  `state.kernel`.
+
 ## Unreleased — 0.7.0 (notebooks, slate 1)
 
 The first of three notebook releases (`docs/design/notebooks_roadmap.md`, D009): SQL notebooks and

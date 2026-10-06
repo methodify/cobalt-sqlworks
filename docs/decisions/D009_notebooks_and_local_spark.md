@@ -46,3 +46,6 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
   and bootstraps Python and the JDK from it.
 - The runtime manager ships in 0.7 with SQL notebooks (done: `cobalt-runtime`, Settings → Spark
   runtime, verified end to end on the founder's machine).
+- 0.8 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
+  Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
+  restarts the session because the protocol has no interrupt.

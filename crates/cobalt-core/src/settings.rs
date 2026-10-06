@@ -282,10 +282,13 @@ pub struct NotebookSettings {
     pub default_language: String,
     /// Height of a result grid under a cell, in rows.
     pub grid_rows: u32,
+    /// Rows a bare DataFrame expression or a `%%sql` cell brings back from local Spark
+    /// (`display(df)` uses Fabric's 1,000 unless given `limit=`).
+    pub spark_row_limit: u64,
 }
 impl Default for NotebookSettings {
     fn default() -> Self {
-        Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12 }
+        Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12, spark_row_limit: 10_000 }
     }
 }
 

@@ -134,7 +134,14 @@ go to a `kernel_actor` per runtime with the same event style (`CellStarted`, `Ce
    `run_sql`). This de-risks the plumbing a release early; PySpark cells stay disabled in the
    picker until 0.8.
 
-### 0.8 — PySpark cells
+### 0.8 — PySpark cells (shipped 2026-10-06 as slate 2; notes below)
+
+Shipped: the kernel actor (`crates/cobalt-app/src/kernel.rs`, a thread owning one worker), the
+kernel picker per notebook, Python + `%%sql` cells, stdout/stderr/tracebacks, stop (as a session
+restart), status-bar session indicator, session log window. Arrow results use an interim path: a
+`display`/pretty-printer hook installed at session start writes Arrow IPC files that Cobalt reads
+(replaced by `run_sql_arrow` once upstream has it). Still open from the list below: inline images,
+driver memory UI (the setting exists), per-worker environment variables, a true interrupt.
 
 - Kernel actor, execution of Python and `%%sql` cells, stdout/stderr/tracebacks, interrupt,
   reset session, session info in the status bar (uptime, driver memory).
