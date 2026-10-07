@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.7.4
+## 0.7.4 — 2026-10-06
 
 - **Fixed: "Start session" did nothing.** Starting (or restarting) the local Spark session from
   the notebook toolbar's kernel menu or the status bar queued a blank placeholder cell to kick
