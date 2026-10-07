@@ -20,6 +20,7 @@
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
 //! - `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit, …}` → notebook tabs; `state` tabs carry `kind` and `cells`
 //! - `runtime {action: status|install|smoke|cancel|remove|refresh|libraries}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
+//! - `settings {set: {"spark.idle_minutes": 1, ...}}` → dotted-path settings patch, applied and saved
 //! - `kernel {action: status|start|stop|restart|interrupt|log}` → the local Spark session notebooks run PySpark cells on; `notebook {action: set_kernel, kernel: connection|spark}`
 
 use crate::app::CobaltApp;
@@ -203,6 +204,7 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "native_arrow": k.native_arrow,
         "features": k.features.iter().cloned().collect::<Vec<_>>(),
         "contexts": k.contexts.len(),
+        "idle_s": k.idle().as_secs(),
         "interrupting": k.interrupting.map(|t| t.elapsed().as_secs()),
         "last_interrupt": k.last_interrupt.as_ref().map(|(s, r)| json!({"secs": s, "result": r})),
         "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },
@@ -906,6 +908,33 @@ impl AgentApp for CobaltApp {
                         let current_mode = self.state.tabs[i].notebook.as_deref().and_then(|nb| nb.fabric.as_ref().map(|f| f.write_mode.clone())).unwrap_or_else(|| "sandbox".into());
                         let write_mode = arg_str(args, "write_mode").unwrap_or(current_mode);
                         let preload = args.and_then(|a| a.get("preload")).and_then(|v| v.as_bool()).unwrap_or(false);
+                        // the lakehouse's remembered policy: preload (none|last|all) and keep_clones
+                        if let Some(id) = lh_id.clone() {
+                            let policy_arg = args.and_then(|a| a.get("preload_policy")).and_then(|v| v.as_str()).map(str::to_string);
+                            let preload_given = args.and_then(|a| a.get("preload")).is_some();
+                            let keep = args.and_then(|a| a.get("keep_clones")).and_then(|v| v.as_bool());
+                            self.with_ctx(egui, |_, cx| {
+                                let mut p = crate::notebook::lakehouse_policy(cx, &id);
+                                let mut touched = false;
+                                if let Some(v) = policy_arg {
+                                    p.preload = v;
+                                    touched = true;
+                                } else if preload {
+                                    p.preload = "all".into();
+                                    touched = true;
+                                } else if preload_given {
+                                    p.preload = String::new();
+                                    touched = true;
+                                }
+                                if let Some(k) = keep {
+                                    p.keep_clones = k;
+                                    touched = true;
+                                }
+                                if touched {
+                                    crate::notebook::set_lakehouse_policy(cx, &id, &p);
+                                }
+                            });
+                        }
                         crate::notebook::set_fabric(&mut self.state, i, Some(crate::state::NotebookFabric { workspace_id: ws_id, lakehouse_id: lh_id, write_mode, preload }));
                         ActionResult::ok()
                     }
@@ -1112,6 +1141,29 @@ impl AgentApp for CobaltApp {
                 egui.request_repaint();
                 let sh = &self.state.shadows;
                 ActionResult::with(&json!({"loading": sh.loading, "status": sh.status, "error": sh.error, "note": sh.note}))
+            }
+            "settings" => {
+                // {set: {"spark.idle_minutes": 1, "spark.lifecycle": "idle", ...}} — dotted paths into the settings document
+                let Some(set) = args.and_then(|a| a.get("set")).and_then(|v| v.as_object()).cloned() else { return ActionResult::BadArgs("set is required".into()) };
+                let mut doc = serde_json::to_value(&self.settings).unwrap_or(Value::Null);
+                for (path, value) in set {
+                    let (parent, leaf) = match path.rsplit_once('.') {
+                        Some((p, l)) => (format!("/{}", p.replace('.', "/")), l.to_string()),
+                        None => (String::new(), path.clone()),
+                    };
+                    let target = if parent.is_empty() { Some(&mut doc) } else { doc.pointer_mut(&parent) };
+                    match target.and_then(|t| t.as_object_mut()) {
+                        Some(o) => {
+                            o.insert(leaf, value.clone());
+                        }
+                        None => return ActionResult::BadArgs(format!("settings: no section {parent}")),
+                    }
+                }
+                match serde_json::from_value::<cobalt_core::Settings>(doc) {
+                    Ok(new) => self.apply_settings(egui, new),
+                    Err(e) => return ActionResult::BadArgs(format!("settings: {e}")),
+                }
+                ActionResult::with(&json!({"spark": {"lifecycle": self.settings.spark.lifecycle, "idle_minutes": self.settings.spark.idle_minutes, "early_start": self.settings.spark.early_start}}))
             }
             "kernel" => {
                 let action = arg_str(args, "action").unwrap_or_else(|| "status".into());

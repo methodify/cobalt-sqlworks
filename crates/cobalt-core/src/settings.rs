@@ -312,10 +312,17 @@ pub struct SparkSettings {
     pub jars: Vec<String>,
     /// Maven coordinates (`group:artifact:version`) fetched into the runtime and put on the classpath.
     pub maven: Vec<String>,
+    /// When the session ends on its own: `keep` (only when stopped), `idle` (after `idle_minutes`
+    /// with no cell or preload), `last_notebook` (when the last Spark notebook closes).
+    pub lifecycle: String,
+    pub idle_minutes: u32,
+    /// When the session starts ahead of the first cell: `notebook_open` (a Spark notebook is
+    /// opened or created), `app_start`, or `first_cell`.
+    pub early_start: String,
 }
 impl Default for SparkSettings {
     fn default() -> Self {
-        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new() }
+        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new(), lifecycle: "idle".into(), idle_minutes: 60, early_start: "notebook_open".into() }
     }
 }
 

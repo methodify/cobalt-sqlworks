@@ -157,9 +157,14 @@ pub struct KernelFabric {
     pub write_mode: String,
     pub slot: cobalt_core::ProfileId,
     pub tenant: Option<String>,
-    /// Lakehouses whose tables the session clones in the background right after start
-    /// (`["all"]` for every lakehouse in the workspace).
-    pub preload: Vec<String>,
+    /// The worker's `preload` argument built from the lakehouse policies: `Null` for none, else
+    /// `{lakehouse: null | [tables]}` (null = every table).
+    pub preload: Value,
+    /// Lakehouses whose policy is "the tables I used last time": after start, `shadow_status`
+    /// lists the persisted clones and those not yet registered are preloaded.
+    pub preload_last: Vec<String>,
+    /// Keep clones on disk between sessions (any attached lakehouse's policy asks for it).
+    pub persist_shadow: bool,
     /// Workspaces attached after start through `register_lakehouse` (`(id, name)`).
     pub extra_workspaces: Vec<(String, String)>,
 }
@@ -296,17 +301,27 @@ pub struct KernelUi {
     pub features: std::collections::HashSet<String>,
     /// Notebooks that have a context in the worker.
     pub contexts: std::collections::HashSet<TabId>,
+    /// Last time a cell finished, a cell was submitted, a preload ran, or the session came up —
+    /// the idle clock of the lifecycle policy.
+    pub last_activity: Instant,
 }
 
 impl KernelUi {
     pub fn has(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
+    pub fn idle(&self) -> Duration {
+        if self.busy.is_some() || !self.waiting.is_empty() {
+            Duration::ZERO
+        } else {
+            self.last_activity.elapsed()
+        }
+    }
 }
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default() }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now() }
     }
 }
 
@@ -408,11 +423,11 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
             extra.insert("default_lakehouse".into(), Value::String(d.clone()));
         }
         extra.insert("write_mode".into(), Value::String(fs.fabric.write_mode.clone()));
-        extra.insert("persist_shadow".into(), Value::Bool(false));
+        extra.insert("persist_shadow".into(), Value::Bool(fs.fabric.persist_shadow));
         // the worker's own preload (0.4.1 lists OneLake through the JVM and takes every token
         // from Cobalt's endpoint, so it needs no credential of its own)
-        if !fs.fabric.preload.is_empty() {
-            extra.insert("preload".into(), Value::Array(fs.fabric.preload.iter().map(|s| Value::String(s.clone())).collect()));
+        if !fs.fabric.preload.is_null() {
+            extra.insert("preload".into(), fs.fabric.preload.clone());
         }
         extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
         k.token_server = Some(ts);
@@ -658,6 +673,7 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
 
 /// Submit a cell. While the kernel starts, the request waits in `waiting`.
 pub fn run(k: &mut KernelUi, req: RunReq) {
+    k.last_activity = Instant::now();
     if k.state.is_ready() {
         if let Some(tx) = &k.tx {
             k.busy.get_or_insert((req.tab, req.cell_id.clone()));
@@ -812,6 +828,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.contexts.clear();
                 k.state = KernelState::Ready { info, since: Instant::now() };
                 k.control = control;
+                k.last_activity = Instant::now();
                 ready_now = true;
             }
             KernelEvent::ContextCreated(tab) => {
@@ -842,6 +859,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                     k.busy = None;
                 }
                 k.interrupting = None;
+                k.last_activity = Instant::now();
                 done.push((req, result, blobs));
             }
             KernelEvent::Stopped => {

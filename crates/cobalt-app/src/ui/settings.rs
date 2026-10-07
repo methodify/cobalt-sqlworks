@@ -261,6 +261,28 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.label(RichText::new("(bare expressions and %%sql cells; display(df) shows 1,000 like Fabric unless given limit=)").size(11.0).color(theme.text_muted));
             });
             ui.label(RichText::new("Saved rows travel inside the notebook as Arrow (plus HTML/Markdown previews for other tools), so grids come back when the notebook is reopened.").size(11.0).color(theme.text_muted));
+            section(ui, theme, "Session lifecycle");
+            ui.label(RichText::new("One local Spark session serves every notebook; each notebook runs in its own context (variables, temp views and default lakehouse of its own; tables and clones shared). These settings decide when the session starts and ends on its own.").size(11.0).color(theme.text_muted));
+            ui.horizontal(|ui| {
+                ui.label("Start the session");
+                for (v, label, hint) in [("notebook_open", "when a Spark notebook opens", "A new or opened notebook on the Local Spark kernel brings the session up in the background, so its first cell does not wait (20–60 s). Costs the driver's memory while you read."), ("app_start", "when Cobalt starts", "A plain session starts a minute after launch; a lakehouse notebook rebinds it on first use."), ("first_cell", "only when a cell runs", "Nothing starts until you run something.")] {
+                    if ui.selectable_label(draft.spark.early_start == v, label).on_hover_text(hint).clicked() {
+                        draft.spark.early_start = v.into();
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("End the session");
+                for (v, label, hint) in [("idle", "after idle minutes", "Stops when no cell has run and no preload has been active for the given time; the next cell starts a fresh session."), ("keep", "only when I stop it", "The session runs until Stop, Restart or Cobalt exits."), ("last_notebook", "when the last Spark notebook closes", "Closing the last notebook on the Local Spark kernel stops the session.")] {
+                    if ui.selectable_label(draft.spark.lifecycle == v, label).on_hover_text(hint).clicked() {
+                        draft.spark.lifecycle = v.into();
+                    }
+                }
+                if draft.spark.lifecycle == "idle" {
+                    ui.add(egui::DragValue::new(&mut draft.spark.idle_minutes).range(5..=24 * 60).speed(5).suffix(" min"));
+                }
+            });
+            ui.label(RichText::new("Per lakehouse (lakehouse button on a notebook): what to preload when a session attaches it and whether to keep its clones between sessions.").size(11.0).color(theme.text_muted));
                             section(ui, theme, "Spark runtime");
             spark_runtime(ui, theme, draft, runtime, &mut action);
                             }

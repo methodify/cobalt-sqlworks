@@ -16,7 +16,21 @@
   was started without one, still needs a restart, and the chip says which.
 - **Spark jobs are named after the cell.** The cell's first line goes to the worker as the job
   description (0.4.3), so `status` and the Spark UI say what is running.
-- Agent: `kernel` state carries `features` and `contexts`.
+- **Session lifecycle you can set** (Settings → Notebooks & Spark → Session lifecycle). *Start
+  the session*: when a Spark notebook opens (default — the session comes up in the background
+  while you read, so the first cell is instant), when Cobalt starts, or only when a cell runs.
+  *End the session*: after N idle minutes (default 60, a toast says so), only when you stop it,
+  or when the last Spark notebook closes. Closing a notebook never stops the session on its own;
+  the status bar and the kernel menu show how many notebooks are attached. A session nobody has
+  used yet (an early start, say) is rebound on the spot when a notebook binds a lakehouse or runs
+  with one, with the queued cell carried over, so no restart hint appears for it.
+- **Per-lakehouse policies, remembered.** The lakehouse button now sets, for that lakehouse
+  wherever a session attaches it: *Preload* nothing / the tables used in earlier sessions / all
+  tables, and *Keep clones between sessions* (the shallow clones stay on disk and are reused
+  next time). The per-notebook preload checkbox is gone; an old notebook that had it ticked
+  behaves as "all tables" for its default lakehouse until the policy is set.
+- Agent: `kernel` state carries `features`, `contexts` and `idle_s`; `notebook set_lakehouse`
+  takes `preload_policy` (`none|last|all`) and `keep_clones`.
 
 ## 0.7.4 — 2026-10-06
 

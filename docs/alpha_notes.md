@@ -292,6 +292,17 @@ lakehouse notebook on a session started plain, still gets the restart hint. Cell
 `job_description` (first line) so `status.cell.jobs` and the Spark UI name them. The session log
 shows `cobalt: context nb-xxxx created (database …)` / `dropped` / `attached lakehouse …`.
 
+**Lifecycle (0.8).** Settings → Notebooks & Spark → Session lifecycle. Start: *when a Spark
+notebook opens* (default; `maybe_early_start` on install/open/Fabric open, quiet when the
+Fabric panel is signed out), *when Cobalt starts* (a plain session a minute after launch), or
+*only when a cell runs*. End: *after idle minutes* (default 60; the idle clock is
+`KernelUi.last_activity`, reset by a cell submit/finish, a running preload, or start), *only
+when I stop it*, or *when the last Spark notebook closes*. Per-lakehouse policies live in the
+store (`pref:lakehouse:<id>`): preload none / `last` (persisted clones with `registered: false`
+from `shadow_status` → `preload {lakehouses: {lh: [tables]}}` right after start) / all; keep
+clones (`persist_shadow` for the session when any attached lakehouse asks). Set from the
+lakehouse button; agent `notebook set_lakehouse {preload_policy, keep_clones}`.
+
 ## Spark runtime (Settings → Spark runtime)
 
 Everything lands under `%LOCALAPPDATA%\Cobalt\Cobalt SQL Works\data\spark-runtime` (override

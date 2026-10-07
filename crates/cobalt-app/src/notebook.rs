@@ -85,7 +85,7 @@ fn install(state: &mut AppState, cx: &Ctx, nb: Notebook, path: Option<PathBuf>, 
     t.text = String::new();
     t.notebook = Some(Box::new(nbs));
     t.mark_saved();
-    let _ = cx;
+    maybe_early_start(state, cx, idx);
     idx
 }
 
@@ -260,6 +260,7 @@ pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::
         }
         None => install(state, cx, nb, None, title),
     };
+    maybe_early_start(state, cx, idx);
     let t = &mut state.tabs[idx];
     if !copy {
         t.fabric_item = Some(FabricItemRef { item: item.clone(), platform, saving: false });
@@ -277,6 +278,11 @@ pub fn install_from_fabric(state: &mut AppState, cx: &Ctx, item: cobalt_fabric::
 /// Bind a notebook to a workspace / default lakehouse / write mode; the metadata follows so
 /// Fabric sees the same default lakehouse.
 pub fn set_fabric(state: &mut AppState, idx: usize, binding: Option<NotebookFabric>) {
+    // binding a lakehouse while an early-started plain session sits unused: rebind it now, so the
+    // first cell is instant on the right session
+    if binding.is_some() && state.kernel.fabric.is_none() && state.active_tab == Some(idx) {
+        let _ = rebind_if_unused(state);
+    }
     let names: Option<(String, Option<String>)> = binding.as_ref().map(|b| (state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), b.lakehouse_id.as_ref().and_then(|id| state.fabric.lakehouses(&b.workspace_id).and_then(|v| v.into_iter().find(|(_, i)| i == id).map(|(n, _)| n)))));
     let Some(nb) = state.tabs.get_mut(idx).and_then(|t| t.notebook.as_deref_mut()) else { return };
     nb.fabric = binding.clone();
@@ -304,6 +310,98 @@ pub fn set_fabric(state: &mut AppState, idx: usize, binding: Option<NotebookFabr
 
 /// Resolve a notebook's binding into the session config. `Err(true)` = still loading the
 /// workspace's items (try again on the Items event); `Err(false)` = cannot bind (told the user).
+/// What a lakehouse does when a session attaches it — remembered per lakehouse id in the store.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LakehousePolicy {
+    /// `none` · `last` (the tables cloned in earlier sessions) · `all` · `list` (`tables`).
+    #[serde(default)]
+    pub preload: String,
+    #[serde(default)]
+    pub tables: Vec<String>,
+    /// Keep the shallow clones on disk between sessions (`persist_shadow`).
+    #[serde(default)]
+    pub keep_clones: bool,
+}
+
+const LAKEHOUSE_POLICY_PREFIX: &str = "pref:lakehouse:";
+
+pub fn lakehouse_policy(cx: &Ctx, lakehouse_id: &str) -> LakehousePolicy {
+    match cx.store.fabric_cache_get(&format!("{LAKEHOUSE_POLICY_PREFIX}{lakehouse_id}")) {
+        Ok(Some((text, _))) => serde_json::from_str(&text).unwrap_or_default(),
+        _ => LakehousePolicy::default(),
+    }
+}
+
+pub fn set_lakehouse_policy(cx: &Ctx, lakehouse_id: &str, policy: &LakehousePolicy) {
+    if let Ok(text) = serde_json::to_string(policy) {
+        let _ = cx.store.fabric_cache_put(&format!("{LAKEHOUSE_POLICY_PREFIX}{lakehouse_id}"), &text);
+    }
+}
+
+/// Early start (Settings → Notebooks & Spark): a Spark notebook that was just opened or created
+/// brings the session up so its first cell does not wait. Quiet: a lakehouse notebook on a
+/// signed-out Fabric panel does nothing (the first cell will say what is needed).
+pub fn maybe_early_start(state: &mut AppState, cx: &Ctx, idx: usize) {
+    if cx.settings.spark.early_start != "notebook_open" {
+        return;
+    }
+    let Some(nb) = state.tabs.get(idx).and_then(|t| t.notebook.as_deref()) else { return };
+    if nb.kernel != NotebookKernel::Spark {
+        return;
+    }
+    if nb.fabric.is_some() && state.fabric.slot.is_none() {
+        return;
+    }
+    if !matches!(state.kernel.state, crate::kernel::KernelState::Stopped) {
+        return;
+    }
+    let _ = ensure_session(state, cx, idx);
+}
+
+/// A running session nobody has used yet (no context, no cell) — an early start, typically — can
+/// be replaced without losing anything. Stops it and lets the restart consumer bring it back
+/// with the active notebook's binding; queued cells survive the restart.
+pub fn rebind_if_unused(state: &mut AppState) -> bool {
+    let k = &state.kernel;
+    let unused = (k.state.is_ready() || k.state.is_starting()) && k.contexts.is_empty() && k.busy.is_none() && k.waiting.is_empty();
+    if !unused {
+        return false;
+    }
+    crate::kernel::stop(&mut state.kernel);
+    state.kernel_restart_pending = true;
+    state.kernel.log.push_back("cobalt: rebinding the unused session to the notebook's lakehouse".into());
+    true
+}
+
+/// The lifecycle policy: stop a session nobody has used for `idle_minutes`.
+pub fn lifecycle_tick(state: &mut AppState, cx: &Ctx) {
+    if cx.settings.spark.lifecycle != "idle" || !state.kernel.state.is_ready() {
+        return;
+    }
+    let preload_running = state.shadows.preload.as_ref().map(|p| p.get("state").and_then(|s| s.as_str()) == Some("running")).unwrap_or(false);
+    if preload_running {
+        state.kernel.last_activity = std::time::Instant::now();
+        return;
+    }
+    let limit = std::time::Duration::from_secs(60 * cx.settings.spark.idle_minutes.max(1) as u64);
+    if state.kernel.idle() >= limit {
+        crate::kernel::stop(&mut state.kernel);
+        cx.toast(ToastKind::Info, format!("The local Spark session stopped after {} minutes without a cell (Settings → Notebooks & Spark → Session lifecycle).", cx.settings.spark.idle_minutes.max(1)));
+    }
+}
+
+/// Closing the last Spark notebook ends the session when the lifecycle policy says so.
+pub fn on_spark_notebook_closed(state: &mut AppState, cx: &Ctx) {
+    if cx.settings.spark.lifecycle != "last_notebook" {
+        return;
+    }
+    let any = state.tabs.iter().any(|t| t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
+    if !any && !matches!(state.kernel.state, crate::kernel::KernelState::Stopped) {
+        crate::kernel::stop(&mut state.kernel);
+        cx.toast(ToastKind::Info, "The last Spark notebook closed; the local Spark session stopped (Settings → Notebooks & Spark → Session lifecycle).");
+    }
+}
+
 fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<crate::kernel::KernelFabric>, bool> {
     let Some(b) = state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone()) else { return Ok(None) };
     let Some(slot) = state.fabric.slot else {
@@ -334,8 +432,29 @@ fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<cr
     if b.lakehouse_id.is_some() && default_lakehouse.is_none() {
         cx.toast(ToastKind::Warning, "The notebook's default lakehouse is not in that workspace any more; pick one from the lakehouse button.");
     }
-    let preload = if b.preload { default_lakehouse.clone().map(|d| vec![d]).unwrap_or_else(|| vec!["all".to_string()]) } else { Vec::new() };
-    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, extra_workspaces: Vec::new() }))
+    // per-lakehouse policies (the notebook's old preload flag means "all" for its default lakehouse)
+    let mut preload = serde_json::Map::new();
+    let mut preload_last = Vec::new();
+    let mut persist_shadow = false;
+    for (name, id) in &lakehouses {
+        let mut p = lakehouse_policy(cx, id);
+        if b.preload && p.preload.is_empty() && Some(name) == default_lakehouse.as_ref() {
+            p.preload = "all".into();
+        }
+        persist_shadow |= p.keep_clones;
+        match p.preload.as_str() {
+            "all" => {
+                preload.insert(name.clone(), serde_json::Value::Null);
+            }
+            "list" if !p.tables.is_empty() => {
+                preload.insert(name.clone(), serde_json::Value::Array(p.tables.iter().map(|t| serde_json::Value::String(t.clone())).collect()));
+            }
+            "last" => preload_last.push(name.clone()),
+            _ => {}
+        }
+    }
+    let preload = if preload.is_empty() { serde_json::Value::Null } else { serde_json::Value::Object(preload) };
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, preload_last, persist_shadow, extra_workspaces: Vec::new() }))
 }
 
 /// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).
@@ -788,6 +907,10 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
                     match (want, have) {
                         (None, _) => {}
                         (Some(_), None) => {
+                            if rebind_if_unused(state) {
+                                cx.toast(ToastKind::Info, "Rebinding the Spark session to this notebook's lakehouse (nothing had run in it yet).");
+                                return; // the cell stays queued and runs on the rebound session
+                            }
                             if state.kernel.binding_warned.insert(tab) {
                                 cx.toast(ToastKind::Warning, "The running Spark session was started without a lakehouse. Restart the session (kernel menu) to use this notebook's lakehouse.");
                             }
@@ -899,11 +1022,42 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
 pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     let out = crate::kernel::poll(&mut state.kernel);
     // a session that starts with a preload: ask for its progress once so the window has it
-    if out.ready_now && state.kernel.fabric.as_ref().map(|f| !f.preload.is_empty()).unwrap_or(false) {
+    if out.ready_now && state.kernel.fabric.as_ref().map(|f| !f.preload.is_null()).unwrap_or(false) {
         shadows_action(state, "preload_status", serde_json::json!({}));
     }
+    // "the tables I used last time": the persisted clones not yet registered become a preload
+    if out.ready_now && state.kernel.fabric.as_ref().map(|f| !f.preload_last.is_empty()).unwrap_or(false) {
+        crate::kernel::call(&mut state.kernel, "preload-last", "shadow_status", serde_json::json!({}));
+    }
+    lifecycle_tick(state, cx);
     for (tag, result) in out.calls {
         match tag.as_str() {
+            "preload-last" => {
+                if let Ok(v) = result {
+                    let wanted: Vec<String> = state.kernel.fabric.as_ref().map(|f| f.preload_last.clone()).unwrap_or_default();
+                    let mut per: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+                    for t in v.get("tables").and_then(|t| t.as_array()).cloned().unwrap_or_default() {
+                        if t.get("registered").and_then(|r| r.as_bool()) != Some(false) {
+                            continue;
+                        }
+                        let (Some(lh), Some(table)) = (t.get("lakehouse").and_then(|s| s.as_str()), t.get("table").and_then(|s| s.as_str())) else { continue };
+                        // `lh__schema` + `table` is the schema form `schema/table` of lakehouse `lh`
+                        let (name, entry) = match lh.split_once("__") {
+                            Some((base, schema)) => (base.to_string(), format!("{schema}/{table}")),
+                            None => (lh.to_string(), table.to_string()),
+                        };
+                        if !wanted.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
+                            continue;
+                        }
+                        per.entry(name).or_insert_with(|| serde_json::Value::Array(Vec::new())).as_array_mut().map(|a| a.push(serde_json::Value::String(entry)));
+                    }
+                    if !per.is_empty() {
+                        let n: usize = per.values().filter_map(|a| a.as_array()).map(|a| a.len()).sum();
+                        state.kernel.log.push_back(format!("cobalt: preloading {n} table{} used in earlier sessions", if n == 1 { "" } else { "s" }));
+                        shadows_action(state, "preload", serde_json::json!({"lakehouses": serde_json::Value::Object(per)}));
+                    }
+                }
+            }
             "shadows" => {
                 state.shadows.loading = false;
                 match result {
@@ -990,12 +1144,16 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         pumps.push((req.tab, o.failed || interrupted));
     }
     if let Some(err) = &out.broke {
+        // an intentional restart keeps the queued cells: they run on the new session
+        let keep_queues = state.kernel_restart_pending;
         for t in state.tabs.iter_mut() {
             if let Some(nb) = t.notebook.as_deref_mut() {
                 if nb.kernel != NotebookKernel::Spark {
                     continue;
                 }
-                nb.queue.clear();
+                if !keep_queues {
+                    nb.queue.clear();
+                }
                 for cs in nb.cells.iter_mut() {
                     if let Some(r) = cs.run.as_mut() {
                         if r.is_live() {

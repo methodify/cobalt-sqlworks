@@ -32,6 +32,7 @@ enum NbAction {
     SetLanguage(usize, Option<CellLanguage>),
     SetKernel(NotebookKernel),
     SetFabric(Option<NotebookFabric>),
+    SetLakehousePolicy(String, nbops::LakehousePolicy),
     LoadWorkspace(String),
     Cancel,
     ClearOutputs(Option<usize>),
@@ -101,6 +102,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let fabric_item = f.state.tabs[idx].fabric_item.as_ref().map(|fi| (fi.item.display_name.clone(), fi.saving, f.state.fabric.workspace(&fi.item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default()));
     let session_fabric = f.state.kernel.fabric.clone();
     let can_attach = f.state.kernel.has("register_lakehouse");
+    let attached = f.state.kernel.contexts.len();
+    let lh_policy = nb_fabric.as_ref().and_then(|b| b.lakehouse_id.clone()).map(|id| (id.clone(), nbops::lakehouse_policy(f.cx, &id)));
     // names for the chip
     let (ws_name, lh_name) = match &nb_fabric {
         Some(b) => (
@@ -213,7 +216,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     }
                     // the local Spark session itself
                     ui.separator();
-                    ui.label(RichText::new(format!("Session · {}", kernel_state.label())).strong());
+                    ui.label(RichText::new(format!("Session · {}{}", kernel_state.label(), if attached > 0 { format!(" · {attached} notebook{}", if attached == 1 { "" } else { "s" }) } else { String::new() })).strong());
                     let running = kernel_state.is_ready() || kernel_state.is_starting();
                     if ui.add_enabled(!kernel_state.is_starting(), egui::Button::new(if running { format!("{} Restart session", icons::ARROWS_CLOCKWISE) } else { format!("{} Start session", icons::PLAY) })).clicked() {
                         session_cmd = Some(Command::KernelRestart);
@@ -304,10 +307,27 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                     ui.close();
                                 }
                             }
-                            ui.separator();
-                            let mut pre = b.preload;
-                            if ui.checkbox(&mut pre, "Preload the default lakehouse's tables at session start").on_hover_text("Clones every table in the background right after the session starts (about 1.5–2 s per table, 32 at a time), so first queries do not wait on first-touch clones. Progress shows in Lakehouse shadows.").changed() {
-                                set = Some(Some(NotebookFabric { preload: pre, ..b.clone() }));
+                            if let Some((lh_id, policy)) = &lh_policy {
+                                ui.separator();
+                                ui.label(RichText::new("This lakehouse, whenever a session attaches it").strong());
+                                let mut p = policy.clone();
+                                let mut changed = false;
+                                ui.horizontal(|ui| {
+                                    ui.label("Preload");
+                                    for (v, label, hint) in [("", "nothing", "Tables are cloned on first touch (1.5–2 s each)."), ("last", "tables used before", "After the session starts, the tables cloned in earlier sessions (and kept on disk) are cloned again in the background."), ("all", "all tables", "Every table is cloned in the background right after the session starts (32 at a time); progress in Lakehouse shadows.")] {
+                                        let sel = if v.is_empty() { p.preload.is_empty() || p.preload == "none" } else { p.preload == v };
+                                        if ui.selectable_label(sel, label).on_hover_text(hint).clicked() {
+                                            p.preload = v.into();
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                                if ui.checkbox(&mut p.keep_clones, "Keep clones between sessions").on_hover_text("The shallow clones stay on disk when the session ends and are reused next time (frozen at the version they were cloned at — Discard in Lakehouse shadows re-clones). Applies from the next session start.").changed() {
+                                    changed = true;
+                                }
+                                if changed {
+                                    actions.push(NbAction::SetLakehousePolicy(lh_id.clone(), p));
+                                }
                             }
                             ui.separator();
                             if ui.button("Lakehouse shadows…").clicked() {
@@ -945,6 +965,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::SetLanguage(i, l) => nbops::set_language(f.state, idx, i, l),
             NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
             NbAction::SetFabric(b) => nbops::set_fabric(f.state, idx, b),
+            NbAction::SetLakehousePolicy(id, p) => nbops::set_lakehouse_policy(f.cx, &id, &p),
             NbAction::LoadWorkspace(ws) => {
                 if matches!(f.state.fabric.workspaces, Loadable::NotLoaded | Loadable::Failed(_)) {
                     crate::fabric::load_workspaces(f.state, f.cx);

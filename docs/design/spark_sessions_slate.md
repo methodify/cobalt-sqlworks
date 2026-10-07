@@ -256,7 +256,7 @@ Asks for local-spark-mcp (written up in `docs/requests/local-spark-mcp-sessions.
 
 ## 9. Phasing
 
-- **Slate 4 — Sticky sessions (0.8.0).** Attach/detach, lifecycle policy with idle timeout,
+- **Slate 4 — Sticky sessions (0.8.0)** — *built 2026-10-07 (contexts instead of the shared-session notice and the per-notebook-worker mode, which contexts made unnecessary).* Attach/detach, lifecycle policy with idle timeout,
   per-cell default lakehouse, early start setting (default on, remembered), keep-clones +
   preload policies per lakehouse (remembered), "Attach workspace" through restart-with-union,
   status bar "N notebooks attached", the crosstalk notice, and the opt-in *one session per

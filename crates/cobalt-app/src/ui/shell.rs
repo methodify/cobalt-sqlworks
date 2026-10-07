@@ -1077,7 +1077,10 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         crate::kernel::KernelState::Failed(_) => (theme.error, icons::WARNING),
                         crate::kernel::KernelState::Stopped => (theme.text_faint, icons::CIRCLE),
                     };
-                    let label = if k.busy.is_some() { format!("{} · running a cell", k.state.label()) } else { k.state.label() };
+                    let mut label = if k.busy.is_some() { format!("{} · running a cell", k.state.label()) } else { k.state.label() };
+                    if !k.contexts.is_empty() {
+                        label.push_str(&format!(" · {} notebook{}", k.contexts.len(), if k.contexts.len() == 1 { "" } else { "s" }));
+                    }
                     let r = ui.add(egui::Button::new(RichText::new(format!("{icon} {label}")).color(color)).frame(false));
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark kernel"));
                     let hover = match &k.state {

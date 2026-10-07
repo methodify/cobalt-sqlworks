@@ -58,6 +58,7 @@ pub struct CobaltApp {
     update_tx: crossbeam_channel::Sender<crate::update::UpdateOutcome>,
     update_rx: Receiver<crate::update::UpdateOutcome>,
     update_started: bool,
+    spark_early_started: bool,
     last_maintenance: Instant,
     /// `snippets.toml` is polled for changes every few seconds.
     snippets_checked: Instant,
@@ -201,6 +202,7 @@ impl CobaltApp {
             update_tx,
             update_rx,
             update_started: false,
+            spark_early_started: false,
             last_maintenance: Instant::now(),
             snippets_checked: Instant::now(),
             snippets_mtime: None,
@@ -316,6 +318,13 @@ impl CobaltApp {
             }
             while let Ok(ev) = self.fabric_rx.try_recv() {
                 crate::fabric::on_event(&mut self.state, &cx, ev);
+            }
+            // early start of the local Spark session at app start (Settings → Notebooks & Spark)
+            if !self.spark_early_started && self.frames > 60 {
+                self.spark_early_started = true;
+                if self.settings.spark.early_start == "app_start" {
+                    let _ = crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, &cx.egui, None);
+                }
             }
             // update check: once shortly after start-up (if enabled), or on request from Help
             let startup_due = !self.update_started && self.frames > 120 && self.settings.updates.check_on_startup;
