@@ -50,7 +50,7 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
 - Slate 2 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
   Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
   restarted the session because the protocol had no interrupt.
-- 0.8 (2026-10-07): local-spark-mcp 0.4.3–0.6.1 — a context per notebook in the one session,
+- 0.8 (2026-10-07): local-spark-mcp 0.4.3–0.6.3 — a context per notebook in the one session,
   lazy lakehouse Files (Spark streams from OneLake, Python fetches on first open), session
   lifecycle policies
   (isolated namespace and SparkSession, shared catalog), workspaces attached in place, job

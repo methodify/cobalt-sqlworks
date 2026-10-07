@@ -43,7 +43,7 @@
 - **Notebook cells stay still.** The cell header (cell type, language, position controls) is
   always visible instead of appearing on hover, so moving the mouse over a notebook no longer
   makes cells jump.
-- **Lakehouse Files without syncing** (local-spark-mcp 0.6.2, the new pin). Spark's relative
+- **Lakehouse Files without syncing** (local-spark-mcp 0.6.3, the new pin). Spark's relative
   `Files/…` is the notebook's default lakehouse on OneLake, streamed with your token; nothing is
   copied, and in sandbox or read-only mode a Spark write under `Files/` is refused before it
   reaches OneLake. Python's Fabric path `/lakehouse/default/Files/…` works too: a file is fetched

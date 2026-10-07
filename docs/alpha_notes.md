@@ -325,10 +325,20 @@ lakehouses; Make default rewrites the notebook's binding). Tables come from Coba
 `sync_files(paths, pull)`, Remove local copy = `clear_mirror(paths)`. Double-click / Insert makes
 a PySpark cell by extension (csv/parquet/json/… → `spark.read…` + `display`; txt → `open()`);
 drag payload is the qualified name or `Files/<path>`. Agent: `lakehouse_pane {action: …}`.
-Clone now = a one-table `preload` (the worker's `mount_table` rejects the `schema/table` form).
-Known (0.6.2): `shadow_status.tables` is empty even after a clone (reported in
-`docs/requests/local-spark-mcp-0.6.2-reply.md`), so clone markers and the Shadows window show
-nothing until the worker fixes the lister.
+Clone now = `mount_table(lakehouse, "schema/table")` (0.6.3 accepts the entry form). 0.6.0–0.6.2
+had `shadow_status` empty on any state path with a space (the shadow root reached the JVM as a
+percent-encoded `file:` URI, so clones landed under a `…%20…` sibling the lister never scanned —
+on this box `AppData/Local/Cobalt/Cobalt%20SQL%20Works`); fixed in 0.6.3, and the stray folder
+can be deleted. Token note: the OneLake data plane (the JVM's ABFS, Cobalt's DFS listings, the
+pane) accepts **only the Azure Storage audience** (`https://storage.azure.com/.default`); a
+Fabric API token is answered with `401 Authentication Failed with Audience validation failed for
+audience 'https://api.fabric.microsoft.com'`, although the blob path the OneLake *export* uses
+takes it. Seen live 2026-10-07 after an evening re-sign-in: the silent storage-scope refresh
+stopped, the code fell back to the Fabric token, and every lakehouse first touch failed with
+TABLE_OR_VIEW_NOT_FOUND while the worker log showed `AccessDeniedException: Unauthorized 401` from
+`listOneLakeTables` and the pane said "Fabric rejected the token". Cobalt's token endpoint now
+serves the storage audience only and says "sign in again on the Fabric panel" when it cannot;
+the session start's token check still goes interactive. The OneLake client reports the 401 body.
 Cell headers are now always visible (no hover expansion).
 
 ## Spark runtime (Settings → Spark runtime)

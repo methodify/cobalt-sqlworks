@@ -760,7 +760,7 @@ pub fn prepare_onelake(state: &mut AppState, cx: &Ctx, slot: ProfileId) {
     let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
     state.flash("Checking OneLake access…");
     cx.session.spawn(async move {
-        let result = ops::onelake_token(resolver, slot, tenant, hint, prompter).await.map(|_| ());
+        let result = ops::onelake_storage_token(resolver, slot, tenant, hint, prompter).await.map(|_| ());
         let _ = tx.send(FabricEvent::OneLakeToken(result));
         egui.request_repaint();
     });

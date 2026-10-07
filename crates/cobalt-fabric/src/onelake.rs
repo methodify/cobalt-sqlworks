@@ -84,7 +84,11 @@ impl OneLakeClient {
             let status = resp.status();
             let next = resp.headers().get("x-ms-continuation").and_then(|v| v.to_str().ok()).filter(|s| !s.is_empty()).map(|s| s.to_string());
             if status.as_u16() == 401 || status.as_u16() == 403 {
-                return Err(FabricError::Unauthorized(status.as_u16()));
+                // OneLake says why in the body or the WWW-Authenticate header; keep it
+                let www = resp.headers().get("www-authenticate").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                let body = resp.text().await.unwrap_or_default();
+                let detail = format!("{} {}", www, body.lines().next().unwrap_or("")).trim().chars().take(400).collect::<String>();
+                return Err(FabricError::Api { status: status.as_u16(), code: "OneLake".into(), message: if detail.is_empty() { "unauthorized".into() } else { detail } });
             }
             let body = resp.text().await?;
             if !status.is_success() {

@@ -2181,6 +2181,8 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
 /// API token (with OneLake.ReadWrite.All) works too. Silent first, then the browser as a last resort.
 pub(crate) async fn onelake_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenant: Option<String>, hint: Option<String>, prompter: UiPrompter) -> Result<String, String> {
     use cobalt_auth::provider::{FABRIC_API_RESOURCE, ONELAKE_RESOURCE};
+    // the Azure Storage audience is what the OneLake data plane (DFS/ABFS, the JVM) accepts; the
+    // Fabric API token only serves the blob path exports take, so it is a last resort here
     if let Ok(Some(ts)) = resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant.as_deref()).await {
         return Ok(ts.access.token.expose().to_string());
     }
@@ -2192,6 +2194,19 @@ pub(crate) async fn onelake_token(resolver: Arc<CredentialResolver>, slot: Profi
     match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
         Ok(ts) => Ok(ts.access.token.expose().to_string()),
         Err(e) => Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")),
+    }
+}
+
+/// The Azure Storage token the local Spark session's JVM needs (ABFS refuses the Fabric API
+/// audience): silently when possible, otherwise through the browser. No Fabric-token fallback.
+pub(crate) async fn onelake_storage_token(resolver: Arc<CredentialResolver>, slot: ProfileId, tenant: Option<String>, hint: Option<String>, prompter: UiPrompter) -> Result<String, String> {
+    use cobalt_auth::provider::ONELAKE_RESOURCE;
+    if let Ok(Some(ts)) = resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant.as_deref()).await {
+        return Ok(ts.access.token.expose().to_string());
+    }
+    match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
+        Ok(ts) => Ok(ts.access.token.expose().to_string()),
+        Err(e) => Err(format!("OneLake sign-in failed: {e}. The Spark session needs an Azure Storage token (delegated permission Azure Storage → user_impersonation on the app registration); sign in again on the Fabric panel.")),
     }
 }
 

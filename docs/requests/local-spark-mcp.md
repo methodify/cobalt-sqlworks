@@ -124,4 +124,5 @@ current-catalog bug with live evidence) is in `local-spark-mcp-0.4.1-reply.md`; 
 0.4.2 (fix confirmed on the real schema-enabled lakehouse) is in `local-spark-mcp-0.4.2-reply.md`. The next round of asks (contexts, attach after init, lazy Files) is `local-spark-mcp-sessions.md`;
 the reply to 0.4.3/0.5.0 (contexts adopted, verified live) is `local-spark-mcp-0.5.0-reply.md`;
 the reply to 0.5.1/0.6.0/0.6.1 (lazy Files adopted) is `local-spark-mcp-0.6.1-reply.md`; 0.6.2 (two
-niceties from that reply) is acknowledged in `local-spark-mcp-0.6.2-reply.md`.
+niceties from that reply) is acknowledged in `local-spark-mcp-0.6.2-reply.md`; 0.6.3 (the
+`shadow_status` fix confirmed) in `local-spark-mcp-0.6.3-reply.md`.

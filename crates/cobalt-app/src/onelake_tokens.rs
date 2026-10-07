@@ -81,17 +81,17 @@ pub(crate) async fn fetch_fabric(resolver: &CredentialResolver, slot: ProfileId,
     }
 }
 
-/// A token OneLake accepts, silently.
+/// A token the OneLake data plane (DFS / ABFS) accepts, silently: the **Azure Storage**
+/// audience only. A Fabric API token is refused there with "Audience validation failed for
+/// audience 'https://api.fabric.microsoft.com'" (seen live 2026-10-07), even though the blob path
+/// the exporter uses takes it — so this never falls back to it. When the storage token cannot be
+/// refreshed silently the error says what to do; the session start's token check goes
+/// interactive (`ops::onelake_token`) and the panel's Sign in refreshes it.
 pub(crate) async fn fetch(resolver: &CredentialResolver, slot: ProfileId, tenant: Option<&str>) -> Result<String, String> {
     match resolver.resource_token_silent(slot, ONELAKE_RESOURCE, tenant).await {
-        Ok(Some(ts)) => return Ok(ts.access.token.expose().to_string()),
-        Ok(None) => {}
-        Err(e) => tracing::debug!("onelake token: {e}"),
-    }
-    match resolver.resource_token_silent(slot, FABRIC_API_RESOURCE, tenant).await {
-        Ok(Some(ts)) if ts.access.scope.split(' ').any(|s| s.contains("OneLake")) => Ok(ts.access.token.expose().to_string()),
-        Ok(_) => Err("no OneLake token for this account (sign in to Fabric again)".into()),
-        Err(e) => Err(e.to_string()),
+        Ok(Some(ts)) => Ok(ts.access.token.expose().to_string()),
+        Ok(None) => Err("OneLake needs an Azure Storage token for this account and none could be refreshed silently — sign in again on the Fabric panel (Sign out, then Sign in).".into()),
+        Err(e) => Err(format!("OneLake token refresh failed: {e} — sign in again on the Fabric panel.")),
     }
 }
 

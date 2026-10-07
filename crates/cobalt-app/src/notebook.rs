@@ -477,12 +477,12 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
             }
         }
         A::Mount(lh, table) => {
-            // one-table preload: unlike mount_table it accepts the `schema/table` entry form
-            if !crate::kernel::call(&mut state.kernel, "pane-action", "preload", serde_json::json!({"lakehouses": {lh: [table.clone()]}})) {
+            // mount_table takes the `schema/table` entry form since local-spark-mcp 0.6.3 and
+            // answers when the clone exists
+            if !crate::kernel::call(&mut state.kernel, "pane-action", "mount_table", serde_json::json!({"lakehouse": lh, "table": table})) {
                 cx.toast(ToastKind::Warning, "Start the Spark session first (run a cell or use the kernel menu).");
             } else {
-                state.lakehouse_pane.note = Some(format!("Cloning {table} in the background…"));
-                state.lakehouse_pane.refresh_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
+                state.lakehouse_pane.note = Some(format!("Cloning {table}…"));
             }
         }
         A::Discard(table) => shadows_action(state, "discard_shadow", serde_json::json!({"table": table})),
