@@ -261,11 +261,14 @@ the session log. Cells run one at a time in a persistent IPython namespace (the 
 across notebooks); a failing cell stops the queue.
 
 What comes back: `print` → text under the cell; `display(df)`, a bare DataFrame or pandas
-expression, and `%%sql` → the results grid. Behind the scenes a hook installed at session start
-writes the frame as an Arrow IPC file under the runtime's `state/outputs/` and prints a marker
-that Cobalt swaps for the grid — an interim path until local-spark-mcp exposes Arrow natively.
-`display()` caps at 1,000 rows (Fabric parity) unless given `limit=`; bare expressions and `%%sql`
-use Settings → Notebooks → "Rows a Spark DataFrame brings back". Stop (toolbar, the cell's
+expression, and `%%sql` → the results grid. With local-spark-mcp 0.4.1 these are native: the
+worker attaches each frame to its reply as an Arrow IPC blob (`displays` entries; a bare last
+expression through `run_code`'s `capture_result`, whose `Out[n]:` repr Cobalt drops from the
+text), and Cobalt's `%%sql` helper just runs the statements and hands the last frame to the
+worker's `display`. On an older environment the legacy hook (IPC files under the runtime's
+`state/outputs/` plus a marker line) is still installed and the session log says so. The row cap
+for all of them is Settings → Notebooks → "Rows a Spark DataFrame brings back" (`init`'s
+`default_sql_limit`); `display(df, limit=N)` overrides it. Stop (toolbar, the cell's
 button, Alt+C) on a running cell sends `interrupt` on the worker's control socket
 (local-spark-mcp 0.4.0+): Spark jobs are cancelled, the cell ends as *cancelled* with
 "Interrupted (Spark jobs cancelled)" under what it printed so far, and the session and its
@@ -316,15 +319,18 @@ resolves the Maven packages with their dependencies when the session starts (the
 with a new package waits on the download; the session log shows Ivy's progress). "Install
 Python packages" is the only install step left. The runtime page also runs the package's
 `healthcheck` and shows its problems and warnings; a lakehouse binding has a "Preload …
-tables at session start" option whose progress shows in Lakehouse shadows. The preload is
-Cobalt's own: the worker's preload discovers tables through the Fabric REST API with an Azure
-credential this process does not give it, and that endpoint refuses schema-enabled lakehouses
-anyway, so Cobalt lists `Tables/` on OneLake with the signed-in account's storage token and sends
-`mount_tables` in batches of eight (a cell queued meanwhile runs between batches). Tables in
-schema folders (`Tables/dbo/...`) are listed but not cloned: the session's catalog resolves
-only `Tables/<name>`, so `lakehouse.dbo.table` fails with REQUIRES_SINGLE_PART_NAMESPACE — the
-window says so, and the ask is in `docs/requests/local-spark-mcp-0.3.5-reply.md` (items 5 and 6). Verified
-on the test lakehouse: 3 top-level tables cloned in ~20 s, 5 schema tables reported.
+tables at session start" option whose progress shows in Lakehouse shadows. Since 0.4.1 the
+preload is the worker's: `init` carries `preload: [<lakehouse>]`, the worker lists `Tables/`
+through the Hadoop filesystem it already authenticates (one level down for schema folders) and
+clones in parallel, and every Azure token it needs comes from Cobalt's loopback endpoint —
+`GET /token?scope=<scope>` now serves the Fabric API scope as well as OneLake storage (Key
+Vault is refused with a 404). The Shadows window polls `preload_status` on the control socket,
+so the progress bar moves while a cell runs. Between 0.3.5 and 0.4.0 Cobalt listed OneLake and
+drove `mount_tables` itself because the worker's discovery needed a credential this process never
+gives it and the Fabric REST tables endpoint refuses schema-enabled lakehouses; that code is gone.
+**Schema-enabled lakehouses** (`Tables/<schema>/<table>`) are first-class in 0.4.1: the lakehouse
+gets a V2 catalog named after it, so `test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`,
+`SHOW NAMESPACES IN test` and `USE test` work, and top-level tables stay `test.<table>`.
 
 ## Permissions and re-consent (0.7.1)
 

@@ -2,16 +2,32 @@
 
 ## Unreleased — 0.7.3
 
-- **local-spark-mcp 0.4.0: Stop interrupts the cell, the session survives.** The runtime pin moves
-  to 0.4.0 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
+- **local-spark-mcp 0.4.1: Stop interrupts the cell, the session survives.** The runtime pin moves
+  to 0.4.1 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
   control socket: Spark jobs are cancelled within seconds, the cell ends as *cancelled* with what
   it printed so far plus "Interrupted (Spark jobs cancelled)", and the session, its namespace and
   its lakehouse clones stay. Stop again while that is pending ends the session (for a cell stuck
   in pure Python, which Windows cannot interrupt mid-call). Cell output **streams** as the cell
   runs instead of arriving at the end. Replies are checked against their request id on both
   sockets; a mismatch restarts the worker instead of misattributing results. The environment is
-  brought to 0.4.0 by "Reinstall / update" on the Spark runtime page; on an older environment
+  brought to 0.4.1 by "Reinstall / update" on the Spark runtime page; on an older environment
   Stop keeps killing the worker and the session log says why.
+- **DataFrames arrive natively.** `display(df)`, a bare DataFrame or pandas frame as a cell's last
+  expression, and `%%sql` results come back as Arrow attached to the worker's reply; the hook
+  Cobalt used to install into the session (IPC files under the runtime folder plus a marker
+  line) is gone on 0.4.1, kept only for older environments. The row cap for all three is
+  Settings → Notebooks → "Rows a Spark DataFrame brings back" (`display(df, limit=N)` overrides).
+- **Schema-enabled lakehouses in Spark cells.** With 0.4.1 a lakehouse whose tables live in schema
+  folders gets a catalog named after it, so `test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`
+  and `USE test` work as in a Fabric notebook, while tables at the top level stay `test.<table>`.
+- **Fixed: worker sockets were non-blocking on Windows.** An accepted socket inherits the
+  listener's non-blocking mode there, so the wait for a cell's reply spun instead of blocking and
+  the interrupt acknowledgement was reported as a timeout the moment it was sent (the cell was
+  still cancelled). Both sockets block now; the acknowledgement arrives in milliseconds.
+- **Preload is the worker's again.** Cobalt's own token endpoint now also serves the Fabric API
+  scope on request, so the worker lists a lakehouse's tables through its own OneLake filesystem
+  (schema folders included) and clones them in parallel with no credential of its own; the
+  Shadows window polls its progress on the control socket while cells run.
 - **local-spark-mcp 0.3.5.** The runtime pin moves to 0.3.5, which shipped most of Cobalt's
   requests: user jars and Maven coordinates now go to the session as `extra_jars` and
   `extra_packages` (Ivy resolves Maven packages with their dependencies, so a coordinate alone
@@ -20,12 +36,8 @@
   runs on the Spark runtime page (versions, profile, JDK and winutils verdicts, catalog jar).
   `init` passes the profile so a mismatched environment is refused with a clear message.
   **Preload**: a lakehouse binding can ask for the default lakehouse's tables to be cloned in the
-  background right after the session starts; Cobalt lists `Tables/` on OneLake with its own token
-  (the Fabric REST tables endpoint refuses schema-enabled lakehouses, and the worker's own
-  discovery needs an Azure credential this process does not give it) and mounts the tables in
-  small batches so cells can run in between. The Shadows window shows the progress and names the
-  tables in schema folders (`Tables/dbo/...`) that the session's catalog cannot reach yet.
-  Per-table **Discard** in the Shadows window uses the new per-table call instead of a rewind. "Reinstall / update" on the
+  background right after the session starts; the Shadows window shows the progress. Per-table
+  **Discard** in the Shadows window uses the new per-table call instead of a rewind. "Reinstall / update" on the
   runtime page brings an existing environment to 0.3.5.
 - **Cell run queue, visible and cancellable.** Running several cells (Run all, Run cells above,
   Shift+Enter in a row) queues them in notebook order; a waiting cell shows an hourglass in place

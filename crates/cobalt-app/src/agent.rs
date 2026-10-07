@@ -199,9 +199,10 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "log_tail": k.log.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
         "fabric": k.fabric.as_ref().map(|f| json!({"workspace_id": f.workspace_id, "workspace": f.workspace_name, "lakehouses": f.lakehouses, "default_lakehouse": f.default_lakehouse, "write_mode": f.write_mode})),
         "pending_fabric_start": k.pending_fabric_start.is_some(),
-        "preload": k.preload.as_ref().map(|p| p.as_json()),
         "control": k.control.is_some(),
+        "native_arrow": k.native_arrow,
         "interrupting": k.interrupting.map(|t| t.elapsed().as_secs()),
+        "last_interrupt": k.last_interrupt.as_ref().map(|(s, r)| json!({"secs": s, "result": r})),
         "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },
         "token_requests": k.token_requests(),
         "token_error": k.token_error(),
@@ -1091,9 +1092,8 @@ impl AgentApp for CobaltApp {
                 let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
                 match action.as_str() {
                     "status" => crate::notebook::refresh_shadows(&mut self.state),
-                    "preload_status" => {
-                        self.state.shadows.preload = self.state.kernel.preload.as_ref().map(|p| p.as_json());
-                    }
+                    "peek" => {}
+                    "preload_status" => crate::notebook::shadows_action(&mut self.state, "preload_status", json!({})),
                     "discard_table" => {
                         let Some(t) = arg_str(args, "table") else { return ActionResult::BadArgs("table is required".into()) };
                         crate::notebook::shadows_action(&mut self.state, "discard_shadow", json!({"table": t}));
@@ -1127,10 +1127,15 @@ impl AgentApp for CobaltApp {
                         self.state.recent_toasts.push_back(format!("interrupt: {a:?}"));
                     }
                     "log" => self.state.kernel.log_open = !self.state.kernel.log_open,
+                    "full_log" => return ActionResult::with(&json!({"log": self.state.kernel.log.iter().cloned().collect::<Vec<_>>()})),
                     other => return ActionResult::BadArgs(format!("unknown kernel action {other}")),
                 }
                 egui.request_repaint();
-                ActionResult::with(&kernel_json(&self.state.kernel))
+                {
+                    let mut v = kernel_json(&self.state.kernel);
+                    v["preload"] = self.state.shadows.preload.clone().unwrap_or(Value::Null);
+                    ActionResult::with(&v)
+                }
             }
             "runtime" => {
                 use crate::runtime::RuntimeAction;

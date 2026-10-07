@@ -590,13 +590,16 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
             crate::notebook::shadows_action(f.state, method, params);
         }
     }
-    // preload progress comes from the app-driven preload; keep the window live while it runs
-    if f.state.shadows.open {
-        if let Some(p) = &f.state.kernel.preload {
-            f.state.shadows.preload = Some(p.as_json());
-            if p.state() == "running" {
-                ctx.request_repaint_after(std::time::Duration::from_millis(500));
-            }
+    // preload progress: poll the worker (control socket) while a preload runs and the window is open
+    if f.state.shadows.open && f.state.kernel.state.is_ready() {
+        let running = f.state.shadows.preload.as_ref().map(|p| p.get("state").and_then(|s| s.as_str()) == Some("running")).unwrap_or(true);
+        let key = egui::Id::new("preload-poll");
+        let now = ctx.input(|i| i.time);
+        let last: f64 = ctx.memory(|m| m.data.get_temp(key)).unwrap_or(0.0);
+        if running && now - last > 3.0 {
+            ctx.memory_mut(|m| m.data.insert_temp(key, now));
+            crate::notebook::shadows_action(f.state, "preload_status", serde_json::json!({}));
+            ctx.request_repaint_after(std::time::Duration::from_secs(3));
         }
     }
 }

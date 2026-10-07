@@ -88,8 +88,8 @@ impl ControlHandle {
         unwrap_reply(resp)
     }
 
-    /// The acknowledgement can lag the cancellation itself by 10 s or more in 0.4.0 (the worker's
-    /// `cancelAllJobs` waits on the py4j connection the cell holds), hence the long wait.
+    /// The worker answers as soon as its `cancelAllJobs` returns; the wait is generous because a
+    /// cancel can take a few seconds when a job is being planned.
     pub fn interrupt(&self) -> Result<Value> {
         self.call("interrupt", json!({}), Duration::from_secs(30))
     }
@@ -252,9 +252,14 @@ impl Worker {
             std::thread::sleep(Duration::from_millis(50));
         }
         let stream = data.expect("data stream");
+        // the listeners are non-blocking for the accept loop and, on Windows, an accepted socket
+        // inherits that: reads must block (with the timeouts the callers set) or every wait
+        // spins and the control socket reports a timeout at once
+        stream.set_nonblocking(false)?;
         stream.set_nodelay(true)?;
         w.stream = stream;
         if let Some(c) = control {
+            c.set_nonblocking(false)?;
             c.set_nodelay(true)?;
             w.control = Some(ControlHandle::new(c));
         }

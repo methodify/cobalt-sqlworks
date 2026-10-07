@@ -184,6 +184,8 @@ with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client ca
   the issue.
 - **Interrupt**: done in local-spark-mcp 0.4.0 (control socket); a cell blocked in pure Python on
   Windows returns only when the call ends — Stop twice kills the worker as the escape hatch.
+- **Arrow**: native since 0.4.1 (`displays` blobs + `capture_result`); the bootstrap hook survives
+  only for environments that have not been updated.
 - **Memory**: the default 8 GB driver is too much for small laptops; detect RAM and size the
   driver, expose it in settings.
 - **Security**: notebooks run arbitrary code as the user, like every notebook tool. The token

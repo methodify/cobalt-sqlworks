@@ -1,9 +1,10 @@
 //! The local Spark kernel: one local-spark-mcp worker process, owned by a thread that speaks the
 //! socket protocol, driven by commands from the UI and reporting events the app polls each frame.
 //! Notebook cells on the "Local Spark" kernel run here (Python through `run_code`; SQL through a
-//! `spark.sql` helper). DataFrames come back as Arrow IPC files written by a helper the kernel
-//! installs into the IPython namespace at start (see `BOOTSTRAP`), until local-spark-mcp grows a
-//! native Arrow method.
+//! `spark.sql` helper). DataFrames come back as Arrow: with local-spark-mcp 0.4.1+ natively
+//! (`display(df)` and, through `capture_result`, a bare DataFrame as the cell's last expression
+//! become `displays` entries whose IPC blobs follow the reply); on an older environment through
+//! the legacy `BOOTSTRAP` hook that writes IPC files and prints a marker.
 
 use crate::state::*;
 use cobalt_core::{Settings, TabId};
@@ -210,7 +211,8 @@ pub struct RunReq {
 }
 
 enum Cmd {
-    Start { cfg: WorkerConfig, bootstrap: String },
+    /// `capture`: ask `run_code` for `capture_result` (0.4.1+).
+    Start { cfg: WorkerConfig, bootstrap: String, capture: bool },
     Run(RunReq),
     /// Any other worker method (shadow_status, discard_shadow, restore_shadow, info…).
     Call { tag: String, method: String, params: Value },
@@ -225,9 +227,9 @@ pub enum KernelEvent {
     /// The control socket answered an `interrupt`.
     Interrupted(Result<Value, String>),
     CallResult { tag: String, result: Result<Value, String> },
-    /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback…), or a
-    /// transport-level error.
-    Done { req: RunReq, result: Result<Value, String> },
+    /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback,
+    /// displays…) with the Arrow blobs that followed it, or a transport-level error.
+    Done { req: RunReq, result: Result<Value, String>, blobs: Vec<Vec<u8>> },
     Stopped,
     Failed(String),
 }
@@ -257,50 +259,19 @@ pub struct KernelUi {
     pub control: Option<ControlHandle>,
     /// An `interrupt` was sent for the running cell at this time; a second Stop kills the session.
     pub interrupting: Option<Instant>,
+    /// When the last `interrupt` went out, and how the worker answered (seconds to the
+    /// acknowledgement, its text) — for the session log and diagnostics.
+    pub interrupt_sent_at: Option<Instant>,
+    pub last_interrupt: Option<(f32, String)>,
     ev_tx: Option<Sender<KernelEvent>>,
-    /// A preload driven from the app: table lists come from the Fabric REST API (the worker's
-    /// own discovery needs an Azure credential this process does not give it), then
-    /// `mount_tables` runs chunk by chunk so cells can interleave.
-    pub preload: Option<Preload>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct Preload {
-    /// `(lakehouse, tables)` chunks still to mount.
-    pub pending: std::collections::VecDeque<(String, Vec<String>)>,
-    /// A `mount_tables` call is in flight.
-    pub in_flight: bool,
-    pub total: usize,
-    pub done: usize,
-    pub failed: usize,
-    pub errors: Vec<String>,
-    /// Tables in schema folders the catalog cannot mount (not counted in `total`).
-    pub skipped: usize,
-    pub note: Option<String>,
-    /// Lakehouses whose table lists are still being fetched.
-    pub listing: usize,
-    pub started: Option<Instant>,
-    pub finished: Option<Instant>,
-}
-
-impl Preload {
-    pub fn state(&self) -> &'static str {
-        if self.listing > 0 || self.in_flight || !self.pending.is_empty() {
-            "running"
-        } else if self.started.is_some() {
-            "done"
-        } else {
-            "idle"
-        }
-    }
-    pub fn as_json(&self) -> Value {
-        json!({"state": self.state(), "tables_total": self.total, "tables_done": self.done, "tables_failed": self.failed, "tables_skipped": self.skipped, "note": self.note, "errors": self.errors, "seconds": self.started.map(|s| self.finished.unwrap_or_else(Instant::now).duration_since(s).as_secs())})
-    }
+    /// DataFrames arrive as native `displays` blobs (local-spark-mcp 0.4.1+) rather than through
+    /// the legacy file-marker bootstrap.
+    pub native_arrow: bool,
 }
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, ev_tx: None, preload: None }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false }
     }
 }
 
@@ -324,6 +295,49 @@ pub enum StartError {
 fn python_bootstrap(out_dir: &std::path::Path, limit: u64) -> String {
     BOOTSTRAP.replace("{out_dir}", &out_dir.to_string_lossy()).replace("{limit}", &limit.to_string())
 }
+
+/// The namespace helpers for local-spark-mcp 0.4.1+: `display()` is the worker's own and a bare
+/// DataFrame is captured natively, so only the `%%sql` runner remains (statements split as in the
+/// legacy bootstrap, the last statement's frame handed to `display` under the cell's limit).
+const BOOTSTRAP_SQL: &str = r#"
+def __cobalt_split_sql(text):
+    out, buf, q = [], [], None
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if q:
+            buf.append(c)
+            if c == q:
+                q = None
+        elif c in ("'", '"', "`"):
+            q = c
+            buf.append(c)
+        elif c == "-" and text[i:i+2] == "--":
+            j = text.find("\n", i)
+            j = len(text) if j < 0 else j
+            buf.append(text[i:j])
+            i = j
+            continue
+        elif c == ";":
+            s = "".join(buf).strip()
+            if s:
+                out.append(s)
+            buf = []
+        else:
+            buf.append(c)
+        i += 1
+    s = "".join(buf).strip()
+    if s:
+        out.append(s)
+    return out
+
+def __cobalt_sql(text, limit=None):
+    last = None
+    for s in __cobalt_split_sql(text):
+        last = spark.sql(s)
+    if last is not None:
+        display(last, limit=limit)
+"#;
 
 /// Everything a Fabric-bound start needs from the app besides the settings.
 pub struct FabricStart {
@@ -360,7 +374,11 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         }
         extra.insert("write_mode".into(), Value::String(fs.fabric.write_mode.clone()));
         extra.insert("persist_shadow".into(), Value::Bool(false));
-        k.preload = if fs.fabric.preload.is_empty() { None } else { Some(Preload::default()) };
+        // the worker's own preload (0.4.1 lists OneLake through the JVM and takes every token
+        // from Cobalt's endpoint, so it needs no credential of its own)
+        if !fs.fabric.preload.is_empty() {
+            extra.insert("preload".into(), Value::Array(fs.fabric.preload.iter().map(|s| Value::String(s.clone())).collect()));
+        }
         extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
         k.token_server = Some(ts);
         k.fabric = Some(fs.fabric);
@@ -382,14 +400,23 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         extra.insert("extra_packages".into(), Value::Array(libs.packages.iter().map(|p| Value::String(p.clone())).collect()));
         k.log.push_back(format!("cobalt: {} Maven package{} for the session (Ivy resolves them at start)", libs.packages.len(), if libs.packages.len() == 1 { "" } else { "s" }));
     }
+    let limit = settings.notebooks.spark_row_limit.max(1);
+    // the row cap for display(df), a captured bare DataFrame and run_sql
+    extra.insert("default_sql_limit".into(), json!(limit));
     let mut cfg = install::worker_config(&dirs, &profile, jdk.as_deref(), &settings.spark.driver_memory, extra);
     // the control socket exists from local-spark-mcp 0.4.0 (protocol 2); an older worker would
-    // reject the argument
-    cfg.control = rec.package_version.as_deref().map(|v| version_at_least(v, 0, 4)).unwrap_or(false);
+    // reject the argument. Native Arrow displays and capture_result from 0.4.1.
+    let ver = rec.package_version.as_deref().map(version_tuple).unwrap_or((0, 0, 0));
+    cfg.control = ver >= (0, 4, 0);
+    let native = ver >= (0, 4, 1);
     if !cfg.control {
         k.log.push_back("cobalt: local-spark-mcp before 0.4.0 — Stop ends the session instead of interrupting the cell (update the runtime on the Spark runtime page)".into());
     }
-    let bootstrap = python_bootstrap(&out_dir, settings.notebooks.spark_row_limit.max(1));
+    if !native {
+        k.log.push_back("cobalt: local-spark-mcp before 0.4.1 — DataFrames come back through the legacy file hook (update the runtime on the Spark runtime page)".into());
+    }
+    k.native_arrow = native;
+    let bootstrap = if native { BOOTSTRAP_SQL.to_string() } else { python_bootstrap(&out_dir, limit) };
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -408,12 +435,13 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         .name("spark-kernel".into())
         .spawn(move || kernel_thread(ctx_rx, ev_tx, cancel, egui2))
         .ok();
-    let _ = ctx_tx.send(Cmd::Start { cfg, bootstrap });
+    let _ = ctx_tx.send(Cmd::Start { cfg, bootstrap, capture: native });
     Ok(())
 }
 
 fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicBool>, egui: egui::Context) {
     let mut worker: Option<Worker> = None;
+    let mut capture = false;
     let log_tx = tx.clone();
     let log_egui = egui.clone();
     let log: cobalt_runtime::worker::LogFn = Arc::new(move |s: String| {
@@ -422,7 +450,8 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
     });
     while let Ok(cmd) = rx.recv() {
         match cmd {
-            Cmd::Start { cfg, bootstrap } => {
+            Cmd::Start { cfg, bootstrap, capture: cap } => {
+                capture = cap;
                 cancel.store(false, Ordering::Relaxed);
                 match Worker::start(&cfg, log.clone(), &cancel) {
                     Ok(mut w) => {
@@ -458,12 +487,13 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
             }
             Cmd::Run(req) => {
                 let Some(w) = worker.as_mut() else {
-                    let _ = tx.send(KernelEvent::Done { req, result: Err("the Spark kernel is not running".into()) });
+                    let _ = tx.send(KernelEvent::Done { req, result: Err("the Spark kernel is not running".into()), blobs: Vec::new() });
                     egui.request_repaint();
                     continue;
                 };
                 cancel.store(false, Ordering::Relaxed);
-                let stream = w.protocol_version >= 2;
+                // COBALT_SPARK_STREAM=0 turns streamed output off (diagnostics)
+                let stream = w.protocol_version >= 2 && std::env::var("COBALT_SPARK_STREAM").map(|v| v != "0").unwrap_or(true);
                 let (tab, cell_id) = (req.tab, req.cell_id.clone());
                 let ev_tx = tx.clone();
                 let ev_egui = egui.clone();
@@ -471,29 +501,30 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                     let _ = ev_tx.send(KernelEvent::CellOutput { tab, cell_id: cell_id.clone(), stream: ev.to_string(), text: text.to_string() });
                     ev_egui.request_repaint_after(Duration::from_millis(100));
                 };
-                let r = w.call_streaming("run_code", json!({"code": req.code, "stream": stream}), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_event);
+                let r = w.call_streaming("run_code", json!({"code": req.code, "stream": stream, "capture_result": capture}), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_event);
                 match r {
                     Ok(v) => {
-                        let _ = tx.send(KernelEvent::Done { req, result: Ok(v) });
+                        let blobs = std::mem::take(&mut w.last_blobs);
+                        let _ = tx.send(KernelEvent::Done { req, result: Ok(v), blobs });
                     }
                     Err(RuntimeError::Cancelled) => {
                         // the protocol is out of step after an abandoned call: the session restarts
                         if let Some(w) = worker.take() {
                             w.kill();
                         }
-                        let _ = tx.send(KernelEvent::Done { req, result: Err("interrupted — the local Spark session was stopped (the next cell starts a new session)".into()) });
+                        let _ = tx.send(KernelEvent::Done { req, result: Err("interrupted — the local Spark session was stopped (the next cell starts a new session)".into()), blobs: Vec::new() });
                         let _ = tx.send(KernelEvent::Stopped);
                     }
                     Err(RuntimeError::WorkerFatal(e)) => {
                         if let Some(w) = worker.take() {
                             w.kill();
                         }
-                        let _ = tx.send(KernelEvent::Done { req, result: Err(e.clone()) });
+                        let _ = tx.send(KernelEvent::Done { req, result: Err(e.clone()), blobs: Vec::new() });
                         let _ = tx.send(KernelEvent::Failed(e));
                     }
                     Err(e) => {
                         let fatal = !w.is_alive();
-                        let _ = tx.send(KernelEvent::Done { req, result: Err(e.to_string()) });
+                        let _ = tx.send(KernelEvent::Done { req, result: Err(e.to_string()), blobs: Vec::new() });
                         if fatal {
                             if let Some(w) = worker.take() {
                                 w.kill();
@@ -539,25 +570,23 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
     k.waiting.push(req);
 }
 
-/// Send the next preload chunk when none is in flight.
-pub fn preload_pump(k: &mut KernelUi) {
-    let Some(p) = k.preload.as_mut() else { return };
-    if p.in_flight || !k.state.is_ready() {
-        return;
+/// A request on the control socket (`status`, `preload_status`, `ping`), answered while a cell
+/// runs; the reply arrives as `PollOut::calls` under `tag`. Falls back to the data socket when
+/// the worker has no control socket.
+pub fn control_call(k: &mut KernelUi, tag: &str, method: &str, params: Value) -> bool {
+    if !k.state.is_ready() {
+        return false;
     }
-    let Some((lakehouse, tables)) = p.pending.pop_front() else {
-        if p.listing == 0 && p.finished.is_none() && p.started.is_some() {
-            p.finished = Some(Instant::now());
-        }
-        return;
-    };
-    p.in_flight = true;
-    let params = json!({"lakehouse": lakehouse, "tables": tables});
-    if let Some(tx) = &k.tx {
-        let _ = tx.send(Cmd::Call { tag: "preload-mount".into(), method: "mount_tables".into(), params });
-    } else {
-        p.in_flight = false;
-    }
+    let (Some(ctl), Some(ev)) = (k.control.clone(), k.ev_tx.clone()) else { return call(k, tag, method, params) };
+    let tag = tag.to_string();
+    let method = method.to_string();
+    std::thread::Builder::new()
+        .name("spark-control".into())
+        .spawn(move || {
+            let result = ctl.call(&method, params, Duration::from_secs(20)).map_err(|e| e.to_string());
+            let _ = ev.send(KernelEvent::CallResult { tag, result });
+        })
+        .is_ok()
 }
 
 /// Any worker method; the answer arrives as `PollOut::calls` under `tag`.
@@ -597,6 +626,8 @@ pub fn interrupt(k: &mut KernelUi) -> InterruptAction {
     match (&k.control, k.interrupting) {
         (Some(ctl), None) => {
             k.interrupting = Some(Instant::now());
+            k.interrupt_sent_at = k.interrupting;
+            k.last_interrupt = None;
             let ctl = ctl.clone();
             let ev = k.ev_tx.clone();
             std::thread::Builder::new()
@@ -618,11 +649,16 @@ pub fn interrupt(k: &mut KernelUi) -> InterruptAction {
     }
 }
 
-/// `v` (`major.minor[.patch]`) is at least `maj.min`.
-pub fn version_at_least(v: &str, maj: u64, min: u64) -> bool {
+/// `major.minor.patch` of a version string (missing parts are 0, suffixes ignored).
+pub fn version_tuple(v: &str) -> (u64, u64, u64) {
     let mut it = v.trim().split(|c: char| c == '.' || c == '-' || c == '+').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0));
-    let (a, b) = (it.next().unwrap_or(0), it.next().unwrap_or(0));
-    (a, b) >= (maj, min)
+    (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
+}
+
+/// `v` is at least `maj.min`.
+pub fn version_at_least(v: &str, maj: u64, min: u64) -> bool {
+    let t = version_tuple(v);
+    (t.0, t.1) >= (maj, min)
 }
 
 pub fn stop(k: &mut KernelUi) {
@@ -639,7 +675,7 @@ pub fn stop(k: &mut KernelUi) {
 }
 
 pub struct PollOut {
-    pub done: Vec<(RunReq, Result<Value, String>)>,
+    pub done: Vec<(RunReq, Result<Value, String>, Vec<Vec<u8>>)>,
     /// Streamed output for running cells: `(tab, cell id, stream, text)`.
     pub outputs: Vec<(TabId, String, String, String)>,
     pub ready_now: bool,
@@ -670,9 +706,11 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
             }
             KernelEvent::CellOutput { tab, cell_id, stream, text } => outputs.push((tab, cell_id, stream, text)),
             KernelEvent::Interrupted(r) => {
+                let secs = k.interrupt_sent_at.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
+                k.last_interrupt = Some((secs, match &r { Ok(v) => v.to_string(), Err(e) => e.clone() }));
                 k.log.push_back(match &r {
-                    Ok(v) => format!("cobalt: interrupt → {}", v.get("state").and_then(Value::as_str).unwrap_or("?")),
-                    Err(e) if e.contains("timed out") => "cobalt: interrupt sent; the worker's acknowledgement did not arrive in time (the cell is still being cancelled — Stop again to end the session)".to_string(),
+                    Ok(v) => format!("cobalt: interrupt → {} after {secs:.1} s{}", v.get("state").and_then(Value::as_str).unwrap_or("?"), v.get("detail").and_then(Value::as_str).map(|d| format!(" ({d})")).unwrap_or_default()),
+                    Err(e) if e.contains("timed out") => format!("cobalt: interrupt sent; the worker's acknowledgement did not arrive in time (the cell is still being cancelled — Stop again to end the session): {e}"),
                     Err(e) => format!("cobalt: interrupt failed: {e}"),
                 });
             }
@@ -683,12 +721,12 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 }
             }
             KernelEvent::CallResult { tag, result } => calls.push((tag, result)),
-            KernelEvent::Done { req, result } => {
+            KernelEvent::Done { req, result, blobs } => {
                 if k.busy.as_ref().map(|(t, c)| *t == req.tab && *c == req.cell_id).unwrap_or(false) {
                     k.busy = None;
                 }
                 k.interrupting = None;
-                done.push((req, result));
+                done.push((req, result, blobs));
             }
             KernelEvent::Stopped => {
                 k.state = KernelState::Stopped;
@@ -697,7 +735,6 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.waiting.clear();
                 k.token_server = None;
                 k.fabric = None;
-                k.preload = None;
                 k.control = None;
                 k.interrupting = None;
                 broke = Some("the local Spark session stopped".to_string());
@@ -709,7 +746,6 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.waiting.clear();
                 k.token_server = None;
                 k.fabric = None;
-                k.preload = None;
                 k.control = None;
                 k.interrupting = None;
                 broke = Some(e);
@@ -734,7 +770,7 @@ pub struct CellOutcome {
     pub interrupted: bool,
 }
 
-pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
+pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome {
     let mut out = CellOutcome { messages: Vec::new(), result_sets: Vec::new(), failed: false, interrupted: false };
     let msg = |text: String, is_error: bool| MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path: None };
     match result {
@@ -746,8 +782,29 @@ pub fn outcome(result: &Result<Value, String>) -> CellOutcome {
             let stdout = v.get("stdout").and_then(Value::as_str).unwrap_or("");
             let interrupted = v.get("interrupted").and_then(Value::as_bool) == Some(true);
             let failed = !interrupted && (v.get("ok").and_then(Value::as_bool) == Some(false) || v.get("error").and_then(Value::as_str).map(|e| !e.is_empty()).unwrap_or(false));
+            // native displays (0.4.1+): one Arrow IPC blob per entry, in order; a captured bare
+            // expression (`source: "result"`) also left IPython's `Out[n]:` repr on stdout
+            let displays = v.get("displays").and_then(Value::as_array).cloned().unwrap_or_default();
+            let mut captured_result = false;
+            for (i, d) in displays.iter().enumerate() {
+                if d.get("kind").and_then(Value::as_str) != Some("arrow") {
+                    continue;
+                }
+                if d.get("source").and_then(Value::as_str) == Some("result") {
+                    captured_result = true;
+                }
+                match blobs.get(i) {
+                    Some(bytes) => match crate::notebook::result_set_from_ipc(bytes, out.result_sets.len()) {
+                        Ok(rs) => out.result_sets.push(rs),
+                        Err(e) => out.messages.push(msg(format!("Could not read the DataFrame: {e}"), true)),
+                    },
+                    None => out.messages.push(msg("The worker announced a DataFrame but sent no data for it.".into(), true)),
+                }
+            }
+            let stdout_lines: Vec<&str> = stdout.lines().collect();
+            let cut = if captured_result { stdout_lines.iter().rposition(|l| l.starts_with("Out[")).unwrap_or(stdout_lines.len()) } else { stdout_lines.len() };
             let mut in_traceback = false;
-            for line in stdout.lines() {
+            for line in stdout_lines.into_iter().take(cut) {
                 // an interrupted cell's KeyboardInterrupt traceback is noise: keep what it printed before
                 if interrupted && line.starts_with("-----") {
                     break;
@@ -820,6 +877,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn outcome_reads_native_displays() {
+        // an Arrow IPC stream with one int column
+        let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new("n", arrow::datatypes::DataType::Int64, false)]));
+        let batch = arrow::record_batch::RecordBatch::try_new(schema.clone(), vec![std::sync::Arc::new(arrow::array::Int64Array::from(vec![1, 2, 3]))]).unwrap();
+        let mut buf = Vec::new();
+        {
+            let mut w = arrow::ipc::writer::StreamWriter::try_new(&mut buf, &schema).unwrap();
+            w.write(&batch).unwrap();
+            w.finish().unwrap();
+        }
+        let v = json!({"ok": true, "stdout": "hello\nOut[3]: DataFrame[n: bigint]\n", "stderr": "", "error": null, "traceback": null, "notices": [], "displays": [{"kind": "arrow", "source": "result", "columns": ["n"], "row_count": 3, "truncated": false, "limit": 100, "arrow_bytes": buf.len()}]});
+        let o = outcome(&Ok(v), &[buf]);
+        assert!(!o.failed);
+        assert_eq!(o.result_sets.len(), 1);
+        assert_eq!(o.result_sets[0].row_count(), 3);
+        // the captured value's Out[n] repr is dropped from the text
+        let texts: Vec<&str> = o.messages.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["hello"]);
+        assert!(version_tuple("0.4.1") >= (0, 4, 1) && version_tuple("0.4.0") < (0, 4, 1) && version_tuple("1.0") >= (0, 4, 1));
+    }
+
+    #[test]
     fn bootstrap_substitutes() {
         let s = python_bootstrap(std::path::Path::new("C:\\x\\out"), 500);
         assert!(s.contains("__COBALT_OUT = r\"C:\\x\\out\""));
@@ -830,7 +909,7 @@ mod tests {
     #[test]
     fn outcome_parses_exec_result() {
         let v = json!({"ok": false, "stdout": "hello\nworld\n", "stderr": "26/10/05 WARN SQLConf: x\nreal problem\n", "error": "ZeroDivisionError: division by zero", "traceback": "Traceback...\nZeroDivisionError: division by zero", "execution_count": 3, "notices": []});
-        let o = outcome(&Ok(v));
+        let o = outcome(&Ok(v), &[]);
         assert!(o.failed);
         let texts: Vec<&str> = o.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts[0], "hello");
@@ -840,7 +919,7 @@ mod tests {
         assert!(o.messages[3].is_error);
         // IPython's own traceback on stdout is used as the error, once
         let v = json!({"ok": false, "stdout": "x\n---------------------------------\nZeroDivisionError  Traceback\nCell In[6], line 1\n----> 1 1 / 0\n\nZeroDivisionError: division by zero\n", "stderr": "", "error": "ZeroDivisionError: division by zero", "traceback": "Traceback (most recent call last)...", "notices": []});
-        let o = outcome(&Ok(v));
+        let o = outcome(&Ok(v), &[]);
         assert_eq!(o.messages[0].text, "x");
         assert!(!o.messages[0].is_error);
         let errs: Vec<&str> = o.messages.iter().filter(|m| m.is_error).map(|m| m.text.as_str()).collect();
@@ -848,13 +927,13 @@ mod tests {
         assert!(!o.messages.iter().any(|m| m.text.starts_with("Traceback (most recent")));
         // an "Out[n]: " prefix before a marker
         let v = json!({"ok": true, "stdout": "Out[8]: \u{1e}COBALT-ARROW-FILE:C:/nope/x.arrow\u{1e}\n", "stderr": "", "error": null, "traceback": null, "notices": []});
-        let o = outcome(&Ok(v));
+        let o = outcome(&Ok(v), &[]);
         assert!(o.messages.iter().any(|m| m.text.contains("Could not read the DataFrame file")));
-        let o = outcome(&Err("interrupted".into()));
+        let o = outcome(&Err("interrupted".into()), &[]);
         assert!(o.failed && o.messages[0].is_error);
         // protocol 2: an interrupted cell is not a failure and its traceback is dropped
         let v = json!({"ok": false, "interrupted": true, "stdout": "step 1\n---------------------------------\nKeyboardInterrupt  Traceback\n", "stderr": "ERROR:root:Exception while sending command.\npy4j.protocol.Py4JNetworkError: x\n", "error": "KeyboardInterrupt: interrupted (Spark jobs cancelled)", "traceback": "Traceback...", "notices": []});
-        let o = outcome(&Ok(v));
+        let o = outcome(&Ok(v), &[]);
         assert!(o.interrupted && !o.failed);
         let texts: Vec<&str> = o.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, vec!["step 1", "Interrupted (Spark jobs cancelled)"]);

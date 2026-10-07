@@ -358,7 +358,9 @@ pub fn refresh_shadows(state: &mut AppState) {
 }
 
 pub fn shadows_action(state: &mut AppState, method: &str, params: serde_json::Value) {
-    if crate::kernel::call(&mut state.kernel, "shadows-action", method, params) {
+    // progress questions go on the control socket so they answer while a cell runs
+    let sent = if method == "preload_status" { crate::kernel::control_call(&mut state.kernel, "shadows-action", method, params) } else { crate::kernel::call(&mut state.kernel, "shadows-action", method, params) };
+    if sent {
         state.shadows.loading = true;
         state.shadows.error = None;
     }
@@ -823,45 +825,12 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
 /// cells; a kernel that died fails the cells still marked running.
 pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     let out = crate::kernel::poll(&mut state.kernel);
-    // the preload starts once the session is up: list each requested lakehouse's tables
-    if out.ready_now {
-        if let (Some(fabric), Some(p)) = (state.kernel.fabric.clone(), state.kernel.preload.as_mut()) {
-            p.started = Some(std::time::Instant::now());
-            let wanted: Vec<(String, String)> = if fabric.preload.iter().any(|s| s == "all") { fabric.lakehouses.clone() } else { fabric.lakehouses.iter().filter(|(n, _)| fabric.preload.iter().any(|w| w.eq_ignore_ascii_case(n))).cloned().collect() };
-            p.listing = wanted.len();
-            state.shadows.preload = state.kernel.preload.as_ref().map(|p| p.as_json());
-            for (name, id) in wanted {
-                crate::fabric::list_lakehouse_tables(state, cx, &fabric.workspace_id, &name, &id);
-            }
-        }
+    // a session that starts with a preload: ask for its progress once so the window has it
+    if out.ready_now && state.kernel.fabric.as_ref().map(|f| !f.preload.is_empty()).unwrap_or(false) {
+        shadows_action(state, "preload_status", serde_json::json!({}));
     }
     for (tag, result) in out.calls {
         match tag.as_str() {
-            "preload-mount" => {
-                if let Some(p) = state.kernel.preload.as_mut() {
-                    p.in_flight = false;
-                    match result {
-                        Ok(v) => {
-                            let mounted = v.get("mounted").and_then(|m| m.as_array()).map(|a| a.len()).unwrap_or(0);
-                            let failed = v.get("failed").and_then(|m| m.as_array()).cloned().unwrap_or_default();
-                            p.done += mounted;
-                            p.failed += failed.len();
-                            for f in failed.iter().take(5) {
-                                p.errors.push(format!("{}: {}", f.get("table").and_then(|t| t.as_str()).unwrap_or("?"), f.get("error").and_then(|t| t.as_str()).unwrap_or("?")));
-                            }
-                        }
-                        Err(e) => {
-                            p.failed += 8;
-                            p.errors.push(e);
-                        }
-                    }
-                }
-                crate::kernel::preload_pump(&mut state.kernel);
-                state.shadows.preload = state.kernel.preload.as_ref().map(|p| p.as_json());
-                if state.kernel.preload.as_ref().map(|p| p.state() == "done").unwrap_or(false) && state.shadows.open {
-                    refresh_shadows(state);
-                }
-            }
             "shadows" => {
                 state.shadows.loading = false;
                 match result {
@@ -918,11 +887,11 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     }
     let mut followups = Vec::new();
     let mut pumps: Vec<(TabId, bool)> = Vec::new();
-    for (req, result) in out.done {
+    for (req, result, blobs) in out.done {
         let Some(idx) = state.tab_index(req.tab) else { continue };
         let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
         let Some(ci) = nb.cell_index(&req.cell_id) else { continue };
-        let o = crate::kernel::outcome(&result);
+        let o = crate::kernel::outcome(&result, &blobs);
         let cs = &mut nb.cells[ci];
         let Some(run) = cs.run.as_mut() else { continue };
         let interrupted = o.interrupted || matches!(&result, Err(e) if e.starts_with("interrupted"));
