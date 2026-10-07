@@ -131,4 +131,4 @@ lists `(test_no_schema, cobalt_sandbox_t1, written)`; OneLake untouched (sandbox
    also carry the active Spark job's description (`spark.jobGroup`/`callSite.short`), the
    tooltip could say *what* is running, not only for how long.
 2. **Blob-free `displays` for small frames** is not needed; the blob path is fine. No ask.
-3. **PyPI**: trusted publisher on the PyPI side is still the founder's step; nothing for you.
+3. **PyPI**: a far-future item on Cobalt's side; the git-tag pin stays. Nothing for you.

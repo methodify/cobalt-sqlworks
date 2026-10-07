@@ -2,26 +2,26 @@
 
 ## Unreleased — 0.7.3
 
-- **local-spark-mcp 0.4.1: Stop interrupts the cell, the session survives.** The runtime pin moves
-  to 0.4.1 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
+- **local-spark-mcp 0.4.2: Stop interrupts the cell, the session survives.** The runtime pin moves
+  to 0.4.2 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
   control socket: Spark jobs are cancelled within seconds, the cell ends as *cancelled* with what
   it printed so far plus "Interrupted (Spark jobs cancelled)", and the session, its namespace and
   its lakehouse clones stay. Stop again while that is pending ends the session (for a cell stuck
   in pure Python, which Windows cannot interrupt mid-call). Cell output **streams** as the cell
   runs instead of arriving at the end. Replies are checked against their request id on both
   sockets; a mismatch restarts the worker instead of misattributing results. The environment is
-  brought to 0.4.1 by "Reinstall / update" on the Spark runtime page; on an older environment
+  brought to 0.4.2 by "Reinstall / update" on the Spark runtime page; on an older environment
   Stop keeps killing the worker and the session log says why.
 - **DataFrames arrive natively.** `display(df)`, a bare DataFrame or pandas frame as a cell's last
   expression, and `%%sql` results come back as Arrow attached to the worker's reply; the hook
   Cobalt used to install into the session (IPC files under the runtime folder plus a marker
   line) is gone on 0.4.1, kept only for older environments. The row cap for all three is
   Settings → Notebooks → "Rows a Spark DataFrame brings back" (`display(df, limit=N)` overrides).
-- **Schema-enabled lakehouses in Spark cells.** With 0.4.1 a lakehouse whose tables live in schema
-  folders gets a catalog named after it (`test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`,
-  `USE test`), while tables at the top level stay `test.<table>`. Known issue in 0.4.1, reported
-  upstream: with that catalog current, no table of such a lakehouse materializes
-  (`UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY … delta`); lakehouses without schemas are unaffected.
+- **Schema-enabled lakehouses in Spark cells.** A lakehouse whose tables live in schema folders
+  gets a catalog named after it, so `test.dbo.publicholidays`, `SHOW TABLES IN test.dbo` and
+  `USE test` work as in a Fabric notebook; an unqualified `publicholidays` resolves to the default
+  schema of the default lakehouse, and tables at the top level stay `test.<table>` (0.4.1 shipped
+  the catalog, 0.4.2 made every table of such a lakehouse materialize with it in place).
 - **Fixed: worker sockets were non-blocking on Windows.** An accepted socket inherits the
   listener's non-blocking mode there, so the wait for a cell's reply spun instead of blocking and
   the interrupt acknowledgement was reported as a timeout the moment it was sent (the cell was

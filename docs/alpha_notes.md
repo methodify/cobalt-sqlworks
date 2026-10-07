@@ -329,13 +329,16 @@ so the progress bar moves while a cell runs. Between 0.3.5 and 0.4.0 Cobalt list
 drove `mount_tables` itself because the worker's discovery needed a credential this process never
 gives it and the Fabric REST tables endpoint refuses schema-enabled lakehouses; that code is gone.
 **Schema-enabled lakehouses** (`Tables/<schema>/<table>`) get a V2 catalog named after the
-lakehouse in 0.4.1 (`SHOW NAMESPACES IN test` → `dbo`), but as of 0.4.1 no table of such a
-lakehouse materializes: the worker makes that catalog the session's current catalog, so the
-`delta.`path`` SQL behind every shallow clone resolves under it and Spark answers
-`UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY … delta` — top-level tables included. Diagnosed live on
-the `test` lakehouse and reported in `docs/requests/local-spark-mcp-0.4.1-reply.md`; until the
-next worker release, bind Spark notebooks to lakehouses without schemas (`test_no_schema`
-verified end to end: preload, sandbox `saveAsTable`, `SHOW TABLES`, shadows).
+lakehouse (`SHOW NAMESPACES IN test` → `dbo`; `test.dbo.publicholidays`, `SHOW TABLES IN
+test.dbo`, `USE test`), top-level tables stay `test.<table>`, and an unqualified name resolves to
+the default lakehouse's default schema (`spark_catalog.test__dbo` is current at start). 0.4.1
+had every table of such a lakehouse fail to materialize because its catalog was made current and
+the shallow clone's `delta.`path`` SQL then resolved under it (diagnosed live on `test`, see
+`docs/requests/local-spark-mcp-0.4.1-reply.md`); 0.4.2 qualifies everything the worker runs
+with `spark_catalog.` and leaves `USE test` to the user. In your own cells, with a V2 catalog
+current, write `spark_catalog.delta.`path`` rather than `delta.`path``. Both fixtures are
+verified: `test` (mixed layout) and `test_no_schema` (plain, empty — preload 0/0, sandbox
+`saveAsTable`, `SHOW TABLES`, shadows).
 
 ## Permissions and re-consent (0.7.1)
 
