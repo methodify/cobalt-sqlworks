@@ -50,7 +50,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 for (t, icon, label) in TABS {
                     let selected = tab == *t;
                     let text = RichText::new(format!("{icon}   {label}")).size(13.0).color(if selected { theme.text } else { theme.text_muted });
-                    let r = ui.add_sized(Vec2::new(168.0, 30.0), egui::Button::new(text).fill(if selected { theme.bg_selection } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(6.0));
+                    // min_size in the column's top-down(Min) layout keeps the label left-aligned
+                    // (add_sized would centre it)
+                    let r = ui.add(egui::Button::new(text).min_size(Vec2::new(168.0, 30.0)).fill(if selected { theme.bg_selection } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(6.0));
                     r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("settings tab {label}")));
                     if r.clicked() {
                         tab = *t;
@@ -677,9 +679,33 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
     let busy = runtime.job.is_some();
     ui.horizontal(|ui| {
         let ready = runtime.status.as_ref().map(|s| s.is_ready()).unwrap_or(false);
-        let b = ui.add_enabled(!busy, egui::Button::new(if ready { "Reinstall / update" } else { "Install for me" }));
+        // what the install will actually do: present components are kept, only the rest is fetched
+        let pinned = manifest.local_spark_mcp.version.clone();
+        let (label, plan_text) = match runtime.status.as_ref() {
+            Some(st) => {
+                let kept = |c: &cobalt_runtime::ComponentState| matches!(c, cobalt_runtime::ComponentState::Managed { .. } | cobalt_runtime::ComponentState::Adopted { .. });
+                let mut lines: Vec<String> = Vec::new();
+                lines.push(format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }));
+                lines.push(format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }));
+                let pkg_update = st.package_version.as_deref().map(|v| v != pinned).unwrap_or(false);
+                lines.push(match (&st.package_version, kept(&st.env)) {
+                    (Some(v), false) if pkg_update => format!("Spark package: local-spark-mcp {v} → {pinned} (pyspark/delta-spark kept)"),
+                    (_, true) => format!("Spark package: local-spark-mcp {pinned} reinstalled over itself (fast, cached)"),
+                    _ => format!("Spark package: local-spark-mcp {pinned} + pyspark/delta-spark installed"),
+                });
+                lines.push(format!("JDK: {}", if kept(&st.jdk) { "kept" } else { "downloaded" }));
+                lines.push("then one Spark start to cache its jars (~20 s)".into());
+                let label = if pkg_update && kept(&st.uv) && kept(&st.python) && kept(&st.jdk) { format!("Update Spark to {pinned}") } else if ready { "Reinstall / update".to_string() } else { "Install for me".to_string() };
+                (label, lines.join("
+"))
+            }
+            None => ("Install for me".to_string(), "Downloads what is missing (uv, Python, pyspark/delta-spark, a JDK), then starts Spark once so its jars are cached.".to_string()),
+        };
+        let b = ui.add_enabled(!busy, egui::Button::new(label));
         b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install spark runtime"));
-        if b.on_hover_text("Downloads what is missing (uv, Python, pyspark/delta-spark, a JDK), then starts Spark once so its jars are cached. Hash-checked and resumable.").clicked() {
+        if b.on_hover_text(format!("What this will do:
+{plan_text}
+Hash-checked and resumable; nothing present is downloaded again.")).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::Install, draft.clone()));
         }
         let b = ui.add_enabled(!busy && ready, egui::Button::new("Run smoke test"));

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — 0.8.1
+
+- **Updating over an installed version no longer walks you through the old uninstaller.** The
+  Windows installer still asks once whether to remove the previous version; after that the
+  previous uninstaller runs silently.
+- **No more console flashes on Windows.** The one remaining subprocess started without the
+  no-window flag (the `uv --version` probe the runtime page and the session start run) has it.
+- **Settings tab labels are left-aligned.**
+- **The Spark runtime button says what it will do.** "Update Spark to 0.6.4" when only the
+  local-spark-mcp package is behind the pin, "Install for me" when something is missing,
+  "Reinstall / update" otherwise; the tooltip lists what is kept (uv, Python, the JDK and the
+  environment are reused when present) and what is fetched, and the step labels say "Checking …
+  (installed only if missing)". This is what the install always did; it just never said so.
+
 ## 0.8.0 — 2026-10-07
 
 - **Every notebook gets its own Spark context.** With local-spark-mcp 0.5.0 (the new runtime pin)

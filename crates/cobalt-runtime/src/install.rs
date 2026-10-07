@@ -340,7 +340,7 @@ fn step_uv(cx: &Context, rec: &mut Installed) -> Result<PathBuf> {
 
 fn step_python(cx: &Context, uv: &Path, profile: &Profile, rec: &mut Installed) -> Result<String> {
     let want = profile.python_for(Platform::current()).to_string();
-    (cx.progress)(Progress::Step { step: Step::Python, label: format!("Installing Python {want}") });
+    (cx.progress)(Progress::Step { step: Step::Python, label: format!("Checking Python {want} (installed only if missing)") });
     let env = uv_env(cx.dirs);
     std::fs::create_dir_all(cx.dirs.python_dir())?;
     run_tool(cx, uv, &["python", "install", &want], &env)?;
@@ -352,7 +352,7 @@ fn step_python(cx: &Context, uv: &Path, profile: &Profile, rec: &mut Installed) 
 }
 
 fn step_env(cx: &Context, uv: &Path, profile_name: &str, profile: &Profile, python: &str, rec: &mut Installed) -> Result<PathBuf> {
-    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Creating the {profile_name} environment") });
+    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Checking the {profile_name} environment (created only if missing)") });
     let env = uv_env(cx.dirs);
     let env_dir = cx.dirs.env_dir(profile_name);
     let env_dir_s = env_dir.to_string_lossy().to_string();
@@ -360,7 +360,7 @@ fn step_env(cx: &Context, uv: &Path, profile_name: &str, profile: &Profile, pyth
         run_tool(cx, uv, &["venv", &env_dir_s, "--python", python, "--seed"], &env)?;
     }
     let req = cx.manifest.requirement(profile);
-    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Installing pyspark {} + delta-spark {} (local-spark-mcp {})", profile.pyspark, profile.delta, cx.manifest.local_spark_mcp.version) });
+    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Updating local-spark-mcp to {} (pyspark {} + delta-spark {} kept when already there)", cx.manifest.local_spark_mcp.version, profile.pyspark, profile.delta) });
     let py = cx.dirs.env_python(profile_name).to_string_lossy().to_string();
     run_tool(cx, uv, &["pip", "install", "--python", &py, "--reinstall-package", "local-spark-mcp", &req], &env)?;
     let v = detect::installed_package_version(&env_dir, "local-spark-mcp");

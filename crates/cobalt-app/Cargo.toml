@@ -104,6 +104,8 @@ icons = ["../../assets/icon.ico", "../../assets/icons/32x32.png", "../../assets/
 
 [package.metadata.packager.nsis]
 installer-mode = "currentUser"
+# cargo-packager 0.11.8's template with the previous version's uninstaller run silently (see the file header)
+template = "nsis/installer.nsi"
 
 [package.metadata.packager.deb]
 depends = ["libxkbcommon0", "libwayland-client0", "libgl1", "libfontconfig1", "libdbus-1-3", "libssl3"]

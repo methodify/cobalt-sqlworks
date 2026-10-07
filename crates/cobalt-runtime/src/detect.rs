@@ -195,7 +195,14 @@ pub fn which(name: &str) -> Option<PathBuf> {
 
 /// `uv --version` → "0.12.23".
 pub fn uv_version(exe: &Path) -> Option<String> {
-    let out = Command::new(exe).arg("--version").output().ok()?;
+    let mut cmd = Command::new(exe);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashes when the runtime is inspected
+    }
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }

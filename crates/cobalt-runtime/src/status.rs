@@ -73,6 +73,8 @@ pub struct RuntimeStatus {
     pub disk_bytes: u64,
     /// The lakehouse Files mirror under the state folder (lazily fetched files and pulled folders).
     pub mirror_bytes: u64,
+    /// The installed local-spark-mcp version (to tell an update from a reinstall).
+    pub package_version: Option<String>,
     pub last_error: Option<String>,
     /// `python -m local_spark_mcp.healthcheck --json` from the environment (None when it is not
     /// installed or the check could not run).
@@ -196,6 +198,7 @@ impl RuntimeStatus {
             jdk_candidates,
             disk_bytes: crate::dir_size(&dirs.root),
             mirror_bytes: crate::dir_size(&dirs.state_dir().join("lakehouses")),
+            package_version: record.package_version.clone(),
             last_error: record.last_error.clone(),
             health,
         }
