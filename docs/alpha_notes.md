@@ -328,9 +328,14 @@ Vault is refused with a 404). The Shadows window polls `preload_status` on the c
 so the progress bar moves while a cell runs. Between 0.3.5 and 0.4.0 Cobalt listed OneLake and
 drove `mount_tables` itself because the worker's discovery needed a credential this process never
 gives it and the Fabric REST tables endpoint refuses schema-enabled lakehouses; that code is gone.
-**Schema-enabled lakehouses** (`Tables/<schema>/<table>`) are first-class in 0.4.1: the lakehouse
-gets a V2 catalog named after it, so `test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`,
-`SHOW NAMESPACES IN test` and `USE test` work, and top-level tables stay `test.<table>`.
+**Schema-enabled lakehouses** (`Tables/<schema>/<table>`) get a V2 catalog named after the
+lakehouse in 0.4.1 (`SHOW NAMESPACES IN test` → `dbo`), but as of 0.4.1 no table of such a
+lakehouse materializes: the worker makes that catalog the session's current catalog, so the
+`delta.`path`` SQL behind every shallow clone resolves under it and Spark answers
+`UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY … delta` — top-level tables included. Diagnosed live on
+the `test` lakehouse and reported in `docs/requests/local-spark-mcp-0.4.1-reply.md`; until the
+next worker release, bind Spark notebooks to lakehouses without schemas (`test_no_schema`
+verified end to end: preload, sandbox `saveAsTable`, `SHOW TABLES`, shadows).
 
 ## Permissions and re-consent (0.7.1)
 

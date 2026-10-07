@@ -18,8 +18,10 @@
   line) is gone on 0.4.1, kept only for older environments. The row cap for all three is
   Settings → Notebooks → "Rows a Spark DataFrame brings back" (`display(df, limit=N)` overrides).
 - **Schema-enabled lakehouses in Spark cells.** With 0.4.1 a lakehouse whose tables live in schema
-  folders gets a catalog named after it, so `test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`
-  and `USE test` work as in a Fabric notebook, while tables at the top level stay `test.<table>`.
+  folders gets a catalog named after it (`test.dbo.publicholidays`, `SHOW TABLES IN test.dbo`,
+  `USE test`), while tables at the top level stay `test.<table>`. Known issue in 0.4.1, reported
+  upstream: with that catalog current, no table of such a lakehouse materializes
+  (`UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY … delta`); lakehouses without schemas are unaffected.
 - **Fixed: worker sockets were non-blocking on Windows.** An accepted socket inherits the
   listener's non-blocking mode there, so the wait for a cell's reply spun instead of blocking and
   the interrupt acknowledgement was reported as a timeout the moment it was sent (the cell was

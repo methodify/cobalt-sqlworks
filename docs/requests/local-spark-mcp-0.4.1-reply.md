@@ -58,16 +58,75 @@ running normally.
 
 ## Live output from the schema-enabled test lakehouse
 
-Pending. The dev box's Fabric sign-in lapsed while the sockets above were being chased, and a
-fresh sign-in needs the founder at the browser prompt; the `test` lakehouse here has both
-layouts (`Tables/sales_import`, `Tables/r2e_stream`, `Tables/cobalt_nb_writethrough` at the top
-level and `Tables/dbo/{cobalt_export_schema, cobalt_export_test, publicholidays, r2e_dialog,
-r2e_stream2}`), so it is the right fixture for `test.dbo.publicholidays`, `SHOW TABLES IN
-test.dbo`, `SHOW NAMESPACES IN test`, `test.sales_import` and the worker-side preload over host
-tokens. The script is ready; the output will be appended here as soon as the sign-in is done.
+Workspace "Fabric test", lakehouse `test` (both layouts: `Tables/{sales_import, r2e_stream,
+cobalt_nb_writethrough}` at the top level, `Tables/dbo/{cobalt_export_schema, cobalt_export_test,
+publicholidays, r2e_dialog, r2e_stream2}`). Windows, Python 3.11, fabric-2.0, Spark 4.1.1,
+`write_mode: sandbox`, `preload: ["test"]`, all tokens from Cobalt's endpoint (1 request served).
+
+**What works.** Discovery and the catalog wiring: `info.lakehouse_schemas = {"test": ["dbo"]}`,
+`spark.conf.get("spark.sql.catalog.test")` → `ch.fs.OneLakeSchemaCatalog`, `SHOW NAMESPACES IN
+test` → `['dbo']`, `spark.catalog.listCatalogs()` → `spark_catalog, test`, `SHOW TABLES IN
+test.dbo` runs (0 rows, see below). The preload listed all 8 tables over the host token in 5.6 s.
+
+**What fails — every table, both layouts, the same error:**
+
+```
+SELECT COUNT(*) AS n FROM test.sales_import
+spark.table("test.dbo.publicholidays")
+SELECT ... FROM test.dbo.publicholidays
+DESCRIBE EXTENDED test.dbo.publicholidays
+spark.table("spark_catalog.test.sales_import")
+→ AnalysisException: [UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY]
+  Unsupported data source type for direct query on files: delta SQLSTATE: 0A000; line 1 pos 0
+
+preload_status.lakehouses.test.errors:
+  cobalt_nb_writethrough / r2e_stream / sales_import →
+      [UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY] ... delta
+  dbo/cobalt_export_schema, dbo/cobalt_export_test, dbo/publicholidays, ... →
+      [TABLE_OR_VIEW_NOT_FOUND] The table or view `test__dbo`.`<t>` cannot be found
+```
+
+**Why (from a diagnostic cell in the same session):**
+
+```
+spark.sql.extensions            = io.delta.sql.DeltaSparkSessionExtension   (set, and live)
+spark.sql.catalog.spark_catalog = ch.fs.OneLakeCatalog
+spark.jars.packages             = io.delta:delta-spark_4.1_2.13:4.2.0,org.apache.hadoop:hadoop-azure:3.4.1
+current catalog: test   current database: dbo      ← the V2 catalog is the session's current catalog
+
+spark.read.format("delta").load("abfss://…/Tables/sales_import").count()  → 20000   (Delta is fine)
+spark.sql("SELECT COUNT(*) FROM delta.`abfss://…/Tables/sales_import`")   → UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY
+spark.table("spark_catalog.test.sales_import")                             → UNSUPPORTED_DATASOURCE_FOR_DIRECT_QUERY
+SHOW TABLES IN spark_catalog.test__dbo                                     → []
+```
+
+With the current catalog set to `test`, a two-part `delta.`<path>`` identifier is resolved as
+`test.delta.<path>` — a table named `<path>` in namespace `delta` of the V2 catalog — so Delta's
+analyzer rule for path tables never sees it and Spark's generic direct-query check rejects
+`delta`. Every materialization path that goes through `delta.`…`` SQL (the shallow clone of a
+first touch, the preload's mounts, and therefore the `test__dbo` session database the schema
+catalog delegates to) fails for as long as the current catalog is not `spark_catalog`. That is
+also why the 0.4.0 session, which never changed the current catalog, mounted these same tables.
+
+Two ways out, either is fine for Cobalt: leave `spark_catalog` current at start (make `USE test`
+the user's choice, and have `OneLakeSchemaCatalog` resolve its tables without depending on the
+session's current catalog), or materialize through the DataFrame/Delta API
+(`spark.read.format("delta").load(path)` / `DeltaTable.forPath`) and `spark_catalog.`-qualified
+identifiers instead of `delta.`path`` SQL, so the current catalog cannot matter. A regression
+test with a non-`spark_catalog` current catalog would have caught this.
+
+**The plain-layout lakehouse works end to end.** `test_no_schema` (new, empty, no schemas):
+`info.lakehouse_schemas` has no entry for it, no catalog is registered, databases are
+`default, test, test__dbo, test_no_schema`; preload finished `done 0/0`; `SHOW TABLES IN
+test_no_schema` → 0 rows; `spark.range(5)....saveAsTable("test_no_schema.cobalt_sandbox_t1")`
+followed by a bare `spark.table(...)` → a 5-row grid; `SHOW TABLES` → 1 row; the Shadows window
+lists `(test_no_schema, cobalt_sandbox_t1, written)`; OneLake untouched (sandbox).
 
 ## Asks
 
+0. **The schema catalog and the current catalog** (above) — this one blocks every table of a
+   schema-enabled lakehouse, so it is the one to take first. Cobalt ships 0.7.3 on 0.4.1 with a
+   note that schema-enabled lakehouses need the next worker release.
 1. **`status` for the Stop button.** Already shipped as asked; no change needed. If `cell` could
    also carry the active Spark job's description (`spark.jobGroup`/`callSite.short`), the
    tooltip could say *what* is running, not only for how long.
