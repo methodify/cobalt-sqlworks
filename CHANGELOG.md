@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.8.0
+## 0.8.0 — 2026-10-07
 
 - **Every notebook gets its own Spark context.** With local-spark-mcp 0.5.0 (the new runtime pin)
   each notebook runs in its own context inside the one local Spark session: its own variables
