@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — 0.8.0
+
+- **Every notebook gets its own Spark context.** With local-spark-mcp 0.5.0 (the new runtime pin)
+  each notebook runs in its own context inside the one local Spark session: its own variables
+  and imports, temp views, SQL settings, current database and UDFs, while tables, lakehouse
+  clones, cached data and jars are shared. Two notebooks no longer step on each other's `df`, and
+  a notebook's **default lakehouse is its own** — two notebooks bound to different lakehouses
+  share one session with no restart. The context is created on the notebook's first run and
+  released when the notebook closes; the session keeps running.
+- **A notebook from another workspace attaches to the running session** instead of asking for a
+  restart (`register_lakehouse`, 0.4.3): its lakehouses join the session's catalog, the kernel
+  chip shows "+1" workspace, and a lakehouse whose name clashes with one already attached is
+  reported rather than replaced. Only a different write mode, or a lakehouse on a session that
+  was started without one, still needs a restart, and the chip says which.
+- **Spark jobs are named after the cell.** The cell's first line goes to the worker as the job
+  description (0.4.3), so `status` and the Spark UI say what is running.
+- Agent: `kernel` state carries `features` and `contexts`.
+
 ## 0.7.4 — 2026-10-06
 
 - **Fixed: "Start session" did nothing.** Starting (or restarting) the local Spark session from

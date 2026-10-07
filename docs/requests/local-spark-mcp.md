@@ -121,4 +121,5 @@ and the two new asks (preload credential, schema-enabled lakehouses) — is in
 on the interrupt acknowledgement, healthcheck, bare-expression Arrow) is in
 `local-spark-mcp-0.4.0-reply.md`; the reply to 0.4.1 (everything adopted; the schema-catalog
 current-catalog bug with live evidence) is in `local-spark-mcp-0.4.1-reply.md`; the reply to
-0.4.2 (fix confirmed on the real schema-enabled lakehouse) is in `local-spark-mcp-0.4.2-reply.md`. The next round of asks (contexts, attach after init, lazy Files) is `local-spark-mcp-sessions.md`.
+0.4.2 (fix confirmed on the real schema-enabled lakehouse) is in `local-spark-mcp-0.4.2-reply.md`. The next round of asks (contexts, attach after init, lazy Files) is `local-spark-mcp-sessions.md`;
+the reply to 0.4.3/0.5.0 (contexts adopted, verified live) is `local-spark-mcp-0.5.0-reply.md`.

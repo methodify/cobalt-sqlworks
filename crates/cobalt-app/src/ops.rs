@@ -884,6 +884,7 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     }
     let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
+    crate::kernel::drop_context(&mut state.kernel, t.id);
     // keep a restorable snapshot
     let text = if t.is_notebook() { snapshot_document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).unwrap_or_default() } else { t.text.clone() };
     let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);

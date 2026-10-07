@@ -201,6 +201,8 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "pending_fabric_start": k.pending_fabric_start.is_some(),
         "control": k.control.is_some(),
         "native_arrow": k.native_arrow,
+        "features": k.features.iter().cloned().collect::<Vec<_>>(),
+        "contexts": k.contexts.len(),
         "interrupting": k.interrupting.map(|t| t.elapsed().as_secs()),
         "last_interrupt": k.last_interrupt.as_ref().map(|(s, r)| json!({"secs": s, "result": r})),
         "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },

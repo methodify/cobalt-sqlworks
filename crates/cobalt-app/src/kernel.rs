@@ -160,15 +160,18 @@ pub struct KernelFabric {
     /// Lakehouses whose tables the session clones in the background right after start
     /// (`["all"]` for every lakehouse in the workspace).
     pub preload: Vec<String>,
+    /// Workspaces attached after start through `register_lakehouse` (`(id, name)`).
+    pub extra_workspaces: Vec<(String, String)>,
 }
 
 impl KernelFabric {
     pub fn label(&self) -> String {
-        format!("{}{} · {}", self.default_lakehouse.clone().unwrap_or_else(|| "no default lakehouse".into()), if self.workspace_name.is_empty() { String::new() } else { format!(" ({})", self.workspace_name) }, self.write_mode)
+        let ws = if self.workspace_name.is_empty() { String::new() } else if self.extra_workspaces.is_empty() { format!(" ({})", self.workspace_name) } else { format!(" ({} +{})", self.workspace_name, self.extra_workspaces.len()) };
+        format!("{}{} · {}", self.default_lakehouse.clone().unwrap_or_else(|| "no default lakehouse".into()), ws, self.write_mode)
     }
-    /// Same binding (ignoring the account fields).
-    pub fn same_binding(&self, other: &KernelFabric) -> bool {
-        self.workspace_id == other.workspace_id && self.default_lakehouse == other.default_lakehouse && self.write_mode == other.write_mode && self.lakehouses == other.lakehouses && self.preload == other.preload
+    /// The session knows this workspace (started with it or attached later).
+    pub fn knows_workspace(&self, id: &str) -> bool {
+        self.workspace_id == id || self.extra_workspaces.iter().any(|(w, _)| w == id)
     }
 }
 
@@ -208,6 +211,22 @@ pub struct RunReq {
     pub tab: TabId,
     pub cell_id: String,
     pub code: String,
+    /// The notebook's context (local-spark-mcp 0.5.0): its own namespace and SparkSession in the
+    /// shared JVM, created on first use. `None` = the worker's default context.
+    pub context: Option<String>,
+    /// The context's default lakehouse (current database), set when it is created.
+    pub context_lakehouse: Option<String>,
+    /// The cell's first line, for `status.cell.jobs` and the Spark UI (0.4.3).
+    pub job_description: Option<String>,
+    /// Lakehouses to attach before the cell runs (`register_lakehouse`, 0.4.3) — a notebook from
+    /// a workspace the session does not know yet.
+    pub register: Vec<Value>,
+}
+
+/// The context id a notebook tab uses in the worker.
+pub fn context_id(tab: TabId) -> String {
+    let s = tab.to_string();
+    format!("nb-{}", &s[..s.len().min(8)])
 }
 
 enum Cmd {
@@ -216,6 +235,8 @@ enum Cmd {
     Run(RunReq),
     /// Any other worker method (shadow_status, discard_shadow, restore_shadow, info…).
     Call { tag: String, method: String, params: Value },
+    /// A notebook closed: release its context.
+    DropContext { tab: TabId, id: String },
     Shutdown,
 }
 
@@ -226,6 +247,9 @@ pub enum KernelEvent {
     CellOutput { tab: TabId, cell_id: String, stream: String, text: String },
     /// The control socket answered an `interrupt`.
     Interrupted(Result<Value, String>),
+    /// A notebook's context was created in / dropped from the worker.
+    ContextCreated(TabId),
+    ContextDropped(TabId),
     CallResult { tag: String, result: Result<Value, String> },
     /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback,
     /// displays…) with the Arrow blobs that followed it, or a transport-level error.
@@ -267,11 +291,22 @@ pub struct KernelUi {
     /// DataFrames arrive as native `displays` blobs (local-spark-mcp 0.4.1+) rather than through
     /// the legacy file-marker bootstrap.
     pub native_arrow: bool,
+    /// The worker's additive capabilities (`init.features`, 0.5.0): `contexts`,
+    /// `register_lakehouse`, `job_description`, … Empty on older workers.
+    pub features: std::collections::HashSet<String>,
+    /// Notebooks that have a context in the worker.
+    pub contexts: std::collections::HashSet<TabId>,
+}
+
+impl KernelUi {
+    pub fn has(&self, feature: &str) -> bool {
+        self.features.contains(feature)
+    }
 }
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default() }
     }
 }
 
@@ -442,6 +477,8 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
 fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicBool>, egui: egui::Context) {
     let mut worker: Option<Worker> = None;
     let mut capture = false;
+    // contexts created in this worker (0.5.0), by id
+    let mut created: std::collections::HashSet<String> = Default::default();
     let log_tx = tx.clone();
     let log_egui = egui.clone();
     let log: cobalt_runtime::worker::LogFn = Arc::new(move |s: String| {
@@ -452,6 +489,7 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
         match cmd {
             Cmd::Start { cfg, bootstrap, capture: cap } => {
                 capture = cap;
+                created.clear();
                 cancel.store(false, Ordering::Relaxed);
                 match Worker::start(&cfg, log.clone(), &cancel) {
                     Ok(mut w) => {
@@ -501,7 +539,51 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                     let _ = ev_tx.send(KernelEvent::CellOutput { tab, cell_id: cell_id.clone(), stream: ev.to_string(), text: text.to_string() });
                     ev_egui.request_repaint_after(Duration::from_millis(100));
                 };
-                let r = w.call_streaming("run_code", json!({"code": req.code, "stream": stream, "capture_result": capture}), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_event);
+                // lakehouses from a workspace the session did not start with
+                for lh in &req.register {
+                    let name = lh.get("name").and_then(Value::as_str).unwrap_or("?").to_string();
+                    match w.call("register_lakehouse", json!({"lakehouse": lh}), Duration::from_secs(300)) {
+                        Ok(_) => {
+                            let _ = tx.send(KernelEvent::Log(format!("cobalt: attached lakehouse {name}")));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(KernelEvent::Log(format!("cobalt: could not attach lakehouse {name}: {e}")));
+                        }
+                    }
+                }
+                // the notebook's own context, created on first use
+                let mut context = req.context.clone();
+                if let Some(id) = context.clone() {
+                    if !created.contains(&id) {
+                        let mut p = serde_json::Map::new();
+                        p.insert("id".into(), Value::String(id.clone()));
+                        if let Some(lh) = &req.context_lakehouse {
+                            p.insert("default_lakehouse".into(), Value::String(lh.clone()));
+                        }
+                        match w.call("create_context", Value::Object(p), Duration::from_secs(120)) {
+                            Ok(v) => {
+                                created.insert(id.clone());
+                                let _ = tx.send(KernelEvent::ContextCreated(req.tab));
+                                let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} created (database {})", v.get("current_database").and_then(Value::as_str).unwrap_or("default"))));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} could not be created, running in the shared context: {e}")));
+                                context = None;
+                            }
+                        }
+                    }
+                }
+                let mut params = serde_json::Map::new();
+                params.insert("code".into(), Value::String(req.code.clone()));
+                params.insert("stream".into(), Value::Bool(stream));
+                params.insert("capture_result".into(), Value::Bool(capture));
+                if let Some(c) = &context {
+                    params.insert("context".into(), Value::String(c.clone()));
+                }
+                if let Some(d) = &req.job_description {
+                    params.insert("job_description".into(), Value::String(d.clone()));
+                }
+                let r = w.call_streaming("run_code", Value::Object(params), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_event);
                 match r {
                     Ok(v) => {
                         let blobs = std::mem::take(&mut w.last_blobs);
@@ -533,6 +615,22 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                         }
                     }
                 }
+                egui.request_repaint();
+            }
+            Cmd::DropContext { tab, id } => {
+                if let Some(w) = worker.as_mut() {
+                    if created.remove(&id) {
+                        match w.call("drop_context", json!({"id": id}), Duration::from_secs(60)) {
+                            Ok(_) => {
+                                let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} dropped")));
+                            }
+                            Err(e) => {
+                                let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} could not be dropped: {e}")));
+                            }
+                        }
+                    }
+                }
+                let _ = tx.send(KernelEvent::ContextDropped(tab));
                 egui.request_repaint();
             }
             Cmd::Call { tag, method, params } => {
@@ -568,6 +666,16 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
         }
     }
     k.waiting.push(req);
+}
+
+/// A notebook closed: release its context in the worker (no-op without one).
+pub fn drop_context(k: &mut KernelUi, tab: TabId) {
+    if !k.contexts.contains(&tab) {
+        return;
+    }
+    if let Some(tx) = &k.tx {
+        let _ = tx.send(Cmd::DropContext { tab, id: context_id(tab) });
+    }
 }
 
 /// A request on the control socket (`status`, `preload_status`, `ping`), answered while a cell
@@ -700,9 +808,17 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
     for ev in events {
         match ev {
             KernelEvent::Ready { info, control } => {
+                k.features = info.get("features").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                k.contexts.clear();
                 k.state = KernelState::Ready { info, since: Instant::now() };
                 k.control = control;
                 ready_now = true;
+            }
+            KernelEvent::ContextCreated(tab) => {
+                k.contexts.insert(tab);
+            }
+            KernelEvent::ContextDropped(tab) => {
+                k.contexts.remove(&tab);
             }
             KernelEvent::CellOutput { tab, cell_id, stream, text } => outputs.push((tab, cell_id, stream, text)),
             KernelEvent::Interrupted(r) => {
@@ -737,6 +853,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.fabric = None;
                 k.control = None;
                 k.interrupting = None;
+                k.contexts.clear();
+                k.features.clear();
                 broke = Some("the local Spark session stopped".to_string());
             }
             KernelEvent::Failed(e) => {
@@ -748,6 +866,8 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.fabric = None;
                 k.control = None;
                 k.interrupting = None;
+                k.contexts.clear();
+                k.features.clear();
                 broke = Some(e);
             }
         }

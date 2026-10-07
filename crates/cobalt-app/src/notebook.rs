@@ -335,7 +335,7 @@ fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<cr
         cx.toast(ToastKind::Warning, "The notebook's default lakehouse is not in that workspace any more; pick one from the lakehouse button.");
     }
     let preload = if b.preload { default_lakehouse.clone().map(|d| vec![d]).unwrap_or_else(|| vec!["all".to_string()]) } else { Vec::new() };
-    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload }))
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, extra_workspaces: Vec::new() }))
 }
 
 /// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).
@@ -768,6 +768,8 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
 fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, override_text: Option<String>) {
     use crate::kernel::{self, KernelState, RunReq};
     let tab = state.tabs[idx].id;
+    let mut pending_register: Vec<serde_json::Value> = Vec::new();
+    let mut context_lakehouse: Option<String> = None;
     // the kernel must be up or starting
     match &state.kernel.state {
         KernelState::Stopped | KernelState::Failed(_) => {
@@ -776,24 +778,73 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
             }
         }
         KernelState::Ready { .. } => {
-            // warn once per notebook when its binding differs from the running session's
-            if !state.kernel.binding_warned.contains(&tab) {
-                if let Ok(want) = kernel_fabric(state, cx, idx) {
-                    let differs = match (&want, &state.kernel.fabric) {
-                        (None, None) => false,
-                        (Some(a), Some(b)) => !a.same_binding(b),
-                        _ => true,
-                    };
-                    if differs {
-                        state.kernel.binding_warned.insert(tab);
-                        let have = state.kernel.fabric.as_ref().map(|f| f.label()).unwrap_or_else(|| "no lakehouse".into());
-                        cx.toast(ToastKind::Warning, format!("The running Spark session is bound to {have}. Restart the session (status bar) to use this notebook's lakehouse binding."));
+            // the notebook's binding against the running session's: the default lakehouse is
+            // the notebook's own context (0.5.0), a new workspace is attached (0.4.3); only a
+            // different write mode, or a lakehouse on a session started without one, needs a
+            // restart — said once per notebook
+            match kernel_fabric(state, cx, idx) {
+                Ok(want) => {
+                    let have = state.kernel.fabric.clone();
+                    match (want, have) {
+                        (None, _) => {}
+                        (Some(_), None) => {
+                            if state.kernel.binding_warned.insert(tab) {
+                                cx.toast(ToastKind::Warning, "The running Spark session was started without a lakehouse. Restart the session (kernel menu) to use this notebook's lakehouse.");
+                            }
+                        }
+                        (Some(w), Some(h)) => {
+                            if w.write_mode != h.write_mode {
+                                if state.kernel.binding_warned.insert(tab) {
+                                    cx.toast(ToastKind::Warning, format!("The running Spark session is in {} mode; this notebook asks for {}. Restart the session (kernel menu) to switch.", h.write_mode, w.write_mode));
+                                }
+                            } else if !h.knows_workspace(&w.workspace_id) {
+                                if state.kernel.has("register_lakehouse") {
+                                    let mut fresh: Vec<(String, String)> = Vec::new();
+                                    let mut clashes: Vec<String> = Vec::new();
+                                    for (name, id) in &w.lakehouses {
+                                        match h.lakehouses.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)) {
+                                            Some((_, have_id)) if have_id == id => {}
+                                            Some(_) => clashes.push(name.clone()),
+                                            None => fresh.push((name.clone(), id.clone())),
+                                        }
+                                    }
+                                    if !clashes.is_empty() {
+                                        cx.toast(ToastKind::Warning, format!("Lakehouse name{} already attached from another workspace: {} — reach {} by path or restart the session.", if clashes.len() == 1 { "" } else { "s" }, clashes.join(", "), if clashes.len() == 1 { "it" } else { "them" }));
+                                    }
+                                    pending_register = fresh.iter().map(|(name, id)| serde_json::json!({"name": name, "id": id, "workspace_id": w.workspace_id})).collect();
+                                    if let Some(f) = state.kernel.fabric.as_mut() {
+                                        f.lakehouses.extend(fresh);
+                                        f.extra_workspaces.push((w.workspace_id.clone(), w.workspace_name.clone()));
+                                    }
+                                    cx.toast(ToastKind::Info, format!("Attaching workspace {} to the running Spark session.", if w.workspace_name.is_empty() { w.workspace_id.clone() } else { w.workspace_name.clone() }));
+                                } else if state.kernel.binding_warned.insert(tab) {
+                                    cx.toast(ToastKind::Warning, format!("The running Spark session is bound to {}. Restart the session (kernel menu) to use this notebook's workspace (local-spark-mcp 0.4.3 attaches it without a restart).", h.label()));
+                                }
+                            }
+                            context_lakehouse = w.default_lakehouse.clone();
+                        }
                     }
+                }
+                Err(true) => return, // the workspace's lakehouses are still loading; the cell stays queued
+                Err(false) => {
+                    if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+                        nb.queue.clear();
+                    }
+                    return;
                 }
             }
         }
         _ => {}
     }
+    // while the session is still starting the Ready arm did not run: the context's default
+    // lakehouse still comes from the notebook's binding (resolved already for the start)
+    if context_lakehouse.is_none() && state.tabs[idx].notebook.as_deref().map(|nb| nb.fabric.is_some()).unwrap_or(false) {
+        if let Ok(Some(w)) = kernel_fabric(state, cx, idx) {
+            context_lakehouse = w.default_lakehouse;
+        }
+    }
+    let use_context = state.kernel.has("contexts");
+    let want_description = state.kernel.has("job_description");
     let t = &mut state.tabs[idx];
     let nb = t.notebook.as_deref_mut().unwrap();
     let lang = nb.language_of(cell_idx);
@@ -835,7 +886,11 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     cs.outputs_collapsed = false;
     let cell_id = cs.id.clone();
     nb.dirty = true;
-    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code });
+    let job_description = if want_description { code.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).map(|l| l.chars().take(80).collect::<String>()) } else { None };
+    // a context per notebook when the worker has them; before the session is up the features
+    // are unknown, so the request carries the context and the thread decides
+    let context = if use_context || !state.kernel.state.is_ready() { Some(kernel::context_id(tab)) } else { None };
+    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code, context, context_lakehouse, job_description, register: pending_register });
     state.history.loaded = false;
 }
 

@@ -280,6 +280,18 @@ the final reply replaces the streamed lines. `%pip install x` works (IPython's p
 the runtime's environment) but is not recorded anywhere. Agent: `kernel {action: status|start|stop|restart|interrupt|log}`;
 `kernel` state carries `protocol_version`, `control` and `interrupting`.
 
+**Contexts (local-spark-mcp 0.5.0, Cobalt 0.8).** Each notebook runs in its own context of the
+one session: `create_context(<nb-id>, default_lakehouse)` on the notebook's first run,
+`run_code(context=…)` for every cell, `drop_context` when the tab closes. Isolated per notebook:
+variables and imports, temp views, SQL conf, current database (the notebook's default lakehouse
+— `test__dbo` for a schema-enabled one), UDFs. Shared: the catalog and its tables, lakehouse
+clones, cached data, jars. Execution is still one cell at a time across notebooks. A notebook
+from a workspace the session did not start with is attached with `register_lakehouse` (its
+lakehouses join the catalog; the chip shows "+N"); a notebook whose write mode differs, or a
+lakehouse notebook on a session started plain, still gets the restart hint. Cells carry a
+`job_description` (first line) so `status.cell.jobs` and the Spark UI name them. The session log
+shows `cobalt: context nb-xxxx created (database …)` / `dropped` / `attached lakehouse …`.
+
 ## Spark runtime (Settings → Spark runtime)
 
 Everything lands under `%LOCALAPPDATA%\Cobalt\Cobalt SQL Works\data\spark-runtime` (override

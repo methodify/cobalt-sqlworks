@@ -1,6 +1,8 @@
 # Spark sessions: lifecycle, lakehouses, Files, warm start — an expansion slate
 
-*Status: decided in principle, 2026-10-06 (founder's answers in §11). Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
+*Status: decided 2026-10-06 (§11); upstream asks 0, 1, 2, 4, 5 shipped in local-spark-mcp
+0.4.3/0.5.0 on 2026-10-07 and adopted in Cobalt 0.8 (contexts per notebook, attach without
+restart, job descriptions); ask 3 (lazy Files) proposed upstream as 0.6.0. Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
 D009. Covers the founder's questions: can one session serve many notebooks, what happens on
 close/open, different workspaces, default lakehouse and Files, and how a user opts into the
 worker's warm start and eager mounting.*
@@ -235,22 +237,22 @@ restart-with-union.
 
 Asks for local-spark-mcp (written up in `docs/requests/local-spark-mcp-sessions.md`):
 
-0. **Contexts** (§4.3): `create_context(id, default_lakehouse)` / `drop_context(id)`;
+0. **Contexts** (§4.3) — *shipped in 0.5.0*: `create_context(id, default_lakehouse)` / `drop_context(id)`;
    `run_code` / `run_sql` / `interrupt` / `status` take `context`; each context is an isolated
    namespace plus `spark.newSession()`; `info.contexts`. Sequential execution across contexts
    is fine for a first version.
-1. `register_lakehouse` / `attach_workspace` after `init` (and `detach`), so a session grows
-   without a restart; `info.lakehouses` reflects it.
-2. `job_description` on `run_code` / `run_sql` (the cell's first line, for `status.cell.jobs`
-   and the Stop tooltip). The default-lakehouse half of this ask is subsumed by contexts.
-3. `files_mode: "lazy" | "mirror"` (default lazy under a host): Spark's `Files/` resolves to
+1. *Shipped in 0.4.3.* `register_lakehouse` / `unregister_lakehouse` after `init`, so a session
+   grows without a restart; `info.lakehouses` reflects it.
+2. *Shipped in 0.4.3.* `job_description` on `run_code` / `run_sql` (the cell's first line, for
+   `status.cell.jobs` and the Stop tooltip).
+3. *Proposed upstream as 0.6.0 (after contexts).* `files_mode: "lazy" | "mirror"` (default lazy under a host): Spark's `Files/` resolves to
    the default lakehouse's `abfss://…/Files/` (no mirror involved); `/lakehouse/<name>/Files`
    is served by Python-level hooks that fetch single files on first access and list directories
    from OneLake; explicit `sync_files` pulls whole subtrees for native readers. Plus
    `mirror_status` (per lakehouse: pulled subtrees, bytes) and `clear_mirror`.
 4. `set_default_lakehouse` as a cheaper alternative to 2 if per-call context is unwelcome.
-5. Confirm `persist_shadow` semantics for "the tables I used last time" (a `shadow_status` that
-   lists persisted clones before they are re-registered).
+5. *Shipped in 0.4.3.* `shadow_status` entries carry `cloned_at` and `registered`; "the tables I
+   used last time" = entries with `registered: false`. `status.idle_s` / `last_activity` too.
 
 ## 9. Phasing
 

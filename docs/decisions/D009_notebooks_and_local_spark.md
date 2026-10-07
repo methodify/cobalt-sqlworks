@@ -50,6 +50,9 @@ wait, write to real tables) is the pain this addresses. See `docs/design/noteboo
 - Slate 2 (2026-10-06): PySpark cells run on the worker through `run_code`; DataFrames come back as
   Arrow via a display hook writing IPC files (interim until upstream adds an Arrow method); Stop
   restarted the session because the protocol had no interrupt.
+- 0.8 (2026-10-07): local-spark-mcp 0.4.3/0.5.0 — a context per notebook in the one session
+  (isolated namespace and SparkSession, shared catalog), workspaces attached in place, job
+  descriptions; the sessions slate (`docs/design/spark_sessions_slate.md`) is the design.
 - 0.7.3 (2026-10-06): local-spark-mcp 0.4.0/0.4.1/0.4.2 — protocol 2. Stop sends `interrupt` on the
   worker's control socket and the session survives; cell output streams; replies are checked by
   id (mismatch = respawn). With 0.4.1 the display hook is retired: `display(df)`, a captured bare

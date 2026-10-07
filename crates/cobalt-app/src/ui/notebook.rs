@@ -100,6 +100,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let nb_fabric = f.state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone());
     let fabric_item = f.state.tabs[idx].fabric_item.as_ref().map(|fi| (fi.item.display_name.clone(), fi.saving, f.state.fabric.workspace(&fi.item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default()));
     let session_fabric = f.state.kernel.fabric.clone();
+    let can_attach = f.state.kernel.has("register_lakehouse");
     // names for the chip
     let (ws_name, lh_name) = match &nb_fabric {
         Some(b) => (
@@ -325,12 +326,13 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         actions.push(NbAction::Command(Command::Shadows));
                     }
                     // the running session's binding, when it differs
-                    if let (Some(sf), KernelState::Ready { .. }) = (&session_fabric, &kernel_state) {
-                        let want = nb_fabric.as_ref().map(|b| (b.workspace_id.clone(), b.lakehouse_id.clone(), b.write_mode.clone()));
-                        let have = (sf.workspace_id.clone(), sf.default_lakehouse.as_ref().and_then(|n| sf.lakehouses.iter().find(|(nm, _)| nm == n).map(|(_, id)| id.clone())), sf.write_mode.clone());
-                        if want.as_ref() != Some(&have) {
+                    if let (Some(sf), Some(b), KernelState::Ready { .. }) = (&session_fabric, &nb_fabric, &kernel_state) {
+                        // the default lakehouse is the notebook's own context and a new workspace is
+                        // attached in place; only the write mode (or an unattachable workspace) needs a restart
+                        let mismatch = b.write_mode != sf.write_mode || (!sf.knows_workspace(&b.workspace_id) && !can_attach);
+                        if mismatch {
                             let r = ui.add(egui::Button::new(RichText::new(format!("{} session: {}", icons::WARNING, sf.label())).size(11.0).color(theme.warning)).small());
-                            if r.on_hover_text("The running session was started with a different binding. Click to restart it with this notebook's.").clicked() {
+                            if r.on_hover_text(if b.write_mode != sf.write_mode { "The running session is in a different write mode. Click to restart it with this notebook's." } else { "The running session does not know this workspace. Click to restart it with this notebook's." }).clicked() {
                                 actions.push(NbAction::Command(Command::KernelRestart));
                             }
                         }
