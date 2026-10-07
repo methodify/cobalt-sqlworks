@@ -27,4 +27,8 @@
   again (it answers when the clone exists, which suits a button better than the background
   preload we had switched to).
 
-Nothing open from Cobalt's side. Thanks for the quick turn.
+One small gap seen while cleaning up a test file: the `notebookutils.fs` shim has `ls`, `exists`,
+`mount` and `unmount` but no `rm` (Fabric's has `rm(path, recurse)`, plus `mkdirs`, `cp`, `mv`,
+`put`, `head`, `append`). Not urgent; the Hadoop filesystem through py4j did the job.
+
+Nothing else open from Cobalt's side. Thanks for the quick turn.
