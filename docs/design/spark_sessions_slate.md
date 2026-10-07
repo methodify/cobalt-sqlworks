@@ -1,6 +1,6 @@
 # Spark sessions: lifecycle, lakehouses, Files, warm start — an expansion slate
 
-*Status: proposed, 2026-10-06. Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
+*Status: decided in principle, 2026-10-06 (founder's answers in §11). Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
 D009. Covers the founder's questions: can one session serve many notebooks, what happens on
 close/open, different workspaces, default lakehouse and Files, and how a user opts into the
 worker's warm start and eager mounting.*
@@ -102,13 +102,40 @@ today, worded as a choice: *"This session knows workspace A. Attach workspace B 
 - **Stop / Restart / Interrupt**: unchanged (0.7.4), plus "Restart with this notebook's
   context" when the chip shows a mismatch.
 
-### 4.3 Several sessions (later)
+### 4.3 Isolation between notebooks: contexts, not JVMs
 
-One worker is 2–8 GB of JVM; two is a laptop's lunch. Keep **one session** as the product
-default, but structure `KernelUi` as `sessions: Vec<Session>` with a selected one so a second
-session (another account, another write mode, a scratch session) is a UI choice later rather
-than a rewrite. The kernel chip grows a "Sessions…" entry listing them with memory and attached
-notebooks. Not in the first phase.
+Sharing one IPython namespace between notebooks is crosstalk by construction: notebook A's
+`df`, `spark.conf.set`, `USE`, temp views, UDF registrations and cached frames are notebook B's
+too. It is the Python side that bites (variables and imports); on the Spark side the leaks are
+temp views, the current database and session confs. Fabric's high-concurrency mode solves
+exactly this: **one Spark application, one isolated REPL context per notebook**.
+
+The same shape fits the worker: one JVM and one `SparkContext`, and per attached notebook a
+**context** = its own Python namespace (its own IPython shell or `exec` globals) plus its own
+`spark.newSession()` — which gives isolated temp views, SQL conf, current database and UDF
+registry while sharing the catalog, the clones, cached data and the Ivy-resolved jars. A
+context is created on attach (`create_context`), every `run_code`/`run_sql` names it, and it is
+dropped on detach. The default lakehouse becomes a property of the context (current database and
+the meaning of `Files/`), which retires the per-cell `USE` from 4.1. Cells from different
+contexts still run one at a time at first; concurrent contexts (FAIR scheduler, one thread each)
+can come later. This is upstream ask 0 and the keystone of the slate.
+
+Until contexts exist, Cobalt has two honest modes:
+
+- **Shared session (default today)** with the crosstalk stated in the chip — "variables and
+  temp views are shared with the other N attached notebooks" — and `USE` per cell for the
+  default lakehouse.
+- **Isolated: one session per notebook** (opt-in in Settings → Session lifecycle): one worker
+  process per Spark notebook, hard isolation, at the cost of one JVM each (driver memory ×
+  notebooks, 20–60 s start each, separate shadow roots so clones do not collide). `KernelUi`
+  becomes `sessions: Vec<Session>` keyed by notebook, which is the structure the chip's
+  "Sessions…" list and a second account's session need anyway. With a driver at 2 GB this is a
+  realistic choice on a 32 GB laptop for two or three notebooks; the setting says what it
+  costs.
+
+Once contexts ship, *isolated per notebook* becomes the default behaviour of the single shared
+JVM, and "one session per notebook" stays as the heavy option for people who want separate
+drivers (different write modes, different accounts).
 
 ## 5. Default lakehouse and Files
 
@@ -124,12 +151,25 @@ it. The chip's popup becomes a **lakehouse pane** (5.3) rather than a menu.
 The founder's objection stands: a lakehouse's `Files/` can be hundreds of GB; mirroring it is
 never the default. Three tiers, cheapest first:
 
-1. **Remote by default.** `spark.read.*("Files/…")`, `df.write.*("Files/…")` and `abfss://`
-   go straight to OneLake through hadoop-azure with the host token — streaming, no local copy.
-   This needs the worker to resolve relative `Files/` to the `abfss://` of the default lakehouse
-   instead of the mirror (**ask 3: `files_mode: "remote"`**); until then Cobalt rewrites
-   `Files/` to the `abfss://` form in `%%sql` and documents the explicit path for Python.
-   `notebookutils.fs.ls/exists` already work remotely.
+1. **Remote by default for Spark.** `spark.read.*("Files/…")`, `df.write.*("Files/…")` and
+   `abfss://` go straight to OneLake through hadoop-azure with the host token — streaming, no
+   local copy. This needs the worker to resolve relative `Files/` to the `abfss://` of the
+   default lakehouse instead of the mirror (**ask 3: `files_mode`**); until then Cobalt
+   rewrites `Files/` to the `abfss://` form in `%%sql` and documents the explicit path for
+   Python. `notebookutils.fs.ls/exists` already work remotely.
+
+   **And lazy for Python.** The Fabric path `/lakehouse/default/Files/<x>` must still work for
+   `open()`, `pandas.read_csv`, `pathlib`, `os.listdir` — that was the hard part last time.
+   The answer is not a sync and not a filesystem driver (FUSE/WinFsp would be a heavy install):
+   the worker already shims `notebookutils`; the same technique can shim Python's file access
+   under `/lakehouse/<name>/Files` — `builtins.open`, `os.listdir/scandir/stat/path.exists`,
+   `pathlib` — so a *single file* is fetched into the mirror on first access and a directory
+   listing comes from OneLake. Python-level IO (which is most of pandas, json, csv, PIL, zip)
+   then works without pulling anything else. Native readers that `fopen` directly (DuckDB,
+   Arrow's `OSFile`, some ML loaders) do not go through Python's `open`; for those the pane's
+   explicit *Pull to local* (tier 2) is the path, and the error text should say so. Writes
+   under the path land in the mirror and push only in writethrough, as today. This is ask 3's
+   `"lazy"` mode, the default under a host.
 2. **Explicit pulls.** From the lakehouse pane's Files tree (listed live from OneLake with the
    DFS API Cobalt already has, sizes shown), the user right-clicks a folder → *Pull to local*
    (`sync_files(paths=[folder])`). Only then does `/lakehouse/default/Files/<folder>` exist for
@@ -193,16 +233,21 @@ live Files tree (OneLake DFS listing exists), explicit pulls through `sync_files
 footprint and cleanup, early start, keep-clones and preload policies, "Attach workspace" via
 restart-with-union.
 
-Asks for local-spark-mcp (to be sent as `docs/requests/local-spark-mcp-sessions.md`):
+Asks for local-spark-mcp (written up in `docs/requests/local-spark-mcp-sessions.md`):
 
+0. **Contexts** (§4.3): `create_context(id, default_lakehouse)` / `drop_context(id)`;
+   `run_code` / `run_sql` / `interrupt` / `status` take `context`; each context is an isolated
+   namespace plus `spark.newSession()`; `info.contexts`. Sequential execution across contexts
+   is fine for a first version.
 1. `register_lakehouse` / `attach_workspace` after `init` (and `detach`), so a session grows
    without a restart; `info.lakehouses` reflects it.
-2. A per-call context on `run_code` / `run_sql`: `default_lakehouse` (current database and the
-   meaning of `Files/`), `job_description`. Cobalt can emulate the first with `USE`, not the
-   second.
-3. `files_mode: "remote" | "mirror"` (default remote under a host): `Files/` resolves to the
-   default lakehouse's `abfss://…/Files/`; `/lakehouse/default` is linked only when a pull has
-   happened. Plus `mirror_status` (per lakehouse: pulled subtrees, bytes) and `clear_mirror`.
+2. `job_description` on `run_code` / `run_sql` (the cell's first line, for `status.cell.jobs`
+   and the Stop tooltip). The default-lakehouse half of this ask is subsumed by contexts.
+3. `files_mode: "lazy" | "mirror"` (default lazy under a host): Spark's `Files/` resolves to
+   the default lakehouse's `abfss://…/Files/` (no mirror involved); `/lakehouse/<name>/Files`
+   is served by Python-level hooks that fetch single files on first access and list directories
+   from OneLake; explicit `sync_files` pulls whole subtrees for native readers. Plus
+   `mirror_status` (per lakehouse: pulled subtrees, bytes) and `clear_mirror`.
 4. `set_default_lakehouse` as a cheaper alternative to 2 if per-call context is unwelcome.
 5. Confirm `persist_shadow` semantics for "the tables I used last time" (a `shadow_status` that
    lists persisted clones before they are re-registered).
@@ -210,15 +255,16 @@ Asks for local-spark-mcp (to be sent as `docs/requests/local-spark-mcp-sessions.
 ## 9. Phasing
 
 - **Slate 4 — Sticky sessions (0.8.0).** Attach/detach, lifecycle policy with idle timeout,
-  per-cell default lakehouse, early start setting, keep-clones + preload policies per lakehouse
-  (remembered), "Attach workspace" through restart-with-union, status bar "N notebooks attached".
-  All Cobalt-side; ships against worker 0.4.2.
+  per-cell default lakehouse, early start setting (default on, remembered), keep-clones +
+  preload policies per lakehouse (remembered), "Attach workspace" through restart-with-union,
+  status bar "N notebooks attached", the crosstalk notice, and the opt-in *one session per
+  notebook* mode on `sessions: Vec<Session>`. All Cobalt-side; ships against worker 0.4.2.
 - **Slate 5 — Lakehouse pane and Files (0.8.x).** Tables with state and per-table actions,
   live Files tree, explicit pulls with footprint and cleanup, remote `Files/` once ask 3 ships
   (rewrite in `%%sql` meanwhile).
-- **Slate 6 — Growable sessions (0.9).** Attach without restart (ask 1), per-call context
-  (ask 2), session presets, and the `sessions: Vec<Session>` UI if a second session proves
-  wanted.
+- **Slate 6 — Contexts and growable sessions (0.9).** Per-notebook contexts in one JVM
+  (ask 0) become the default isolation; attach without restart (ask 1); lazy Files (ask 3);
+  session presets; the "Sessions…" list for second accounts or write modes.
 
 ## 10. Decisions needed
 
@@ -233,3 +279,21 @@ Asks for local-spark-mcp (to be sent as `docs/requests/local-spark-mcp-sessions.
 6. Cross-workspace: one session spanning workspaces (needs ask 1) vs "one session per
    workspace" as a simpler rule. The worker's model allows the former; the question is whether
    users expect it.
+
+## 11. Decisions (founder, 2026-10-06)
+
+1. **Isolation.** Each user-opened notebook should run isolated "if possible", to avoid
+   crosstalk. Resolution: isolation is the goal, *contexts in one JVM* (§4.3, ask 0) is the way
+   to get it without a JVM per notebook; until the worker has them, the shared session states
+   its crosstalk plainly and an opt-in *one session per notebook* mode gives hard isolation to
+   those who want it now.
+2. **Lifecycle default** (delegated): *stop after 60 minutes idle*, remembered; "keep running
+   until I stop it" and "stop with the last notebook" remain choices. A JVM that nobody has
+   used for an hour on a laptop is not what the user wants to find.
+3. **Early start**: default on (*when a Spark notebook opens*), a remembered preference.
+4. **Files**: remote by default for Spark; the Fabric path for Python is served lazily (ask 3),
+   never by syncing the tree; explicit pulls for native readers.
+5. **Keep clones between sessions**: default off.
+6. **Cross-workspace** (delegated): one account-scoped session may span workspaces — with
+   contexts, a workspace is just more lakehouses in the catalog; the chip shows which
+   workspaces are attached and "Attach workspace…" adds one (restart-with-union until ask 1).
