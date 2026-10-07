@@ -167,6 +167,10 @@ with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client ca
 
 ### Later
 
+- **Session lifecycle, lakehouse pane, Files, warm start** — proposed as slates 4–6 in
+  `spark_sessions_slate.md` (sticky account-scoped sessions notebooks attach to, per-notebook
+  default lakehouse, explicit Files pulls instead of mirrors, remembered preload/keep-clones
+  policies, early start).
 - Charts in cells (egui_plot) and the dashboard tiles from §5.6 of the product design.
 - `cobalt run notebook.ipynb --param k=v --out report.html` for scheduled runs.
 - `fabric-2.0` profile (Spark 4.1, Delta 4.2) as a second runtime.
