@@ -83,6 +83,8 @@ pub enum RuntimeAction {
     OpenLog,
     /// Install the configured Python packages and fetch Maven jars.
     InstallLibraries,
+    /// Delete the lakehouse Files mirror (lazily fetched files and pulled folders).
+    ClearMirror,
 }
 
 /// The configured libraries as the runtime crate sees them.
@@ -235,6 +237,17 @@ pub fn action(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &
                 }
                 Err(e) => return Some(format!("Could not remove the runtime: {e}")),
             }
+        }
+        RuntimeAction::ClearMirror => {
+            let d = dirs(settings, paths);
+            let m = d.state_dir().join("lakehouses");
+            if m.is_dir() {
+                if let Err(e) = std::fs::remove_dir_all(&m) {
+                    return Some(format!("Could not clear the Files mirror: {e} (stop the Spark session first if it is running)"));
+                }
+            }
+            ui.last_result = Some(Ok("Lakehouse Files mirror cleared".into()));
+            refresh_status(ui, settings, paths, egui);
         }
         RuntimeAction::OpenFolder => {
             let d = dirs(settings, paths);

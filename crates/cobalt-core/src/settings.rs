@@ -319,10 +319,13 @@ pub struct SparkSettings {
     /// When the session starts ahead of the first cell: `notebook_open` (a Spark notebook is
     /// opened or created), `app_start`, or `first_cell`.
     pub early_start: String,
+    /// Lakehouse `Files/`: `lazy` (Spark streams from OneLake; Python fetches single files on
+    /// first open) or `mirror` (folders are pulled locally with sync_files).
+    pub files_mode: String,
 }
 impl Default for SparkSettings {
     fn default() -> Self {
-        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new(), lifecycle: "idle".into(), idle_minutes: 60, early_start: "notebook_open".into() }
+        Self { profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new(), lifecycle: "idle".into(), idle_minutes: 60, early_start: "notebook_open".into(), files_mode: "lazy".into() }
     }
 }
 

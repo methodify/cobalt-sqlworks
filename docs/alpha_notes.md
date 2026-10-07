@@ -303,6 +303,18 @@ from `shadow_status` → `preload {lakehouses: {lh: [tables]}}` right after star
 clones (`persist_shadow` for the session when any attached lakehouse asks). Set from the
 lakehouse button; agent `notebook set_lakehouse {preload_policy, keep_clones}`.
 
+**Files (0.6.1, `files_mode: lazy` by default).** Spark's `Files/…` resolves through the catalog
+jar's `lakehouse://<ws>@<lh>.onelake…` filesystem to the context's default lakehouse on OneLake:
+`spark.read.csv("Files/x")` streams, `df.write…("Files/out")` is refused under sandbox/readonly
+with a message naming write-through, and `/lakehouse/default/Files/…` in Python fetches a file
+into the mirror on first `open` (re-fetched when OneLake has a newer copy), lists from OneLake,
+and writes locally (pushed on close only in writethrough). Two Spark facts: `delta.`<path>``
+in SQL needs an absolute path (`lakehouse://…/Files/dt`, as on Fabric), and `DESCRIBE DETAIL` on a
+shadow shows a `file:/…` location. Native readers (DuckDB, Arrow `OSFile`) bypass Python's `open`:
+`sync_files(paths=[folder])` first, or `open()` the file once from Python. Settings → Notebooks &
+Spark → Lakehouse Files: lazy / mirror; Settings → Spark runtime shows the mirror's size with
+Clear (stop the session first). Agent: `kernel {action: call, method: mirror_status}`.
+
 ## Spark runtime (Settings → Spark runtime)
 
 Everything lands under `%LOCALAPPDATA%\Cobalt\Cobalt SQL Works\data\spark-runtime` (override

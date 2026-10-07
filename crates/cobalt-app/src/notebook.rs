@@ -1013,7 +1013,8 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     // a context per notebook when the worker has them; before the session is up the features
     // are unknown, so the request carries the context and the thread decides
     let context = if use_context || !state.kernel.state.is_ready() { Some(kernel::context_id(tab)) } else { None };
-    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code, context, context_lakehouse, job_description, register: pending_register });
+    let context_name = Some(state.tabs[idx].title.trim_end_matches(".ipynb").to_string());
+    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code, context, context_lakehouse, context_name, job_description, register: pending_register });
     state.history.loaded = false;
 }
 
@@ -1064,6 +1065,12 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
                     Ok(v) => state.shadows.status = Some(v),
                     Err(e) => state.shadows.error = Some(e),
                 }
+            }
+            "agent-call" => {
+                state.kernel.last_call = Some(match result {
+                    Ok(v) => serde_json::json!({"ok": true, "result": v}),
+                    Err(e) => serde_json::json!({"ok": false, "error": e}),
+                });
             }
             "shadows-action" => {
                 state.shadows.loading = false;

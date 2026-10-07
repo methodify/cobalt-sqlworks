@@ -71,6 +71,8 @@ pub struct RuntimeStatus {
     /// JDKs found on the machine that the profile accepts ("Use what I have").
     pub jdk_candidates: Vec<detect::JdkCandidate>,
     pub disk_bytes: u64,
+    /// The lakehouse Files mirror under the state folder (lazily fetched files and pulled folders).
+    pub mirror_bytes: u64,
     pub last_error: Option<String>,
     /// `python -m local_spark_mcp.healthcheck --json` from the environment (None when it is not
     /// installed or the check could not run).
@@ -193,6 +195,7 @@ impl RuntimeStatus {
             spark_version: record.spark_version.clone(),
             jdk_candidates,
             disk_bytes: crate::dir_size(&dirs.root),
+            mirror_bytes: crate::dir_size(&dirs.state_dir().join("lakehouses")),
             last_error: record.last_error.clone(),
             health,
         }

@@ -29,8 +29,20 @@
   tables, and *Keep clones between sessions* (the shallow clones stay on disk and are reused
   next time). The per-notebook preload checkbox is gone; an old notebook that had it ticked
   behaves as "all tables" for its default lakehouse until the policy is set.
-- Agent: `kernel` state carries `features`, `contexts` and `idle_s`; `notebook set_lakehouse`
-  takes `preload_policy` (`none|last|all`) and `keep_clones`.
+- **Lakehouse Files without syncing** (local-spark-mcp 0.6.1, the new pin). Spark's relative
+  `Files/…` is the notebook's default lakehouse on OneLake, streamed with your token; nothing is
+  copied, and in sandbox or read-only mode a Spark write under `Files/` is refused before it
+  reaches OneLake. Python's Fabric path `/lakehouse/default/Files/…` works too: a file is fetched
+  the first time it is opened, folders are listed from OneLake, and each notebook sees its own
+  lakehouse. Native readers that open files from C (DuckDB, Arrow files) still need the folder
+  pulled with `sync_files` first, and the error says so. Settings → Notebooks & Spark →
+  Lakehouse Files switches back to the full local mirror; the Spark runtime page shows the
+  mirror's size with a Clear button.
+- Spark jobs are grouped under the notebook's title (context names, 0.5.1), and closing a
+  notebook whose cell is running interrupts it and releases its context.
+- Agent: `kernel` state carries `features`, `contexts`, `idle_s` and `last_call`;
+  `kernel {action: call, method, params}` runs any worker method; `notebook set_lakehouse`
+  takes `preload_policy` (`none|last|all`) and `keep_clones`; `settings {set: {...}}`.
 
 ## 0.7.4 — 2026-10-06
 

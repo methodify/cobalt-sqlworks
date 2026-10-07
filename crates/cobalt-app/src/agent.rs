@@ -205,6 +205,7 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "features": k.features.iter().cloned().collect::<Vec<_>>(),
         "contexts": k.contexts.len(),
         "idle_s": k.idle().as_secs(),
+        "last_call": k.last_call,
         "interrupting": k.interrupting.map(|t| t.elapsed().as_secs()),
         "last_interrupt": k.last_interrupt.as_ref().map(|(s, r)| json!({"secs": s, "result": r})),
         "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },
@@ -1181,6 +1182,15 @@ impl AgentApp for CobaltApp {
                         self.state.recent_toasts.push_back(format!("interrupt: {a:?}"));
                     }
                     "log" => self.state.kernel.log_open = !self.state.kernel.log_open,
+                    // any worker method on the data socket; the reply lands in kernel.last_call
+                    "call" => {
+                        let Some(method) = arg_str(args, "method") else { return ActionResult::BadArgs("method is required".into()) };
+                        let params = args.and_then(|a| a.get("params")).cloned().unwrap_or(json!({}));
+                        self.state.kernel.last_call = None;
+                        if !crate::kernel::call(&mut self.state.kernel, "agent-call", &method, params) {
+                            return ActionResult::Rejected("the Spark session is not ready".into());
+                        }
+                    }
                     "full_log" => return ActionResult::with(&json!({"log": self.state.kernel.log.iter().cloned().collect::<Vec<_>>()})),
                     other => return ActionResult::BadArgs(format!("unknown kernel action {other}")),
                 }
@@ -1225,7 +1235,7 @@ impl AgentApp for CobaltApp {
                         "ready": s.is_ready(), "warm": s.warm, "spark_version": s.spark_version,
                         "uv": comp(&s.uv), "python": comp(&s.python), "env": comp(&s.env), "jdk": comp(&s.jdk),
                         "jdk_candidates": s.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),
-                        "disk_bytes": s.disk_bytes, "last_error": s.last_error,
+                        "disk_bytes": s.disk_bytes, "mirror_bytes": s.mirror_bytes, "last_error": s.last_error,
                         "health": s.health.as_ref().map(|h| json!({"ok": h.ok, "problems": h.problems, "warnings": h.warnings, "profile": h.profile, "protocol_version": h.protocol_version})),
                     })),
                     "job": r.job.as_ref().map(|j| json!({"kind": format!("{:?}", j.kind), "step": j.step.as_ref().map(|(s, l)| format!("{s:?}: {l}")), "bytes": j.bytes, "elapsed_s": j.started.elapsed().as_secs(), "log_tail": j.log.iter().rev().take(15).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>()})),

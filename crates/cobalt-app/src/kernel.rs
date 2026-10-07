@@ -221,6 +221,8 @@ pub struct RunReq {
     pub context: Option<String>,
     /// The context's default lakehouse (current database), set when it is created.
     pub context_lakehouse: Option<String>,
+    /// The notebook's title: the context's display name and Spark job group description (0.5.1).
+    pub context_name: Option<String>,
     /// The cell's first line, for `status.cell.jobs` and the Spark UI (0.4.3).
     pub job_description: Option<String>,
     /// Lakehouses to attach before the cell runs (`register_lakehouse`, 0.4.3) — a notebook from
@@ -240,8 +242,9 @@ enum Cmd {
     Run(RunReq),
     /// Any other worker method (shadow_status, discard_shadow, restore_shadow, info…).
     Call { tag: String, method: String, params: Value },
-    /// A notebook closed: release its context.
-    DropContext { tab: TabId, id: String },
+    /// A notebook closed: release its context (`forced`: already requested on the control socket
+    /// with `force: true`, only the bookkeeping remains).
+    DropContext { tab: TabId, id: String, forced: bool },
     Shutdown,
 }
 
@@ -304,6 +307,8 @@ pub struct KernelUi {
     /// Last time a cell finished, a cell was submitted, a preload ran, or the session came up —
     /// the idle clock of the lifecycle policy.
     pub last_activity: Instant,
+    /// The reply to the agent's last `kernel {action: call}` (diagnostics).
+    pub last_call: Option<Value>,
 }
 
 impl KernelUi {
@@ -321,7 +326,7 @@ impl KernelUi {
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now() }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now(), last_call: None }
     }
 }
 
@@ -457,6 +462,10 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
     // the control socket exists from local-spark-mcp 0.4.0 (protocol 2); an older worker would
     // reject the argument. Native Arrow displays and capture_result from 0.4.1.
     let ver = rec.package_version.as_deref().map(version_tuple).unwrap_or((0, 0, 0));
+    // lakehouse Files: lazy (Spark streams from OneLake, Python fetches on first open) from 0.6.x
+    if ver >= (0, 6, 0) {
+        cfg.init["files_mode"] = Value::String(if settings.spark.files_mode == "mirror" { "mirror".into() } else { "lazy".into() });
+    }
     cfg.control = ver >= (0, 4, 0);
     let native = ver >= (0, 4, 1);
     if !cfg.control {
@@ -575,6 +584,9 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                         if let Some(lh) = &req.context_lakehouse {
                             p.insert("default_lakehouse".into(), Value::String(lh.clone()));
                         }
+                        if let Some(n) = &req.context_name {
+                            p.insert("name".into(), Value::String(n.clone()));
+                        }
                         match w.call("create_context", Value::Object(p), Duration::from_secs(120)) {
                             Ok(v) => {
                                 created.insert(id.clone());
@@ -632,9 +644,9 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                 }
                 egui.request_repaint();
             }
-            Cmd::DropContext { tab, id } => {
+            Cmd::DropContext { tab, id, forced } => {
                 if let Some(w) = worker.as_mut() {
-                    if created.remove(&id) {
+                    if created.remove(&id) && !forced {
                         match w.call("drop_context", json!({"id": id}), Duration::from_secs(60)) {
                             Ok(_) => {
                                 let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} dropped")));
@@ -684,13 +696,34 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
     k.waiting.push(req);
 }
 
-/// A notebook closed: release its context in the worker (no-op without one).
+/// A notebook closed: release its context in the worker (no-op without one). When the
+/// notebook's cell is running, the control socket interrupts it and drops the context as soon as
+/// it ends (`force`, 0.5.1); otherwise the request goes behind the queue on the data socket.
 pub fn drop_context(k: &mut KernelUi, tab: TabId) {
     if !k.contexts.contains(&tab) {
         return;
     }
+    let id = context_id(tab);
+    let running_here = k.busy.as_ref().map(|(t, _)| *t == tab).unwrap_or(false);
+    let mut forced = false;
+    if running_here {
+        if let (Some(ctl), Some(ev)) = (k.control.clone(), k.ev_tx.clone()) {
+            forced = true;
+            let id2 = id.clone();
+            std::thread::Builder::new()
+                .name("spark-drop".into())
+                .spawn(move || {
+                    let r = ctl.call("drop_context", json!({"id": id2, "force": true}), Duration::from_secs(30));
+                    let _ = ev.send(KernelEvent::Log(match r {
+                        Ok(v) => format!("cobalt: context {id2} drop requested while its cell runs → {v}"),
+                        Err(e) => format!("cobalt: context {id2} forced drop failed: {e}"),
+                    }));
+                })
+                .ok();
+        }
+    }
     if let Some(tx) = &k.tx {
-        let _ = tx.send(Cmd::DropContext { tab, id: context_id(tab) });
+        let _ = tx.send(Cmd::DropContext { tab, id, forced });
     }
 }
 

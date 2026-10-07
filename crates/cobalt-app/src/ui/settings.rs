@@ -282,6 +282,15 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     ui.add(egui::DragValue::new(&mut draft.spark.idle_minutes).range(5..=24 * 60).speed(5).suffix(" min"));
                 }
             });
+            ui.horizontal(|ui| {
+                ui.label("Lakehouse Files");
+                for (v, label, hint) in [("lazy", "stream from OneLake, fetch on first open", "Spark reads and writes Files/ straight from OneLake (nothing is copied; writes need write-through). Python's /lakehouse/default/Files fetches a single file the first time it is opened and lists folders from OneLake. Native readers that bypass Python's open (DuckDB, Arrow files) need the folder pulled first: sync_files(paths=[...])."), ("mirror", "mirror folders locally", "The worker's full mirror: folders you pull with sync_files live under the runtime's state folder and Spark's Files/ points there. Use when you need whole folders on disk."), ] {
+                    if ui.selectable_label(draft.spark.files_mode == v, label).on_hover_text(hint).clicked() {
+                        draft.spark.files_mode = v.into();
+                    }
+                }
+                ui.label(RichText::new("(applies to the next session)").size(11.0).color(theme.text_faint));
+            });
             ui.label(RichText::new("Per lakehouse (lakehouse button on a notebook): what to preload when a session attaches it and whether to keep its clones between sessions.").size(11.0).color(theme.text_muted));
                             section(ui, theme, "Spark runtime");
             spark_runtime(ui, theme, draft, runtime, &mut action);
@@ -691,6 +700,15 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             *action = Some(SettingsAction::Runtime(RuntimeAction::OpenLog, draft.clone()));
         }
     });
+    if let Some(st) = &runtime.status {
+        ui.horizontal(|ui| {
+            let mb = st.mirror_bytes as f64 / 1_048_576.0;
+            ui.label(RichText::new(format!("Lakehouse Files mirror: {}", if st.mirror_bytes == 0 { "empty".to_string() } else if mb < 1024.0 { format!("{mb:.0} MB") } else { format!("{:.1} GB", mb / 1024.0) })).size(12.0).color(theme.text_muted));
+            if st.mirror_bytes > 0 && ui.add_enabled(!busy, egui::Button::new("Clear").small()).on_hover_text("Deletes the lazily fetched files and pulled folders of every lakehouse (local writes not yet pushed go with them); they are fetched again on first use. Stop the Spark session first.").clicked() {
+                *action = Some(SettingsAction::Runtime(RuntimeAction::ClearMirror, draft.clone()));
+            }
+        });
+    }
     if let Some(job) = &runtime.job {
         ui.add_space(4.0);
         let (label, frac) = match (&job.step, &job.bytes) {

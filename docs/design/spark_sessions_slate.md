@@ -1,8 +1,8 @@
 # Spark sessions: lifecycle, lakehouses, Files, warm start — an expansion slate
 
-*Status: decided 2026-10-06 (§11); upstream asks 0, 1, 2, 4, 5 shipped in local-spark-mcp
-0.4.3/0.5.0 on 2026-10-07 and adopted in Cobalt 0.8 (contexts per notebook, attach without
-restart, job descriptions); ask 3 (lazy Files) proposed upstream as 0.6.0. Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
+*Status: decided 2026-10-06 (§11); every upstream ask shipped by 2026-10-07 (0.4.3 small items,
+0.5.0 contexts, 0.5.1 follow-ups, 0.6.0/0.6.1 lazy Files) and adopted in Cobalt 0.8; slate 4
+built; slate 5's lakehouse pane with a Files tree and explicit pulls remains. Follows `notebooks_roadmap.md` (slates 1–3, shipped in 0.7.x) and
 D009. Covers the founder's questions: can one session serve many notebooks, what happens on
 close/open, different workspaces, default lakehouse and Files, and how a user opts into the
 worker's warm start and eager mounting.*
@@ -245,7 +245,7 @@ Asks for local-spark-mcp (written up in `docs/requests/local-spark-mcp-sessions.
    grows without a restart; `info.lakehouses` reflects it.
 2. *Shipped in 0.4.3.* `job_description` on `run_code` / `run_sql` (the cell's first line, for
    `status.cell.jobs` and the Stop tooltip).
-3. *Proposed upstream as 0.6.0 (after contexts).* `files_mode: "lazy" | "mirror"` (default lazy under a host): Spark's `Files/` resolves to
+3. *Shipped: 0.6.0 (Spark half, per context) and 0.6.1 (Python hooks, `mirror_status`, `clear_mirror`); adopted in Cobalt 0.8 with `lazy` as the default.* `files_mode: "lazy" | "mirror"`: Spark's `Files/` resolves to
    the default lakehouse's `abfss://…/Files/` (no mirror involved); `/lakehouse/<name>/Files`
    is served by Python-level hooks that fetch single files on first access and list directories
    from OneLake; explicit `sync_files` pulls whole subtrees for native readers. Plus
