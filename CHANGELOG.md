@@ -29,7 +29,21 @@
   tables, and *Keep clones between sessions* (the shallow clones stay on disk and are reused
   next time). The per-notebook preload checkbox is gone; an old notebook that had it ticked
   behaves as "all tables" for its default lakehouse until the policy is set.
-- **Lakehouse Files without syncing** (local-spark-mcp 0.6.1, the new pin). Spark's relative
+- **Lakehouse pane.** A new sidebar (View → Show Lakehouse Pane, or the lakehouse button on a
+  notebook) for the active Spark notebook's lakehouse, like the Fabric notebook's left pane:
+  **Tables**, grouped by schema, with the session's clone state (cloned / written, with the
+  clone time) and Clone now / Discard clone / Rewind on each; **Files**, listed live from OneLake
+  with sizes, folders opening on demand, nothing synced — Pull to local puts a folder or file in
+  the mirror for native readers, Remove local copy drops it, and the pane shows how much is
+  local. Double-click a table or file (or right-click → Insert) for a PySpark cell that reads
+  it; drag a name into a cell. A picker switches between the workspace's lakehouses and can make
+  one the notebook's default. Known issue: local-spark-mcp 0.6.2's `shadow_status` lists no
+  clones (reported upstream), so the "cloned / written" markers and the Shadows window stay empty
+  until the next worker release; the clones themselves work.
+- **Notebook cells stay still.** The cell header (cell type, language, position controls) is
+  always visible instead of appearing on hover, so moving the mouse over a notebook no longer
+  makes cells jump.
+- **Lakehouse Files without syncing** (local-spark-mcp 0.6.2, the new pin). Spark's relative
   `Files/…` is the notebook's default lakehouse on OneLake, streamed with your token; nothing is
   copied, and in sandbox or read-only mode a Spark write under `Files/` is refused before it
   reaches OneLake. Python's Fabric path `/lakehouse/default/Files/…` works too: a file is fetched

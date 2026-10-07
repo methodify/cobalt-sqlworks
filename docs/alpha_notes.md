@@ -315,6 +315,22 @@ shadow shows a `file:/…` location. Native readers (DuckDB, Arrow `OSFile`) byp
 Spark → Lakehouse Files: lazy / mirror; Settings → Spark runtime shows the mirror's size with
 Clear (stop the session first). Agent: `kernel {action: call, method: mirror_status}`.
 
+**Lakehouse pane (0.8).** Sidebar view `Lakehouse` (`ui/lakehouse.rs`, state
+`LakehousePane`): follows the active notebook's binding (picker for the workspace's other
+lakehouses; Make default rewrites the notebook's binding). Tables come from Cobalt's own OneLake
+`Tables/` listing (schema folders → groups), clone state from `shadow_status` (`lh.t` /
+`lh__schema.t`); Clone now = `mount_table`, Discard = `discard_shadow`, Rewind =
+`restore_shadow(version 0)`. Files folders are listed on demand with the DFS API (sizes from
+`contentLength`), "local" markers from `mirror_status` (`pulled`, `fetched`), Pull =
+`sync_files(paths, pull)`, Remove local copy = `clear_mirror(paths)`. Double-click / Insert makes
+a PySpark cell by extension (csv/parquet/json/… → `spark.read…` + `display`; txt → `open()`);
+drag payload is the qualified name or `Files/<path>`. Agent: `lakehouse_pane {action: …}`.
+Clone now = a one-table `preload` (the worker's `mount_table` rejects the `schema/table` form).
+Known (0.6.2): `shadow_status.tables` is empty even after a clone (reported in
+`docs/requests/local-spark-mcp-0.6.2-reply.md`), so clone markers and the Shadows window show
+nothing until the worker fixes the lister.
+Cell headers are now always visible (no hover expansion).
+
 ## Spark runtime (Settings → Spark runtime)
 
 Everything lands under `%LOCALAPPDATA%\Cobalt\Cobalt SQL Works\data\spark-runtime` (override

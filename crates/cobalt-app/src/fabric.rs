@@ -127,6 +127,10 @@ pub enum FabricEvent {
     NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
     /// The OneLake token needed before a Fabric-bound Spark session can start.
     OneLakeToken(Result<(), String>),
+    /// Lakehouse pane: the tables of a lakehouse (from OneLake's `Tables/` layout).
+    PaneTables { lakehouse_id: String, result: Result<Vec<cobalt_fabric::OneLakeTable>, String> },
+    /// Lakehouse pane: one `Files/` folder (`path` relative to `Files/`, `""` = root).
+    PaneFiles { lakehouse_id: String, path: String, result: Result<Vec<crate::state::FileEntry>, String> },
 }
 
 /// What the panel asks for.
@@ -636,6 +640,43 @@ pub fn open_notebook(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) 
     });
 }
 
+/// Lakehouse pane: list `Tables/` of a lakehouse on OneLake (storage token, no session needed).
+pub fn load_pane_tables(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str) {
+    let Some(slot) = state.fabric.slot else { return };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let (ws, lh) = (workspace_id.to_string(), lakehouse_id.to_string());
+    cx.session.spawn(async move {
+        let result = match crate::onelake_tokens::fetch(&resolver, slot, tenant.as_deref()).await {
+            Ok(tok) => cobalt_fabric::OneLakeClient::new(tok).list_tables(&ws, &lh).await.map_err(|e| fabric_error_text(&e)),
+            Err(e) => Err(e),
+        };
+        let _ = tx.send(FabricEvent::PaneTables { lakehouse_id: lh, result });
+        egui.request_repaint();
+    });
+}
+
+/// Lakehouse pane: list one `Files/` folder of a lakehouse on OneLake.
+pub fn load_pane_files(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str, rel: &str) {
+    let Some(slot) = state.fabric.slot else { return };
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let (ws, lh, rel) = (workspace_id.to_string(), lakehouse_id.to_string(), rel.trim_matches('/').to_string());
+    cx.session.spawn(async move {
+        let dir = if rel.is_empty() { format!("{lh}/Files") } else { format!("{lh}/Files/{rel}") };
+        let result = match crate::onelake_tokens::fetch(&resolver, slot, tenant.as_deref()).await {
+            Ok(tok) => cobalt_fabric::OneLakeClient::new(tok).list_dir(&ws, &dir).await.map(|v| v.into_iter().filter(|e| !e.name.starts_with('.')).map(|e| crate::state::FileEntry { name: e.name, is_dir: e.is_dir, size: e.size }).collect()).map_err(|e| fabric_error_text(&e)),
+            Err(e) => Err(e),
+        };
+        let _ = tx.send(FabricEvent::PaneFiles { lakehouse_id: lh, path: rel, result });
+        egui.request_repaint();
+    });
+}
+
 /// Fetch again for an existing placeholder tab (Retry).
 pub fn open_notebook_again(state: &mut AppState, cx: &Ctx, item_id: &str, copy: bool) {
     let Some(slot) = state.fabric.slot else {
@@ -893,6 +934,20 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                     }
                     Err(e) => cx.toast(ToastKind::Error, format!("Saving to Fabric failed: {e}")),
                 }
+            }
+        }
+        FabricEvent::PaneTables { lakehouse_id, result } => {
+            let pane = &mut state.lakehouse_pane;
+            if pane.selected.as_ref().map(|(_, _, id)| *id == lakehouse_id).unwrap_or(false) {
+                pane.tables_loading = false;
+                pane.tables = Some(result);
+            }
+        }
+        FabricEvent::PaneFiles { lakehouse_id, path, result } => {
+            let pane = &mut state.lakehouse_pane;
+            if pane.selected.as_ref().map(|(_, _, id)| *id == lakehouse_id).unwrap_or(false) {
+                pane.files_loading.remove(&path);
+                pane.files.insert(path, result);
             }
         }
         FabricEvent::OneLakeToken(result) => {

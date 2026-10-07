@@ -261,7 +261,7 @@ Asks for local-spark-mcp (written up in `docs/requests/local-spark-mcp-sessions.
   preload policies per lakehouse (remembered), "Attach workspace" through restart-with-union,
   status bar "N notebooks attached", the crosstalk notice, and the opt-in *one session per
   notebook* mode on `sessions: Vec<Session>`. All Cobalt-side; ships against worker 0.4.2.
-- **Slate 5 — Lakehouse pane and Files (0.8.x).** Tables with state and per-table actions,
+- **Slate 5 — Lakehouse pane and Files (0.8.x)** — *built 2026-10-07 (pane in the sidebar; Files remote via 0.6.x so no `%%sql` rewrite was needed).* Tables with state and per-table actions,
   live Files tree, explicit pulls with footprint and cleanup, remote `Files/` once ask 3 ships
   (rewrite in `%%sql` meanwhile).
 - **Slate 6 — Contexts and growable sessions (0.9).** Per-notebook contexts in one JVM

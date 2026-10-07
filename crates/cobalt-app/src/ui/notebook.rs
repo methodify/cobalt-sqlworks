@@ -330,6 +330,10 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 }
                             }
                             ui.separator();
+                            if ui.button(format!("{} Lakehouse pane", icons::SIDEBAR_SIMPLE)).on_hover_text("Tables and Files of this lakehouse in the sidebar").clicked() {
+                                actions.push(NbAction::Command(Command::ShowLakehouse));
+                                ui.close();
+                            }
                             if ui.button("Lakehouse shadows…").clicked() {
                                 open_shadows = true;
                                 ui.close();
@@ -495,8 +499,9 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         }
                     });
                     ui.vertical(|ui| {
-                        // header row: cell type / language, position controls (visible on hover or selection)
-                        let show_header = is_selected || hovered_before;
+                        // header row: cell type / language, position controls — always shown (a
+                        // hover-dependent header made every cell jump as the mouse moved)
+                        let show_header = true;
                         if show_header {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;

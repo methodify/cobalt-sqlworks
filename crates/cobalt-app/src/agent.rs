@@ -21,6 +21,7 @@
 //! - `notebook {action: new|open|save|cells|set_cell|add_cell|delete_cell|move_cell|set_kind|select|run|cancel|clear_outputs|export|md_edit, …}` → notebook tabs; `state` tabs carry `kind` and `cells`
 //! - `runtime {action: status|install|smoke|cancel|remove|refresh|libraries}` → the Spark runtime manager (Settings → Spark runtime), status JSON incl. job progress and log tail
 //! - `settings {set: {"spark.idle_minutes": 1, ...}}` → dotted-path settings patch, applied and saved
+//! - `lakehouse_pane {action: show|state|select|expand|pull|remove_local|mount|discard|refresh|insert, path?, lakehouse?, table?, code?}` → the Lakehouse sidebar
 //! - `kernel {action: status|start|stop|restart|interrupt|log}` → the local Spark session notebooks run PySpark cells on; `notebook {action: set_kernel, kernel: connection|spark}`
 
 use crate::app::CobaltApp;
@@ -1142,6 +1143,47 @@ impl AgentApp for CobaltApp {
                 egui.request_repaint();
                 let sh = &self.state.shadows;
                 ActionResult::with(&json!({"loading": sh.loading, "status": sh.status, "error": sh.error, "note": sh.note}))
+            }
+            "lakehouse_pane" => {
+                // {action: show|state|select|expand|pull|remove_local|mount|discard|refresh|insert, path?, lakehouse?, table?, code?}
+                use crate::ui::lakehouse::LakehouseAction as A;
+                let action = arg_str(args, "action").unwrap_or_else(|| "state".into());
+                let path = arg_str(args, "path").unwrap_or_default();
+                let act: Option<A> = match action.as_str() {
+                    "show" => {
+                        self.state.sidebar_visible = true;
+                        self.state.sidebar_view = crate::state::SidebarView::Lakehouse;
+                        None
+                    }
+                    "state" => None,
+                    "select" => self.state.fabric.lakehouses(&self.state.lakehouse_pane.selected.as_ref().map(|(w, _, _)| w.clone()).unwrap_or_default()).and_then(|v| v.into_iter().find(|(n, id)| *id == path || n.eq_ignore_ascii_case(&path)).map(|(_, id)| A::Select(id))),
+                    "expand" => Some(A::ExpandFiles(path)),
+                    "pull" => Some(A::Pull(path)),
+                    "remove_local" => Some(A::RemoveLocal(path)),
+                    "mount" => Some(A::Mount(arg_str(args, "lakehouse").unwrap_or_default(), arg_str(args, "table").unwrap_or_default())),
+                    "discard" => Some(A::Discard(arg_str(args, "table").unwrap_or_default())),
+                    "refresh" => Some(A::Refresh),
+                    "insert" => Some(A::InsertCell(arg_str(args, "code").unwrap_or_default())),
+                    other => return ActionResult::BadArgs(format!("unknown lakehouse_pane action {other}")),
+                };
+                self.with_ctx(egui, |state, cx| {
+                    crate::notebook::lakehouse_pane_shown(state, cx);
+                    if let Some(a) = act {
+                        crate::notebook::lakehouse_action(state, cx, a);
+                    }
+                });
+                egui.request_repaint();
+                let p = &self.state.lakehouse_pane;
+                ActionResult::with(&json!({
+                    "selected": p.selected.as_ref().map(|(w, n, i)| json!({"workspace_id": w, "lakehouse": n, "lakehouse_id": i})),
+                    "tables": p.tables.as_ref().map(|r| match r { Ok(v) => json!(v.iter().map(|t| t.rel_path()).collect::<Vec<_>>()), Err(e) => json!({"error": e}) }),
+                    "tables_loading": p.tables_loading,
+                    "files": p.files.iter().map(|(k, v)| (k.clone(), match v { Ok(es) => json!(es.iter().map(|e| json!({"name": e.name, "dir": e.is_dir, "size": e.size})).collect::<Vec<_>>()), Err(e) => json!({"error": e}) })).collect::<serde_json::Map<_, _>>(),
+                    "files_loading": p.files_loading.iter().cloned().collect::<Vec<_>>(),
+                    "expanded": p.expanded.iter().cloned().collect::<Vec<_>>(),
+                    "mirror": p.mirror,
+                    "note": p.note,
+                }))
             }
             "settings" => {
                 // {set: {"spark.idle_minutes": 1, "spark.lifecycle": "idle", ...}} — dotted paths into the settings document

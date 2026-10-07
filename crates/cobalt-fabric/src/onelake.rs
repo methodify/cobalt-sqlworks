@@ -48,6 +48,16 @@ struct PathEntry {
     name: String,
     #[serde(rename = "isDirectory", default)]
     is_directory: Option<String>,
+    #[serde(rename = "contentLength", default)]
+    content_length: Option<serde_json::Value>,
+}
+
+/// One child of a OneLake directory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
 }
 
 impl OneLakeClient {
@@ -60,9 +70,8 @@ impl OneLakeClient {
         Self { http, base: base.into().trim_end_matches('/').to_string(), token: token.into() }
     }
 
-    /// Immediate children of `directory` (`<lakehouse-id>/Tables`), as `(basename, is_dir)`,
-    /// following continuation tokens.
-    pub async fn list_dir(&self, workspace_id: &str, directory: &str) -> Result<Vec<(String, bool)>> {
+    /// Immediate children of `directory` (`<lakehouse-id>/Tables`), following continuation tokens.
+    pub async fn list_dir(&self, workspace_id: &str, directory: &str) -> Result<Vec<DirEntry>> {
         let mut out = Vec::new();
         let mut continuation: Option<String> = None;
         loop {
@@ -88,8 +97,14 @@ impl OneLakeClient {
             for p in parsed.paths {
                 let base = p.name.rsplit('/').next().unwrap_or(&p.name).to_string();
                 let is_dir = p.is_directory.as_deref().map(|s| s.eq_ignore_ascii_case("true")).unwrap_or(false);
-                out.push((base, is_dir));
+                let size = match &p.content_length {
+                    Some(serde_json::Value::String(s)) => s.parse().unwrap_or(0),
+                    Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
+                    _ => 0,
+                };
+                out.push(DirEntry { name: base, is_dir, size });
             }
+            out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
             match next {
                 Some(c) => continuation = Some(c),
                 None => break,
@@ -103,17 +118,18 @@ impl OneLakeClient {
     pub async fn list_tables(&self, workspace_id: &str, lakehouse_id: &str) -> Result<Vec<OneLakeTable>> {
         let root = format!("{lakehouse_id}/Tables");
         let mut out = Vec::new();
-        for (name, is_dir) in self.list_dir(workspace_id, &root).await? {
-            if !is_dir || name.starts_with('_') || name.starts_with('.') {
+        for e in self.list_dir(workspace_id, &root).await? {
+            let name = e.name;
+            if !e.is_dir || name.starts_with('_') || name.starts_with('.') {
                 continue;
             }
             let kids = self.list_dir(workspace_id, &format!("{root}/{name}")).await?;
-            if kids.iter().any(|(k, _)| k == "_delta_log") {
+            if kids.iter().any(|k| k.name == "_delta_log") {
                 out.push(OneLakeTable { schema: None, name });
             } else {
-                for (t, d) in kids {
-                    if d && !t.starts_with('_') && !t.starts_with('.') {
-                        out.push(OneLakeTable { schema: Some(name.clone()), name: t });
+                for k in kids {
+                    if k.is_dir && !k.name.starts_with('_') && !k.name.starts_with('.') {
+                        out.push(OneLakeTable { schema: Some(name.clone()), name: k.name });
                     }
                 }
             }
@@ -147,9 +163,10 @@ mod tests {
 
     #[test]
     fn parses_list_response() {
-        let r: ListResponse = serde_json::from_str(r#"{"paths":[{"name":"lh/Tables/dbo","isDirectory":"true","etag":"x"},{"name":"lh/Tables/f.txt"}]}"#).unwrap();
+        let r: ListResponse = serde_json::from_str(r#"{"paths":[{"name":"lh/Tables/dbo","isDirectory":"true","etag":"x"},{"name":"lh/Tables/f.txt","contentLength":"1234"}]}"#).unwrap();
         assert_eq!(r.paths.len(), 2);
         assert_eq!(r.paths[0].is_directory.as_deref(), Some("true"));
         assert!(r.paths[1].is_directory.is_none());
+        assert_eq!(r.paths[1].content_length, Some(serde_json::Value::String("1234".into())));
     }
 }

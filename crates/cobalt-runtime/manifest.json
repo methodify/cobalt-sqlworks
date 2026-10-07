@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "local_spark_mcp": {
-    "version": "0.6.1",
-    "source": "https://github.com/methodify/local-spark-mcp/archive/refs/tags/v0.6.1.tar.gz"
+    "version": "0.6.2",
+    "source": "https://github.com/methodify/local-spark-mcp/archive/refs/tags/v0.6.2.tar.gz"
   },
   "default_profile": "fabric-2.0",
   "profiles": {

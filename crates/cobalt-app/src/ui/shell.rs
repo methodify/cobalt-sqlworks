@@ -183,6 +183,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ShowHistory);
                 item(ui, &mut cmds, Command::ShowFiles);
                 item(ui, &mut cmds, Command::ShowFabric);
+                item(ui, &mut cmds, Command::ShowLakehouse);
                 ui.separator();
                 item(ui, &mut cmds, Command::ToggleTheme);
                 item(ui, &mut cmds, Command::ZoomIn);
@@ -214,7 +215,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     egui::Panel::left("strip").exact_size(44.0).resizable(false).show_separator_line(false).frame(egui::Frame::new().fill(theme.bg_sidebar)).show(ui, |ui| {
         ui.add_space(6.0);
-        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::Files, icons::FOLDER_OPEN, "Files"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
+        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::Lakehouse, icons::DROP, "Lakehouse — tables and Files of the active notebook's lakehouse"), (SidebarView::Files, icons::FOLDER_OPEN, "Files"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
         for (view, icon, tip) in items {
             let active = f.state.sidebar_visible && f.state.sidebar_view == view;
             let color = if active { theme.accent } else { theme.text_muted };
@@ -279,6 +280,13 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             let actions = crate::ui::fabric::show(ui, f.state, theme);
             for a in actions {
                 crate::fabric::action(f.state, f.cx, a);
+            }
+        }
+        SidebarView::Lakehouse => {
+            crate::notebook::lakehouse_pane_shown(f.state, f.cx);
+            let actions = crate::ui::lakehouse::show(ui, f.state, theme);
+            for a in actions {
+                crate::notebook::lakehouse_action(f.state, f.cx, a);
             }
         }
     });
@@ -1688,6 +1696,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ShowFabric => {
             state.sidebar_visible = true;
             state.sidebar_view = SidebarView::Fabric;
+        }
+        Command::ShowLakehouse => {
+            state.sidebar_visible = true;
+            state.sidebar_view = SidebarView::Lakehouse;
         }
         Command::ShowHistory => {
             state.sidebar_visible = true;

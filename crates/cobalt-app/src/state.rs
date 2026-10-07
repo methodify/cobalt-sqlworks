@@ -860,6 +860,51 @@ pub enum SidebarView {
     History,
     Fabric,
     Files,
+    /// Tables and Files of the active Spark notebook's lakehouse.
+    Lakehouse,
+}
+
+/// One entry of a lakehouse `Files/` folder, listed from OneLake.
+#[derive(Clone, Debug)]
+pub struct FileEntry {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// The Lakehouse sidebar's state (see `ui/lakehouse.rs`).
+#[derive(Default)]
+pub struct LakehousePane {
+    /// `(workspace id, lakehouse name, lakehouse id)` shown; follows the active notebook's
+    /// binding unless another lakehouse of the same workspace was picked.
+    pub selected: Option<(String, String, String)>,
+    pub tables: Option<Result<Vec<cobalt_fabric::OneLakeTable>, String>>,
+    pub tables_loading: bool,
+    /// Listed folders by relative path (`""` = `Files/`).
+    pub files: std::collections::HashMap<String, Result<Vec<FileEntry>, String>>,
+    pub files_loading: std::collections::HashSet<String>,
+    pub expanded: std::collections::HashSet<String>,
+    /// Collapsed schema groups (`schema:<name>`); groups are open by default.
+    pub collapsed: std::collections::HashSet<String>,
+    /// This lakehouse's entry of the worker's `mirror_status`.
+    pub mirror: Option<serde_json::Value>,
+    pub mirror_pending: bool,
+    pub filter: String,
+    pub note: Option<String>,
+    /// Re-read shadows and the mirror at this time (a clone or pull runs in the background).
+    pub refresh_at: Option<std::time::Instant>,
+}
+
+impl LakehousePane {
+    pub fn reset_data(&mut self) {
+        self.tables = None;
+        self.tables_loading = false;
+        self.files.clear();
+        self.files_loading.clear();
+        self.mirror = None;
+        self.mirror_pending = false;
+        self.note = None;
+    }
 }
 
 /// The Files sidebar: a remembered folder of query files.
@@ -876,6 +921,7 @@ pub struct AppState {
     pub library: Library,
     pub fabric: crate::fabric::FabricState,
     pub files: FilesState,
+    pub lakehouse_pane: LakehousePane,
     pub tabs: Vec<EditorTab>,
     pub active_tab: Option<usize>,
     pub next_untitled: usize,
@@ -1122,6 +1168,7 @@ impl AppState {
             sidebar_view: SidebarView::Servers,
             fabric: Default::default(),
             files: FilesState::default(),
+            lakehouse_pane: LakehousePane::default(),
             sidebar_width: 280.0,
             pending_meta: HashMap::new(),
             formatter: CellFormatter::default(),

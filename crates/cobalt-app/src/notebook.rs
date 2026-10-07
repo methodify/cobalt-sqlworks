@@ -358,6 +358,166 @@ pub fn maybe_early_start(state: &mut AppState, cx: &Ctx, idx: usize) {
     let _ = ensure_session(state, cx, idx);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Lakehouse pane
+// ---------------------------------------------------------------------------------------------
+
+/// Each frame the pane is visible: follow the active notebook's binding and load what is missing
+/// (tables and the Files root from OneLake; the mirror status and shadows from the session).
+pub fn lakehouse_pane_shown(state: &mut AppState, cx: &Ctx) {
+    let binding = state.active().and_then(|t| t.notebook.as_deref()).and_then(|nb| nb.fabric.clone());
+    let Some(b) = binding else {
+        state.lakehouse_pane.selected = None;
+        return;
+    };
+    let Some(lakehouses) = state.fabric.lakehouses(&b.workspace_id) else {
+        if state.fabric.slot.is_some() && !state.fabric.items.get(&b.workspace_id).map(|l| l.is_loading()).unwrap_or(false) {
+            if state.fabric.workspaces.get().is_none() {
+                crate::fabric::load_workspaces(state, cx);
+            }
+            crate::fabric::load_items(state, cx, &b.workspace_id);
+        }
+        return;
+    };
+    // keep a pick within the same workspace; otherwise the notebook's default (or the first)
+    let keep = match &state.lakehouse_pane.selected {
+        Some((ws, _, id)) if *ws == b.workspace_id && lakehouses.iter().any(|(_, i)| i == id) => Some(id.clone()),
+        _ => None,
+    };
+    let Some(id) = keep.or_else(|| b.lakehouse_id.clone().filter(|id| lakehouses.iter().any(|(_, i)| i == id))).or_else(|| lakehouses.first().map(|(_, i)| i.clone())) else {
+        state.lakehouse_pane.selected = None;
+        return;
+    };
+    let name = lakehouses.iter().find(|(_, i)| *i == id).map(|(n, _)| n.clone()).unwrap_or_default();
+    let want = (b.workspace_id.clone(), name, id);
+    if state.lakehouse_pane.selected.as_ref() != Some(&want) {
+        state.lakehouse_pane.reset_data();
+        state.lakehouse_pane.expanded.clear();
+        state.lakehouse_pane.selected = Some(want.clone());
+    }
+    let (ws, lh_name, lh_id) = want;
+    if state.lakehouse_pane.tables.is_none() && !state.lakehouse_pane.tables_loading {
+        state.lakehouse_pane.tables_loading = true;
+        crate::fabric::load_pane_tables(state, cx, &ws, &lh_id);
+    }
+    if !state.lakehouse_pane.files.contains_key("") && !state.lakehouse_pane.files_loading.contains("") {
+        state.lakehouse_pane.files_loading.insert(String::new());
+        crate::fabric::load_pane_files(state, cx, &ws, &lh_id, "");
+    }
+    if state.lakehouse_pane.refresh_at.map(|t| std::time::Instant::now() >= t).unwrap_or(false) {
+        state.lakehouse_pane.refresh_at = None;
+        state.lakehouse_pane.mirror = None;
+        state.lakehouse_pane.mirror_pending = false;
+        state.shadows.status = None;
+        state.lakehouse_pane.note = None;
+    } else if state.lakehouse_pane.refresh_at.is_some() {
+        cx.egui.request_repaint_after(std::time::Duration::from_millis(500));
+    }
+    if state.kernel.state.is_ready() {
+        if state.lakehouse_pane.mirror.is_none() && !state.lakehouse_pane.mirror_pending {
+            state.lakehouse_pane.mirror_pending = crate::kernel::call(&mut state.kernel, "pane-mirror", "mirror_status", serde_json::json!({}));
+        }
+        if state.shadows.status.is_none() && !state.shadows.loading {
+            refresh_shadows(state);
+        }
+    }
+    let _ = lh_name;
+}
+
+pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse::LakehouseAction) {
+    use crate::ui::lakehouse::LakehouseAction as A;
+    let Some((ws, lh_name, lh_id)) = state.lakehouse_pane.selected.clone() else {
+        if let A::Refresh = a {
+            lakehouse_pane_shown(state, cx);
+        }
+        return;
+    };
+    match a {
+        A::Select(id) => {
+            if let Some(name) = state.fabric.lakehouses(&ws).and_then(|v| v.into_iter().find(|(_, i)| *i == id).map(|(n, _)| n)) {
+                state.lakehouse_pane.reset_data();
+                state.lakehouse_pane.expanded.clear();
+                state.lakehouse_pane.selected = Some((ws, name, id));
+                lakehouse_pane_shown(state, cx);
+            }
+        }
+        A::MakeDefault(id) => {
+            if let Some(idx) = state.active_tab {
+                let binding = state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone());
+                if let Some(b) = binding {
+                    set_fabric(state, idx, Some(NotebookFabric { lakehouse_id: Some(id), ..b }));
+                }
+            }
+        }
+        A::Refresh => {
+            state.lakehouse_pane.reset_data();
+            state.shadows.status = None;
+            lakehouse_pane_shown(state, cx);
+            // re-list the folders that are open
+            let open: Vec<String> = state.lakehouse_pane.expanded.iter().cloned().collect();
+            for rel in open {
+                state.lakehouse_pane.files_loading.insert(rel.clone());
+                crate::fabric::load_pane_files(state, cx, &ws, &lh_id, &rel);
+            }
+        }
+        A::ExpandFiles(key) => {
+            if let Some(schema) = key.strip_prefix("schema:") {
+                let k = format!("schema:{schema}");
+                if !state.lakehouse_pane.collapsed.remove(&k) {
+                    state.lakehouse_pane.collapsed.insert(k);
+                }
+            } else if state.lakehouse_pane.expanded.remove(&key) {
+                // collapsed
+            } else {
+                state.lakehouse_pane.expanded.insert(key.clone());
+                if !state.lakehouse_pane.files.contains_key(&key) && !state.lakehouse_pane.files_loading.contains(&key) {
+                    state.lakehouse_pane.files_loading.insert(key.clone());
+                    crate::fabric::load_pane_files(state, cx, &ws, &lh_id, &key);
+                }
+            }
+        }
+        A::Mount(lh, table) => {
+            // one-table preload: unlike mount_table it accepts the `schema/table` entry form
+            if !crate::kernel::call(&mut state.kernel, "pane-action", "preload", serde_json::json!({"lakehouses": {lh: [table.clone()]}})) {
+                cx.toast(ToastKind::Warning, "Start the Spark session first (run a cell or use the kernel menu).");
+            } else {
+                state.lakehouse_pane.note = Some(format!("Cloning {table} in the background…"));
+                state.lakehouse_pane.refresh_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(8));
+            }
+        }
+        A::Discard(table) => shadows_action(state, "discard_shadow", serde_json::json!({"table": table})),
+        A::Restore(table) => shadows_action(state, "restore_shadow", serde_json::json!({"table": table, "version": 0})),
+        A::Pull(rel) => {
+            if !crate::kernel::call(&mut state.kernel, "pane-action", "sync_files", serde_json::json!({"paths": [rel], "direction": "pull", "lakehouse": lh_name})) {
+                cx.toast(ToastKind::Warning, "Start the Spark session first (run a cell or use the kernel menu).");
+            } else {
+                state.lakehouse_pane.note = Some(format!("Pulling Files/{rel}…"));
+            }
+        }
+        A::RemoveLocal(rel) => {
+            if !crate::kernel::call(&mut state.kernel, "pane-action", "clear_mirror", serde_json::json!({"lakehouse": lh_name, "paths": [rel]})) {
+                cx.toast(ToastKind::Warning, "Start the Spark session first (run a cell or use the kernel menu).");
+            } else {
+                state.lakehouse_pane.note = Some(format!("Removing the local copy of Files/{rel}…"));
+            }
+        }
+        A::InsertCell(code) => {
+            let Some(idx) = state.active_tab else { return };
+            let at = state.tabs[idx].notebook.as_deref().map(|nb| (nb.selected + 1).min(nb.cells.len())).unwrap_or(0);
+            if let Some(i) = insert_cell(state, idx, at, CellKind::Code, true) {
+                if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+                    if let Some(cell) = nb.nb.cells.get_mut(i) {
+                        cell.source = code;
+                    }
+                    nb.cells[i].editor.cursors.clamp(nb.nb.cells[i].source.chars().count());
+                    nb.dirty = true;
+                }
+                set_language(state, idx, i, Some(CellLanguage::Python));
+            }
+        }
+    }
+}
+
 /// A running session nobody has used yet (no context, no cell) — an early start, typically — can
 /// be replaced without losing anything. Stops it and lets the restart consumer bring it back
 /// with the active notebook's binding; queued cells survive the restart.
@@ -1065,6 +1225,30 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
                     Ok(v) => state.shadows.status = Some(v),
                     Err(e) => state.shadows.error = Some(e),
                 }
+            }
+            "pane-mirror" => {
+                state.lakehouse_pane.mirror_pending = false;
+                match result {
+                    Ok(v) => {
+                        let name = state.lakehouse_pane.selected.as_ref().map(|(_, n, _)| n.clone()).unwrap_or_default();
+                        state.lakehouse_pane.mirror = Some(v.get("lakehouses").and_then(|l| l.get(&name)).cloned().unwrap_or(serde_json::json!({})));
+                    }
+                    Err(e) => state.lakehouse_pane.note = Some(e),
+                }
+            }
+            "pane-action" => {
+                state.lakehouse_pane.note = Some(match &result {
+                    Ok(v) if v.get("transferred").is_some() => format!("Pulled {} file{} ({} skipped, {} bytes)", v.get("transferred").and_then(|x| x.as_u64()).unwrap_or(0), if v.get("transferred").and_then(|x| x.as_u64()) == Some(1) { "" } else { "s" }, v.get("skipped").and_then(|x| x.as_u64()).unwrap_or(0), v.get("bytes").and_then(|x| x.as_u64()).unwrap_or(0)),
+                    Ok(v) if v.get("removed").is_some() => format!("Removed {} local path{}", v.get("removed").and_then(|x| x.as_array()).map(|a| a.len()).unwrap_or(0), if v.get("removed").and_then(|x| x.as_array()).map(|a| a.len()) == Some(1) { "" } else { "s" }),
+                    Ok(v) if v.get("table").is_some() => format!("Cloned {}", v.get("table").and_then(|x| x.as_str()).unwrap_or("")),
+                    Ok(v) if v.get("state").is_some() => "Cloning in the background (Lakehouse shadows shows progress)…".into(),
+                    Ok(_) => "Done".into(),
+                    Err(e) => e.clone(),
+                });
+                // the mirror and the shadows changed
+                state.lakehouse_pane.mirror = None;
+                state.lakehouse_pane.mirror_pending = false;
+                state.shadows.status = None;
             }
             "agent-call" => {
                 state.kernel.last_call = Some(match result {

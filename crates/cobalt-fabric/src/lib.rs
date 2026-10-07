@@ -11,4 +11,4 @@ pub mod onelake;
 
 pub use client::{FabricClient, FabricError};
 pub use model::*;
-pub use onelake::{OneLakeClient, OneLakeTable};
+pub use onelake::{DirEntry, OneLakeClient, OneLakeTable};
