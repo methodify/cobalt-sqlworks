@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.7.3
+## 0.7.3 — 2026-10-06
 
 - **local-spark-mcp 0.4.2: Stop interrupts the cell, the session survives.** The runtime pin moves
   to 0.4.2 (protocol 2). Stop on a running Spark cell now sends `interrupt` on the worker's new
