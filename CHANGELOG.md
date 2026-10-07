@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — 0.7.4
+
+- **Fixed: "Start session" did nothing.** Starting (or restarting) the local Spark session from
+  the notebook toolbar's kernel menu or the status bar queued a blank placeholder cell to kick
+  the session off, and the queue pump silently dropped it, so nothing started and nothing was
+  logged. Start, Restart and Stop-then-Start now go through the same session-start path the
+  first cell uses, lakehouse binding and OneLake token included, without needing a cell.
+
 ## 0.7.3 — 2026-10-06
 
 - **local-spark-mcp 0.4.2: Stop interrupts the cell, the session survives.** The runtime pin moves

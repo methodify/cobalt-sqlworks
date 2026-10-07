@@ -721,39 +721,57 @@ fn py_literal(s: &str) -> String {
 }
 
 /// Run the next queued cell on the local Spark kernel (starting it when needed).
+/// Bring the local Spark session up for notebook `idx` when it is not running: the notebook's
+/// lakehouse binding is resolved, a Fabric-bound session fetches its OneLake token first (the
+/// Fabric event then starts the kernel), a plain session starts at once. `Ok(true)` = the
+/// session is up or starting now; `Ok(false)` = something is pending (token, binding prompt)
+/// and the caller should wait; `Err(())` = refused (runtime not installed, binding unresolved)
+/// and the notebook's queue was cleared.
+pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool, ()> {
+    use crate::kernel::{self, KernelState, StartError};
+    match &state.kernel.state {
+        KernelState::Stopped | KernelState::Failed(_) => {}
+        _ => return Ok(true),
+    }
+    if state.kernel.pending_fabric_start.is_some() {
+        return Ok(false); // the OneLake token is on its way; cells stay queued
+    }
+    let fabric = match kernel_fabric(state, cx, idx) {
+        Ok(f) => f,
+        Err(true) => return Ok(false),
+        Err(false) => {
+            if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+                nb.queue.clear();
+            }
+            return Err(());
+        }
+    };
+    if let Some(f) = fabric {
+        // a OneLake token first (may need the browser); the Fabric event starts the kernel
+        let slot = f.slot;
+        state.kernel.pending_fabric_start = Some(f);
+        crate::fabric::prepare_onelake(state, cx, slot);
+        return Ok(false);
+    }
+    if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
+        if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
+            nb.queue.clear();
+        }
+        cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime, then run the cell again.");
+        state.settings_open = true;
+        state.settings_scroll_to = Some("Spark runtime");
+        return Err(());
+    }
+    Ok(true)
+}
+
 fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, override_text: Option<String>) {
-    use crate::kernel::{self, KernelState, RunReq, StartError};
+    use crate::kernel::{self, KernelState, RunReq};
     let tab = state.tabs[idx].id;
     // the kernel must be up or starting
     match &state.kernel.state {
         KernelState::Stopped | KernelState::Failed(_) => {
-            if state.kernel.pending_fabric_start.is_some() {
-                return; // the OneLake token is on its way; cells stay queued
-            }
-            let fabric = match kernel_fabric(state, cx, idx) {
-                Ok(f) => f,
-                Err(true) => return,
-                Err(false) => {
-                    if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
-                        nb.queue.clear();
-                    }
-                    return;
-                }
-            };
-            if let Some(f) = fabric {
-                // a OneLake token first (may need the browser); the Fabric event starts the kernel
-                let slot = f.slot;
-                state.kernel.pending_fabric_start = Some(f);
-                crate::fabric::prepare_onelake(state, cx, slot);
-                return;
-            }
-            if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
-                if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
-                    nb.queue.clear();
-                }
-                cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime, then run the cell again.");
-                state.settings_open = true;
-                state.settings_scroll_to = Some("Spark runtime");
+            if !matches!(ensure_session(state, cx, idx), Ok(true)) {
                 return;
             }
         }

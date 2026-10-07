@@ -46,14 +46,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
         f.state.kernel_restart_pending = false;
         let active_nb = f.state.active_tab.filter(|i| f.state.tabs[*i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
         if let Some(i) = active_nb {
-            // run through the normal path: binding resolution, OneLake token, start
-            if let Some(nb) = f.state.tabs[i].notebook.as_deref_mut() {
-                if nb.queue.is_empty() {
-                    nb.queue.push_back(QueuedCell { id: String::new(), text: None }); // a no-op marker so pump starts the session
-                }
-            }
-            let tab = f.state.tabs[i].id;
-            crate::notebook::pump(f.state, f.cx, tab, false);
+            // the normal path: binding resolution, OneLake token, start (no cell needed)
+            let _ = crate::notebook::ensure_session(f.state, f.cx, i);
         } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut f.state.kernel, f.cx.settings, f.cx.paths, f.cx.egui, None) {
             f.cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings → Spark runtime).");
         }
