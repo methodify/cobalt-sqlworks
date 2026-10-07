@@ -339,6 +339,10 @@ TABLE_OR_VIEW_NOT_FOUND while the worker log showed `AccessDeniedException: Unau
 `listOneLakeTables` and the pane said "Fabric rejected the token". Cobalt's token endpoint now
 serves the storage audience only and says "sign in again on the Fabric panel" when it cannot;
 the session start's token check still goes interactive. The OneLake client reports the 401 body.
+`notebookutils.fs` (0.6.4) covers Fabric's surface: `ls/exists/mkdirs/rm/cp/mv/put/head/append`,
+`mounts/getMountPath/refreshMounts`; `abfss://` paths hit OneLake (writes only in writethrough,
+otherwise a PermissionError naming the mirror), `/lakehouse/…` paths hit the mirror through the
+lazy hooks (`default` = the context's default lakehouse).
 Cell headers are now always visible (no hover expansion).
 
 ## Spark runtime (Settings → Spark runtime)
