@@ -7,6 +7,9 @@
   previous uninstaller runs silently.
 - **No more console flashes on Windows.** The one remaining subprocess started without the
   no-window flag (the `uv --version` probe the runtime page and the session start run) has it.
+- **The editor caret shows over Remote Desktop.** It followed the OS window's focus flag,
+  which RDP sessions (and the software renderer) can leave unset while you type; it now
+  follows the editor's own focus and merely stops blinking when the window is in the background.
 - **Settings tab labels are left-aligned.**
 - **The Spark runtime button says what it will do.** "Update Spark to 0.6.4" when only the
   local-spark-mcp package is behind the pin, "Install for me" when something is missing,

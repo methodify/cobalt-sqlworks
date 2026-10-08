@@ -379,9 +379,14 @@ impl<'a> CodeEditor<'a> {
             painter.line_segment([r.center_top(), r.center_bottom()], Stroke::new(2.0, ui.visuals().selection.stroke.color));
         }
         let primary_caret = caret_rect(&galley, cursors.primary().head, row_h).translate(origin.to_vec2());
-        if has_focus && (ui.input(|i| i.focused) || cfg!(feature = "agent")) {
+        // The caret follows egui's widget focus, not the OS window's focus flag: under Remote
+        // Desktop (and with the software renderer) winit can report the window as unfocused
+        // while the user is typing in it, which made the caret vanish. When the window really
+        // is in the background the caret stays visible but stops blinking.
+        let window_focused = ui.input(|i| i.focused) || cfg!(feature = "agent");
+        if has_focus {
             let v = ui.visuals();
-            let (visible, wake) = if v.text_cursor.blink {
+            let (visible, wake) = if v.text_cursor.blink && window_focused {
                 let on = v.text_cursor.on_duration;
                 let off = v.text_cursor.off_duration;
                 let total = on + off;
