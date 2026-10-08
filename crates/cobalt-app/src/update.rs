@@ -52,6 +52,34 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
     }
 }
 
+/// The changelog as shipped with this build (Help → What's new shows it at once).
+pub const BUNDLED_CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+pub const CHANGELOG_URL: &str = "https://raw.githubusercontent.com/methodify/cobalt-sqlworks/main/CHANGELOG.md";
+pub const CHANGELOG_PAGE: &str = "https://github.com/methodify/cobalt-sqlworks/blob/main/CHANGELOG.md";
+
+/// Fetch the latest changelog from GitHub into `state.changelog` (no-op while one is in flight).
+pub fn fetch_changelog(state: &mut crate::state::AppState, cx: &crate::ops::Ctx) {
+    if state.changelog.pending.is_some() {
+        return;
+    }
+    let slot = std::sync::Arc::new(parking_lot::Mutex::new(None));
+    state.changelog.pending = Some(slot.clone());
+    let egui = cx.egui.clone();
+    cx.session.spawn(async move {
+        let result = async {
+            let client = reqwest::Client::builder().user_agent(format!("cobalt-sqlworks/{CURRENT_VERSION}")).timeout(std::time::Duration::from_secs(15)).build().map_err(|e| e.to_string())?;
+            let resp = client.get(CHANGELOG_URL).send().await.map_err(|e| e.to_string())?;
+            if !resp.status().is_success() {
+                return Err(format!("GitHub answered {}", resp.status()));
+            }
+            resp.text().await.map_err(|e| e.to_string())
+        }
+        .await;
+        *slot.lock() = Some(result);
+        egui.request_repaint();
+    });
+}
+
 /// Fire the check on the session runtime; the outcome arrives on `tx`.
 pub fn spawn_check(session: &crate::session::SessionManager, tx: Sender<UpdateOutcome>, manual: bool) {
     session.spawn(async move {

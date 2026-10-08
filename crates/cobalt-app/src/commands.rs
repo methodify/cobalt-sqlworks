@@ -115,6 +115,8 @@ pub enum Command {
     ZoomReset,
     // help
     About,
+    /// Help → What's new: the changelog in a window.
+    Changelog,
     CheckForUpdates,
     KeyboardShortcuts,
 }
@@ -262,6 +264,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::ZoomReset, id: "view.zoom_reset", label: "Reset Zoom", category: Category::View, default_key: sc(CTRL, Key::Num0) },
     CommandInfo { cmd: Command::CheckForUpdates, id: "help.check_updates", label: "Check for Updates…", category: Category::Help, default_key: None },
     CommandInfo { cmd: Command::About, id: "help.about", label: "About Cobalt SQL Works", category: Category::Help, default_key: None },
+    CommandInfo { cmd: Command::Changelog, id: "help.changelog", label: "What's New (Changelog)", category: Category::Help, default_key: None },
     CommandInfo { cmd: Command::KeyboardShortcuts, id: "help.shortcuts", label: "Keyboard Shortcuts", category: Category::Help, default_key: None },
 ];
 

@@ -307,6 +307,18 @@ pub struct ShadowsUi {
     pub note: Option<String>,
 }
 
+/// The changelog window (Help → What's new): the copy bundled with this build at once, the
+/// latest from GitHub when the fetch comes back.
+#[derive(Default)]
+pub struct ChangelogUi {
+    pub open: bool,
+    /// The GitHub copy (`Ok`) or why it could not be fetched (`Err`).
+    pub fetched: Option<Result<String, String>>,
+    /// A fetch in flight; the task fills the slot and asks for a repaint.
+    pub pending: Option<std::sync::Arc<parking_lot::Mutex<Option<Result<String, String>>>>>,
+    pub cache: egui_commonmark::CommonMarkCache,
+}
+
 /// A notebook tab that is still being fetched (from Fabric).
 #[derive(Clone, Debug)]
 pub struct NotebookLoading {
@@ -937,6 +949,8 @@ pub struct AppState {
     pub history: HistoryView,
     pub settings_open: bool,
     pub about_open: bool,
+    /// Help → What's new: the changelog, rendered in a window.
+    pub changelog: ChangelogUi,
     pub shortcuts_open: bool,
     /// Help → Check for Updates… was chosen; the app fires the request.
     pub update_check_requested: bool,
@@ -1179,6 +1193,7 @@ impl AppState {
             history: HistoryView::default(),
             settings_open: false,
             about_open: false,
+            changelog: ChangelogUi::default(),
             update_check_requested: false,
             skip_version_request: None,
             shortcuts_open: false,

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 0.8.1
+## 0.8.1 — 2026-10-07
 
 - **Updating over an installed version no longer walks you through the old uninstaller.** The
   Windows installer still asks once whether to remove the previous version; after that the
@@ -18,6 +18,9 @@
   closer over the inserted one steps past it, and Backspace inside an empty pair removes both.
   Both behaviours are on by default and have switches under Settings → Editor (the old
   "auto-close brackets" setting now does something).
+- **Help → What's New shows the changelog in the app.** The copy bundled with the build opens
+  at once; the latest from GitHub replaces it when the fetch comes back (with a note either
+  way), rendered as Markdown with Refresh and Open on GitHub.
 - **Settings tab labels are left-aligned.**
 - **The Spark runtime button says what it will do.** "Update Spark to 0.6.4" when only the
   local-spark-mcp package is behind the pin, "Install for me" when something is missing,

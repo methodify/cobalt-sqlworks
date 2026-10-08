@@ -54,6 +54,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     kernel_log_window(ctx, f);
     shadows_window(ctx, f);
+    changelog_window(ctx, f);
     // overlays
     if let Some(item) = palette::show(ui, f.state, f.theme, f.keymap) {
         match item {
@@ -194,6 +195,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             });
             ui.menu_button("Help", |ui| {
                 item(ui, &mut cmds, Command::Welcome);
+                item(ui, &mut cmds, Command::Changelog);
                 item(ui, &mut cmds, Command::KeyboardShortcuts);
                 item(ui, &mut cmds, Command::CheckForUpdates);
                 item(ui, &mut cmds, Command::About);
@@ -607,6 +609,58 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
 }
 
 /// The local Spark session's console (worker stderr: Spark, py4j, Ivy, tracebacks).
+/// Help → What's new: the changelog, bundled copy first, GitHub's when it arrives.
+fn changelog_window(ctx: &egui::Context, f: &mut Frame<'_>) {
+    if !f.state.changelog.open {
+        return;
+    }
+    // a finished fetch lands in `fetched`
+    let done = f.state.changelog.pending.as_ref().and_then(|slot| slot.lock().take());
+    if let Some(r) = done {
+        f.state.changelog.pending = None;
+        f.state.changelog.fetched = Some(r);
+    }
+    let theme = f.theme;
+    let mut open = true;
+    let mut refetch = false;
+    crate::ui::chrome::Window::new("What's new").id(egui::Id::new("changelog-window")).open(&mut open).default_size([760.0, 560.0]).min_size([420.0, 300.0]).resizable(true).show(ctx, theme, |ui| {
+        let cl = &mut f.state.changelog;
+        let (text, note, is_error) = match (&cl.fetched, cl.pending.is_some()) {
+            (Some(Ok(t)), _) => (t.as_str(), "latest from GitHub".to_string(), false),
+            (Some(Err(e)), _) => (crate::update::BUNDLED_CHANGELOG, format!("the copy bundled with this build — GitHub could not be reached ({e})"), true),
+            (None, true) => (crate::update::BUNDLED_CHANGELOG, "the copy bundled with this build — fetching the latest from GitHub…".to_string(), false),
+            (None, false) => (crate::update::BUNDLED_CHANGELOG, "the copy bundled with this build".to_string(), false),
+        };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("You are on {}", crate::update::CURRENT_VERSION)).strong());
+            ui.label(RichText::new(format!("· {note}")).size(11.0).color(if is_error { theme.warning } else { theme.text_muted }));
+            if cl.pending.is_some() {
+                ui.spinner();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("Open on GitHub").clicked() {
+                    let _ = open::that(crate::update::CHANGELOG_PAGE);
+                }
+                if ui.add_enabled(cl.pending.is_none(), egui::Button::new("Refresh").small()).clicked() {
+                    refetch = true;
+                }
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().id_salt("changelog-scroll").auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_width(ui.available_width() - 8.0);
+            egui_commonmark::CommonMarkViewer::new().max_image_width(Some(700)).show(ui, &mut cl.cache, text);
+        });
+    });
+    if refetch {
+        f.state.changelog.fetched = None;
+        crate::update::fetch_changelog(f.state, f.cx);
+    }
+    if !open {
+        f.state.changelog.open = false;
+    }
+}
+
 fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     if !f.state.kernel.log_open {
         return;
@@ -1723,6 +1777,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ZoomOut => state.settings_patch.push(SettingsPatch::UiScale((cx.settings.appearance.ui_scale - 0.1).max(0.6))),
         Command::ZoomReset => state.settings_patch.push(SettingsPatch::UiScale(1.0)),
         Command::About => state.about_open = true,
+        Command::Changelog => {
+            state.changelog.open = true;
+            crate::update::fetch_changelog(state, cx);
+        }
         Command::RefreshDatabases => {
             if let Some(i) = idx {
                 let tab = state.tabs[i].id;
