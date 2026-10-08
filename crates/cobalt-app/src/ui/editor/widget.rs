@@ -389,10 +389,18 @@ impl<'a> CodeEditor<'a> {
         }
         let primary_caret = caret_rect(&galley, cursors.primary().head, row_h).translate(origin.to_vec2());
         // The caret follows egui's widget focus, not the OS window's focus flag: under Remote
-        // Desktop (and with the software renderer) winit can report the window as unfocused
-        // while the user is typing in it, which made the caret vanish. When the window really
-        // is in the background the caret stays visible but stops blinking.
-        let window_focused = ui.input(|i| i.focused) || cfg!(feature = "agent");
+        // Desktop (and with the software renderer) winit never reports the window as focused
+        // while the user is typing in it, which made the caret vanish and then kept it from
+        // blinking. The flag is trusted only once it has been seen true in this session; until
+        // then the window counts as focused. When a trusted flag says the window really is in
+        // the background the caret stays visible but stops blinking.
+        let os_focused = ui.input(|i| i.focused);
+        let focus_flag_seen = ui.ctx().data_mut(|d| {
+            let seen = d.get_temp_mut_or_default::<bool>(Id::new("cobalt-os-focus-seen"));
+            *seen |= os_focused;
+            *seen
+        });
+        let window_focused = os_focused || !focus_flag_seen || cfg!(feature = "agent");
         if has_focus {
             let v = ui.visuals();
             let (visible, wake) = if v.text_cursor.blink && window_focused {

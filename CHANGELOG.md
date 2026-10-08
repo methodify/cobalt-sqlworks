@@ -4,6 +4,9 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **The editor caret blinks over Remote Desktop.** 0.8.1 made it visible there, but blinking
+  still waited for a window-focus signal that Remote Desktop sessions never deliver; the
+  signal is now trusted only once it has been seen in the session.
 - Release builds restore a dependency cache warmed on the main branch, so tag builds no
   longer compile every dependency from scratch.
 - Code quality: the workspace builds without compiler or clippy warnings in both the
