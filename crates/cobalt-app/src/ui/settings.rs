@@ -100,6 +100,8 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.checkbox(&mut draft.editor.insert_spaces, "Insert spaces");
                 ui.checkbox(&mut draft.editor.word_wrap, "Word wrap");
             });
+            ui.checkbox(&mut draft.editor.auto_close_brackets, "Auto-close brackets and quotes").on_hover_text("Typing ( [ { ' \" ` inserts the partner with the caret between; typing the closer over it steps past; Backspace in an empty pair removes both. Pairs are not inserted before a word character, nor quotes right after one or inside an open string.");
+            ui.checkbox(&mut draft.editor.auto_surround, "Wrap the selection when typing a bracket or quote").on_hover_text("With text selected, ( [ { ' \" ` wrap it instead of replacing it — at every cursor — and the selection stays on the wrapped text, so a second bracket wraps again. A closing bracket still replaces the selection.");
             ui.checkbox(&mut draft.editor.highlight_current_statement, "Highlight the current statement");
             ui.checkbox(&mut draft.editor.completion_enabled, "IntelliSense");
             ui.checkbox(&mut draft.editor.completion_on_type, "Suggest while typing");

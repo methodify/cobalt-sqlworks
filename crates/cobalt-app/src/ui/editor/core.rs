@@ -895,6 +895,181 @@ impl SnippetSession {
     }
 }
 
+
+// ---------------------------------------------------------------------------------------------
+// Bracket and quote pairs (VS Code's auto-closing / auto-surround / overtype / pair delete)
+// ---------------------------------------------------------------------------------------------
+
+/// The pairs kept balanced. Quotes pair with themselves; `[`…`]` doubles as T-SQL's identifier
+/// quote, backticks as Spark SQL's.
+pub const PAIRS: [(char, char); 6] = [('(', ')'), ('[', ']'), ('{', '}'), ('\'', '\''), ('"', '"'), ('`', '`')];
+
+pub fn closer_of(open: char) -> Option<char> {
+    PAIRS.iter().find(|(o, _)| *o == open).map(|(_, c)| *c)
+}
+
+pub fn is_closer(c: char) -> bool {
+    PAIRS.iter().any(|(_, cl)| *cl == c)
+}
+
+fn is_quote(c: char) -> bool {
+    matches!(c, '\'' | '"' | '`')
+}
+
+/// What the editor does with brackets and quotes (Settings → Editor).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PairPolicy {
+    /// Wrap a selection when an opening bracket or a quote is typed.
+    pub surround: bool,
+    /// Insert the partner, overtype it, delete an empty pair with Backspace.
+    pub auto_close: bool,
+}
+
+impl Default for PairPolicy {
+    fn default() -> Self {
+        Self { surround: true, auto_close: true }
+    }
+}
+
+/// VS Code's `autoCloseBefore`: a pair is only inserted when the caret is followed by nothing,
+/// whitespace, or one of these.
+fn auto_close_before(next: Option<char>) -> bool {
+    match next {
+        None => true,
+        Some(c) => c.is_whitespace() || matches!(c, ';' | ':' | '.' | ',' | '=' | '}' | ']' | ')' | '>'),
+    }
+}
+
+/// Should typing `ch` (an opener) at `at` insert its partner too?
+fn should_auto_close(ch: char, chars: &[char], at: usize) -> bool {
+    let next = chars.get(at).copied();
+    let prev = if at > 0 { chars.get(at - 1).copied() } else { None };
+    if !auto_close_before(next) {
+        return false;
+    }
+    if is_quote(ch) {
+        // not right after a word (it's / don't / an identifier), and not inside a string on
+        // this line (an odd number of the same quote before the caret means we are)
+        if prev.map(is_word_char).unwrap_or(false) || prev == Some(ch) {
+            return false;
+        }
+        let line_start = chars[..at].iter().rposition(|c| *c == '\n').map(|i| i + 1).unwrap_or(0);
+        let count = chars[line_start..at].iter().filter(|c| **c == ch).count();
+        if count % 2 == 1 {
+            return false;
+        }
+    }
+    true
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PairAct {
+    /// `(` + selection + `)`, selection kept on the inner text.
+    Wrap,
+    /// `(` + `)` with the caret between.
+    Pair,
+    /// The closer is already there: step over it.
+    Over,
+    /// Just the character.
+    Plain,
+}
+
+/// Type one character under the pairing rules, at every cursor. Returns `false` when the rules
+/// do not apply (the caller inserts the text as usual).
+pub fn type_pair_char(text: &mut String, cursors: &mut Cursors, ch: char, policy: PairPolicy) -> bool {
+    let close = closer_of(ch);
+    if close.is_none() && !is_closer(ch) {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let acts: Vec<PairAct> = cursors
+        .sels
+        .iter()
+        .map(|s| {
+            if !s.is_empty() {
+                // a closing bracket typed over a selection replaces it, as in VS Code
+                if policy.surround && close.is_some() { PairAct::Wrap } else { PairAct::Plain }
+            } else if policy.auto_close && is_closer(ch) && chars.get(s.head).copied() == Some(ch) {
+                PairAct::Over
+            } else if policy.auto_close && close.is_some() && should_auto_close(ch, &chars, s.head) {
+                PairAct::Pair
+            } else {
+                PairAct::Plain
+            }
+        })
+        .collect();
+    if acts.iter().all(|a| *a == PairAct::Plain) {
+        return false;
+    }
+    let closer = close.unwrap_or(ch);
+    let mut reps: Vec<Replace> = Vec::with_capacity(acts.len());
+    let mut inner_lens: Vec<usize> = Vec::with_capacity(acts.len());
+    for (s, a) in cursors.sels.iter().zip(&acts) {
+        let (start, end) = (s.min(), s.max());
+        let t = match a {
+            PairAct::Wrap => {
+                let inner: String = chars[start..end].iter().collect();
+                inner_lens.push(end - start);
+                format!("{ch}{inner}{closer}")
+            }
+            PairAct::Pair => {
+                inner_lens.push(0);
+                format!("{ch}{closer}")
+            }
+            PairAct::Over => {
+                inner_lens.push(0);
+                ch.to_string()
+            }
+            PairAct::Plain => {
+                inner_lens.push(0);
+                ch.to_string()
+            }
+        };
+        let end = if *a == PairAct::Over { end + 1 } else { end };
+        reps.push(Replace { start, end, text: t });
+    }
+    let ends = apply_replacements(text, &reps);
+    for ((s, a), (e, inner)) in cursors.sels.iter_mut().zip(&acts).zip(ends.iter().zip(&inner_lens)) {
+        match a {
+            PairAct::Wrap => {
+                let (lo, hi) = (e - 1 - inner, e - 1);
+                let forward = s.is_forward();
+                s.anchor = if forward { lo } else { hi };
+                s.head = if forward { hi } else { lo };
+                s.h_pos = None;
+            }
+            PairAct::Pair => s.collapse_to(e - 1),
+            PairAct::Over | PairAct::Plain => s.collapse_to(*e),
+        }
+    }
+    cursors.normalize();
+    true
+}
+
+/// Backspace with the caret between an opener and its closer removes both (per cursor; other
+/// cursors delete one character). Returns `false` when no cursor sits in an empty pair.
+pub fn backspace_pair(text: &mut String, cursors: &mut Cursors) -> bool {
+    if cursors.sels.iter().any(|s| !s.is_empty()) {
+        return false;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let in_pair = |at: usize| -> bool { at > 0 && chars.get(at - 1).and_then(|o| closer_of(*o)).is_some_and(|c| chars.get(at).copied() == Some(c)) };
+    if !cursors.sels.iter().any(|s| in_pair(s.head)) {
+        return false;
+    }
+    let reps: Vec<Replace> = cursors
+        .sels
+        .iter()
+        .map(|s| if in_pair(s.head) { Replace { start: s.head - 1, end: s.head + 1, text: String::new() } } else { Replace { start: s.head.saturating_sub(1), end: s.head, text: String::new() } })
+        .collect();
+    let ends = apply_replacements(text, &reps);
+    for (s, e) in cursors.sels.iter_mut().zip(ends) {
+        s.collapse_to(e);
+    }
+    cursors.normalize();
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1122,4 +1297,85 @@ mod tests {
         assert!(u.redo(&mut t, &mut c));
         assert_eq!(t, "abcde");
     }
+
+    fn pairs_default() -> PairPolicy {
+        PairPolicy::default()
+    }
+
+    #[test]
+    fn surround_wraps_selection_and_keeps_it() {
+        let mut t = String::from("select name from t");
+        let mut c = Cursors { sels: vec![Sel::range(7, 11)], primary: 0 };
+        assert!(type_pair_char(&mut t, &mut c, '[', pairs_default()));
+        assert_eq!(t, "select [name] from t");
+        assert_eq!((c.sels[0].anchor, c.sels[0].head), (8, 12));
+        // typing another opener wraps again; a backwards selection keeps its direction
+        c.sels[0] = Sel::range(12, 8);
+        assert!(type_pair_char(&mut t, &mut c, '\'', pairs_default()));
+        assert_eq!(t, "select ['name'] from t");
+        assert_eq!((c.sels[0].anchor, c.sels[0].head), (13, 9));
+    }
+
+    #[test]
+    fn surround_every_cursor_and_closer_replaces() {
+        let mut t = String::from("a b");
+        let mut c = Cursors { sels: vec![Sel::range(0, 1), Sel::range(2, 3)], primary: 0 };
+        assert!(type_pair_char(&mut t, &mut c, '(', pairs_default()));
+        assert_eq!(t, "(a) (b)");
+        // a closing bracket over a selection replaces it (VS Code)
+        let mut t = String::from("abc");
+        let mut c = Cursors { sels: vec![Sel::range(0, 3)], primary: 0 };
+        assert!(!type_pair_char(&mut t, &mut c, ')', pairs_default()));
+        // surround off: the rules do not apply to a selection
+        let mut c = Cursors { sels: vec![Sel::range(0, 3)], primary: 0 };
+        assert!(!type_pair_char(&mut t, &mut c, '(', PairPolicy { surround: false, auto_close: true }));
+    }
+
+    #[test]
+    fn auto_close_pairs_overtypes_and_respects_context() {
+        let mut t = String::new();
+        let mut c = Cursors::single(0);
+        assert!(type_pair_char(&mut t, &mut c, '(', pairs_default()));
+        assert_eq!((t.as_str(), c.sels[0].head), ("()", 1));
+        // typing the closer steps over the auto-inserted one
+        assert!(type_pair_char(&mut t, &mut c, ')', pairs_default()));
+        assert_eq!((t.as_str(), c.sels[0].head), ("()", 2));
+        // no pair before a word character
+        let mut t = String::from("x");
+        let mut c = Cursors::single(0);
+        assert!(!type_pair_char(&mut t, &mut c, '(', pairs_default()));
+        // quotes: not after a word (don't), not inside an open string on the line
+        let mut t = String::from("don");
+        let mut c = Cursors::single(3);
+        assert!(!type_pair_char(&mut t, &mut c, '\'', pairs_default()));
+        let mut t = String::from("'abc");
+        let mut c = Cursors::single(4);
+        assert!(!type_pair_char(&mut t, &mut c, '\'', pairs_default()));
+        // a quote at a clean spot pairs
+        let mut t = String::from("where x = ");
+        let mut c = Cursors::single(10);
+        assert!(type_pair_char(&mut t, &mut c, '\'', pairs_default()));
+        assert_eq!((t.as_str(), c.sels[0].head), ("where x = ''", 11));
+        // auto-close off: nothing happens
+        let mut t = String::new();
+        let mut c = Cursors::single(0);
+        assert!(!type_pair_char(&mut t, &mut c, '(', PairPolicy { surround: true, auto_close: false }));
+    }
+
+    #[test]
+    fn backspace_removes_an_empty_pair() {
+        let mut t = String::from("f()");
+        let mut c = Cursors::single(2);
+        assert!(backspace_pair(&mut t, &mut c));
+        assert_eq!((t.as_str(), c.sels[0].head), ("f", 1));
+        let mut t = String::from("f(x)");
+        let mut c = Cursors::single(2);
+        assert!(!backspace_pair(&mut t, &mut c));
+        // mixed cursors: the one in a pair deletes both, the other one character
+        let mut t = String::from("() ab");
+        let mut c = Cursors { sels: vec![Sel::cursor(1), Sel::cursor(5)], primary: 0 };
+        assert!(backspace_pair(&mut t, &mut c));
+        assert_eq!(t, " a");
+    }
+
 }

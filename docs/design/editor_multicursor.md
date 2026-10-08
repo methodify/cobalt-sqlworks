@@ -69,6 +69,27 @@ Windows bindings, matching VS Code. None collide with Cobalt's existing commands
 
 Not implemented in this pass (noted for later): Ctrl+U cursor undo, Ctrl+K Ctrl+D, Shift+Alt+Left/Right smart select, keyboard column select (Ctrl+Shift+Alt+Arrows), `editor.multiCursorModifier = ctrlCmd`.
 
+## Brackets and quotes (0.8.1)
+
+VS Code's rules, in `core.rs` (`type_pair_char`, `backspace_pair`, `PairPolicy`), for the pairs
+`()` `[]` `{}` `''` `""` and backticks:
+
+- **Surround.** A non-empty selection plus an opener (or a quote) becomes opener + selection +
+  closer, at every cursor; the selection stays on the wrapped text (direction kept) so a second
+  opener wraps again. A closing bracket over a selection replaces it, as in VS Code.
+- **Auto-close.** An opener at an empty cursor inserts the pair with the caret between, only
+  when the next character is nothing, whitespace or one of `; : . , = } ] ) >` (VS Code's
+  `autoCloseBefore`). Quotes additionally require the previous character not to be a word
+  character or the same quote (so `don't` and `'it''s'` work), and an even number of that quote
+  earlier on the line (not inside an open string — an approximation of VS Code's token check).
+- **Overtype.** Typing a closer when the next character is that closer steps over it
+  (VS Code's `always` mode; auto-inserted closers are not tracked).
+- **Pair delete.** Backspace between an opener and its closer removes both; other cursors in the
+  same keystroke delete one character.
+- One undo step per keystroke, as for any typed text. IME commits and pastes bypass the rules.
+- Settings → Editor: "Auto-close brackets and quotes" (`auto_close_brackets`) and "Wrap the
+  selection when typing a bracket or quote" (`auto_surround`), both on by default.
+
 ## Mouse
 
 Selection happens on **press**, never on release. The widget counts presses itself: a press

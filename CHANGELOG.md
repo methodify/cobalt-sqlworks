@@ -10,6 +10,14 @@
 - **The editor caret shows over Remote Desktop.** It followed the OS window's focus flag,
   which RDP sessions (and the software renderer) can leave unset while you type; it now
   follows the editor's own focus and merely stops blinking when the window is in the background.
+- **Brackets and quotes behave like VS Code.** With text selected, typing `(` `[` `{` `'` `"` or
+  `` ` `` wraps the selection instead of replacing it, at every cursor, and keeps the selection
+  on the wrapped text so a second bracket wraps again (`[` is handy for T-SQL identifiers). With
+  nothing selected, typing an opener inserts its partner with the caret between — not before a
+  word character, and quotes neither right after a word nor inside an open string — typing the
+  closer over the inserted one steps past it, and Backspace inside an empty pair removes both.
+  Both behaviours are on by default and have switches under Settings → Editor (the old
+  "auto-close brackets" setting now does something).
 - **Settings tab labels are left-aligned.**
 - **The Spark runtime button says what it will do.** "Update Spark to 0.6.4" when only the
   local-spark-mcp package is behind the pin, "Install for me" when something is missing,

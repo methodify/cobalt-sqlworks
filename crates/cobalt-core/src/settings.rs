@@ -53,7 +53,13 @@ pub struct EditorSettings {
     pub tab_size: u8,
     pub insert_spaces: bool,
     pub word_wrap: bool,
+    /// Typing an opening bracket or a quote inserts its partner and keeps the caret between
+    /// them; typing the closer over an auto-inserted one steps past it; Backspace inside an
+    /// empty pair removes both.
     pub auto_close_brackets: bool,
+    /// Typing an opening bracket or a quote with text selected wraps the selection instead of
+    /// replacing it (every cursor; the selection stays on the wrapped text).
+    pub auto_surround: bool,
     pub highlight_current_statement: bool,
     pub completion_enabled: bool,
     pub completion_on_type: bool,
@@ -71,6 +77,7 @@ impl Default for EditorSettings {
             insert_spaces: true,
             word_wrap: false,
             auto_close_brackets: true,
+            auto_surround: true,
             highlight_current_statement: true,
             completion_enabled: true,
             completion_on_type: true,

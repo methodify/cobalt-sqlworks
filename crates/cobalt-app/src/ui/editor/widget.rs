@@ -72,6 +72,8 @@ pub struct CodeEditor<'a> {
     pub word_wrap: bool,
     pub tab_size: usize,
     pub insert_spaces: bool,
+    /// Bracket and quote pairing (auto-close, overtype, pair delete, surround a selection).
+    pub pairs: PairPolicy,
     /// Fill at least this much of the parent (the scroll viewport).
     pub min_size: Vec2,
     pub margin: egui::Margin,
@@ -138,7 +140,7 @@ fn first_nonblank_in_row(galley: &Galley, text_chars: &[char], row: usize) -> us
 
 impl<'a> CodeEditor<'a> {
     pub fn show(self, ui: &mut Ui) -> CodeEditorOutput {
-        let CodeEditor { id, text, cursors, undo, snippet, font, colors, syntax, text_color, cursor_color, word_wrap, tab_size, insert_spaces, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
+        let CodeEditor { id, text, cursors, undo, snippet, font, colors, syntax, text_color, cursor_color, word_wrap, tab_size, insert_spaces, pairs, min_size, margin, scroll_to_cursor, find_mode, page_rows } = self;
         let mut mem: Mem = ui.data_mut(|d| d.get_temp(id).unwrap_or_default());
         let row_h = ui.fonts_mut(|f| f.row_height(&font));
         let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0')).max(1.0);
@@ -193,7 +195,17 @@ impl<'a> CodeEditor<'a> {
                     }
                     Event::Text(s) if !s.is_empty() && s != "\n" && s != "\r" => {
                         undo.record(EditKind::Typing, text, cursors);
-                        insert_at_cursors(text, cursors, s);
+                        // one bracket or quote goes through the pairing rules (surround a
+                        // selection, auto-close, overtype); anything else is inserted as typed
+                        let mut it = s.chars();
+                        let single = match (it.next(), it.next()) {
+                            (Some(c), None) => Some(c),
+                            _ => None,
+                        };
+                        let handled = single.map(|c| type_pair_char(text, cursors, c, pairs)).unwrap_or(false);
+                        if !handled {
+                            insert_at_cursors(text, cursors, s);
+                        }
                         relayout = true;
                         typed = true;
                     }
@@ -204,7 +216,7 @@ impl<'a> CodeEditor<'a> {
                         typed = true;
                     }
                     Event::Key { key, pressed: true, modifiers, .. } => {
-                        let r = handle_key(*key, modifiers, text, cursors, undo, snippet, &galley, &mut mem, tab_size, insert_spaces, find_mode, page_rows.max(1), row_h, char_w);
+                        let r = handle_key(*key, modifiers, text, cursors, undo, snippet, &galley, &mut mem, tab_size, insert_spaces, pairs, find_mode, page_rows.max(1), row_h, char_w);
                         match r {
                             KeyOutcome::Ignored => {}
                             KeyOutcome::Moved => cursor_moved = true,
@@ -491,7 +503,8 @@ enum KeyOutcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors, undo: &mut UndoStack, snippet: &mut Option<SnippetSession>, galley: &Galley, mem: &mut Mem, tab_size: usize, insert_spaces: bool, find_mode: MatchMode, page_rows: usize, row_h: f32, char_w: f32) -> KeyOutcome {
+#[allow(clippy::too_many_arguments)]
+fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors, undo: &mut UndoStack, snippet: &mut Option<SnippetSession>, galley: &Galley, mem: &mut Mem, tab_size: usize, insert_spaces: bool, pairs: PairPolicy, find_mode: MatchMode, page_rows: usize, row_h: f32, char_w: f32) -> KeyOutcome {
     use KeyOutcome::*;
     let ctrl = m.ctrl || m.command;
     let alt = m.alt;
@@ -677,7 +690,10 @@ fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors,
         }
         Key::Backspace => {
             undo.record(EditKind::Deleting, text, cursors);
-            delete_at_cursors(text, cursors, false, ctrl);
+            // Backspace inside an empty pair removes both characters
+            if ctrl || !pairs.auto_close || !backspace_pair(text, cursors) {
+                delete_at_cursors(text, cursors, false, ctrl);
+            }
             Edited
         }
         Key::Delete => {
