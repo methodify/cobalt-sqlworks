@@ -45,7 +45,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Dependencies come from the cache warmed on main by release-cache.yml (a tag run can only
+      # read caches saved on the default branch, and never shares with other tags); nothing a tag
+      # run would save could be reused, so it saves nothing.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: cargo-bins/cargo-binstall@main
       - name: Install cargo-packager (prebuilt)
         run: cargo binstall -y cargo-packager@0.11.8
@@ -110,7 +116,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Dependencies come from the cache warmed on main by release-cache.yml (a tag run can only
+      # read caches saved on the default branch, and never shares with other tags); nothing a tag
+      # run would save could be reused, so it saves nothing.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build dependencies
         run: |
           sudo apt-get update
@@ -150,7 +162,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Dependencies come from the cache warmed on main by release-cache.yml (a tag run can only
+      # read caches saved on the default branch, and never shares with other tags); nothing a tag
+      # run would save could be reused, so it saves nothing.
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: cargo-bins/cargo-binstall@main
       - name: Install cargo-packager (prebuilt)
         run: cargo binstall -y cargo-packager@0.11.8

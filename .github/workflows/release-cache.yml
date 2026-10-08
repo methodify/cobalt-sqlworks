@@ -1,0 +1,48 @@
+name: Release cache
+
+# Warms the dependency cache the release workflow restores (Swatinem/rust-cache, shared-key
+# "release") on the default branch, where tag runs can read it. Runs when the dependency set
+# changes, weekly so the cache does not expire (7 days unused), and on demand.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - "crates/*/Cargo.toml"
+      - "vendor/**"
+      - .github/workflows/release-cache.yml
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+concurrency:
+  group: release-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          save-if: true
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev libxkbcommon-dev libwayland-dev libx11-dev             libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dev             libfontconfig1-dev libdbus-1-dev cmake clang file
+      - name: Build (release profile, same as the release workflow)
+        run: cargo build --release -p cobalt-app --locked
