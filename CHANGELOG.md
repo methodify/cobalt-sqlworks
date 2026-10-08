@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The changelog window substitutes the one arrow character the UI font lacks, so
+  "Settings › Editor" no longer shows a box.
+
 ## 0.8.1 — 2026-10-07
 
 - **Updating over an installed version no longer walks you through the old uninstaller.** The
