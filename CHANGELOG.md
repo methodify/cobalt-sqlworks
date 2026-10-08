@@ -4,6 +4,10 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **local-spark-mcp 0.6.6 is the new pin.** In a context whose default lakehouse is
+  schema-enabled, the lakehouse is the current catalog as on Fabric, so `publicholidays`,
+  `dbo.publicholidays` and `test.dbo.publicholidays` all resolve. Settings → Spark runtime
+  offers the update.
 - **`%%sql` cells work again on the local Spark kernel.** Since notebooks got their own
   contexts, the SQL helper was only defined in the worker's shared namespace, so a `%%sql`
   cell (or a cell switched to SQL) failed with "`__cobalt_sql` is not defined". The helpers are
