@@ -15,7 +15,6 @@ pub enum CopyKind {
     Json,
     Insert,
     InList,
-    Cell,
 }
 
 pub struct CopyOptions<'a> {
@@ -58,10 +57,6 @@ pub fn build(rs: &ResultSet, sel: &Selection, kind: CopyKind, o: &CopyOptions<'_
     let names: Vec<String> = cols.iter().map(|&c| rs.columns[c].name.clone()).collect();
     let mut out = String::new();
     match kind {
-        CopyKind::Cell => {
-            let (r, c) = (*rows.first()?, *cols.first()?);
-            out = full_text(rs, r, c, o.fmt, o.null_as);
-        }
         CopyKind::Tsv | CopyKind::TsvWithHeaders | CopyKind::HeadersOnly => {
             if matches!(kind, CopyKind::TsvWithHeaders | CopyKind::HeadersOnly) {
                 out.push_str(&names.iter().map(|n| tsv_escape(n)).collect::<Vec<_>>().join("\t"));

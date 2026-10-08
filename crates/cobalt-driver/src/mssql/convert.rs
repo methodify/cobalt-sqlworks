@@ -721,7 +721,7 @@ pub fn infer_decimal_scales(columns: &mut [MetaColumn], rows: &[TokenRow<'static
 mod tests {
     use super::*;
     use arrow::array::{Array, AsArray};
-    use arrow::datatypes::{Decimal128Type, TimestampNanosecondType};
+    use arrow::datatypes::Decimal128Type;
     use tiberius::numeric::Numeric;
     use tiberius::{VarLenContext, VarLenType};
 

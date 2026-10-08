@@ -9,7 +9,6 @@ use crate::ui::results::ResultsAction;
 use crate::ui::servers::TreeAction;
 use cobalt_auth::{CredentialResolver, Prompter, SecretStore};
 use cobalt_core::*;
-use cobalt_driver::ScriptKind;
 use cobalt_store::{AppPaths, HistoryQuery, HistoryStatus, NewHistoryEntry, Store, TabSnapshot};
 use crossbeam_channel::Sender;
 use std::cell::RefCell;
@@ -39,9 +38,6 @@ pub struct Ctx<'a> {
 impl Ctx<'_> {
     pub fn toast(&self, kind: ToastKind, msg: impl Into<String>) {
         self.toasts.borrow_mut().push((kind, msg.into()));
-    }
-    pub fn repaint(&self) {
-        self.egui.request_repaint();
     }
 }
 
@@ -619,8 +615,8 @@ pub fn finish_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile
             node.databases = Loadable::NotLoaded;
             request_meta(state, cx, pid, MetadataRequest::Probe, MetaPurpose::Tree);
             let req = request_meta(state, cx, pid, MetadataRequest::ListDatabases, MetaPurpose::Tree);
-            if let Some(r) = req {
-                state.library.server(pid).databases = Loadable::Loading(r);
+            if req.is_some() {
+                state.library.server(pid).databases = Loadable::Loading;
             }
         }
         ConnectPurpose::TestOnly => {
@@ -708,7 +704,7 @@ pub fn request_meta(state: &mut AppState, cx: &Ctx, profile: ProfileId, kind: Me
         }
     };
     let req = cx.session.new_request();
-    state.pending_meta.insert(req, PendingMeta { profile, kind: kind.clone(), purpose });
+    state.pending_meta.insert(req, PendingMeta { kind: kind.clone(), purpose });
     cx.session.send(Command::Metadata { req, profile: p, creds, kind });
     Some(req)
 }
@@ -745,8 +741,8 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             let node = state.library.server(id);
             node.db_nodes.clear();
             node.databases = Loadable::NotLoaded;
-            if let Some(r) = request_meta(state, cx, id, MetadataRequest::ListDatabases, MetaPurpose::Tree) {
-                state.library.server(id).databases = Loadable::Loading(r);
+            if request_meta(state, cx, id, MetadataRequest::ListDatabases, MetaPurpose::Tree).is_some() {
+                state.library.server(id).databases = Loadable::Loading;
             }
         }
         TreeAction::ToggleGroupBySchema(id) => {
@@ -759,9 +755,9 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         }
         TreeAction::ExpandDatabase { profile, database } | TreeAction::RefreshDatabase { profile, database } => {
             let _ = cx.store.invalidate_catalog(profile, Some(&database));
-            if let Some(r) = request_meta(state, cx, profile, MetadataRequest::ListObjects { database: database.clone() }, MetaPurpose::Tree) {
+            if request_meta(state, cx, profile, MetadataRequest::ListObjects { database: database.clone() }, MetaPurpose::Tree).is_some() {
                 let dbn = state.library.server(profile).db_nodes.entry(database).or_default();
-                dbn.objects = Loadable::Loading(r);
+                dbn.objects = Loadable::Loading;
                 dbn.columns.clear();
                 dbn.keys.clear();
                 dbn.indexes.clear();
@@ -769,9 +765,9 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             }
         }
         TreeAction::LoadTableStats { profile, obj } => {
-            if let Some(r) = request_meta(state, cx, profile, MetadataRequest::TableStats { obj: obj.clone() }, MetaPurpose::Tree) {
+            if request_meta(state, cx, profile, MetadataRequest::TableStats { obj: obj.clone() }, MetaPurpose::Tree).is_some() {
                 let dbn = state.library.server(profile).db_nodes.entry(obj.database.clone()).or_default();
-                dbn.stats.insert(obj.object_id.unwrap_or(0), Loadable::Loading(r));
+                dbn.stats.insert(obj.object_id.unwrap_or(0), Loadable::Loading);
             }
         }
         TreeAction::LoadObjectChildren { profile, obj, sub } => {
@@ -781,21 +777,21 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
                 SubFolder::Indexes => MetadataRequest::ListIndexes { obj: obj.clone() },
                 SubFolder::Parameters => MetadataRequest::ListParameters { obj: obj.clone() },
             };
-            if let Some(r) = request_meta(state, cx, profile, kind, MetaPurpose::Tree) {
+            if request_meta(state, cx, profile, kind, MetaPurpose::Tree).is_some() {
                 let dbn = state.library.server(profile).db_nodes.entry(obj.database.clone()).or_default();
                 let oid = obj.object_id.unwrap_or(0);
                 match sub {
                     SubFolder::Columns => {
-                        dbn.columns.insert(oid, Loadable::Loading(r));
+                        dbn.columns.insert(oid, Loadable::Loading);
                     }
                     SubFolder::Keys => {
-                        dbn.keys.insert(oid, Loadable::Loading(r));
+                        dbn.keys.insert(oid, Loadable::Loading);
                     }
                     SubFolder::Indexes => {
-                        dbn.indexes.insert(oid, Loadable::Loading(r));
+                        dbn.indexes.insert(oid, Loadable::Loading);
                     }
                     SubFolder::Parameters => {
-                        dbn.parameters.insert(oid, Loadable::Loading(r));
+                        dbn.parameters.insert(oid, Loadable::Loading);
                     }
                 }
             }
@@ -1065,7 +1061,7 @@ pub fn open_plan_file(state: &mut AppState, cx: &Ctx, path: PathBuf) {
             let t = &mut state.tabs[idx];
             t.title = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "plan.sqlplan".into());
             t.custom_title = true;
-            let mut run = RunView::new(RunId(0), PlanMode::Estimated);
+            let mut run = RunView::new(RunId(0));
             run.state = RunViewState::Done;
             let mut pv = PlanView::new(xml);
             pv.statement_index = 0;
@@ -1206,7 +1202,7 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
         opts.plan = PlanMode::None; // plans have no place in a file
     }
     let run_id = cx.session.new_run();
-    let mut view = RunView::new(run_id, opts.plan);
+    let mut view = RunView::new(run_id);
     view.export_target = job.as_ref().map(|j| j.display_target());
     view.script_hash = hash_text(&t.text);
     // history
@@ -1282,8 +1278,8 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                         }
                     }
                     let req = request_meta(state, cx, p.id, MetadataRequest::ListDatabases, MetaPurpose::TabDatabases { tab });
-                    if let (Some(r), Some(t)) = (req, state.tab_mut(tab)) {
-                        t.databases = Loadable::Loading(r);
+                    if let (Some(_), Some(t)) = (req, state.tab_mut(tab)) {
+                        t.databases = Loadable::Loading;
                     }
                     // update the title and run anything queued
                     if let Some(t) = state.tab_mut(tab) {
@@ -1451,9 +1447,9 @@ pub fn import_request_existing_columns(state: &mut AppState, cx: &Ctx) {
     let (Some(p), Some(db)) = (t.profile.clone(), t.conn.database().map(str::to_string)) else { return };
     let obj = ObjectRef { database: db, schema: d.schema_name.trim().to_string(), name: d.table_name.trim().to_string(), kind: ObjectKind::Table, object_id: None };
     match request_meta(state, cx, p.id, MetadataRequest::ListColumns { obj }, MetaPurpose::ImportColumns) {
-        Some(r) => {
+        Some(_) => {
             if let Dialog::Import(d) = &mut state.dialog {
-                d.existing_columns = Loadable::Loading(r);
+                d.existing_columns = Loadable::Loading;
             }
         }
         None => {
@@ -1685,19 +1681,13 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
     cx.session.send(Command::Import { tab: tab_id, table, create_sql, columns, rx, cancel });
 }
 
-pub fn cancel_import(state: &mut AppState) {
-    if let Dialog::Import(d) = &state.dialog {
-        d.cancel.store(true, Ordering::Relaxed);
-    }
-}
-
 // ---------------------------------------------------------------------------------------------
 // Results
 // ---------------------------------------------------------------------------------------------
 
 pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: ResultsAction) {
     match action {
-        ResultsAction::FetchMore { rows, .. } => fetch_more(state, cx, idx, rows),
+        ResultsAction::FetchMore { rows } => fetch_more(state, cx, idx, rows),
         ResultsAction::Cancel => cancel(state, cx, idx),
         ResultsAction::Copy { set, kind } => copy_cells(state, cx, idx, set, kind),
         ResultsAction::Export { set, selection_only } => open_export_dialog(state, cx, idx, set, selection_only),
@@ -1721,7 +1711,6 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
                 state.focus = Focus::Editor;
             }
         }
-        ResultsAction::Summarize { .. } => {}
         ResultsAction::PopOut { set } => pop_out_result(state, idx, set),
         ResultsAction::OpenInExcel { set, selection_only } => open_in_excel(state, cx, idx, set, selection_only),
         ResultsAction::SetTotals { set, kind } => {
@@ -2017,7 +2006,7 @@ pub fn pop_out_result(state: &mut AppState, idx: usize, set: usize) {
     nt.title = title;
     nt.custom_title = true;
     nt.text = String::new();
-    let mut run = RunView::new(RunId(0), PlanMode::None);
+    let mut run = RunView::new(RunId(0));
     run.state = RunViewState::Done;
     run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
     nt.run = Some(run);
@@ -2602,7 +2591,7 @@ pub fn on_export_done(state: &mut AppState, cx: &Ctx, done: ExportDone) {
                 Err(e) => (format!("Export failed: {e}"), true),
             };
             let path = if is_error { None } else { done.path.clone() };
-            r.messages.push(MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path });
+            r.messages.push(MessageLine { text, is_error, is_batch_header: false, line: None, path });
         }
         match done.result {
             Ok(m) => cx.toast(ToastKind::Success, m),
@@ -2695,17 +2684,6 @@ pub fn maintenance(state: &mut AppState, cx: &Ctx) {
     let _ = cx.store.prune_history(cx.settings.history.retention_days, cx.settings.history.max_entries);
     let _ = cx.store.prune_closed_tabs(50);
     let _ = state;
-}
-
-/// Insert the value of a script action into the editor of `idx`.
-pub fn script_kind_label(k: ScriptKind) -> &'static str {
-    match k {
-        ScriptKind::Create => "CREATE",
-        ScriptKind::Alter => "ALTER",
-        ScriptKind::Drop => "DROP",
-        ScriptKind::Select => "SELECT",
-        ScriptKind::Execute => "EXECUTE",
-    }
 }
 
 #[cfg(test)]

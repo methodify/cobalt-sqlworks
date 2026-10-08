@@ -25,9 +25,6 @@ pub struct TokenServer {
     pub last_error: Arc<parking_lot::Mutex<Option<String>>>,
 }
 
-pub const STORAGE_SCOPE: &str = "https://storage.azure.com/.default";
-pub const FABRIC_SCOPE: &str = "https://api.fabric.microsoft.com/.default";
-
 /// Which token a `scope` query asks for. `None` = a scope Cobalt does not serve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {

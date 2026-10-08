@@ -30,7 +30,6 @@ pub enum ViewerOutcome {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ViewMode {
-    Auto,
     Text,
     Json,
     Xml,
@@ -71,7 +70,7 @@ impl ViewerState {
 
     pub fn shown(&self) -> &str {
         match (self.mode, &self.pretty) {
-            (ViewMode::Json | ViewMode::Xml | ViewMode::Auto, Some(p)) => p,
+            (ViewMode::Json | ViewMode::Xml, Some(p)) => p,
             _ => &self.text,
         }
     }
@@ -140,12 +139,13 @@ pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> ViewerOutcome {
         let shown_len = v.shown().len();
         ui.label(RichText::new(format!("{} characters", crate::state::fmt_count(v.shown().chars().count() as u64))).small().color(theme.text_faint));
         egui::ScrollArea::both().id_salt(("viewer", v.row, v.col)).auto_shrink([false, false]).show(ui, |ui| {
-            let mut text: &str = v.shown();
-            let mut truncated = String::new();
-            if shown_len > 2_000_000 {
-                truncated = format!("{}\n\n… (truncated for display; use Copy for the full value)", &text[..2_000_000]);
-                text = &truncated;
-            }
+            let truncated;
+            let text: &str = if shown_len > 2_000_000 {
+                truncated = format!("{}\n\n… (truncated for display; use Copy for the full value)", &v.shown()[..2_000_000]);
+                &truncated
+            } else {
+                v.shown()
+            };
             let mut buf = text.to_string();
             let te = egui::TextEdit::multiline(&mut buf).font(egui::FontId::monospace(13.0)).code_editor().desired_width(if v.wrap { ui.available_width() } else { f32::INFINITY }).frame(egui::Frame::NONE).interactive(true);
             ui.add(te);

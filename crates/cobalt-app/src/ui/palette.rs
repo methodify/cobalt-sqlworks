@@ -11,7 +11,6 @@ use egui::{Key, RichText, Ui, Vec2};
 pub enum PaletteItem {
     Command(Command),
     Connect(ProfileId),
-    Open(ProfileId, String),
     /// A table/view/procedure known to the catalog cache (Go to Object).
     Object(ProfileId, ObjectRef),
 }

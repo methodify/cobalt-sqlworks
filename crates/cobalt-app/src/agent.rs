@@ -96,7 +96,7 @@ impl CobaltApp {
                     },
                     "databases": match &t.databases {
                         Loadable::Loaded(d) => json!(d.len()),
-                        Loadable::Loading(_) => json!("loading"),
+                        Loadable::Loading => json!("loading"),
                         Loadable::Failed(e) => json!({"failed": e}),
                         Loadable::NotLoaded => json!(null),
                     },
@@ -176,7 +176,6 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ChangeConnection { .. } => "change_connection",
         ExecOptions { .. } => "exec_options",
         Rename { .. } => "rename",
-        Error { .. } => "error",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -492,8 +491,9 @@ impl AgentApp for CobaltApp {
                 self.state.focus = crate::state::Focus::Results;
                 let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
                 let Some(r) = t.run.as_mut() else { return ActionResult::BadArgs("no run".into()) };
-                let mut data_sets: Vec<&mut crate::state::ResultSetView> = r.result_sets.iter_mut().filter(|s| !s.is_plan).collect();
-                let Some(v) = data_sets.get_mut(set) else { return ActionResult::BadArgs("no such result set".into()) };
+                if r.result_sets.iter().filter(|s| !s.is_plan).count() <= set {
+                    return ActionResult::BadArgs("no such result set".into());
+                }
                 for s in r.result_sets.iter_mut() {
                     s.grid.focused = false;
                 }
@@ -753,7 +753,7 @@ impl AgentApp for CobaltApp {
                         "open": true, "running": d.running, "rows_done": d.rows_done, "path": d.path, "table": format!("{}.{}", d.schema_name, d.table_name), "existing": d.existing, "destination": if d.destination == 0 { "table" } else { "file" },
                         "columns": d.columns.iter().map(|c| json!({"name": c.name, "sql_type": c.sql_type, "nullable": c.nullable, "include": c.include, "source": c.source})).collect::<Vec<_>>(),
                         "row_estimate": d.inspection.as_ref().and_then(|i| i.row_estimate), "format": d.inspection.as_ref().map(|i| i.format.label()),
-                        "existing_columns": match &d.existing_columns { crate::state::Loadable::Loaded(c) => c.len() as i64, crate::state::Loadable::Loading(_) => -1, _ => 0 },
+                        "existing_columns": match &d.existing_columns { crate::state::Loadable::Loaded(c) => c.len() as i64, crate::state::Loadable::Loading => -1, _ => 0 },
                         "result": d.result.as_ref().map(|r| match r { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }), "inspect_error": d.inspect_error,
                     }),
                     _ => json!({"open": false}),
@@ -802,7 +802,7 @@ impl AgentApp for CobaltApp {
                 }))
             }
             "fabric" => {
-                // {action: sign_in|sign_out|refresh|expand|open|pin|save|copy|portal, workspace?: name, item?: name}
+                // {action: sign_in|sign_out|grant|refresh|expand|open|pin|save|copy|portal|explore|export_here, workspace?: name, item?: name}
                 use crate::fabric::FabricAction as FA;
                 let act = arg_str(args, "action").unwrap_or_default();
                 // prefer the parent item over its SQL-endpoint child when names collide
@@ -815,6 +815,7 @@ impl AgentApp for CobaltApp {
                     "sign_in" => FA::SignIn,
                     "sign_out" => FA::SignOut,
                     "refresh" => FA::Refresh,
+                    "grant" => FA::GrantPermissions,
                     "expand" => match arg_str(args, "workspace").and_then(|n| find_ws(&n)) { Some(id) => FA::ToggleWorkspace(id), None => return ActionResult::BadArgs("no such workspace".into()) },
                     "open" | "pin" | "save" | "copy" | "portal" | "explore" | "export_here" => {
                         let Some(id) = arg_str(args, "item").and_then(|n| find_item(&n)) else { return ActionResult::BadArgs("no such item (expand its workspace first)".into()) };
@@ -831,7 +832,7 @@ impl AgentApp for CobaltApp {
                     _ => return ActionResult::BadArgs("unknown fabric action".into()),
                 };
                 self.with_ctx(egui, |s, cx| crate::fabric::action(s, cx, action));
-                ActionResult::ok()
+                ActionResult::with(&json!({"status": format!("{:?}", self.state.fabric.status()), "consent_needed": self.state.fabric.consent_needed(), "missing": self.state.fabric.missing_scopes, "dialog": dialog_name(&self.state.dialog)}))
             }
             "focus_editor" => {
                 if let Some(t) = self.state.active_mut() {
@@ -1094,19 +1095,6 @@ impl AgentApp for CobaltApp {
                 let list: Vec<Value> = self.state.fabric.notebooks.iter().filter(|(k, _)| ws_id.as_ref().map(|w| *k == w).unwrap_or(true)).flat_map(|(ws, l)| l.get().into_iter().flatten().map(move |n| json!({"id": n.id, "name": n.display_name, "workspace_id": ws}))).collect();
                 let loading: Vec<&String> = self.state.fabric.notebooks.iter().filter(|(_, l)| l.is_loading()).map(|(k, _)| k).collect();
                 ActionResult::with(&json!({"notebooks": list, "loading": loading, "fabric_status": format!("{:?}", self.state.fabric.status()), "workspaces": self.state.fabric.workspaces.get().map(|v| v.iter().map(|w| json!({"id": w.id, "name": w.display_name})).collect::<Vec<_>>())}))
-            }
-            "fabric" => {
-                // {action: sign_in|sign_out|grant|refresh}
-                let action = arg_str(args, "action").unwrap_or_else(|| "refresh".into());
-                let a = match action.as_str() {
-                    "sign_in" => crate::fabric::FabricAction::SignIn,
-                    "sign_out" => crate::fabric::FabricAction::SignOut,
-                    "grant" => crate::fabric::FabricAction::GrantPermissions,
-                    "refresh" => crate::fabric::FabricAction::Refresh,
-                    other => return ActionResult::BadArgs(format!("unknown fabric action {other}")),
-                };
-                self.with_ctx(egui, |s, cx| crate::fabric::action(s, cx, a));
-                ActionResult::with(&json!({"status": format!("{:?}", self.state.fabric.status()), "consent_needed": self.state.fabric.consent_needed(), "missing": self.state.fabric.missing_scopes, "dialog": dialog_name(&self.state.dialog)}))
             }
             "fabric_scopes" => {
                 // the scopes granted on the cached Fabric API token (diagnostics)

@@ -812,12 +812,6 @@ pub fn version_tuple(v: &str) -> (u64, u64, u64) {
     (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 
-/// `v` is at least `maj.min`.
-pub fn version_at_least(v: &str, maj: u64, min: u64) -> bool {
-    let t = version_tuple(v);
-    (t.0, t.1) >= (maj, min)
-}
-
 pub fn stop(k: &mut KernelUi) {
     k.waiting.clear();
     if k.busy.is_some() || k.state.is_starting() {
@@ -943,7 +937,7 @@ pub struct CellOutcome {
 
 pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome {
     let mut out = CellOutcome { messages: Vec::new(), result_sets: Vec::new(), failed: false, interrupted: false };
-    let msg = |text: String, is_error: bool| MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path: None };
+    let msg = |text: String, is_error: bool| MessageLine { text, is_error, is_batch_header: false, line: None, path: None };
     match result {
         Err(e) => {
             out.messages.push(msg(e.clone(), true));
@@ -1108,6 +1102,6 @@ mod tests {
         assert!(o.interrupted && !o.failed);
         let texts: Vec<&str> = o.messages.iter().map(|m| m.text.as_str()).collect();
         assert_eq!(texts, vec!["step 1", "Interrupted (Spark jobs cancelled)"]);
-        assert!(version_at_least("0.4.0", 0, 4) && version_at_least("1.0", 0, 4) && !version_at_least("0.3.5", 0, 4));
+        assert!(version_tuple("0.4.0") >= (0, 4, 0) && version_tuple("1.0") >= (0, 4, 0) && version_tuple("0.3.5") < (0, 4, 0));
     }
 }

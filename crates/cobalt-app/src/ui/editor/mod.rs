@@ -915,10 +915,6 @@ pub fn set_text_keep_line(h: &mut EditorHost<'_>, new_text: String) {
     h.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor: c });
 }
 
-pub fn color_hex(c: Color32) -> String {
-    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
-}
-
 #[cfg(test)]
 mod syntax_tests {
     use super::*;

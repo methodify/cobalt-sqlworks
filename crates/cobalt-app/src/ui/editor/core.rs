@@ -76,6 +76,7 @@ impl Cursors {
     pub fn single(i: usize) -> Self {
         Self { sels: vec![Sel::cursor(i)], primary: 0 }
     }
+    #[cfg(test)]
     pub fn one(sel: Sel) -> Self {
         Self { sels: vec![sel], primary: 0 }
     }
@@ -176,6 +177,7 @@ impl Cursors {
         true
     }
     /// Char ranges of every selection, sorted.
+    #[cfg(test)]
     pub fn ranges(&self) -> Vec<(usize, usize)> {
         self.sels.iter().map(|s| (s.min(), s.max())).collect()
     }
@@ -206,13 +208,6 @@ pub fn line_start(chars: &[char], i: usize) -> usize {
 pub fn line_end(chars: &[char], i: usize) -> usize {
     let i = i.min(chars.len());
     chars[i..].iter().position(|&c| c == '\n').map(|p| i + p).unwrap_or(chars.len())
-}
-
-/// First non-blank char of the line containing `i`.
-pub fn line_first_nonblank(chars: &[char], i: usize) -> usize {
-    let s = line_start(chars, i);
-    let e = line_end(chars, i);
-    chars[s..e].iter().position(|c| !c.is_whitespace()).map(|p| s + p).unwrap_or(e)
 }
 
 /// Word motion, VS Code style: Ctrl+Right stops at the end of the current/next word, Ctrl+Left at
@@ -404,14 +399,6 @@ impl UndoStack {
         cursors.clamp(text.chars().count());
         self.last_kind = None;
         true
-    }
-    pub fn can_undo(&self) -> bool {
-        !self.undo.is_empty()
-    }
-    pub fn clear(&mut self) {
-        self.undo.clear();
-        self.redo.clear();
-        self.last_kind = None;
     }
 }
 

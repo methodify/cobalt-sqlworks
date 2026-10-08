@@ -518,7 +518,7 @@ pub fn load_workspaces(state: &mut AppState, cx: &Ctx) {
         return;
     };
     if !matches!(state.fabric.workspaces, Loadable::Loaded(_)) {
-        state.fabric.workspaces = Loadable::Loading(cx.session.new_request());
+        state.fabric.workspaces = Loadable::Loading;
     }
     let resolver = cx.resolver.clone();
     let tx = cx.fabric_tx.clone();
@@ -560,13 +560,13 @@ pub fn load_capacities(state: &mut AppState, cx: &Ctx) {
 
 pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
     let Some(slot) = state.fabric.slot else { return };
-    state.fabric.items.insert(workspace_id.to_string(), Loadable::Loading(cx.session.new_request()));
+    state.fabric.items.insert(workspace_id.to_string(), Loadable::Loading);
     let resolver = cx.resolver.clone();
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();
     let tenant = tenant_hint(cx);
     let ws = workspace_id.to_string();
-    state.fabric.notebooks.insert(workspace_id.to_string(), Loadable::Loading(cx.session.new_request()));
+    state.fabric.notebooks.insert(workspace_id.to_string(), Loadable::Loading);
     cx.session.spawn(async move {
         let (result, notebooks) = match token(&resolver, slot, tenant.as_deref()).await {
             Ok((tok, _)) => {
@@ -780,7 +780,7 @@ pub fn load_detail(state: &mut AppState, cx: &Ctx, item_id: &str) {
             match sibling {
                 Some(sid) => {
                     state.fabric.endpoint_after_detail.entry(sid.clone()).or_default().push(item_id.to_string());
-                    state.fabric.details.insert(item_id.to_string(), Loadable::Loading(cx.session.new_request()));
+                    state.fabric.details.insert(item_id.to_string(), Loadable::Loading);
                     load_detail(state, cx, &sid);
                 }
                 None => {
@@ -793,7 +793,7 @@ pub fn load_detail(state: &mut AppState, cx: &Ctx, item_id: &str) {
     if state.fabric.details.get(item_id).map(|d| d.is_loading()).unwrap_or(false) {
         return;
     }
-    state.fabric.details.insert(item_id.to_string(), Loadable::Loading(cx.session.new_request()));
+    state.fabric.details.insert(item_id.to_string(), Loadable::Loading);
     let resolver = cx.resolver.clone();
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();

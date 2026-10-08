@@ -30,6 +30,12 @@ impl MemoryBudget {
         self.used.fetch_add(bytes, Ordering::Relaxed);
     }
     pub(crate) fn sub(&self, bytes: usize) {
-        let _ = self.used.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |u| Some(u.saturating_sub(bytes)));
+        let mut cur = self.used.load(Ordering::Relaxed);
+        loop {
+            match self.used.compare_exchange_weak(cur, cur.saturating_sub(bytes), Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(now) => cur = now,
+            }
+        }
     }
 }

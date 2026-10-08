@@ -22,7 +22,6 @@ pub enum GridAction {
     OpenViewer(usize, usize),
     ContextMenu(Pos2),
     Copy,
-    CopyWithHeaders,
 }
 
 pub struct GridArgs<'a> {
@@ -44,7 +43,6 @@ struct Delegate<'a> {
     fmt: &'a CellFormatter,
     font: FontId,
     header_font: FontId,
-    rows: usize,
     cols: usize,
     gutter: bool,
     actions: Vec<GridAction>,
@@ -408,7 +406,6 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         fmt: args.fmt,
         font,
         header_font,
-        rows,
         cols,
         gutter,
         actions: Vec::new(),

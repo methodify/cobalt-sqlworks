@@ -130,7 +130,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                         let expanded = !filter.is_empty() || !pane.collapsed.contains(&key);
                         let n = tables.iter().filter(|t| t.schema.as_deref() == Some(schema.as_str())).count();
                         let detail = format!("{n} table{}", if n == 1 { "" } else { "s" });
-                        let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.text_muted), label: &schema, detail: Some(&detail), selected: false, color_dot: None, id_salt: &key, kind: "schema" });
+                        let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.text_muted), label: &schema, detail: Some(&detail), selected: false, color_dot: None, kind: "schema" });
                         if (r.toggle || r.response.clicked()) && filter.is_empty() {
                             actions.push(LakehouseAction::ExpandFiles(key.clone())); // reuses the collapse set
                         }
@@ -186,7 +186,7 @@ fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &
         Some((_, at)) => ("cloned", Some(theme.success), at.clone().map(|a| format!("cloned {}", &a[..a.len().min(16)]))),
         None => ("", None, None),
     };
-    let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::TABLE, icon_color: None, label: name, detail: detail.as_deref(), selected: false, color_dot: dot, id_salt: &format!("lh-table:{spelling}"), kind: "lakehouse table" });
+    let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::TABLE, icon_color: None, label: name, detail: detail.as_deref(), selected: false, color_dot: dot, kind: "lakehouse table" });
     r.response.dnd_set_drag_payload(spelling.clone());
     let r = r.response.on_hover_text(format!("{spelling}{}\nDrag into a cell; double-click for a cell that reads it.", if state_label.is_empty() { " — not touched in this session" } else { "" }));
     if r.double_clicked() {
@@ -244,7 +244,7 @@ fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, d
                 if e.is_dir {
                     let expanded = pane.expanded.contains(&rel);
                     let detail = if is_pulled { Some("local copy") } else { None };
-                    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: pane.files_loading.contains(&rel), icon: icons::FOLDER_SIMPLE, icon_color: Some(if is_pulled { theme.accent } else { theme.warning }), label: &e.name, detail, selected: false, color_dot: None, id_salt: &format!("lh-dir:{rel}"), kind: "folder" });
+                    let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: pane.files_loading.contains(&rel), icon: icons::FOLDER_SIMPLE, icon_color: Some(if is_pulled { theme.accent } else { theme.warning }), label: &e.name, detail, selected: false, color_dot: None, kind: "folder" });
                     if r.toggle || r.response.clicked() {
                         actions.push(LakehouseAction::ExpandFiles(rel.clone()));
                     }
@@ -290,7 +290,7 @@ fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, d
                         "png" | "jpg" | "jpeg" | "gif" => icons::FILE_IMAGE,
                         _ => icons::FILE,
                     };
-                    let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: if is_local { Some(theme.accent) } else { None }, label: &e.name, detail: Some(&detail), selected: false, color_dot: None, id_salt: &format!("lh-file:{rel}"), kind: "file" });
+                    let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: if is_local { Some(theme.accent) } else { None }, label: &e.name, detail: Some(&detail), selected: false, color_dot: None, kind: "file" });
                     let read_code = read_cell_code(&rel, &ext);
                     r.response.dnd_set_drag_payload(format!("Files/{rel}"));
                     let resp = r.response.on_hover_text(format!("Files/{rel}\nDrag into a cell for the path; double-click for a cell that reads it."));

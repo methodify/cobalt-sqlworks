@@ -14,7 +14,6 @@ use cobalt_results::{CellFormatter, ResultSet};
 use cobalt_store::NewHistoryEntry;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
 const SQL_TYPES_KEY: &str = "cobalt.sql_types";
 
@@ -925,7 +924,7 @@ pub fn pump(state: &mut AppState, cx: &Ctx, tab: TabId, failed: bool) {
     }
     opts.plan = PlanMode::None;
     let run_id = cx.session.new_run();
-    let mut view = RunView::new(run_id, PlanMode::None);
+    let mut view = RunView::new(run_id);
     view.script_hash = hash_text(&script);
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(t.profile.as_ref().map(|p| p.display_name()).unwrap_or_default(), script.clone());
@@ -1152,7 +1151,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
         return pump(state, cx, tab, false);
     }
     let run_id = cx.session.new_run();
-    let mut view = RunView::new(run_id, PlanMode::None);
+    let mut view = RunView::new(run_id);
     view.script_hash = hash_text(&code);
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(format!("Local Spark ({})", cx.settings.spark.profile), cell.source.clone());
@@ -1391,7 +1390,7 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, cell: usize, a
 // ---------------------------------------------------------------------------------------------
 
 fn msg(text: String, is_error: bool) -> MessageLine {
-    MessageLine { text, is_error, is_batch_header: false, line: None, at: Instant::now(), path: None }
+    MessageLine { text, is_error, is_batch_header: false, line: None, path: None }
 }
 
 /// Rebuild a cell's cached outputs as a finished run (grids from Arrow / ADS payloads, messages
@@ -1400,7 +1399,7 @@ pub fn load_outputs(cell: &Cell, _index: usize) -> (Option<RunView>, Vec<Output>
     if cell.kind != CellKind::Code || cell.outputs.is_empty() {
         return (None, Vec::new());
     }
-    let mut run = RunView::new(cobalt_core::RunId(u64::MAX - _index as u64), PlanMode::None);
+    let mut run = RunView::new(cobalt_core::RunId(u64::MAX - _index as u64));
     run.state = RunViewState::Done;
     let mut extra = Vec::new();
     for o in &cell.outputs {

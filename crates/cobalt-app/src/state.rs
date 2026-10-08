@@ -136,7 +136,7 @@ pub enum SubFolder {
 #[derive(Debug)]
 pub enum Loadable<T> {
     NotLoaded,
-    Loading(RequestId),
+    Loading,
     Loaded(T),
     Failed(String),
 }
@@ -155,7 +155,7 @@ impl<T> Loadable<T> {
         }
     }
     pub fn is_loading(&self) -> bool {
-        matches!(self, Loadable::Loading(_))
+        matches!(self, Loadable::Loading)
     }
     pub fn needs_load(&self) -> bool {
         matches!(self, Loadable::NotLoaded)
@@ -165,7 +165,6 @@ impl<T> Loadable<T> {
 /// What a pending metadata request will fill in when it completes.
 #[derive(Debug, Clone)]
 pub struct PendingMeta {
-    pub profile: ProfileId,
     pub kind: MetadataRequest,
     pub purpose: MetaPurpose,
 }
@@ -243,7 +242,6 @@ pub struct EditorTab {
     pub editor: EditorState,
     pub catalog: Option<Arc<DatabaseCatalog>>,
     pub catalog_database: Option<String>,
-    pub last_snapshot: Instant,
     pub untitled_index: usize,
     /// Run again once the (re)connect completes.
     pub pending_run: Option<RunMode>,
@@ -436,7 +434,6 @@ impl EditorTab {
             editor: EditorState::default(),
             catalog: None,
             catalog_database: None,
-            last_snapshot: Instant::now(),
             untitled_index,
             pending_run: None,
             last_database: None,
@@ -534,7 +531,6 @@ pub struct EditorState {
     pub find_open: bool,
     pub find_text: String,
     pub replace_text: String,
-    pub find_regex: bool,
     pub find_case: bool,
     pub goto_line_open: bool,
     pub goto_line_text: String,
@@ -601,7 +597,6 @@ pub struct RunView {
     pub plans: Vec<PlanView>,
     pub maximized: Option<usize>,
     pub history_id: Option<i64>,
-    pub plan_mode: PlanMode,
     /// Run-to-export: where the rows went (the grids hold previews only).
     pub export_target: Option<String>,
     /// Per batch: (editor line the batch starts on, elapsed once done, ended in error). Drawn in
@@ -611,7 +606,7 @@ pub struct RunView {
 }
 
 impl RunView {
-    pub fn new(id: RunId, plan_mode: PlanMode) -> Self {
+    pub fn new(id: RunId) -> Self {
         Self {
             id,
             started: Instant::now(),
@@ -627,7 +622,6 @@ impl RunView {
             plans: Vec::new(),
             maximized: None,
             history_id: None,
-            plan_mode,
             export_target: None,
             batch_times: Vec::new(),
             script_hash: 0,
@@ -657,7 +651,6 @@ pub struct MessageLine {
     pub is_batch_header: bool,
     /// Editor line to jump to when clicked.
     pub line: Option<u32>,
-    pub at: Instant,
     /// A file this message is about (an export target): offers "Open folder".
     pub path: Option<PathBuf>,
 }
@@ -720,7 +713,6 @@ pub struct GridState {
     pub scroll_to: Option<(usize, usize)>,
     pub focused: bool,
     pub frozen_cols: usize,
-    pub transposed: bool,
     /// A primary-button press started on a cell and the button is still down: pointer movement
     /// over other cells extends the selection from the anchor.
     pub drag_select: bool,
@@ -748,7 +740,6 @@ impl Default for GridState {
             scroll_to: None,
             focused: false,
             frozen_cols: 0,
-            transposed: false,
             drag_select: false,
             viewer_record: false,
             summary: None,
@@ -793,12 +784,6 @@ impl Selection {
     }
     pub fn cell_count(&self, rows: usize, cols: usize) -> usize {
         self.resolve(rows, cols).map(|(r, c)| (r.end() - r.start() + 1) * (c.end() - c.start() + 1)).unwrap_or(0)
-    }
-    pub fn single_cell(&self) -> Option<(usize, usize)> {
-        match self {
-            Selection::Cells { r0, c0, r1, c1 } if r0 == r1 && c0 == c1 => Some((*r0, *c0)),
-            _ => None,
-        }
     }
 }
 
@@ -956,7 +941,6 @@ pub struct AppState {
     pub update_check_requested: bool,
     /// The update dialog asked to skip this version; the app persists it in settings.
     pub skip_version_request: Option<String>,
-    pub ui_zoom: f32,
     pub focus: Focus,
     pub status_flash: Option<(String, Instant)>,
     pub last_hot_exit_save: Instant,
@@ -967,7 +951,6 @@ pub struct AppState {
     pub settings_draft: Option<Settings>,
     /// Scroll the settings window to this section when it opens.
     pub settings_scroll_to: Option<&'static str>,
-    pub theme_override: Option<ThemeChoice>,
     /// Settings → Spark runtime: status snapshot and the running install job.
     pub runtime: crate::runtime::RuntimeUi,
     /// The local Spark kernel notebooks run PySpark (and Spark SQL) cells on.
@@ -1001,7 +984,6 @@ pub enum Focus {
     #[default]
     Editor,
     Results,
-    Tree,
     Other,
 }
 
@@ -1049,7 +1031,6 @@ pub enum Dialog {
     ChangeConnection { tab_index: usize },
     ExecOptions { tab_index: usize, opts: ExecOptions },
     Rename { tab_index: usize, title: String },
-    Error { title: String, message: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { version: String, url: String, notes: String },
 }
@@ -1197,7 +1178,6 @@ impl AppState {
             update_check_requested: false,
             skip_version_request: None,
             shortcuts_open: false,
-            ui_zoom: 1.0,
             focus: Focus::Editor,
             status_flash: None,
             last_hot_exit_save: Instant::now(),
@@ -1212,7 +1192,6 @@ impl AppState {
             shadows: ShadowsUi::default(),
             recent_toasts: Default::default(),
             pending_commands: Vec::new(),
-            theme_override: None,
             injected_events: Vec::new(),
             injected_pointer: std::collections::VecDeque::new(),
         }
@@ -1229,6 +1208,18 @@ impl AppState {
     }
     pub fn tab_mut(&mut self, id: TabId) -> Option<&mut EditorTab> {
         self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The Import dialog, when it targets tab `id` (import events carry the tab they ran on).
+    pub fn import_dialog_for(&mut self, id: TabId) -> Option<&mut ImportDialog> {
+        let target = match &self.dialog {
+            Dialog::Import(d) => self.tabs.get(d.tab_index).map(|t| t.id),
+            _ => None,
+        };
+        match &mut self.dialog {
+            Dialog::Import(d) if target == Some(id) => Some(d),
+            _ => None,
+        }
     }
 
     pub fn new_tab(&mut self) -> usize {
@@ -1290,7 +1281,7 @@ impl AppState {
                     if let Some(r) = &mut t.run {
                         if r.is_live() {
                             r.state = RunViewState::Failed;
-                            r.messages.push(MessageLine { text: "Connection closed.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                            r.messages.push(MessageLine { text: "Connection closed.".into(), is_error: true, is_batch_header: false, line: None, path: None });
                         }
                     }
                 }
@@ -1306,7 +1297,7 @@ impl AppState {
                         spid.map(|s| s.to_string()).unwrap_or_else(|| "?".into())
                     );
                     match t.run.as_mut().filter(|r| r.is_live()) {
-                        Some(r) => r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None }),
+                        Some(r) => r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, path: None }),
                         None => out.push(Followup::Toast(ToastKind::Info, text)),
                     }
                     if t.catalog_database.as_deref() != Some(database.as_str()) {
@@ -1329,7 +1320,7 @@ impl AppState {
                     if let Some(r) = t.run.as_mut().filter(|r| r.is_live()) {
                         r.state = RunViewState::Failed;
                         r.elapsed = r.started.elapsed();
-                        r.messages.push(MessageLine { text: text.clone(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                        r.messages.push(MessageLine { text: text.clone(), is_error: true, is_batch_header: false, line: None, path: None });
                         out.push(Followup::FinishHistory { history_id: r.history_id, elapsed: r.elapsed, rows: 0, cancelled: false, failed: true, error: Some(text.clone()) });
                         // a Run to File already handed its job to the writer; only a plain run repeats
                         rerun_ok = r.export_target.is_none();
@@ -1347,7 +1338,7 @@ impl AppState {
                 if let Some(t) = self.tab_mut(tab) {
                     if let Some(r) = &mut t.run {
                         r.state = RunViewState::Failed;
-                        r.messages.push(MessageLine { text: "Not connected.".into(), is_error: true, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                        r.messages.push(MessageLine { text: "Not connected.".into(), is_error: true, is_batch_header: false, line: None, path: None });
                     }
                     t.conn = ConnState::Disconnected;
                 }
@@ -1367,7 +1358,7 @@ impl AppState {
                     }
                     r.batch_times[batch] = (start_line, None, false);
                     if r.batches > 1 || batch > 0 {
-                        r.messages.push(MessageLine { text: format!("Started executing batch {} at line {}", batch + 1, start_line), is_error: false, is_batch_header: true, line: Some(start_line), at: Instant::now(), path: None });
+                        r.messages.push(MessageLine { text: format!("Started executing batch {} at line {}", batch + 1, start_line), is_error: false, is_batch_header: true, line: Some(start_line), path: None });
                     }
                 }
             }
@@ -1390,7 +1381,7 @@ impl AppState {
                                 }
                             }
                         } else {
-                            r.messages.push(MessageLine { text: format!("({} row{} returned)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                            r.messages.push(MessageLine { text: format!("({} row{} returned)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, path: None });
                         }
                     }
                     if r.paused_set == Some(index) {
@@ -1401,7 +1392,7 @@ impl AppState {
                     }
                 }
             }
-            Event::Paused { tab, run, index, rows: _ } => {
+            Event::Paused { tab, run, index } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.paused_set = Some(index);
                     r.state = RunViewState::Paused;
@@ -1409,7 +1400,7 @@ impl AppState {
                     r.elapsed = r.started.elapsed();
                 }
             }
-            Event::Message { tab, run, message, batch: _, batch_start_line } => {
+            Event::Message { tab, run, message, batch_start_line } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     let line = if message.line > 0 { Some(batch_start_line + message.line - 1) } else { None };
                     // Fabric Warehouse tags every statement with an informational "Statement ID / Query
@@ -1424,13 +1415,13 @@ impl AppState {
                         }
                     }
                     text.push_str(&message.message);
-                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, at: Instant::now(), path: None });
+                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, path: None });
                 }
             }
             Event::RowsAffected { tab, run, rows } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     r.rows_affected.push(rows);
-                    r.messages.push(MessageLine { text: format!("({} row{} affected)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                    r.messages.push(MessageLine { text: format!("({} row{} affected)", fmt_count(rows), if rows == 1 { "" } else { "s" }), is_error: false, is_batch_header: false, line: None, path: None });
                 }
             }
             Event::BatchDone { tab, run, batch, error, elapsed } => {
@@ -1458,7 +1449,7 @@ impl AppState {
                     } else {
                         format!("Total execution time: {}", fmt_duration(elapsed))
                     };
-                    r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, at: Instant::now(), path: None });
+                    r.messages.push(MessageLine { text, is_error: false, is_batch_header: false, line: None, path: None });
                     let history_id = r.history_id;
                     let has_error = r.has_error();
                     out.push(Followup::FinishHistory { history_id, elapsed, rows: total_rows, cancelled, failed: failed || has_error, error: r.messages.iter().find(|m| m.is_error).map(|m| m.text.clone()) });
@@ -1484,16 +1475,19 @@ impl AppState {
                     out.push(Followup::LoadCatalog(tab, database));
                 }
             }
-            Event::DatabaseChangeFailed { tab: _, error } => out.push(Followup::Toast(ToastKind::Error, error)),
-            Event::ImportStarted { tab: _ } => {
-                if let Dialog::Import(d) = &mut self.dialog {
+            Event::DatabaseChangeFailed { tab, error } => {
+                let title = self.tab_mut(tab).map(|t| t.title.clone()).unwrap_or_default();
+                out.push(Followup::Toast(ToastKind::Error, format!("{title}: {error}")));
+            }
+            Event::ImportStarted { tab } => {
+                if let Some(d) = self.import_dialog_for(tab) {
                     d.running = true;
                     d.rows_done = 0;
                     d.started = Some(Instant::now());
                 }
             }
-            Event::ImportProgress { tab: _, rows } => {
-                if let Dialog::Import(d) = &mut self.dialog {
+            Event::ImportProgress { tab, rows } => {
+                if let Some(d) = self.import_dialog_for(tab) {
                     d.rows_done = rows;
                 }
             }
@@ -1520,13 +1514,6 @@ impl AppState {
                         if let (Some(p), Some(db)) = (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string)) {
                             out.push(Followup::RefreshDatabase { profile: p, database: db });
                         }
-                    }
-                }
-            }
-            Event::Pong { tab, ok } => {
-                if !ok {
-                    if let Some(t) = self.tab_mut(tab) {
-                        t.conn = ConnState::Disconnected;
                     }
                 }
             }

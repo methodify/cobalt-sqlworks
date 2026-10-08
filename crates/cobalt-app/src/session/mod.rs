@@ -153,7 +153,7 @@ async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
             Command::Import { tab, table, create_sql, columns, rx, cancel } => route_tab(&tabs, &shared, tab, actor::TabMsg::Import { table, create_sql, columns, rx, cancel }),
             Command::FetchMore { tab, rows } => route_tab(&tabs, &shared, tab, actor::TabMsg::FetchMore { rows }),
             Command::ChangeDatabase { tab, database } => route_tab(&tabs, &shared, tab, actor::TabMsg::ChangeDatabase { database }),
-            Command::Ping { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Ping),
+            #[cfg(feature = "agent")]
             Command::SimulateLost { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::SimulateLost),
             Command::Metadata { req, profile, creds, kind } => {
                 let entry = meta.entry(profile.id);

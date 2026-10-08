@@ -10,7 +10,7 @@ use crate::ui::theme::Theme;
 use crate::ui::widgets::{icon_button, tool_button};
 use crate::ui::{editor, files, history, palette, plan, results, servers};
 use cobalt_core::*;
-use egui::{Color32, RichText, Sense, Stroke, Ui, Vec2};
+use egui::{RichText, Sense, Stroke, Ui, Vec2};
 use egui_phosphor::regular as icons;
 
 pub struct Frame<'a> {
@@ -61,9 +61,6 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             palette::PaletteItem::Command(c) => dispatch(f, c),
             palette::PaletteItem::Connect(id) => {
                 ops::new_query_tab(f.state, f.cx, Some(id), None, None, false);
-            }
-            palette::PaletteItem::Open(id, db) => {
-                ops::new_query_tab(f.state, f.cx, Some(id), Some(db), None, false);
             }
             palette::PaletteItem::Object(profile, obj) => {
                 use cobalt_core::ObjectKind;
@@ -881,7 +878,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         if tab.results_tab == ResultsTab::Plan {
             // plan body drawn separately (needs the tab strip from results::show first)
         }
-        let actions = results::show(&mut res_ui, results::ResultsArgs { tab, theme, settings: f.cx.settings, fmt: &f.state.formatter, selection_summary: None });
+        let actions = results::show(&mut res_ui, results::ResultsArgs { tab, theme, settings: f.cx.settings, fmt: &f.state.formatter });
         if f.state.tabs[idx].results_tab == ResultsTab::Plan {
             let tab = &mut f.state.tabs[idx];
             let body = egui::Rect::from_min_max(egui::pos2(res_rect.left(), res_rect.top() + 30.0), res_rect.max);
@@ -1238,6 +1235,7 @@ pub(crate) fn selection_summary(t: &mut EditorTab) -> Option<String> {
 }
 
 /// The summary already computed for the focused set (read-only; for the agent's `state`).
+#[cfg(feature = "agent")]
 pub(crate) fn cached_summary(t: &EditorTab) -> Option<String> {
     let run = t.run.as_ref()?;
     let v = run.result_sets.iter().find(|s| !s.is_plan && s.grid.focused).or_else(|| run.result_sets.iter().find(|s| !s.is_plan))?;
@@ -1799,4 +1797,3 @@ fn focused_set(state: &AppState, idx: usize) -> Option<usize> {
     r.result_sets.iter().position(|s| s.grid.focused && !s.is_plan).or_else(|| r.result_sets.iter().position(|s| !s.is_plan))
 }
 
-pub fn unused_color(_c: Color32) {}

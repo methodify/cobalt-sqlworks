@@ -289,7 +289,7 @@ impl CobaltApp {
         self.frames += 1;
         let toasts = RefCell::new(Vec::new());
         let mut update_outcomes: Vec<crate::update::UpdateOutcome> = Vec::new();
-        let mut skip_request: Option<String> = None;
+        let skip_request: Option<String>;
         {
             let cx = make_ctx!(self, ctx, &toasts);
             // command-line launch (files to open, -S server -d database), once the UI exists
@@ -565,6 +565,8 @@ impl eframe::App for CobaltApp {
     }
 }
 
+/// Channel handles for the agent, which builds its own `Ctx` outside the frame loop.
+#[cfg(feature = "agent")]
 impl CobaltApp {
     pub(crate) fn auth_tx_ref(&self) -> Sender<AuthDone> {
         self.auth_tx.clone()

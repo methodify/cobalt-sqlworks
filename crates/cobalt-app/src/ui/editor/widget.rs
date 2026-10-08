@@ -10,7 +10,7 @@ use crate::ui::theme::TokenColors;
 use egui::text::CCursor;
 use egui::text::CCursorRange;
 use egui::text_selection::visuals::paint_text_selection;
-use egui::{Color32, Event, EventFilter, FontId, Id, ImeEvent, Key, Modifiers, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, WidgetInfo, WidgetType};
+use egui::{Color32, Event, EventFilter, FontId, Id, ImeEvent, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2, WidgetInfo, WidgetType};
 use egui::epaint::text::cursor::LayoutCursor;
 use egui::epaint::text::CharIndex;
 use egui::Galley;
@@ -86,16 +86,13 @@ pub struct CodeEditor<'a> {
 }
 
 pub struct CodeEditorOutput {
-    pub response: Response,
     pub galley: Arc<Galley>,
     pub galley_pos: Pos2,
-    pub row_height: f32,
     pub changed: bool,
     /// Something to tell the user ("No more matches").
     pub notice: Option<&'static str>,
     /// Text was typed (Text / IME commit), as opposed to pasted, indented or undone.
     pub typed: bool,
-    pub cursor_moved: bool,
     pub focused: bool,
 }
 
@@ -436,7 +433,7 @@ impl<'a> CodeEditor<'a> {
         }
         let notice = mem.notice.take();
         ui.data_mut(|d| d.insert_temp(id, mem));
-        CodeEditorOutput { response, galley, galley_pos: origin, row_height: row_h, changed, notice, typed, cursor_moved, focused: has_focus }
+        CodeEditorOutput { galley, galley_pos: origin, changed, notice, typed, focused: has_focus }
     }
 }
 

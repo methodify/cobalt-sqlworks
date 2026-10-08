@@ -712,7 +712,6 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             GridAction::ApplyView(spec) => actions.push(NbAction::Results(i, ResultsAction::ApplyView { set, spec })),
                                             GridAction::OpenViewer(r, c) => actions.push(NbAction::Results(i, ResultsAction::OpenViewer { set, row: r, col: c })),
                                             GridAction::Copy => actions.push(NbAction::Results(i, ResultsAction::Copy { set, kind: crate::copy::CopyKind::Tsv })),
-                                            GridAction::CopyWithHeaders => actions.push(NbAction::Results(i, ResultsAction::Copy { set, kind: crate::copy::CopyKind::TsvWithHeaders })),
                                             GridAction::ContextMenu(pos) => {
                                                 view.grid.focused = true;
                                                 ui.memory_mut(|m| m.data.insert_temp(egui::Id::new(("nb-grid-ctx", tab_id, cell_id.as_str(), set)), pos));
@@ -792,10 +791,10 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             ui.label(RichText::new(format!("{} Showing {} rows — the query is still open on the server.", icons::PAUSE_CIRCLE, fmt_count(rows as u64))).size(12.0));
                                             let cap = settings.execution.row_cap.max(1000);
                                             if ui.small_button(format!("Fetch {} more", fmt_count(cap))).clicked() {
-                                                actions.push(NbAction::Results(i, ResultsAction::FetchMore { set, rows: Some(cap) }));
+                                                actions.push(NbAction::Results(i, ResultsAction::FetchMore { rows: Some(cap) }));
                                             }
                                             if ui.small_button("Fetch all").clicked() {
-                                                actions.push(NbAction::Results(i, ResultsAction::FetchMore { set, rows: None }));
+                                                actions.push(NbAction::Results(i, ResultsAction::FetchMore { rows: None }));
                                             }
                                         });
                                     }
@@ -879,7 +878,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         }
     } else if !any_text_focus && !f.state.dialog.is_open() && !f.state.palette_open {
         // command mode: Jupyter's keys
-        let mut consume = |key: Key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
+        let consume = |key: Key| ui.input_mut(|i| i.consume_key(Modifiers::NONE, key));
         if consume(Key::ArrowDown) || consume(Key::J) {
             if sel + 1 < n_cells {
                 f.state.tabs[idx].notebook.as_deref_mut().unwrap().selected = sel + 1;

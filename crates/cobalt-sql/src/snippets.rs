@@ -17,9 +17,12 @@ pub struct Snippet {
 /// A snippet from the user's `snippets.toml` (same body syntax as the built-ins).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserSnippet {
+    /// What the user types to trigger it (completion key).
     pub prefix: String,
+    /// Shown in the completion list; the prefix when empty.
     #[serde(default)]
     pub label: String,
+    /// The text inserted, with `$1`, `${1:placeholder}` and `$0` tab stops.
     pub body: String,
 }
 

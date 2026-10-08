@@ -112,7 +112,6 @@ pub struct TreeRow<'a> {
     pub detail: Option<&'a str>,
     pub selected: bool,
     pub color_dot: Option<Color32>,
-    pub id_salt: &'a str,
     /// Accessibility prefix, e.g. "server" → label "server: local".
     pub kind: &'a str,
 }
@@ -179,19 +178,9 @@ pub fn tree_row(ui: &mut Ui, theme: &Theme, row: TreeRow<'_>) -> TreeRowResponse
     TreeRowResponse { response, toggle }
 }
 
-/// A little animated spinner glyph.
-pub fn spinner(ui: &mut Ui, theme: &Theme) {
-    ui.add(egui::Spinner::new().size(14.0).color(theme.accent));
-}
-
 /// Section title in sidebars.
 pub fn section_title(ui: &mut Ui, theme: &Theme, text: &str) {
     ui.label(RichText::new(text.to_uppercase()).size(11.0).color(theme.text_muted).strong());
-}
-
-/// Muted small text.
-pub fn muted(ui: &mut Ui, theme: &Theme, text: impl Into<String>) -> Response {
-    ui.label(RichText::new(text.into()).size(12.0).color(theme.text_muted))
 }
 
 /// Keyboard shortcut chip.

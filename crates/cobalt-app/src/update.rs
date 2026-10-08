@@ -5,7 +5,6 @@ use crossbeam_channel::Sender;
 use serde::Deserialize;
 
 pub const REPO: &str = "methodify/cobalt-sqlworks";
-pub const RELEASES_PAGE: &str = "https://github.com/methodify/cobalt-sqlworks/releases/latest";
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug)]

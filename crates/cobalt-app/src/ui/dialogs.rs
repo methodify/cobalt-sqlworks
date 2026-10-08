@@ -484,17 +484,6 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::Rename { tab_index, title };
             }
         }
-        Dialog::Error { title, message } => {
-            let (ok, close) = modal(ctx, theme, "error", 460.0, |ui| {
-                ui.heading(RichText::new(&title).color(theme.error));
-                ui.label(&message);
-                ui.add_space(8.0);
-                ui.button("OK").clicked()
-            });
-            if !ok && !close {
-                f.state.dialog = Dialog::Error { title, message };
-            }
-        }
         Dialog::UpdateAvailable { version, url, notes } => {
             let mut done = false;
             let mut skip = false;
@@ -1055,7 +1044,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         });
         if d.existing && to_table {
             match &d.existing_columns {
-                Loadable::Loading(_) => {
+                Loadable::Loading => {
                     ui.horizontal(|ui| {
                         ui.spinner();
                         ui.label(RichText::new("Reading the table's columns…").size(11.0).color(theme.text_muted));
@@ -1283,7 +1272,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                                     ui.end_row();
                                 }
                             }
-                            Some(Loadable::Loading(_)) => {
+                            Some(Loadable::Loading) => {
                                 ui.label("");
                                 ui.label(RichText::new("Checking lakehouse schema support…").size(11.0).color(theme.text_muted));
                                 ui.end_row();

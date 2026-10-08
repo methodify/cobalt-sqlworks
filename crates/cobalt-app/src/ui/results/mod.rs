@@ -10,15 +10,15 @@ use crate::state::{EditorTab, ResultsTab, RunViewState, Selection};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::icon_button;
 use cobalt_core::Settings;
-use cobalt_results::{CellFormatter, RunState};
-use egui::{Color32, Pos2, RichText, Ui, Vec2};
+use cobalt_results::CellFormatter;
+use egui::{Pos2, RichText, Ui, Vec2};
 use egui_phosphor::regular as icons;
 use grid::GridAction;
 
 /// Requests bubbled up to the app layer.
 #[derive(Debug, Clone)]
 pub enum ResultsAction {
-    FetchMore { set: usize, rows: Option<u64> },
+    FetchMore { rows: Option<u64> },
     Cancel,
     Copy { set: usize, kind: CopyKind },
     Export { set: usize, selection_only: bool },
@@ -27,7 +27,6 @@ pub enum ResultsAction {
     /// The viewer in record mode for one row (every column, one per line).
     OpenRecord { set: usize, row: usize, col: usize },
     JumpToLine(u32),
-    Summarize { set: usize },
     PopOut { set: usize },
     /// Totals row under the headers (None removes it).
     SetTotals { set: usize, kind: Option<crate::state::TotalKind> },
@@ -44,7 +43,6 @@ pub struct ResultsArgs<'a> {
     pub theme: &'a Theme,
     pub settings: &'a Settings,
     pub fmt: &'a CellFormatter,
-    pub selection_summary: Option<&'a str>,
 }
 
 pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
@@ -249,7 +247,6 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     ui.memory_mut(|m| m.data.insert_temp(egui::Id::new(("grid-ctx", tab.id, set)), pos));
                                 }
                                 GridAction::Copy => actions.push(ResultsAction::Copy { set, kind: CopyKind::Tsv }),
-                                GridAction::CopyWithHeaders => actions.push(ResultsAction::Copy { set, kind: CopyKind::TsvWithHeaders }),
                             }
                         }
                         // Escape in a maximized grid brings the editor back
@@ -375,10 +372,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     ui.label(RichText::new(format!("{} Showing {} rows — the query is still open on the server.", icons::PAUSE_CIRCLE, crate::state::fmt_count(rows as u64))).size(12.0));
                                     let cap = args.settings.execution.row_cap.max(1000);
                                     if ui.small_button(format!("Fetch {} more", crate::state::fmt_count(cap))).clicked() {
-                                        actions.push(ResultsAction::FetchMore { set, rows: Some(cap) });
+                                        actions.push(ResultsAction::FetchMore { rows: Some(cap) });
                                     }
                                     if ui.small_button("Fetch all").clicked() {
-                                        actions.push(ResultsAction::FetchMore { set, rows: None });
+                                        actions.push(ResultsAction::FetchMore { rows: None });
                                     }
                                     if ui.small_button("Stop").clicked() {
                                         actions.push(ResultsAction::Cancel);
@@ -612,14 +609,6 @@ pub fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usiz
     }
 }
 
-pub fn state_color(theme: &Theme, state: &RunState) -> Color32 {
-    match state {
-        RunState::Streaming | RunState::Paused => theme.info,
-        RunState::Complete => theme.success,
-        RunState::Cancelled => theme.warning,
-        RunState::Error { .. } => theme.error,
-    }
-}
 
 /// A view spec that hides the selected values: one `NotEquals` filter per distinct selected value
 /// per spanned column (at most 50 values per column), keeping existing filters and sorts.

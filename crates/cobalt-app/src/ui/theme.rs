@@ -38,7 +38,6 @@ pub struct Theme {
     pub error: Color32,
     pub warning: Color32,
     pub success: Color32,
-    pub info: Color32,
     pub link: Color32,
     pub tokens: TokenColors,
     pub plan: PlanColors,
@@ -64,7 +63,6 @@ pub struct TokenColors {
 /// Plan-viewer colors by operator category and cost.
 #[derive(Clone, Debug)]
 pub struct PlanColors {
-    pub node_bg: Color32,
     pub node_border: Color32,
     pub node_selected: Color32,
     pub edge: Color32,
@@ -109,7 +107,6 @@ impl Theme {
             error: Color32::from_rgb(0xC9, 0x2A, 0x2A),
             warning: Color32::from_rgb(0xB0, 0x7A, 0x0A),
             success: Color32::from_rgb(0x1F, 0x8A, 0x3C),
-            info: COBALT,
             link: COBALT,
             tokens: TokenColors {
                 keyword: Color32::from_rgb(0x0B, 0x4F, 0xC2),
@@ -126,7 +123,6 @@ impl Theme {
                 punct: Color32::from_rgb(0x4B, 0x55, 0x63),
             },
             plan: PlanColors {
-                node_bg: Color32::from_rgb(0xFF, 0xFF, 0xFF),
                 node_border: Color32::from_rgb(0xBF, 0xC7, 0xD2),
                 node_selected: COBALT,
                 edge: Color32::from_rgb(0x8A, 0x94, 0xA3),
@@ -172,7 +168,6 @@ impl Theme {
             error: Color32::from_rgb(0xF0, 0x6A, 0x6A),
             warning: Color32::from_rgb(0xE8, 0xB3, 0x4B),
             success: Color32::from_rgb(0x4C, 0xC3, 0x7A),
-            info: Color32::from_rgb(0x4C, 0x8F, 0xF5),
             link: Color32::from_rgb(0x6F, 0xA8, 0xFF),
             tokens: TokenColors {
                 keyword: Color32::from_rgb(0x6F, 0xA8, 0xFF),
@@ -189,7 +184,6 @@ impl Theme {
                 punct: Color32::from_rgb(0xA0, 0xA8, 0xB4),
             },
             plan: PlanColors {
-                node_bg: Color32::from_rgb(0x1F, 0x24, 0x2D),
                 node_border: Color32::from_rgb(0x3D, 0x45, 0x52),
                 node_selected: Color32::from_rgb(0x6F, 0xA8, 0xFF),
                 edge: Color32::from_rgb(0x7A, 0x84, 0x93),

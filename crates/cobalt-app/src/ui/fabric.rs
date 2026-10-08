@@ -169,7 +169,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
 
         section(ui, theme, "Workspaces");
         match &state.fabric.workspaces {
-            Loadable::NotLoaded | Loadable::Loading(_) => {
+            Loadable::NotLoaded | Loadable::Loading => {
                 ui.horizontal(|ui| {
                     ui.add_space(12.0);
                     ui.spinner();

@@ -41,9 +41,9 @@ pub enum Command {
     /// Resume a paused (row-capped) result set. `None` = fetch everything.
     FetchMore { tab: TabId, rows: Option<u64> },
     ChangeDatabase { tab: TabId, database: String },
-    Ping { tab: TabId },
     /// Dev/agent: make the tab's actor treat its connection as dead before the next command, so the
     /// idle-reconnect path can be exercised without waiting for a gateway to drop the session.
+    #[cfg(feature = "agent")]
     SimulateLost { tab: TabId },
     /// Object explorer / completion reads on the per-profile metadata connection.
     Metadata { req: RequestId, profile: ConnectionProfile, creds: ResolvedCredentials, kind: MetadataRequest },
@@ -55,7 +55,6 @@ pub enum Command {
 pub enum MetadataRequest {
     Probe,
     ListDatabases,
-    ListSchemas { database: String },
     ListObjects { database: String },
     ListColumns { obj: ObjectRef },
     ListParameters { obj: ObjectRef },
@@ -86,8 +85,8 @@ pub enum Event {
     ResultSetStarted { tab: TabId, run: RunId, rs: Arc<ResultSet> },
     ResultSetDone { tab: TabId, run: RunId, index: usize, rows: u64 },
     /// Row cap reached on result set `index`; waiting for `FetchMore` or `Cancel`.
-    Paused { tab: TabId, run: RunId, index: usize, rows: u64 },
-    Message { tab: TabId, run: RunId, message: ServerMessage, batch: usize, batch_start_line: u32 },
+    Paused { tab: TabId, run: RunId, index: usize },
+    Message { tab: TabId, run: RunId, message: ServerMessage, batch_start_line: u32 },
     RowsAffected { tab: TabId, run: RunId, rows: u64 },
     BatchDone { tab: TabId, run: RunId, batch: usize, error: Option<ServerMessage>, elapsed: Duration },
     RunDone { tab: TabId, run: RunId, cancelled: bool, failed: bool, elapsed: Duration, total_rows: u64 },
@@ -97,7 +96,6 @@ pub enum Event {
     ImportProgress { tab: TabId, rows: u64 },
     /// Rows loaded and elapsed, or the error (after ROLLBACK).
     ImportDone { tab: TabId, result: Result<(u64, Duration), String> },
-    Pong { tab: TabId, ok: bool },
     Metadata { req: RequestId, profile: ProfileId, result: Result<MetadataResponse, String> },
 }
 
@@ -105,7 +103,6 @@ pub enum Event {
 pub enum MetadataResponse {
     Probe(EngineInfo),
     Databases(Vec<DatabaseInfo>),
-    Schemas(Vec<String>),
     Objects(Vec<ObjectRef>),
     Columns(Vec<ColumnInfo>),
     Parameters(Vec<ParameterInfo>),

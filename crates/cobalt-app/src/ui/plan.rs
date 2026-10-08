@@ -4,7 +4,7 @@ use crate::state::{EditorTab, PlanView};
 use crate::ui::theme::Theme;
 use crate::ui::widgets::icon_button;
 use cobalt_core::Settings;
-use cobalt_plan::{IconCategory, LayoutOptions, Metric, OpIcon, Statement};
+use cobalt_plan::{IconCategory, LayoutOptions, OpIcon, Statement};
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 use egui_phosphor::regular as icons;
 use std::sync::Arc;
@@ -574,18 +574,6 @@ fn top_operations(ui: &mut Ui, pv: &mut PlanView, stmt: &Statement, theme: &Them
             pv.show_properties = true;
         }
     });
-}
-
-pub fn metric_label(m: Metric) -> &'static str {
-    match m {
-        Metric::Cost => "Cost",
-        Metric::SubtreeCost => "Subtree cost",
-        Metric::ActualRows => "Actual rows",
-        Metric::EstRows => "Estimated rows",
-        Metric::ActualElapsed => "Actual elapsed",
-        Metric::ActualCpu => "Actual CPU",
-        Metric::RowsRead => "Rows read",
-    }
 }
 
 /// Node colouring choices ("Highlight by").

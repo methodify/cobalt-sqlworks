@@ -24,11 +24,11 @@ fn idle_ping_after() -> Duration {
 pub enum TabMsg {
     Run { run: RunId, script: String, opts: ExecOptions, start_line: u32, sink: Option<RunSink> },
     Cancel,
+    #[cfg(feature = "agent")]
     SimulateLost,
     Import { table: String, create_sql: Option<String>, columns: Vec<ColumnInfo>, rx: std::sync::mpsc::Receiver<std::result::Result<arrow::array::RecordBatch, String>>, cancel: Arc<std::sync::atomic::AtomicBool> },
     FetchMore { rows: Option<u64> },
     ChangeDatabase { database: String },
-    Ping,
     Close,
 }
 
@@ -128,14 +128,8 @@ pub async fn tab_actor(
         }
         match msg {
             TabMsg::Close => break,
+            #[cfg(feature = "agent")]
             TabMsg::SimulateLost => force_dead = true,
-            TabMsg::Ping => {
-                let ok = conn.ping().await.is_ok();
-                shared.emit(Event::Pong { tab, ok });
-                if !ok {
-                    break;
-                }
-            }
             TabMsg::ChangeDatabase { database } => match conn.change_database(&database).await {
                 Ok(()) => shared.emit(Event::DatabaseChanged { tab, database: conn.current_database().to_string() }),
                 Err(e) => shared.emit(Event::DatabaseChangeFailed { tab, error: e.to_string() }),
@@ -294,14 +288,14 @@ async fn run_script(
         let mut stream = match conn.execute(&batch.sql, opts).await {
             Ok(s) => s,
             Err(DriverError::Server(m)) => {
-                shared.emit(Event::Message { tab, run, message: m.clone(), batch: bi, batch_start_line: batch_line });
+                shared.emit(Event::Message { tab, run, message: m.clone(), batch_start_line: batch_line });
                 shared.emit(Event::BatchDone { tab, run, batch: bi, error: Some(m), elapsed: batch_started.elapsed() });
                 failed = true;
                 break;
             }
             Err(e) => {
                 let m = ServerMessage::error(0, e.to_string(), 0);
-                shared.emit(Event::Message { tab, run, message: m.clone(), batch: bi, batch_start_line: batch_line });
+                shared.emit(Event::Message { tab, run, message: m.clone(), batch_start_line: batch_line });
                 shared.emit(Event::BatchDone { tab, run, batch: bi, error: Some(m), elapsed: batch_started.elapsed() });
                 shared.emit(Event::RunDone { tab, run, cancelled: false, failed: true, elapsed: started.elapsed(), total_rows });
                 return matches!(e, DriverError::Disconnected(_));
@@ -350,7 +344,7 @@ async fn run_script(
                                     }
                                     if rows_in_set >= cap {
                                         rs.set_state(RunState::Paused);
-                                        shared.emit(Event::Paused { tab, run, index: rs.index, rows: rows_in_set });
+                                        shared.emit(Event::Paused { tab, run, index: rs.index });
                                     }
                                 }
                             }
@@ -420,7 +414,7 @@ async fn run_script(
                         total_rows += n;
                         if rows_in_set >= cap {
                             rs.set_state(RunState::Paused);
-                            shared.emit(Event::Paused { tab, run, index: rs.index, rows: rows_in_set });
+                            shared.emit(Event::Paused { tab, run, index: rs.index });
                         } else if last_repaint.elapsed().as_millis() >= 33 {
                             (shared.repaint)();
                             last_repaint = Instant::now();
@@ -452,7 +446,7 @@ async fn run_script(
                     }
                 }
                 StreamItem::RowsAffected(n) => shared.emit(Event::RowsAffected { tab, run, rows: n }),
-                StreamItem::Message(m) => shared.emit(Event::Message { tab, run, message: m, batch: bi, batch_start_line: batch_line }),
+                StreamItem::Message(m) => shared.emit(Event::Message { tab, run, message: m, batch_start_line: batch_line }),
                 StreamItem::Done { error, cancelled: c } => {
                     if let Some(rs) = current.take() {
                         if let Some(s) = &sink {
@@ -568,7 +562,6 @@ async fn serve(conn: &mut dyn Connection, kind: MetadataRequest) -> Result<Metad
     Ok(match kind {
         MetadataRequest::Probe => MetadataResponse::Probe(conn.engine().clone()),
         MetadataRequest::ListDatabases => MetadataResponse::Databases(conn.list_databases().await?),
-        MetadataRequest::ListSchemas { database } => MetadataResponse::Schemas(conn.list_schemas(&database).await?),
         MetadataRequest::ListObjects { database } => MetadataResponse::Objects(conn.list_objects(&database).await?),
         MetadataRequest::ListColumns { obj } => MetadataResponse::Columns(conn.list_columns(&obj).await?),
         MetadataRequest::ListParameters { obj } => MetadataResponse::Parameters(conn.list_parameters(&obj).await?),

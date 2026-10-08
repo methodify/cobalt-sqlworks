@@ -93,7 +93,7 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
         if is_dir {
             // with a filter on, every folder is open so matches anywhere show up
             let expanded = !filter.is_empty() || fs.expanded.contains(&path);
-            let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.warning), label: &name, detail: None, selected: false, color_dot: None, id_salt: &path.to_string_lossy(), kind: "folder" });
+            let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading: false, icon: icons::FOLDER_SIMPLE, icon_color: Some(theme.warning), label: &name, detail: None, selected: false, color_dot: None, kind: "folder" });
             if (r.toggle || r.response.clicked()) && filter.is_empty() {
                 if expanded {
                     fs.expanded.remove(&path);
@@ -129,7 +129,7 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
                 Some("sqlplan") => icons::TREE_STRUCTURE,
                 _ => icons::FILE_TEXT,
             };
-            let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: None, label: &name, detail: None, selected: false, color_dot: None, id_salt: &path.to_string_lossy(), kind: "file" });
+            let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: None, label: &name, detail: None, selected: false, color_dot: None, kind: "file" });
             if r.response.clicked() || r.response.double_clicked() {
                 actions.push(FilesAction::Open(path.clone()));
             }
