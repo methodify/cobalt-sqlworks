@@ -44,6 +44,8 @@ pub fn fmt_bytes(n: u64) -> String {
 
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAction> {
     let mut actions = Vec::new();
+    // a Spark SQL query tab gets SQL from the pane; a notebook gets Python cells
+    let sql_tab = state.active().map(|t| t.spark.is_some()).unwrap_or(false);
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             section_title(ui, theme, "Lakehouse");
@@ -55,7 +57,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
         });
         let Some((ws_id, lh_name, lh_id)) = state.lakehouse_pane.selected.clone() else {
             ui.add_space(8.0);
-            ui.label(RichText::new("Shows the tables and Files of a Spark notebook's lakehouse. Open a notebook on the Local Spark kernel and bind a lakehouse with the lakehouse button on its toolbar.").size(12.0).color(theme.text_muted));
+            ui.label(RichText::new("Shows the tables and Files of the active Spark notebook's or Spark SQL tab's lakehouse. Open a notebook on the Local Spark kernel, or a Spark SQL query from the Servers tree's Local Spark root, and bind a lakehouse with the lakehouse button on its toolbar.").size(12.0).color(theme.text_muted));
             return;
         };
         // which lakehouse of the workspace, and whether it is the notebook's default
@@ -123,7 +125,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                     schemas.sort();
                     schemas.dedup();
                     for t in tables.iter().filter(|t| t.schema.is_none()) {
-                        table_row(ui, theme, &lh_name, None, &t.name, 0, &filter, &shadows, session_ready, &mut actions);
+                        table_row(ui, theme, sql_tab, &lh_name, None, &t.name, 0, &filter, &shadows, session_ready, &mut actions);
                     }
                     for schema in schemas {
                         let key = format!("schema:{schema}");
@@ -136,7 +138,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                         }
                         if expanded {
                             for t in tables.iter().filter(|t| t.schema.as_deref() == Some(schema.as_str())) {
-                                table_row(ui, theme, &lh_name, Some(&schema), &t.name, 1, &filter, &shadows, session_ready, &mut actions);
+                                table_row(ui, theme, sql_tab, &lh_name, Some(&schema), &t.name, 1, &filter, &shadows, session_ready, &mut actions);
                             }
                         }
                     }
@@ -154,7 +156,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                     ui.label(RichText::new("session stopped — listing from OneLake only").size(11.0).color(theme.text_faint));
                 }
             });
-            files_children(ui, theme, pane, "", 0, &filter, &pulled, &fetched, session_ready, &mut actions);
+            files_children(ui, theme, sql_tab, pane, "", 0, &filter, &pulled, &fetched, session_ready, &mut actions);
         });
         if let Some(n) = &pane.note {
             ui.label(RichText::new(n).size(11.0).color(theme.text_muted));
@@ -163,7 +165,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
     actions
 }
 
-fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &str, depth: usize, filter: &str, shadows: &std::collections::HashMap<String, (String, Option<String>)>, session_ready: bool, actions: &mut Vec<LakehouseAction>) {
+fn table_row(ui: &mut Ui, theme: &Theme, sql_tab: bool, lh: &str, schema: Option<&str>, name: &str, depth: usize, filter: &str, shadows: &std::collections::HashMap<String, (String, Option<String>)>, session_ready: bool, actions: &mut Vec<LakehouseAction>) {
     if !filter.is_empty() && !name.to_lowercase().contains(filter) {
         return;
     }
@@ -188,12 +190,13 @@ fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &
     let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::TABLE, icon_color: None, label: name, detail: detail.as_deref(), selected: false, color_dot: dot, kind: "lakehouse table" });
     r.response.dnd_set_drag_payload(spelling.clone());
     let r = r.response.on_hover_text(format!("{spelling}{}\nDrag into a cell; double-click for a cell that reads it.", if state_label.is_empty() { " — not touched in this session" } else { "" }));
+    let read_code = if sql_tab { format!("SELECT * FROM {spelling} LIMIT 100") } else { format!("display(spark.table(\"{spelling}\"))") };
     if r.double_clicked() {
-        actions.push(LakehouseAction::InsertCell(format!("display(spark.table(\"{spelling}\"))")));
+        actions.push(LakehouseAction::InsertCell(read_code.clone()));
     }
     r.context_menu(|ui| {
-        if ui.button("Insert a cell that reads it").clicked() {
-            actions.push(LakehouseAction::InsertCell(format!("display(spark.table(\"{spelling}\"))")));
+        if ui.button(if sql_tab { "Insert a SELECT that reads it" } else { "Insert a cell that reads it" }).clicked() {
+            actions.push(LakehouseAction::InsertCell(read_code.clone()));
             ui.close();
         }
         if ui.button("Copy name").clicked() {
@@ -216,7 +219,7 @@ fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &
     });
 }
 
-fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, depth: usize, filter: &str, pulled: &[String], fetched: &[String], session_ready: bool, actions: &mut Vec<LakehouseAction>) {
+fn files_children(ui: &mut Ui, theme: &Theme, sql_tab: bool, pane: &LakehousePane, dir: &str, depth: usize, filter: &str, pulled: &[String], fetched: &[String], session_ready: bool, actions: &mut Vec<LakehouseAction>) {
     match pane.files.get(dir) {
         None => {
             if pane.files_loading.contains(dir) {
@@ -270,7 +273,7 @@ fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, d
                         }
                     });
                     if expanded {
-                        files_children(ui, theme, pane, &rel, depth + 1, filter, pulled, fetched, session_ready, actions);
+                        files_children(ui, theme, sql_tab, pane, &rel, depth + 1, filter, pulled, fetched, session_ready, actions);
                     }
                 } else {
                     if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
@@ -289,7 +292,7 @@ fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, d
                         _ => icons::FILE,
                     };
                     let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: if is_local { Some(theme.accent) } else { None }, label: &e.name, detail: Some(&detail), selected: false, color_dot: None, kind: "file" });
-                    let read_code = read_cell_code(&rel, &ext);
+                    let read_code = if sql_tab { format!("Files/{rel}") } else { read_cell_code(&rel, &ext) };
                     r.response.dnd_set_drag_payload(format!("Files/{rel}"));
                     let resp = r.response.on_hover_text(format!("Files/{rel}\nDrag into a cell for the path; double-click for a cell that reads it."));
                     if resp.double_clicked() {

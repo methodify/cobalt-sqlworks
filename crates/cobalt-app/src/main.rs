@@ -16,6 +16,7 @@ mod notebook;
 mod ops;
 mod runtime;
 mod session;
+mod sparkq;
 mod state;
 mod update;
 mod ui;

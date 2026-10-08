@@ -1,8 +1,10 @@
 # Spark SQL query tabs — proposal (2026-10-08)
 
-*Status: proposed; founder's call pending (see §6). Written after the founder asked, playing
-with 0.8.1: "what if the query view could connect to or spawn a Spark session and run Spark SQL
-against the workspace / lakehouse of my choice?"*
+*Status: slice A built 2026-10-08 on the recommended shape (Servers-tree entry point, one
+result set per statement; the founder agreed it is the right next thing). Slice B open; the
+slice C asks are in `docs/requests/local-spark-mcp-0.6.7-request.md`. Written after the founder
+asked, playing with 0.8.1: "what if the query view could connect to or spawn a Spark session
+and run Spark SQL against the workspace / lakehouse of my choice?"*
 
 ## 1. The idea in one paragraph
 
@@ -89,9 +91,10 @@ pane already fetches. The pane follows the active Spark tab like it follows a no
 
 ## 5. Slices
 
-- **A — core (first release).** Local Spark root with lakehouses; Spark tab with
-  connect / run / cancel / results / messages / errors / history / exports / Run to File
-  (collected); status bar and tab title; hot-exit restore. ≈ 3–4 days.
+- **A — core (first release).** *Built 2026-10-08 (`crates/cobalt-app/src/sparkq.rs`).* Local
+  Spark root with lakehouses; Spark tab with connect / run / cancel / results / messages /
+  errors / history / exports / Run to File (collected); status bar and tab title; hot-exit
+  restore; the Lakehouse pane follows the tab and inserts `SELECT`s. Verified live on `test`.
 - **B — editing comfort.** Completion from the pane, Spark keywords/functions, backticks,
   text EXPLAIN plan tab, "Insert SELECT" from the pane, "Open in a Spark tab" from a
   notebook SQL cell. ≈ 2 days.

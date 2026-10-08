@@ -344,11 +344,12 @@ pub fn maybe_early_start(state: &mut AppState, cx: &Ctx, idx: usize) {
     if cx.settings.spark.early_start != "notebook_open" {
         return;
     }
-    let Some(nb) = state.tabs.get(idx).and_then(|t| t.notebook.as_deref()) else { return };
-    if nb.kernel != NotebookKernel::Spark {
+    let Some(t) = state.tabs.get(idx) else { return };
+    let spark = t.spark.is_some() || t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false);
+    if !spark {
         return;
     }
-    if nb.fabric.is_some() && state.fabric.slot.is_none() {
+    if binding_of(t).is_some() && state.fabric.slot.is_none() {
         return;
     }
     if !matches!(state.kernel.state, crate::kernel::KernelState::Stopped) {
@@ -364,7 +365,7 @@ pub fn maybe_early_start(state: &mut AppState, cx: &Ctx, idx: usize) {
 /// Each frame the pane is visible: follow the active notebook's binding and load what is missing
 /// (tables and the Files root from OneLake; the mirror status and shadows from the session).
 pub fn lakehouse_pane_shown(state: &mut AppState, cx: &Ctx) {
-    let binding = state.active().and_then(|t| t.notebook.as_deref()).and_then(|nb| nb.fabric.clone());
+    let binding = state.active().and_then(binding_of);
     let Some(b) = binding else {
         state.lakehouse_pane.selected = None;
         return;
@@ -442,9 +443,13 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
         }
         A::MakeDefault(id) => {
             if let Some(idx) = state.active_tab {
-                let binding = state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone());
+                let binding = binding_of(&state.tabs[idx]);
                 if let Some(b) = binding {
-                    set_fabric(state, idx, Some(NotebookFabric { lakehouse_id: Some(id), ..b }));
+                    if state.tabs[idx].spark.is_some() {
+                        crate::sparkq::set_binding(state, cx, idx, Some(NotebookFabric { lakehouse_id: Some(id), ..b }));
+                    } else {
+                        set_fabric(state, idx, Some(NotebookFabric { lakehouse_id: Some(id), ..b }));
+                    }
                 }
             }
         }
@@ -502,6 +507,10 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
         }
         A::InsertCell(code) => {
             let Some(idx) = state.active_tab else { return };
+            if state.tabs[idx].spark.is_some() {
+                crate::sparkq::insert_at_cursor(&mut state.tabs[idx], &code);
+                return;
+            }
             let at = state.tabs[idx].notebook.as_deref().map(|nb| (nb.selected + 1).min(nb.cells.len())).unwrap_or(0);
             if let Some(i) = insert_cell(state, idx, at, CellKind::Code, true) {
                 if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
@@ -554,15 +563,45 @@ pub fn on_spark_notebook_closed(state: &mut AppState, cx: &Ctx) {
     if cx.settings.spark.lifecycle != "last_notebook" {
         return;
     }
-    let any = state.tabs.iter().any(|t| t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
+    let any = state.tabs.iter().any(|t| t.spark.is_some() || t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
     if !any && !matches!(state.kernel.state, crate::kernel::KernelState::Stopped) {
         crate::kernel::stop(&mut state.kernel);
-        cx.toast(ToastKind::Info, "The last Spark notebook closed; the local Spark session stopped (Settings → Notebooks & Spark → Session lifecycle).");
+        cx.toast(ToastKind::Info, "The last Spark notebook or tab closed; the local Spark session stopped (Settings → Notebooks & Spark → Session lifecycle).");
     }
 }
 
+/// The lakehouse binding a tab runs Spark with: a notebook's, or a Spark SQL query tab's.
+pub fn binding_of(t: &EditorTab) -> Option<NotebookFabric> {
+    if let Some(nb) = t.notebook.as_deref() {
+        return nb.fabric.clone();
+    }
+    t.spark.as_ref().and_then(|s| s.binding.clone())
+}
+
+/// Whatever this tab had waiting for the session is dropped (queued cells, or a query tab's
+/// pending run).
+fn abandon_pending(state: &mut AppState, idx: usize) {
+    let t = &mut state.tabs[idx];
+    if let Some(nb) = t.notebook.as_deref_mut() {
+        nb.queue.clear();
+    }
+    if t.spark.is_some() {
+        t.pending_run = None;
+    }
+}
+
+/// How a Spark run may proceed once the session and the tab's binding are reconciled.
+pub(crate) enum SparkPrep {
+    /// Submit: the context's default lakehouse and the workspaces to attach first.
+    Ready { context_lakehouse: Option<String>, register: Vec<serde_json::Value> },
+    /// Something is on its way (session start, token, item lists): keep the request pending.
+    Wait,
+    /// Not possible (sign-in missing, binding refused); the request was dropped.
+    Abort,
+}
+
 fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<crate::kernel::KernelFabric>, bool> {
-    let Some(b) = state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone()) else { return Ok(None) };
+    let Some(b) = binding_of(&state.tabs[idx]) else { return Ok(None) };
     let Some(slot) = state.fabric.slot else {
         if state.fabric.status() == crate::fabric::FabricStatus::SignedOut {
             crate::fabric::on_panel_shown(state, cx);
@@ -622,6 +661,7 @@ pub fn pump_all_spark(state: &mut AppState, cx: &Ctx) {
     for tab in tabs {
         pump(state, cx, tab, false);
     }
+    crate::sparkq::pump_pending(state, cx);
 }
 
 /// Ask the running session for its shadow state (the Shadows window).
@@ -981,7 +1021,7 @@ pub fn set_kernel(state: &mut AppState, idx: usize, kernel: NotebookKernel) {
 }
 
 /// A Python string literal for `code`.
-fn py_literal(s: &str) -> String {
+pub(crate) fn py_literal(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {
@@ -1018,9 +1058,7 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
         Ok(f) => f,
         Err(true) => return Ok(false),
         Err(false) => {
-            if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
-                nb.queue.clear();
-            }
+            abandon_pending(state, idx);
             return Err(());
         }
     };
@@ -1032,9 +1070,7 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
         return Ok(false);
     }
     if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
-        if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
-            nb.queue.clear();
-        }
+        abandon_pending(state, idx);
         cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime, then run the cell again.");
         state.settings_open = true;
         state.settings_scroll_to = Some("Spark runtime");
@@ -1043,8 +1079,11 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
     Ok(true)
 }
 
-fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, override_text: Option<String>) {
-    use crate::kernel::{self, KernelState, RunReq};
+/// Reconcile the tab's binding with the running (or starting) session before a Spark run:
+/// start the session, attach a workspace, warn about a binding the session cannot take, and
+/// name the context's default lakehouse. Shared by notebook cells and Spark SQL query tabs.
+pub(crate) fn prepare_spark(state: &mut AppState, cx: &Ctx, idx: usize) -> SparkPrep {
+    use crate::kernel::KernelState;
     let tab = state.tabs[idx].id;
     let mut pending_register: Vec<serde_json::Value> = Vec::new();
     let mut context_lakehouse: Option<String> = None;
@@ -1052,7 +1091,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     match &state.kernel.state {
         KernelState::Stopped | KernelState::Failed(_) => {
             if !matches!(ensure_session(state, cx, idx), Ok(true)) {
-                return;
+                return SparkPrep::Wait;
             }
         }
         KernelState::Ready { .. } => {
@@ -1067,8 +1106,8 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
                         (None, _) => {}
                         (Some(_), None) => {
                             if rebind_if_unused(state) {
-                                cx.toast(ToastKind::Info, "Rebinding the Spark session to this notebook's lakehouse (nothing had run in it yet).");
-                                return; // the cell stays queued and runs on the rebound session
+                                cx.toast(ToastKind::Info, "Rebinding the Spark session to this tab's lakehouse (nothing had run in it yet).");
+                                return SparkPrep::Wait; // the request stays pending and runs on the rebound session
                             }
                             if state.kernel.binding_warned.insert(tab) {
                                 cx.toast(ToastKind::Warning, "The running Spark session was started without a lakehouse. Restart the session (kernel menu) to use this notebook's lakehouse.");
@@ -1107,24 +1146,33 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
                         }
                     }
                 }
-                Err(true) => return, // the workspace's lakehouses are still loading; the cell stays queued
-                Err(false) => {
-                    if let Some(nb) = state.tabs[idx].notebook.as_deref_mut() {
-                        nb.queue.clear();
-                    }
-                    return;
-                }
+                Err(true) => return SparkPrep::Wait, // the workspace's lakehouses are still loading; the request stays pending
+                Err(false) => return SparkPrep::Abort,
             }
         }
         _ => {}
     }
     // while the session is still starting the Ready arm did not run: the context's default
     // lakehouse still comes from the notebook's binding (resolved already for the start)
-    if context_lakehouse.is_none() && state.tabs[idx].notebook.as_deref().map(|nb| nb.fabric.is_some()).unwrap_or(false) {
+    if context_lakehouse.is_none() && binding_of(&state.tabs[idx]).is_some() {
         if let Ok(Some(w)) = kernel_fabric(state, cx, idx) {
             context_lakehouse = w.default_lakehouse;
         }
     }
+    SparkPrep::Ready { context_lakehouse, register: pending_register }
+}
+
+fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, override_text: Option<String>) {
+    use crate::kernel::{self, RunReq};
+    let tab = state.tabs[idx].id;
+    let (context_lakehouse, pending_register) = match prepare_spark(state, cx, idx) {
+        SparkPrep::Ready { context_lakehouse, register } => (context_lakehouse, register),
+        SparkPrep::Wait => return,
+        SparkPrep::Abort => {
+            abandon_pending(state, idx);
+            return;
+        }
+    };
     let use_context = state.kernel.has("contexts");
     let want_description = state.kernel.has("job_description");
     let t = &mut state.tabs[idx];
@@ -1285,6 +1333,10 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     // streamed output lands on the running cell as it is produced; the final reply replaces it
     for (tab, cell_id, stream, text) in out.outputs {
         let Some(idx) = state.tab_index(tab) else { continue };
+        if state.tabs[idx].spark.is_some() {
+            crate::sparkq::on_output(state, tab, &stream, &text);
+            continue;
+        }
         let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
         let Some(ci) = nb.cell_index(&cell_id) else { continue };
         let Some(run) = nb.cells[ci].run.as_mut() else { continue };
@@ -1306,6 +1358,10 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
     let mut pumps: Vec<(TabId, bool)> = Vec::new();
     for (req, result, blobs) in out.done {
         let Some(idx) = state.tab_index(req.tab) else { continue };
+        if state.tabs[idx].spark.is_some() {
+            followups.extend(crate::sparkq::on_done(state, idx, &result, &blobs));
+            continue;
+        }
         let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
         let Some(ci) = nb.cell_index(&req.cell_id) else { continue };
         let o = crate::kernel::outcome(&result, &blobs);
@@ -1338,6 +1394,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         pumps.push((req.tab, o.failed || interrupted));
     }
     if let Some(err) = &out.broke {
+        crate::sparkq::fail_live(state, err);
         // an intentional restart keeps the queued cells: they run on the new session
         let keep_queues = state.kernel_restart_pending;
         for t in state.tabs.iter_mut() {
@@ -1369,6 +1426,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         for tab in tabs {
             pump(state, cx, tab, false);
         }
+        crate::sparkq::pump_pending(state, cx);
     }
 }
 

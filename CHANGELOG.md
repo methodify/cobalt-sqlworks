@@ -4,6 +4,19 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **Spark SQL query tabs.** A query tab that runs on the local Spark session instead of a
+  connection: Servers → *Local Spark* lists the lakehouses bound to open notebooks and tabs,
+  pinned on the Fabric panel, or used before; double-click one for `SparkSQL_1 · test`, or
+  use File → New Spark SQL Query. The tab's toolbar has the session chip (start, stop,
+  restart, interrupt, log) and the lakehouse chip (workspace, default lakehouse, write mode),
+  like a Spark notebook. Run (all, selection, current statement) runs every statement in the
+  tab's own context: each statement that returns rows is a result set in the normal grid,
+  statements without rows report "Statement n completed", a failing statement ends the run
+  with Spark's analysis message as one line, Cancel interrupts the Spark jobs. Run to File
+  writes the collected rows to any export target; history records the run under *Local Spark*;
+  the Lakehouse pane follows the tab and inserts a `SELECT` for a table; hot exit restores the
+  tab with its binding. Not yet: execution plans, Parse, fetch-more on the row cap (the cap is
+  Settings → Notebooks), affected-row counts for DML (asked upstream).
 - **local-spark-mcp 0.6.6 is the new pin.** In a context whose default lakehouse is
   schema-enabled, the lakehouse is the current catalog as on Fabric, so `publicholidays`,
   `dbo.publicholidays` and `test.dbo.publicholidays` all resolve. Settings → Spark runtime

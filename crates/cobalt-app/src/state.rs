@@ -257,6 +257,19 @@ pub struct EditorTab {
     pub notebook: Option<Box<NotebookState>>,
     /// The Fabric item this notebook came from; Save writes back to it.
     pub fabric_item: Option<FabricItemRef>,
+    /// `Some` = a Spark SQL query tab: statements run on the local Spark session in the tab's
+    /// own context instead of over a connection (`sparkq.rs`).
+    pub spark: Option<SparkTab>,
+}
+
+/// A Spark SQL query tab's state: its lakehouse binding (like a notebook's), the display names
+/// (kept so a restored tab reads right before the Fabric lists load) and, during Run to File,
+/// the export sink the collected result sets go to.
+pub struct SparkTab {
+    pub binding: Option<NotebookFabric>,
+    pub workspace_name: String,
+    pub lakehouse_name: Option<String>,
+    pub sink: Option<crate::session::RunSink>,
 }
 
 /// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay
@@ -440,6 +453,7 @@ impl EditorTab {
             snapshot_hash: hash_text(""),
             notebook: None,
             fabric_item: None,
+            spark: None,
         }
     }
 
@@ -493,6 +507,8 @@ impl EditorTab {
         let mut t = self.title.clone();
         if self.notebook.is_some() {
             t = format!("{} {t}", egui_phosphor::regular::NOTEBOOK);
+        } else if self.spark.is_some() {
+            t = format!("{} {t}", egui_phosphor::regular::FIRE);
         }
         if self.profile.as_ref().map(|p| p.read_only_guard).unwrap_or(false) {
             t = format!("{} {t}", egui_phosphor::regular::LOCK_SIMPLE);
@@ -920,6 +936,10 @@ pub struct AppState {
     pub status_flash: Option<(String, Instant)>,
     pub last_hot_exit_save: Instant,
     pub recently_closed_count: usize,
+    /// The Servers tree's Local Spark root is open.
+    pub spark_root_expanded: bool,
+    /// Open the Spark tab's lakehouse menu on the next frame (Connect / Change connection on a Spark tab).
+    pub open_spark_chip: Option<TabId>,
     pub export_progress: Option<Arc<parking_lot::Mutex<(usize, usize)>>>,
     /// Settings changes requested by ops/UI; applied by the app (which owns `Settings`).
     pub settings_patch: Vec<SettingsPatch>,
@@ -1157,6 +1177,8 @@ impl AppState {
             status_flash: None,
             last_hot_exit_save: Instant::now(),
             recently_closed_count: 0,
+            spark_root_expanded: true,
+            open_spark_chip: None,
             export_progress: None,
             settings_patch: Vec::new(),
             settings_draft: None,

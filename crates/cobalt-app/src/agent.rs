@@ -5,6 +5,7 @@
 //! - `add_profile {name?, server, user, password, database?, trust_server_certificate?}` → profile id (SQL login; the password is stored in the OS keychain)
 //! - `connect {profile: <name or id>, database?}` → opens a new tab connected to that profile
 //! - `open_query {text, connect?: <profile name>}` → new tab with text
+//! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
 //! - `set_query {text}` (active tab), `run {mode?: all|current|selection|estimated_plan}`, `cancel`
 //! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
@@ -78,7 +79,8 @@ impl CobaltApp {
                     "index": i,
                     "id": t.id.to_string(),
                     "title": t.title,
-                    "kind": if t.is_notebook() { "notebook" } else { "query" },
+                    "kind": if t.is_notebook() { "notebook" } else if t.spark.is_some() { "spark" } else { "query" },
+                    "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
                     "selected_cell": t.notebook.as_deref().map(|nb| nb.selected),
@@ -292,6 +294,26 @@ impl AgentApp for CobaltApp {
                 let db = arg_str(args, "database");
                 let idx = self.with_ctx(egui, |s, cx| ops::new_query_tab(s, cx, Some(p.id), db, None, false));
                 ActionResult::with(&json!({"tab": idx}))
+            }
+            "spark_query" => {
+                let text = arg_str(args, "text");
+                let binding = match arg_str(args, "workspace") {
+                    None => None,
+                    Some(ws_arg) => {
+                        let ws_id = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone()));
+                        let Some(ws_id) = ws_id else { return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into()) };
+                        let lh_id = match arg_str(args, "lakehouse") {
+                            Some(l) => match self.state.fabric.lakehouses(&ws_id).and_then(|v| v.into_iter().find(|(n, id)| *id == l || n.eq_ignore_ascii_case(&l)).map(|(_, id)| id)) {
+                                Some(id) => Some(id),
+                                None => return ActionResult::BadArgs("unknown lakehouse (workspace items not loaded?)".into()),
+                            },
+                            None => None,
+                        };
+                        Some(crate::state::NotebookFabric { workspace_id: ws_id, lakehouse_id: lh_id, write_mode: arg_str(args, "write_mode").unwrap_or_else(|| "sandbox".into()), preload: false })
+                    }
+                };
+                let idx = self.with_ctx(egui, |s, cx| crate::sparkq::new_tab(s, cx, binding, None, text));
+                ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}))
             }
             "open_query" => {
                 let text = arg_str(args, "text").unwrap_or_default();

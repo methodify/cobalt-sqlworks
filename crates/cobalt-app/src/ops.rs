@@ -681,6 +681,9 @@ pub fn test_connection(state: &mut AppState, cx: &Ctx) {
 }
 
 pub fn disconnect_tab(state: &mut AppState, cx: &Ctx, idx: usize) {
+    if state.tabs.get(idx).map(|t| t.spark.is_some()).unwrap_or(false) {
+        return crate::sparkq::disconnect(state, idx);
+    }
     if let Some(t) = state.tabs.get_mut(idx) {
         cx.session.send(Command::Disconnect { tab: t.id });
         t.conn = ConnState::Disconnected;
@@ -799,6 +802,28 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         TreeAction::NewQuery { profile, database } => {
             new_query_tab(state, cx, Some(profile), database, None, false);
         }
+        TreeAction::SparkQuery(entry) => {
+            let (binding, names) = match entry {
+                Some(e) => (Some(crate::sparkq::binding_for(&e)), Some((e.workspace_name.clone(), Some(e.lakehouse_name.clone())))),
+                None => (None, None),
+            };
+            crate::sparkq::new_tab(state, cx, binding, names, None);
+        }
+        TreeAction::SparkChoose => {
+            let idx = crate::sparkq::new_tab(state, cx, None, None, None);
+            state.open_spark_chip = Some(state.tabs[idx].id);
+        }
+        TreeAction::SparkSession(start) => {
+            if start {
+                if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
+                    cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime.");
+                    state.settings_open = true;
+                    state.settings_scroll_to = Some("Spark runtime");
+                }
+            } else {
+                crate::kernel::stop(&mut state.kernel);
+            }
+        }
         TreeAction::SelectTop { profile, obj } => {
             let n = cx.settings.execution.select_top_n;
             let cols = state.library.servers.get(&profile).and_then(|s| s.db_nodes.get(&obj.database)).and_then(|d| d.columns.get(&obj.object_id.unwrap_or(0))).and_then(|l| l.get()).cloned();
@@ -881,14 +906,14 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
     crate::kernel::drop_context(&mut state.kernel, t.id);
-    if t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false) {
+    if t.spark.is_some() || t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false) {
         crate::notebook::on_spark_notebook_closed(state, cx);
     }
     // keep a restorable snapshot
     let text = if t.is_notebook() { snapshot_document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).unwrap_or_default() } else { t.text.clone() };
     let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
-    snap.database = t.conn.database().map(str::to_string);
+    snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| t.conn.database().map(str::to_string));
     snap.cursor = t.editor.cursor;
     snap.file_path = t.file_path.clone();
     let _ = cx.store.save_tab(&snap);
@@ -929,6 +954,10 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
     }
     t.mark_saved();
     let tab_id = t.id;
+    if let Some(sp) = snap.database.as_deref().and_then(crate::sparkq::from_snapshot) {
+        t.spark = Some(sp);
+        return;
+    }
     if let Some(pid) = snap.profile_id.and_then(|id| state.library.profile(id).cloned()) {
         begin_connect(state, cx, pid, ConnectPurpose::Tab { tab: tab_id, database: snap.database });
     }
@@ -966,7 +995,7 @@ pub fn snapshot_tabs(state: &mut AppState, cx: &Ctx, force: bool) {
         if force || h != t.snapshot_hash {
             let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
             snap.profile_id = t.profile.as_ref().map(|p| p.id);
-            snap.database = t.conn.database().map(str::to_string);
+            snap.database = crate::sparkq::snapshot_binding(t).or_else(|| t.conn.database().map(str::to_string));
             snap.cursor = t.editor.cursor;
             snap.file_path = t.file_path.clone();
             if cx.store.save_tab(&snap).is_ok() {
@@ -984,10 +1013,13 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         let t = &mut state.tabs[idx];
         t.id = snap.tab_id;
         t.title = snap.title;
-        t.custom_title = !t.title.starts_with("SQLQuery_");
-        if let Some(n) = t.title.strip_prefix("SQLQuery_").and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
+        t.custom_title = !(t.title.starts_with("SQLQuery_") || t.title.starts_with("SparkSQL_"));
+        if let Some(n) = t.title.strip_prefix("SQLQuery_").or_else(|| t.title.strip_prefix("SparkSQL_")).and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
             t.untitled_index = n;
             state.next_untitled = state.next_untitled.max(n + 1);
+        }
+        if let Some(sp) = snap.database.as_deref().and_then(crate::sparkq::from_snapshot) {
+            t.spark = Some(sp);
         }
         t.text = snap.text;
         t.file_path = snap.file_path.clone();
@@ -1126,6 +1158,25 @@ pub fn read_only_violation(script: &str) -> Option<String> {
     None
 }
 
+/// The text a run mode executes: every selection (multi-cursor) in document order, the whole
+/// text when none, or the statement under the caret; with the editor line it starts on.
+pub(crate) fn script_for(t: &EditorTab, mode: RunMode) -> Option<(String, u32)> {
+    let (script, start_line) = match mode {
+        RunMode::All | RunMode::EstimatedPlan | RunMode::Selection => crate::ui::editor::selected_script(t).unwrap_or_else(|| (t.text.clone(), 1)),
+        RunMode::Current => {
+            let cursor = char_to_byte(&t.text, t.editor.cursor);
+            match cobalt_sql::statements::statement_at(&t.text, cursor) {
+                Some(s) => (t.text[s.start..s.end].to_string(), s.line),
+                None => (t.text.clone(), 1),
+            }
+        }
+    };
+    if script.trim().is_empty() {
+        return None;
+    }
+    Some((script, start_line))
+}
+
 pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     let Some(t) = state.tabs.get_mut(idx) else { return };
     if let Some(nb) = t.notebook.as_deref() {
@@ -1140,25 +1191,14 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         };
         return crate::notebook::run_cells(state, cx, idx, cells);
     }
+    if t.spark.is_some() {
+        return crate::sparkq::run(state, cx, idx, mode);
+    }
     if t.is_running() {
         return;
     }
     t.last_run_mode = Some(mode);
-    // choose the text
-    let (script, start_line) = match mode {
-        // every selection (multi-cursor) in document order; the whole text when none
-        RunMode::All | RunMode::EstimatedPlan | RunMode::Selection => crate::ui::editor::selected_script(t).unwrap_or_else(|| (t.text.clone(), 1)),
-        RunMode::Current => {
-            let cursor = char_to_byte(&t.text, t.editor.cursor);
-            match cobalt_sql::statements::statement_at(&t.text, cursor) {
-                Some(s) => (t.text[s.start..s.end].to_string(), s.line),
-                None => (t.text.clone(), 1),
-            }
-        }
-    };
-    if script.trim().is_empty() {
-        return;
-    }
+    let Some((script, start_line)) = script_for(t, mode) else { return };
     let tab_id = t.id;
     // need a connection?
     if !t.conn.is_connected() {
@@ -1226,6 +1266,9 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
 pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
     if state.tabs.get(idx).map(|t| t.is_notebook()).unwrap_or(false) {
         return crate::notebook::cancel(state, cx, idx);
+    }
+    if state.tabs.get(idx).map(|t| t.spark.is_some()).unwrap_or(false) {
+        return crate::sparkq::cancel(state, cx, idx);
     }
     if let Some(t) = state.tabs.get_mut(idx) {
         if let Some(r) = &mut t.run {
@@ -2199,7 +2242,7 @@ pub(crate) async fn onelake_storage_token(resolver: Arc<CredentialResolver>, slo
 }
 
 /// Start the export thread for a run-to-export and return the sink the session actor feeds.
-fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: Option<TabId>, job: ExportJob) -> crate::session::RunSink {
+pub(crate) fn spawn_run_export(state: &mut AppState, cx: &Ctx, tab: Option<TabId>, job: ExportJob) -> crate::session::RunSink {
     use crate::session::{RunSink, SinkMsg};
     let (tx, rx) = std::sync::mpsc::sync_channel::<SinkMsg>(8);
     let mut rx = rx;

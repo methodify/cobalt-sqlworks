@@ -456,6 +456,39 @@ copy" fetched the saved version with the new cells and their outputs. `fabric_sc
 shows what the token has.
 Agent: `notebook {action: set_lakehouse, workspace, lakehouse?, write_mode?}`, `shadows {action: status|discard|discard_written|restore, table?}`, `fabric_notebooks {workspace?}`, `notebook {action: open_fabric, item, copy?}`, `notebook {action: save_fabric}`.
 
+## Spark SQL query tabs (0.8.2)
+
+"Just run this query against the lakehouse" without a notebook. In the Servers sidebar the
+**Local Spark** root shows the session's state and the lakehouses it knows: those bound to open
+Spark notebooks and tabs, the ones pinned on the Fabric panel, and the ones used before.
+Double-click a lakehouse (or right-click → New Spark SQL query; File → New Spark SQL Query
+inherits the active tab's binding) for a tab named `SparkSQL_1 · test`. Its toolbar carries the
+session chip (`Local Spark (fabric-2.0) · ready`, with Start / Restart / Stop / Interrupt /
+Session log) and the lakehouse chip (`test (Fabric test)`: workspace, default lakehouse, write
+mode — the same binding a notebook has; "Connect" or "Change connection" on such a tab opens it).
+The session is the one the notebooks use (lifecycle, early start and idle stop apply); each tab
+runs in its own context, created on the first run with the lakehouse as current catalog
+(local-spark-mcp 0.6.6), so `publicholidays`, `dbo.publicholidays` and `test.dbo.publicholidays`
+all resolve.
+
+Run (F5), Run selection and Run current statement work as on a SQL Server tab: statements are
+split on `;`, every statement that returns rows is its own result set in the grid (filters,
+sort, viewer, copy, exports, Save as table), a statement without rows says "Statement 3
+completed (0.0 s)" in Messages, a failing statement ends the run and shows Spark's analysis
+message as one error line ("Statement 2: [TABLE_OR_VIEW_NOT_FOUND] …"), earlier result sets
+stay. Cancel interrupts the Spark jobs (the session survives; Cancel again kills it). The row
+cap is Settings → Notebooks → "Rows a Spark DataFrame brings back" and Messages says when a
+result was capped; there is no fetch-more (re-run with a `LIMIT`). Run to File runs without the
+cap and writes the collected rows to the chosen file or lakehouse. History lists the run under
+`Local Spark (fabric-2.0)` with the lakehouse as database. The Lakehouse pane follows a Spark
+tab: double-click a table to insert `SELECT * FROM test.dbo.publicholidays LIMIT 100` at the
+caret; a file inserts its `Files/…` path. Hot exit restores the tab with its binding (the
+session is not restarted until you run). Not there yet: Est./Actual plan and Parse (run
+`EXPLAIN` as a statement), completion from the lakehouse's tables, affected-row counts for DML.
+Known worker quirk (asked upstream, `docs/requests/local-spark-mcp-0.6.7-request.md`): `SHOW
+TABLES` lists only the tables the session has touched. Agent: `spark_query {workspace?,
+lakehouse?, write_mode?, text?}`; `state` reports `kind: "spark"` and a `spark` object per tab.
+
 ## Import Data from File
 
 Destination: a table in the tab's database, or *File or lakehouse…* to convert the file into any

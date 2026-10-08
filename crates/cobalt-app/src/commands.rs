@@ -12,6 +12,8 @@ use std::collections::HashMap;
 pub enum Command {
     // file
     NewQuery,
+    /// A query tab on the local Spark session (Spark SQL against a lakehouse).
+    NewSparkQuery,
     NewNotebook,
     OpenFile,
     SaveFile,
@@ -167,6 +169,7 @@ const NONE: Modifiers = Modifiers::NONE;
 
 pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::NewQuery, id: "file.new_query", label: "New Query", category: Category::File, default_key: sc(CTRL, Key::N) },
+    CommandInfo { cmd: Command::NewSparkQuery, id: "file.new_spark_query", label: "New Spark SQL Query", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::NewNotebook, id: "file.new_notebook", label: "New Notebook", category: Category::File, default_key: sc(CTRL_SHIFT, Key::N) },
     CommandInfo { cmd: Command::OpenFile, id: "file.open", label: "Open File…", category: Category::File, default_key: sc(CTRL, Key::O) },
     CommandInfo { cmd: Command::ExportNotebookHtml, id: "notebook.export_html", label: "Export Notebook as HTML…", category: Category::File, default_key: None },

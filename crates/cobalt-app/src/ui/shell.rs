@@ -94,6 +94,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             ui.menu_button("File", |ui| {
                 item(ui, &mut cmds, Command::NewQuery);
                 item(ui, &mut cmds, Command::NewNotebook);
+                item(ui, &mut cmds, Command::NewSparkQuery);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
                 ui.separator();
@@ -257,7 +258,11 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
     let resp = panel.show(ui, |ui| match f.state.sidebar_view {
         SidebarView::Servers => {
             let active_profile = f.state.active().and_then(|t| t.profile.as_ref()).map(|p| p.id);
-            let actions = servers::show(ui, &mut f.state.library, theme, active_profile);
+            let spark_root = crate::sparkq::root(f.state, f.cx);
+            let spark_active = f.state.active().map(|t| t.spark.is_some()).unwrap_or(false);
+            let mut spark_expanded = f.state.spark_root_expanded;
+            let actions = servers::show(ui, &mut f.state.library, theme, active_profile, &spark_root, &mut spark_expanded, spark_active);
+            f.state.spark_root_expanded = spark_expanded;
             for a in actions {
                 ops::tree_action(f.state, f.cx, a);
             }
@@ -932,6 +937,168 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
 
 use std::sync::Arc;
 
+/// A Spark SQL tab's toolbar segment: the session chip (state, start/stop/restart, log) and the
+/// lakehouse chip (workspace, default lakehouse, write mode), the way a Spark notebook has them.
+fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Command>) {
+    let theme = f.theme;
+    let tab_id = f.state.tabs[idx].id;
+    let (label, ready) = crate::sparkq::session_label(f.state);
+    let busy_here = f.state.kernel.busy.as_ref().map(|(t, _)| *t == tab_id).unwrap_or(false);
+    let color = if busy_here { theme.accent } else if ready { theme.success } else if f.state.kernel.state.is_starting() { theme.warning } else { theme.text_muted };
+    let r = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::FIRE)).size(12.0).color(color)).small());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark session"));
+    let r = r.on_hover_text("The local Spark session this tab runs on (shared with Spark notebooks; one context per tab).");
+    let mut session_cmd: Option<Command> = None;
+    let mut show_log = false;
+    let mut start = false;
+    egui::Popup::menu(&r).id(egui::Id::new(("spark-session-menu", tab_id))).show(|ui| {
+        ui.set_min_width(240.0);
+        let k = &f.state.kernel.state;
+        ui.label(RichText::new(format!("Session · {}", k.label())).strong());
+        let running = k.is_ready() || k.is_starting();
+        if !running && ui.button(format!("{} Start session", icons::PLAY)).clicked() {
+            start = true;
+            ui.close();
+        }
+        if running && ui.add_enabled(!k.is_starting(), egui::Button::new(format!("{} Restart session", icons::ARROWS_CLOCKWISE))).clicked() {
+            session_cmd = Some(Command::KernelRestart);
+            ui.close();
+        }
+        if ui.add_enabled(running, egui::Button::new(format!("{} Stop session", icons::STOP))).clicked() {
+            session_cmd = Some(Command::KernelStop);
+            ui.close();
+        }
+        if f.state.kernel.busy.is_some() && ui.button(format!("{} Interrupt the running statement", icons::HAND_PALM)).clicked() {
+            session_cmd = Some(Command::CancelQuery);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Session log").clicked() {
+            show_log = true;
+            ui.close();
+        }
+        if ui.button("Lakehouse shadows…").clicked() {
+            session_cmd = Some(Command::Shadows);
+            ui.close();
+        }
+    });
+    if let Some(c) = session_cmd {
+        cmds.push(c);
+    }
+    if show_log {
+        f.state.kernel.log_open = true;
+    }
+    if start {
+        ops::tree_action(f.state, f.cx, servers::TreeAction::SparkSession(true));
+    }
+    // lakehouse chip
+    let (binding, ws_name, lh_name) = {
+        let s = f.state.tabs[idx].spark.as_ref().unwrap();
+        (s.binding.clone(), s.workspace_name.clone(), s.lakehouse_name.clone())
+    };
+    let signed_in = f.state.fabric.slot.is_some();
+    let (label, color) = match &binding {
+        Some(_) => (format!("{} {}{}", icons::DROP, lh_name.clone().unwrap_or_else(|| "no default lakehouse".into()), if ws_name.is_empty() { String::new() } else { format!(" ({ws_name})") }), theme.text),
+        None => (format!("{} no lakehouse", icons::DROP), theme.text_muted),
+    };
+    let r = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(color)).small());
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark lakehouse"));
+    let r = r.on_hover_text("Which workspace's lakehouses the session sees, the default lakehouse for unqualified names, and the write mode. Takes effect at the next run.");
+    let popup_id = egui::Id::new(("spark-lakehouse-menu", tab_id));
+    if f.state.open_spark_chip == Some(tab_id) {
+        f.state.open_spark_chip = None;
+        egui::Popup::open_id(ui.ctx(), popup_id);
+    }
+    let workspaces: Vec<(String, String)> = f.state.fabric.workspaces.get().map(|v| v.iter().map(|w| (w.id.clone(), w.display_name.clone())).collect()).unwrap_or_default();
+    let ws_lakehouses: Option<Vec<(String, String)>> = binding.as_ref().and_then(|b| f.state.fabric.lakehouses(&b.workspace_id));
+    let mut set: Option<Option<crate::state::NotebookFabric>> = None;
+    let mut load_ws: Option<String> = None;
+    let mut need_workspaces = false;
+    let mut show_pane = false;
+    egui::Popup::menu(&r).id(popup_id).show(|ui| {
+        ui.set_min_width(320.0);
+        if !signed_in {
+            ui.label(RichText::new("Sign in on the Fabric panel to bind a lakehouse.").color(theme.text_muted));
+            if ui.button("Open the Fabric panel").clicked() {
+                cmds.push(Command::ShowFabric);
+                ui.close();
+            }
+        }
+        ui.label(RichText::new("Workspace").strong());
+        let cur_ws = binding.as_ref().map(|b| b.workspace_id.clone());
+        if ui.selectable_label(cur_ws.is_none(), "None — plain local Spark").clicked() {
+            set = Some(None);
+            ui.close();
+        }
+        for (id, name) in &workspaces {
+            if ui.selectable_label(cur_ws.as_deref() == Some(id.as_str()), name).clicked() {
+                set = Some(Some(crate::state::NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: binding.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()), preload: false }));
+                load_ws = Some(id.clone());
+                ui.close();
+            }
+        }
+        if workspaces.is_empty() && signed_in {
+            ui.label(RichText::new("Loading workspaces…").size(11.0).color(theme.text_faint));
+            need_workspaces = true;
+        }
+        if let Some(b) = &binding {
+            ui.separator();
+            ui.label(RichText::new("Default lakehouse").strong());
+            match &ws_lakehouses {
+                Some(lhs) => {
+                    if ui.selectable_label(b.lakehouse_id.is_none(), "None").clicked() {
+                        set = Some(Some(crate::state::NotebookFabric { lakehouse_id: None, ..b.clone() }));
+                        ui.close();
+                    }
+                    for (name, id) in lhs {
+                        if ui.selectable_label(b.lakehouse_id.as_deref() == Some(id.as_str()), name).clicked() {
+                            set = Some(Some(crate::state::NotebookFabric { lakehouse_id: Some(id.clone()), ..b.clone() }));
+                            ui.close();
+                        }
+                    }
+                    if lhs.is_empty() {
+                        ui.label(RichText::new("No lakehouses in this workspace").size(11.0).color(theme.text_faint));
+                    }
+                }
+                None => {
+                    ui.label(RichText::new("Loading lakehouses…").size(11.0).color(theme.text_faint));
+                    load_ws = Some(b.workspace_id.clone());
+                }
+            }
+            ui.separator();
+            ui.label(RichText::new("Write mode").strong());
+            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads from OneLake; any write raises."), ("writethrough", "Write through — writes go to OneLake", "Writes land in the lakehouse. Needs a session started in this mode.")] {
+                if ui.selectable_label(b.write_mode == mode, label).on_hover_text(hint).clicked() {
+                    set = Some(Some(crate::state::NotebookFabric { write_mode: mode.into(), ..b.clone() }));
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button(format!("{} Lakehouse pane", icons::SIDEBAR_SIMPLE)).on_hover_text("Tables and Files of this lakehouse in the sidebar").clicked() {
+                show_pane = true;
+                ui.close();
+            }
+        }
+    });
+    if need_workspaces && f.state.fabric.workspaces.get().is_none() && !f.state.fabric.workspaces.is_loading() {
+        crate::fabric::load_workspaces(f.state, f.cx);
+    }
+    if let Some(ws) = load_ws {
+        if f.state.fabric.lakehouses(&ws).is_none() && !f.state.fabric.items.get(&ws).map(|l| l.is_loading()).unwrap_or(false) {
+            crate::fabric::load_items(f.state, f.cx, &ws);
+        }
+    }
+    if let Some(b) = set {
+        crate::sparkq::set_binding(f.state, f.cx, idx, b);
+    } else {
+        crate::sparkq::refresh_names(f.state, idx);
+    }
+    if show_pane {
+        cmds.push(Command::ShowLakehouse);
+    }
+    ui.separator();
+}
+
 fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let theme = f.theme;
     let mut cmds: Vec<Command> = Vec::new();
@@ -951,6 +1118,13 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 cmds.push(Command::RunToFile);
             }
             ui.separator();
+            if tab.spark.is_some() {
+                spark_toolbar(ui, f, idx, &mut cmds);
+            }
+            let tab = &f.state.tabs[idx];
+            if tab.spark.is_some() {
+                // no connection, database list or plans on a Spark tab
+            } else {
             match &tab.conn {
                 ConnState::Connected { engine, spid, .. } => {
                     let name = tab.profile.as_ref().map(|p| p.display_name()).unwrap_or_default();
@@ -1036,6 +1210,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             if tool_button(ui, icons::CHECK, "Parse", "Parse (Shift+Alt+P)", !running && connected).clicked() {
                 cmds.push(Command::ParseQuery);
             }
+            }
             if tool_button(ui, icons::TEXT_INDENT, "Format", "Format document (Shift+Alt+F)", true).clicked() {
                 cmds.push(Command::FormatDocument);
             }
@@ -1071,6 +1246,16 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
             let tab = f.state.active();
             if let Some(t) = tab {
+                if let Some(sp) = &t.spark {
+                    let (label, ready) = crate::sparkq::session_label(f.state);
+                    ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
+                    match (&sp.lakehouse_name, sp.workspace_name.is_empty()) {
+                        (Some(lh), false) => ui.label(format!("{lh} ({})", sp.workspace_name)),
+                        (Some(lh), true) => ui.label(lh.clone()),
+                        (None, _) => ui.label("no lakehouse"),
+                    };
+                    ui.label(RichText::new(label).color(theme.text_muted));
+                } else {
                 match &t.conn {
                     ConnState::Connected { engine, spid, database } => {
                         let color = t.profile.as_ref().and_then(|p| f.state.library.color_for(p)).map(Theme::color32).unwrap_or(theme.success);
@@ -1085,6 +1270,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     _ => {
                         ui.label(RichText::new("Not connected").color(theme.text_muted));
                     }
+                }
                 }
                 if let Some(s) = crate::ui::notebook::status_summary(t) {
                     ui.separator();
@@ -1140,7 +1326,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     };
                     let mut label = if k.busy.is_some() { format!("{} · running a cell", k.state.label()) } else { k.state.label() };
                     if !k.contexts.is_empty() {
-                        label.push_str(&format!(" · {} notebook{}", k.contexts.len(), if k.contexts.len() == 1 { "" } else { "s" }));
+                        label.push_str(&format!(" · {} tab{}", k.contexts.len(), if k.contexts.len() == 1 { "" } else { "s" }));
                     }
                     let r = ui.add(egui::Button::new(RichText::new(format!("{icon} {label}")).color(color)).frame(false));
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark kernel"));
@@ -1178,7 +1364,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new("MSSQL").color(theme.text_muted));
+                    ui.label(RichText::new(if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
@@ -1286,6 +1472,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             // inherit the active tab's connection
             let (profile, db) = state.active().map(|t| (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string))).unwrap_or((None, None));
             ops::new_query_tab(state, cx, profile, db, None, false);
+        }
+        Command::NewSparkQuery => {
+            let (binding, names) = crate::sparkq::inherited_binding(state);
+            crate::sparkq::new_tab(state, cx, binding, names, None);
         }
         Command::NewNotebook => {
             let lang = if cx.settings.notebooks.default_language.eq_ignore_ascii_case("pyspark") { cobalt_notebook::CellLanguage::Python } else { cobalt_notebook::CellLanguage::Sql };
@@ -1415,6 +1605,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ConnectTab => {
             if let Some(i) = idx {
                 let t = &state.tabs[i];
+                if t.spark.is_some() {
+                    state.open_spark_chip = Some(t.id);
+                    return;
+                }
                 match t.profile.clone() {
                     Some(p) => {
                         let tab = t.id;
@@ -1432,6 +1626,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         }
         Command::ChangeConnection => {
             if let Some(i) = idx {
+                if state.tabs[i].spark.is_some() {
+                    state.open_spark_chip = Some(state.tabs[i].id);
+                    return;
+                }
                 state.dialog = Dialog::ChangeConnection { tab_index: i };
             } else {
                 ops::open_connection_dialog(state, cx, None, None, None);
@@ -1486,6 +1684,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ParseQuery => {
             if let Some(i) = idx {
                 let t = &state.tabs[i];
+                if t.spark.is_some() {
+                    cx.toast(ToastKind::Info, "Parse is not available on Spark SQL tabs; run EXPLAIN as a statement.");
+                    return;
+                }
                 let script = format!("SET PARSEONLY ON;\n{}\nSET PARSEONLY OFF;", t.text);
                 if t.conn.is_connected() {
                     let opts = t.exec.clone();

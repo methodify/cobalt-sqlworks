@@ -34,9 +34,15 @@ pub enum TreeAction {
     LoadTableStats { profile: ProfileId, obj: ObjectRef },
     /// Import a flat file into a new or existing table of this database.
     ImportFile { profile: ProfileId, database: String },
+    /// A Spark SQL query tab on this lakehouse (None = plain local Spark, no lakehouse).
+    SparkQuery(Option<crate::sparkq::SparkEntry>),
+    /// A Spark SQL tab whose lakehouse is picked from its toolbar.
+    SparkChoose,
+    /// Start (true) or stop (false) the local Spark session.
+    SparkSession(bool),
 }
 
-pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>) -> Vec<TreeAction> {
+pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool) -> Vec<TreeAction> {
     let mut actions = Vec::new();
     // toolbar
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
@@ -64,6 +70,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
         let filter = lib.filter.trim().to_lowercase();
         let groups = lib.groups.clone();
         let profiles = lib.profiles.clone();
+        spark_root(ui, theme, spark, spark_expanded, spark_active, &filter, &mut actions);
         // ungrouped first, then groups
         let ungrouped: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.group.is_none() || !groups.iter().any(|g| Some(g.id) == p.group)).collect();
         for p in ungrouped {
@@ -89,6 +96,73 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
         ui.add_space(40.0);
     });
     actions
+}
+
+/// The Local Spark root: the session's state, then the lakehouses a Spark SQL tab can open on
+/// (bound to open tabs and notebooks, pinned, used before), plain local Spark, and a chooser.
+fn spark_root(ui: &mut Ui, theme: &Theme, spark: &crate::sparkq::SparkRoot, expanded: &mut bool, active: bool, filter: &str, actions: &mut Vec<TreeAction>) {
+    let open = *expanded || !filter.is_empty();
+    let icon_color = if spark.ready { Some(theme.success) } else if spark.starting { Some(theme.warning) } else { None };
+    let detail = spark.session.strip_prefix("Spark: ").map(str::to_string).unwrap_or_else(|| spark.session.clone());
+    let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded: open, loading: spark.starting, icon: icons::FIRE, icon_color, label: "Local Spark", detail: Some(&detail), selected: active, color_dot: None, kind: "server" });
+    if r.toggle || r.response.clicked() {
+        *expanded = !*expanded;
+    }
+    r.response.context_menu(|ui| {
+        if ui.button(format!("{} New Spark SQL query", icons::FIRE)).clicked() {
+            actions.push(TreeAction::SparkQuery(None));
+            ui.close();
+        }
+        ui.separator();
+        if !spark.ready && !spark.starting {
+            if ui.button(format!("{} Start session", icons::PLAY)).clicked() {
+                actions.push(TreeAction::SparkSession(true));
+                ui.close();
+            }
+        } else if ui.button(format!("{} Stop session", icons::STOP)).clicked() {
+            actions.push(TreeAction::SparkSession(false));
+            ui.close();
+        }
+    });
+    if !open {
+        return;
+    }
+    let mut shown = 0;
+    for e in &spark.entries {
+        if !filter.is_empty() && !e.lakehouse_name.to_lowercase().contains(filter) && !e.workspace_name.to_lowercase().contains(filter) {
+            continue;
+        }
+        shown += 1;
+        let detail = if e.open > 0 { format!("{} · {} open", e.workspace_name, e.open) } else { e.workspace_name.clone() };
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::DROP, icon_color: if e.open > 0 { Some(theme.accent) } else { None }, label: &e.lakehouse_name, detail: Some(&detail), selected: false, color_dot: None, kind: "lakehouse" });
+        let r = r.response.on_hover_text(format!("{} ({})
+Double-click for a Spark SQL query tab on this lakehouse.", e.lakehouse_name, e.workspace_name));
+        if r.double_clicked() {
+            actions.push(TreeAction::SparkQuery(Some(e.clone())));
+        }
+        r.context_menu(|ui| {
+            if ui.button("New Spark SQL query").clicked() {
+                actions.push(TreeAction::SparkQuery(Some(e.clone())));
+                ui.close();
+            }
+        });
+    }
+    if filter.is_empty() {
+        if spark.entries.is_empty() {
+            let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::INFO, icon_color: None, label: if spark.signed_in { "No lakehouses yet" } else { "Sign in on the Fabric panel for lakehouses" }, detail: None, selected: false, color_dot: None, kind: "" });
+            r.response.on_hover_text("Lakehouses appear here when a Spark notebook or tab binds one, when they are pinned on the Fabric panel, or after they were used in a Spark SQL tab.");
+        }
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::DOTS_THREE, icon_color: None, label: "Choose a lakehouse…", detail: None, selected: false, color_dot: None, kind: "lakehouse" });
+        if r.response.clicked() {
+            actions.push(TreeAction::SparkChoose);
+        }
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::TERMINAL_WINDOW, icon_color: None, label: "Plain local Spark", detail: Some("no lakehouse"), selected: false, color_dot: None, kind: "lakehouse" });
+        if r.response.double_clicked() || r.response.clicked() && shown == 0 && spark.entries.is_empty() {
+            actions.push(TreeAction::SparkQuery(None));
+        }
+        r.response.on_hover_text("Double-click for a Spark SQL tab with no lakehouse (temp views, paths, the session catalog).");
+    }
+    ui.add_space(4.0);
 }
 
 fn group_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, g: &ServerGroup, groups: &[ServerGroup], profiles: &[ConnectionProfile], depth: usize, filter: &str, active: Option<ProfileId>, actions: &mut Vec<TreeAction>) {

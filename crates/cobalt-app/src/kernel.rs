@@ -401,6 +401,25 @@ def __cobalt_sql(text, limit=None):
             raise SparkSqlError(m.strip() or type(e).__name__) from None
     if last is not None:
         display(last, limit=limit)
+
+def __cobalt_sql_all(text, limit=None):
+    # a Spark SQL query tab: every statement's rows become a result set; statements without
+    # rows (DDL, DML, USE) report that they completed
+    import time as __time
+    stmts = __cobalt_split_sql(text)
+    for i, s in enumerate(stmts, 1):
+        t0 = __time.time()
+        try:
+            df = spark.sql(s)
+        except Exception as e:
+            m = str(e).split("JVM stacktrace:")[0].rstrip()
+            m = "\n".join(l for l in m.splitlines() if not l.lstrip().startswith(("'", "+-", ":-")))
+            where = "Statement %d: " % i if len(stmts) > 1 else ""
+            raise SparkSqlError(where + (m.strip() or type(e).__name__)) from None
+        if len(df.columns) > 0:
+            display(df, limit=limit)
+        else:
+            print("Statement %d completed (%.1f s)" % (i, __time.time() - t0))
 "#;
 
 /// A failed SQL cell: the Python traceback around `__cobalt_sql` is noise; keep what the
@@ -996,6 +1015,10 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
                 }
                 if d.get("source").and_then(Value::as_str) == Some("result") {
                     captured_result = true;
+                }
+                if d.get("truncated").and_then(Value::as_bool) == Some(true) {
+                    let limit = d.get("limit").and_then(Value::as_u64).unwrap_or(0);
+                    out.messages.push(msg(format!("Result {}: the first {} rows (Settings → Notebooks → rows a Spark DataFrame brings back)", out.result_sets.len() + 1, crate::state::fmt_count(limit)), false));
                 }
                 match blobs.get(i) {
                     Some(bytes) => match crate::notebook::result_set_from_ipc(bytes, out.result_sets.len()) {
