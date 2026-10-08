@@ -6,6 +6,8 @@
 //! on demand through a small LRU. Formatting is cached per (chunk, column) so the grid can ask
 //! for thousands of cells per frame without allocating.
 
+#![allow(clippy::type_complexity)]
+
 pub mod budget;
 pub mod display;
 pub mod filter;
@@ -350,9 +352,9 @@ impl ResultSet {
         let fmt = CellFormatter::default();
         // 1. filter → candidate global rows
         let mut candidates: Vec<u32> = Vec::new();
-        for ci in 0..nchunks {
+        for (ci, &offset) in offsets.iter().enumerate().take(nchunks) {
             let Some(batch) = self.chunk(ci) else { continue };
-            let base = offsets[ci] as u32;
+            let base = offset as u32;
             if spec.filters.is_empty() {
                 candidates.extend(base..base + batch.num_rows() as u32);
             } else {
@@ -367,9 +369,7 @@ impl ResultSet {
                 .sort
                 .iter()
                 .map(|k| {
-                    let mut opts = arrow::compute::SortOptions::default();
-                    opts.descending = k.descending;
-                    opts.nulls_first = !k.descending;
+                    let opts = arrow::compute::SortOptions { descending: k.descending, nulls_first: !k.descending };
                     SortField::new_with_options(self.schema.field(k.column).data_type().clone(), opts)
                 })
                 .collect();

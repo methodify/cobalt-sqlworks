@@ -3,6 +3,7 @@ name = "cobalt-store"
 description = "Local SQLite store: connection library, query history, tab snapshots, catalog cache"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

@@ -98,7 +98,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> ViewerOutcome {
                     out = ViewerOutcome::Goto { row: v.row + 1, col: v.col, record: true };
                 }
             } else {
-                ui.label(RichText::new(format!("{col_name}")).strong());
+                ui.label(RichText::new(col_name.to_string()).strong());
                 ui.label(RichText::new(format!("row {}  ·  {type_label}", v.row + 1)).small().color(theme.text_muted));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

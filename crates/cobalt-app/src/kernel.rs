@@ -808,7 +808,7 @@ pub fn interrupt(k: &mut KernelUi) -> InterruptAction {
 
 /// `major.minor.patch` of a version string (missing parts are 0, suffixes ignored).
 pub fn version_tuple(v: &str) -> (u64, u64, u64) {
-    let mut it = v.trim().split(|c: char| c == '.' || c == '-' || c == '+').map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0));
+    let mut it = v.trim().split(['.', '-', '+']).map(|p| p.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<u64>().unwrap_or(0));
     (it.next().unwrap_or(0), it.next().unwrap_or(0), it.next().unwrap_or(0))
 }
 

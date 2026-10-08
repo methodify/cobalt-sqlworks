@@ -3,6 +3,7 @@ name = "cobalt-runtime"
 description = "Cobalt-managed local Spark runtime: manifest, detection, provisioning (uv, Python, JDK, local-spark-mcp) and the worker protocol client"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

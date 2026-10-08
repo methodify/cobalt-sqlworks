@@ -3,6 +3,7 @@ name = "cobalt-export-delta"
 description = "Delta Lake exporter (delta-rs), isolated for build-time reasons"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

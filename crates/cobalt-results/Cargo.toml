@@ -3,6 +3,7 @@ name = "cobalt-results"
 description = "Arrow-backed result sets with disk spill, sort/filter indexes, and cell formatting"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

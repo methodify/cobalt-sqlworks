@@ -3,6 +3,7 @@ name = "cobalt-fabric"
 description = "Microsoft Fabric REST client: workspaces, SQL-capable items and their connection details"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

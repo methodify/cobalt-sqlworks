@@ -499,8 +499,6 @@ enum KeyOutcome {
     Edited,
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn handle_key(key: Key, m: &Modifiers, text: &mut String, cursors: &mut Cursors, undo: &mut UndoStack, snippet: &mut Option<SnippetSession>, galley: &Galley, mem: &mut Mem, tab_size: usize, insert_spaces: bool, pairs: PairPolicy, find_mode: MatchMode, page_rows: usize, row_h: f32, char_w: f32) -> KeyOutcome {
     use KeyOutcome::*;
     let ctrl = m.ctrl || m.command;

@@ -3,6 +3,7 @@ name = "cobalt-app"
 description = "Cobalt SQL Works desktop application"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 default-run = "cobalt"
 

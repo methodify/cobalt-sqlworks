@@ -134,18 +134,15 @@ pub enum SubFolder {
 }
 
 #[derive(Debug)]
+#[derive(Default)]
 pub enum Loadable<T> {
+    #[default]
     NotLoaded,
     Loading,
     Loaded(T),
     Failed(String),
 }
 
-impl<T> Default for Loadable<T> {
-    fn default() -> Self {
-        Loadable::NotLoaded
-    }
-}
 
 impl<T> Loadable<T> {
     pub fn get(&self) -> Option<&T> {
@@ -699,6 +696,7 @@ impl PlanView {
 }
 
 /// Per-grid interactive state.
+#[derive(Default)]
 pub struct GridState {
     pub selection: Selection,
     pub anchor: Option<(usize, usize)>,
@@ -724,29 +722,6 @@ pub struct GridState {
     pub totals: Option<TotalsRow>,
 }
 
-impl Default for GridState {
-    fn default() -> Self {
-        Self {
-            selection: Selection::default(),
-            anchor: None,
-            view: ViewSpec::default(),
-            view_generation: 0,
-            applying_view: false,
-            col_widths: Vec::new(),
-            widths_initialized: false,
-            filter_popup: None,
-            find: None,
-            viewer: None,
-            scroll_to: None,
-            focused: false,
-            frozen_cols: 0,
-            drag_select: false,
-            viewer_record: false,
-            summary: None,
-            totals: None,
-        }
-    }
-}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Selection {

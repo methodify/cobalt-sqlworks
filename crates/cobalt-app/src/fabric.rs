@@ -399,7 +399,7 @@ pub fn sign_in(state: &mut AppState, cx: &Ctx) {
         .fabric
         .slot
         .or_else(|| state.library.profiles.iter().find(|p| matches!(p.auth, AuthMethod::EntraInteractive { .. })).map(|p| p.id))
-        .unwrap_or_else(ProfileId::new);
+        .unwrap_or_default();
     let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
     state.fabric.status = Some(FabricStatus::SigningIn);
 
@@ -446,7 +446,7 @@ pub fn grant_permissions(state: &mut AppState, cx: &Ctx) {
         cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings → Connections).");
         return;
     }
-    let slot = state.fabric.slot.or_else(|| state.library.profiles.iter().find(|p| matches!(p.auth, AuthMethod::EntraInteractive { .. })).map(|p| p.id)).unwrap_or_else(ProfileId::new);
+    let slot = state.fabric.slot.or_else(|| state.library.profiles.iter().find(|p| matches!(p.auth, AuthMethod::EntraInteractive { .. })).map(|p| p.id)).unwrap_or_default();
     let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
     state.fabric.status = Some(FabricStatus::SigningIn);
     state.fabric.admin_consent_url = None;

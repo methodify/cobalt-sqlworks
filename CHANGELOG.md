@@ -4,6 +4,12 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- Release builds restore a dependency cache warmed on the main branch, so tag builds no
+  longer compile every dependency from scratch.
+- Code quality: the workspace builds without compiler or clippy warnings in both the
+  release and the agent configuration (dead code removed, agent-only paths gated behind the
+  feature, the top-operations table in the plan viewer now sorts by Object when that column
+  is chosen, the crates declare the 1.85 minimum Rust version).
 
 ## 0.8.1 — 2026-10-07
 

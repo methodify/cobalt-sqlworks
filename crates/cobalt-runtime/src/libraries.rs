@@ -98,10 +98,10 @@ pub fn python_dist_name(spec: &str) -> String {
     let looks_like_path = s.ends_with(".whl") || s.ends_with(".tar.gz") || s.ends_with(".zip") || s.contains('\\') || s.contains('/');
     if looks_like_path {
         // a Windows path may be typed on any platform, so both separators count
-        let file = s.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(s);
+        let file = s.rsplit(['/', '\\']).next().unwrap_or(s);
         return file.split('-').next().unwrap_or("").replace('_', "-").to_ascii_lowercase();
     }
-    let end = s.find(|c: char| matches!(c, '=' | '<' | '>' | '!' | '~' | '[' | ';' | '@' | ' ')).unwrap_or(s.len());
+    let end = s.find(['=', '<', '>', '!', '~', '[', ';', '@', ' ']).unwrap_or(s.len());
     s[..end].trim().replace('_', "-").to_ascii_lowercase()
 }
 

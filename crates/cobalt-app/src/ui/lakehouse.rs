@@ -154,7 +154,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                     ui.label(RichText::new("session stopped — listing from OneLake only").size(11.0).color(theme.text_faint));
                 }
             });
-            files_children(ui, theme, pane, "", 0, &filter, &pulled, &fetched, &lh_name, session_ready, &mut actions);
+            files_children(ui, theme, pane, "", 0, &filter, &pulled, &fetched, session_ready, &mut actions);
         });
         if let Some(n) = &pane.note {
             ui.label(RichText::new(n).size(11.0).color(theme.text_muted));
@@ -163,7 +163,6 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
     actions
 }
 
-#[allow(clippy::too_many_arguments)]
 fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &str, depth: usize, filter: &str, shadows: &std::collections::HashMap<String, (String, Option<String>)>, session_ready: bool, actions: &mut Vec<LakehouseAction>) {
     if !filter.is_empty() && !name.to_lowercase().contains(filter) {
         return;
@@ -217,8 +216,7 @@ fn table_row(ui: &mut Ui, theme: &Theme, lh: &str, schema: Option<&str>, name: &
     });
 }
 
-#[allow(clippy::too_many_arguments)]
-fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, depth: usize, filter: &str, pulled: &[String], fetched: &[String], lh: &str, session_ready: bool, actions: &mut Vec<LakehouseAction>) {
+fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, depth: usize, filter: &str, pulled: &[String], fetched: &[String], session_ready: bool, actions: &mut Vec<LakehouseAction>) {
     match pane.files.get(dir) {
         None => {
             if pane.files_loading.contains(dir) {
@@ -272,13 +270,13 @@ fn files_children(ui: &mut Ui, theme: &Theme, pane: &LakehousePane, dir: &str, d
                         }
                     });
                     if expanded {
-                        files_children(ui, theme, pane, &rel, depth + 1, filter, pulled, fetched, lh, session_ready, actions);
+                        files_children(ui, theme, pane, &rel, depth + 1, filter, pulled, fetched, session_ready, actions);
                     }
                 } else {
                     if !filter.is_empty() && !e.name.to_lowercase().contains(filter) {
                         continue;
                     }
-                    let is_local = is_pulled || fetched.iter().any(|f| *f == rel);
+                    let is_local = is_pulled || fetched.contains(&rel);
                     let size = fmt_bytes(e.size);
                     let detail = if is_local { format!("{size} · local") } else { size };
                     let ext = e.name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();

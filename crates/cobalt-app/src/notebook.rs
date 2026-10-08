@@ -1209,7 +1209,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
                         if !wanted.iter().any(|w| w.eq_ignore_ascii_case(&name)) {
                             continue;
                         }
-                        per.entry(name).or_insert_with(|| serde_json::Value::Array(Vec::new())).as_array_mut().map(|a| a.push(serde_json::Value::String(entry)));
+                        if let Some(a) = per.entry(name).or_insert_with(|| serde_json::Value::Array(Vec::new())).as_array_mut() { a.push(serde_json::Value::String(entry)) }
                     }
                     if !per.is_empty() {
                         let n: usize = per.values().filter_map(|a| a.as_array()).map(|a| a.len()).sum();

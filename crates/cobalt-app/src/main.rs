@@ -2,6 +2,8 @@
 //!
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// egui code passes many context values by argument; tuples name transient shapes
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
 
 mod app;
 mod commands;

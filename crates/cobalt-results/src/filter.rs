@@ -63,8 +63,8 @@ pub fn evaluate(batch: &RecordBatch, columns: &[ColumnInfo], filters: &[ColumnFi
             FilterOp::In(_) | FilterOp::Contains(_) | FilterOp::NotContains(_) | FilterOp::Equals(_) | FilterOp::NotEquals(_) | FilterOp::StartsWith(_) | FilterOp::EndsWith(_)
         )
         .then(|| fmt.format_column(arr, &columns[f.column]));
-        for i in 0..n {
-            if !keep[i] {
+        for (i, k) in keep.iter_mut().enumerate().take(n) {
+            if !*k {
                 continue;
             }
             let null = arr.is_null(i);
@@ -93,7 +93,7 @@ pub fn evaluate(batch: &RecordBatch, columns: &[ColumnInfo], filters: &[ColumnFi
                     }
                 }
             };
-            keep[i] = ok;
+            *k = ok;
         }
     }
     keep

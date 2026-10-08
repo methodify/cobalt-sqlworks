@@ -523,7 +523,7 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     if let Some(pos) = delegate.secondary {
         delegate.actions.push(GridAction::ContextMenu(pos));
     }
-    actions.extend(delegate.actions.drain(..));
+    actions.append(&mut delegate.actions);
 
     // filter popup
     if let Some(action) = filter_popup(ui, delegate.grid, args.theme, &rs) {
@@ -542,7 +542,7 @@ const CONDITION_OPS: &[&str] = &["(none)", "contains", "not contains", "equals",
 fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<ResultSet>) -> Option<GridAction> {
     let mut result = None;
     let mut close = false;
-    let Some(popup) = grid.filter_popup.as_mut() else { return None };
+    let popup = grid.filter_popup.as_mut()?;
     let col = popup.column;
     let name = rs.columns.get(col).map(|c| c.name.clone()).unwrap_or_default();
     let id = egui::Id::new(("filter-popup", rs.index, col));

@@ -3,6 +3,7 @@ name = "cobalt-core"
 description = "Shared types for Cobalt SQL Works: profiles, engines, catalog, SQL types, messages"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

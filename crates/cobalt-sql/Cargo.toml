@@ -3,6 +3,7 @@ name = "cobalt-sql"
 description = "T-SQL lexer, batch/statement splitting, completion engine, formatting"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

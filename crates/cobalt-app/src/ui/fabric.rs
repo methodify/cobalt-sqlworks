@@ -24,7 +24,7 @@ fn kind_icon(kind: SqlItemKind) -> &'static str {
 }
 
 fn pin_kind(p: &FabricPin) -> Option<SqlItemKind> {
-    SqlItemKind::parse(&p.item_kind).or_else(|| match p.item_kind.as_str() {
+    SqlItemKind::parse(&p.item_kind).or(match p.item_kind.as_str() {
         "SqlDatabase" => Some(SqlItemKind::SqlDatabase),
         "SqlEndpoint" => Some(SqlItemKind::SqlEndpoint),
         _ => None,
@@ -320,7 +320,6 @@ fn tree_row(ui: &mut Ui, theme: &Theme, depth: usize, expanded: bool, icon: &str
 }
 
 /// One item row. `expandable` rows get a chevron that opens the inline object explorer.
-#[allow(clippy::too_many_arguments)]
 fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, name: &str, kind: Option<SqlItemKind>, subtitle: Option<&str>, pinned: bool, known: bool, actions: &mut Vec<FabricAction>, depth: usize, expandable: bool) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("fabric item {name}")));

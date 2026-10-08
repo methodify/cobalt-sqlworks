@@ -423,7 +423,7 @@ fn properties(ui: &mut Ui, pv: &mut PlanView, stmt: &Statement, theme: &Theme) {
             return;
         };
         let Some(node) = stmt.nodes.get(ni) else { return };
-        ui.label(RichText::new(format!("{}", node.physical_op)).strong());
+        ui.label(RichText::new(node.physical_op.to_string()).strong());
         if let Some(o) = &node.object {
             ui.label(RichText::new(o.display()).size(12.0).color(theme.text_muted));
         }
@@ -528,8 +528,9 @@ fn top_operations(ui: &mut Ui, pv: &mut PlanView, stmt: &Statement, theme: &Them
         } else {
             nodes.sort_by(|a, b| {
                 let (na, nb) = (&stmt.nodes[*a], &stmt.nodes[*b]);
-                let (ka, kb) = if sort_col == 0 { (&na.physical_op, &nb.physical_op) } else { (&na.physical_op, &nb.physical_op) };
-                let o = ka.cmp(kb);
+                // column 0 = operation, 1 = object
+                let text = |n: &cobalt_plan::Node| if sort_col == 0 { n.physical_op.clone() } else { n.object.as_ref().map(|o| o.display()).unwrap_or_default() };
+                let o = text(na).cmp(&text(nb));
                 if desc { o.reverse() } else { o }
             });
         }

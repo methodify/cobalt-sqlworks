@@ -683,7 +683,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                             });
                             ui.end_row();
                         }
-                        1 | 2 | 3 => {
+                        1..=3 => {
                             ui.label("Tenant");
                             ui.add(egui::TextEdit::singleline(&mut d.tenant).hint_text("optional: tenant ID or domain").desired_width(300.0));
                             ui.end_row();
@@ -926,7 +926,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         d.destination = 0;
     }
     let to_table = d.destination == 0;
-    let connected_tabs: Vec<(usize, String)> = f.state.tabs.iter().enumerate().filter(|(_, t)| t.conn.is_connected()).map(|(i, t)| (i, format!("{}", t.title))).collect();
+    let connected_tabs: Vec<(usize, String)> = f.state.tabs.iter().enumerate().filter(|(_, t)| t.conn.is_connected()).map(|(i, t)| (i, t.title.to_string())).collect();
     let (_, close) = modal(ctx, theme, "import", 760.0, |ui| {
         ui.heading(if is_results { "Save results as table" } else { "Import data from file" });
         ui.label(RichText::new(if is_results { "The rows stream through the target tab's connection as a bulk insert, in one transaction — any connected tab, so results can land on another server." } else if to_table { "The file streams through the target tab's connection as a bulk insert, in one transaction." } else { "The file streams to any export target: a local file in any format, or a OneLake lakehouse (Delta table or Files)." }).size(12.0).color(theme.text_muted));
@@ -981,7 +981,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             }
             if to_table {
                 ui.label("Target connection");
-                let current = f.state.tabs.get(d.tab_index).map(|t| format!("{}", t.title)).unwrap_or_else(|| "choose…".into());
+                let current = f.state.tabs.get(d.tab_index).map(|t| t.title.to_string()).unwrap_or_else(|| "choose…".into());
                 let before = d.tab_index;
                 egui::ComboBox::from_id_salt("import-target").width(360.0).selected_text(current).show_ui(ui, |ui| {
                     for (i, label) in &connected_tabs {

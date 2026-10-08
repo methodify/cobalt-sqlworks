@@ -50,7 +50,7 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'%' if i + 2 < b.len() + 0 && i + 2 <= b.len() - 1 => {
+            b'%' if i + 2 < b.len() && i + 2 < b.len() => {
                 let hex = &s[i + 1..i + 3];
                 match u8::from_str_radix(hex, 16) {
                     Ok(v) => {

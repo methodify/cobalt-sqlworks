@@ -84,7 +84,7 @@ pub fn write_delta_remote_blocking(rs: &cobalt_results::ResultSet, target: &Remo
 }
 
 pub fn write_delta_remote_source_blocking(source: &cobalt_export::Source<'_>, target: &RemoteTarget, opts: &DeltaOptions, progress: &mut (dyn FnMut(crate::Progress) -> bool + Send)) -> Result<crate::ExportStats> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| DeltaError::Io(e))?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(DeltaError::Io)?;
     rt.block_on(write_delta_remote_source(source, target, opts, progress))
 }
 
@@ -103,7 +103,7 @@ pub async fn upload_file(target: &RemoteTarget, local: &Path) -> Result<u64> {
 }
 
 pub fn upload_file_blocking(target: &RemoteTarget, local: &Path) -> Result<u64> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| DeltaError::Io(e))?;
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(DeltaError::Io)?;
     rt.block_on(upload_file(target, local))
 }
 

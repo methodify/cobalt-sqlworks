@@ -175,7 +175,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::OpenCellViewer);
             });
             ui.menu_button("View", |ui| {
-                item(ui, &mut cmds, Command::CommandPalette);
+                item(ui, &mut cmds, Command::Palette);
                 item(ui, &mut cmds, Command::ToggleSidebar);
                 item(ui, &mut cmds, Command::ShowServers);
                 item(ui, &mut cmds, Command::ShowHistory);
@@ -198,9 +198,9 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::About);
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(egui::Button::new(format!("{}  Search commands  {}", icons::MAGNIFYING_GLASS, km.shortcut_text(ui.ctx(), Command::CommandPalette))).frame(false));
+                let r = ui.add(egui::Button::new(format!("{}  Search commands  {}", icons::MAGNIFYING_GLASS, km.shortcut_text(ui.ctx(), Command::Palette))).frame(false));
                 if r.clicked() {
-                    cmds.push(Command::CommandPalette);
+                    cmds.push(Command::Palette);
                 }
             });
             for c in cmds {
@@ -734,7 +734,7 @@ fn welcome(ui: &mut Ui, f: &mut Frame<'_>) {
             }
         }
         ui.add_space(24.0);
-        ui.label(RichText::new(format!("{} Command palette   ·   F5 Run   ·   Ctrl+Enter Run statement   ·   Ctrl+L Estimated plan   ·   Ctrl+M Actual plan", f.keymap.shortcut_text(ui.ctx(), Command::CommandPalette))).size(11.0).color(theme.text_faint));
+        ui.label(RichText::new(format!("{} Command palette   ·   F5 Run   ·   Ctrl+Enter Run statement   ·   Ctrl+L Estimated plan   ·   Ctrl+M Actual plan", f.keymap.shortcut_text(ui.ctx(), Command::Palette))).size(11.0).color(theme.text_faint));
     });
 }
 
@@ -992,7 +992,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 ui.separator();
                 ui.label(RichText::new(icons::DATABASE).color(theme.text_muted));
                 let mut dbs: Vec<String> = tab.databases.get().map(|d| d.iter().filter(|x| !x.is_system || x.name == current).map(|x| x.name.clone()).collect()).unwrap_or_default();
-                if !dbs.iter().any(|d| *d == current) && !current.is_empty() {
+                if !dbs.contains(&current) && !current.is_empty() {
                     dbs.insert(0, current.clone());
                 }
                 let load_error = match &tab.databases {
@@ -1732,7 +1732,7 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                 }
             }
         }
-        Command::CommandPalette => {
+        Command::Palette => {
             state.palette_open = !state.palette_open;
             state.palette_query.clear();
             state.palette_selected = 0;

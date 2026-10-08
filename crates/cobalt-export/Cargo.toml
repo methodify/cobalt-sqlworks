@@ -3,6 +3,7 @@ name = "cobalt-export"
 description = "Result exporters: CSV, TSV, JSON, JSONL, XML, Markdown, Excel, Parquet, Arrow IPC"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

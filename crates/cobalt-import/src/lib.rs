@@ -82,7 +82,7 @@ fn sniff_delimiter(path: &Path) -> Option<u8> {
             break;
         }
     }
-    let best = [b',', b'\t', b';', b'|'].into_iter().map(|d| (line.bytes().filter(|b| *b == d).count(), d)).max_by_key(|(n, _)| *n)?;
+    let best = b",\t;|".iter().map(|&d| (line.bytes().filter(|b| *b == d).count(), d)).max_by_key(|(n, _)| *n)?;
     if best.0 == 0 { None } else { Some(best.1) }
 }
 
@@ -280,13 +280,7 @@ pub fn suggest_sql_type(dt: &DataType, max_len: usize) -> SqlType {
 
 /// 50 / 100 / 255 / 1000 / 4000 / max, one step above what we saw (never below 50).
 fn text_bucket(max_len: usize) -> Option<u32> {
-    let buckets = [50u32, 100, 255, 1000, 4000];
-    for b in buckets {
-        if (max_len as u32) * 2 <= b {
-            return Some(b);
-        }
-    }
-    None
+    [50u32, 100, 255, 1000, 4000].into_iter().find(|&b| (max_len as u32) * 2 <= b)
 }
 
 /// Parse a T-SQL type as a user types it: `int`, `nvarchar(100)`, `nvarchar(max)`, `decimal(18,2)`,

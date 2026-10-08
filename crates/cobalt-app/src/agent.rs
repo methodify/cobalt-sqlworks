@@ -115,7 +115,7 @@ impl CobaltApp {
             "active_tab": self.state.active_tab,
             "profiles": self.state.library.profiles.iter().map(|p| json!({"id": p.id.to_string(), "name": p.display_name(), "server": p.server, "auth": p.auth.label(), "database": p.database})).collect::<Vec<_>>(),
             "groups": self.state.library.groups.iter().map(|g| json!({"id": g.id.to_string(), "name": g.name})).collect::<Vec<_>>(),
-            "dialog": if self.state.dialog.is_open() { format!("{}", dialog_name(&self.state.dialog)) } else { "none".into() },
+            "dialog": if self.state.dialog.is_open() { dialog_name(&self.state.dialog).to_string() } else { "none".into() },
             "kernel": kernel_json(&self.state.kernel),
             "toasts": self.state.recent_toasts.iter().cloned().collect::<Vec<_>>(),
             "sidebar": format!("{:?}", self.state.sidebar_view),
@@ -283,7 +283,7 @@ impl AgentApp for CobaltApp {
                     return ActionResult::Rejected(format!("save failed: {e}"));
                 }
                 let id = p.id.to_string();
-                self.with_ctx(egui, |s, cx| ops::load_library(s, cx));
+                self.with_ctx(egui, ops::load_library);
                 ActionResult::with(&json!({"profile_id": id}))
             }
             "connect" => {
@@ -739,7 +739,7 @@ impl AgentApp for CobaltApp {
                 ActionResult::ok()
             }
             "import_start" => {
-                self.with_ctx(egui, |s, cx| ops::start_import(s, cx));
+                self.with_ctx(egui, ops::start_import);
                 ActionResult::ok()
             }
             "import_state" => {

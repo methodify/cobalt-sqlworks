@@ -114,7 +114,7 @@ impl FabricClient {
     pub async fn list_sql_items(&self, workspace_id: &str) -> Result<Vec<SqlItem>> {
         let items: Vec<WireItem> = self.get_all_pages(&format!("{}/workspaces/{workspace_id}/items", self.base)).await?;
         let mut out: Vec<SqlItem> = items.into_iter().filter_map(WireItem::into_sql_item).collect();
-        out.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+        out.sort_by_key(|a| a.display_name.to_lowercase());
         Ok(out)
     }
 
@@ -126,7 +126,7 @@ impl FabricClient {
         };
         let items: Vec<WireItem> = self.get_all_pages(&url).await?;
         let mut out: Vec<FabricItem> = items.into_iter().map(WireItem::into_item).collect();
-        out.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+        out.sort_by_key(|a| a.display_name.to_lowercase());
         Ok(out)
     }
 
@@ -153,7 +153,7 @@ impl FabricClient {
                 _ => break,
             }
         }
-        out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.sort_by_key(|a| a.name.to_lowercase());
         Ok(out)
     }
 

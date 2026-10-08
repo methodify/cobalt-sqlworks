@@ -391,7 +391,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         egui::Frame::new().fill(theme.tint(theme.warning, 0.12)).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("{} {} note{} while reading the Fabric source file", icons::WARNING, warnings.len(), if warnings.len() == 1 { "" } else { "s" })).size(12.0));
-                if ui.small_button("Details").on_hover_text(warnings.join("\n")).clicked() {}
+                ui.small_button("Details").on_hover_text(warnings.join("\n")).clicked();
                 if ui.small_button("Dismiss").clicked() {
                     if let Some(nb) = f.state.tabs[idx].notebook.as_deref_mut() {
                         nb.warnings.clear();

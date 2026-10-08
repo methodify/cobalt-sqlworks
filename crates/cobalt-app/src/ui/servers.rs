@@ -91,7 +91,6 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
     actions
 }
 
-#[allow(clippy::too_many_arguments)]
 fn group_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, g: &ServerGroup, groups: &[ServerGroup], profiles: &[ConnectionProfile], depth: usize, filter: &str, active: Option<ProfileId>, actions: &mut Vec<TreeAction>) {
     let expanded = lib.expanded_groups.contains(&g.id) || !filter.is_empty();
     let members: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.group == Some(g.id)).collect();
@@ -144,7 +143,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
             (false, e) => e,
         }
     };
-    let icon = if p.looks_like_fabric() { icons::CLOUD } else if p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
+    let icon = if p.looks_like_fabric() || p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
     let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, kind: "server" });
@@ -250,7 +249,6 @@ pub fn profile_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &Conne
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, engine: Option<&EngineInfo>, depth: usize, actions: &mut Vec<TreeAction>) {
     let node = lib.servers.entry(p.id).or_default();
     let dbn = node.db_nodes.entry(db.name.clone()).or_default();
@@ -331,13 +329,11 @@ pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &Conn
         }
     }
     for folder in folders {
-        folder_node(ui, dbn, theme, p, db, folder, depth, group_by_schema, actions);
+        folder_node(ui, dbn, theme, p, folder, depth, group_by_schema, actions);
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
-fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, folder: Folder, depth: usize, group_by_schema: bool, actions: &mut Vec<TreeAction>) {
+fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfile, folder: Folder, depth: usize, group_by_schema: bool, actions: &mut Vec<TreeAction>) {
     let objects: Vec<ObjectRef> = match &dbn.objects {
         Loadable::Loaded(o) => o.clone(),
         _ => Vec::new(),
@@ -411,12 +407,12 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     match folder {
         Folder::Programmability => {
             for sub in [Folder::Procedures, Folder::Functions] {
-                folder_node(ui, dbn, theme, p, db, sub, depth + 1, group_by_schema, actions);
+                folder_node(ui, dbn, theme, p, sub, depth + 1, group_by_schema, actions);
             }
         }
         Folder::Functions => {
             for sub in [Folder::TableFunctions, Folder::ScalarFunctions] {
-                folder_node(ui, dbn, theme, p, db, sub, depth + 1, group_by_schema, actions);
+                folder_node(ui, dbn, theme, p, sub, depth + 1, group_by_schema, actions);
             }
         }
         Folder::Schemas => {
@@ -551,14 +547,9 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         r.response.clone().on_hover_ui(|ui| describe_ui(ui, theme, obj, cols, stats));
     }
     r.response.context_menu(|ui| {
-        match obj.kind {
-            ObjectKind::Table | ObjectKind::View | ObjectKind::Synonym | ObjectKind::TableFunction => {
-                if ui.button("Select Top 1000 Rows").clicked() {
-                    actions.push(TreeAction::SelectTop { profile: p.id, obj: obj.clone() });
-                    ui.close();
-                }
-            }
-            _ => {}
+        if matches!(obj.kind, ObjectKind::Table | ObjectKind::View | ObjectKind::Synonym | ObjectKind::TableFunction) && ui.button("Select Top 1000 Rows").clicked() {
+            actions.push(TreeAction::SelectTop { profile: p.id, obj: obj.clone() });
+            ui.close();
         }
         if ui.button("New Query").clicked() {
             actions.push(TreeAction::NewQuery { profile: p.id, database: Some(obj.database.clone()) });

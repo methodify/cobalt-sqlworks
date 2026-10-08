@@ -3,6 +3,7 @@ name = "cobalt-import"
 description = "Flat-file readers for Import Data: CSV/TSV, Parquet, Arrow IPC → Arrow batches, schema inference, SQL DDL"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

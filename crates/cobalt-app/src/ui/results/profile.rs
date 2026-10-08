@@ -87,9 +87,12 @@ pub fn fmt_num(v: f64) -> String {
     }
 }
 
+/// A cell-text predicate from [`find_matcher`].
+pub type FindMatcher = Box<dyn Fn(&str) -> bool>;
+
 /// The matcher behind the results find bar: plain substring, or a regex (also used for whole-word
 /// matching, by wrapping the escaped text in word boundaries).
-pub fn find_matcher(text: &str, case_sensitive: bool, use_regex: bool, whole_word: bool) -> Result<Box<dyn Fn(&str) -> bool>, String> {
+pub fn find_matcher(text: &str, case_sensitive: bool, use_regex: bool, whole_word: bool) -> Result<FindMatcher, String> {
     if use_regex || whole_word {
         let mut pattern = if use_regex { text.to_string() } else { regex::escape(text) };
         if whole_word {

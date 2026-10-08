@@ -138,7 +138,7 @@ impl OneLakeClient {
                 }
             }
         }
-        out.sort_by(|a, b| a.rel_path().to_lowercase().cmp(&b.rel_path().to_lowercase()));
+        out.sort_by_key(|a| a.rel_path().to_lowercase());
         Ok(out)
     }
 }

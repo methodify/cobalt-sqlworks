@@ -3,6 +3,7 @@ name = "cobalt-notebook"
 description = "Notebook document model: nbformat 4 (.ipynb) with Fabric and ADS metadata, the Fabric Git .py form, outputs, HTML/Markdown export"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 
 [dependencies]

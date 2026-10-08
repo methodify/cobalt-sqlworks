@@ -7,6 +7,8 @@
 //! The table is written with the non-DataFusion `RecordBatchWriter` (the workspace's `deltalake`
 //! build has no `datafusion` feature) and committed as a single transaction.
 
+#![allow(clippy::too_many_arguments)]
+
 use arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cobalt_results::ResultSet;

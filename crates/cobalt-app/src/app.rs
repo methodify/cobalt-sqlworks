@@ -233,7 +233,6 @@ impl CobaltApp {
             ops::load_library(&mut app.state, &cx);
             ops::restore_tabs(&mut app.state, &cx);
             ops::maintenance(&mut app.state, &cx);
-            drop(cx);
             app.flush_toasts(toasts.into_inner());
         }
         if app.state.tabs.is_empty() {
@@ -323,7 +322,7 @@ impl CobaltApp {
             if !self.spark_early_started && self.frames > 60 {
                 self.spark_early_started = true;
                 if self.settings.spark.early_start == "app_start" {
-                    let _ = crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, &cx.egui, None);
+                    let _ = crate::kernel::start(&mut self.state.kernel, &self.settings, &self.paths, cx.egui, None);
                 }
             }
             // update check: once shortly after start-up (if enabled), or on request from Help

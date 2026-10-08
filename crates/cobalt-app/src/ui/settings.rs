@@ -342,7 +342,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                             section(ui, theme, "Advanced");
             ui.horizontal(|ui| {
                 ui.label("Result memory budget (MB)");
-                let mut mb = (draft.advanced.memory_budget_bytes / (1024 * 1024)) as u64;
+                let mut mb = draft.advanced.memory_budget_bytes / (1024 * 1024);
                 if ui.add(egui::DragValue::new(&mut mb).range(64..=65536).speed(64)).changed() {
                     draft.advanced.memory_budget_bytes = mb * 1024 * 1024;
                 }

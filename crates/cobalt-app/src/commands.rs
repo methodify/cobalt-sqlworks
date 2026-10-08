@@ -100,7 +100,7 @@ pub enum Command {
     PlanZoomOut,
     PlanZoomFit,
     // view
-    CommandPalette,
+    Palette,
     ToggleSidebar,
     ShowServers,
     ShowHistory,
@@ -249,7 +249,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::PlanZoomIn, id: "plan.zoom_in", label: "Plan: Zoom In", category: Category::Plan, default_key: None },
     CommandInfo { cmd: Command::PlanZoomOut, id: "plan.zoom_out", label: "Plan: Zoom Out", category: Category::Plan, default_key: None },
     CommandInfo { cmd: Command::PlanZoomFit, id: "plan.zoom_fit", label: "Plan: Zoom to Fit", category: Category::Plan, default_key: None },
-    CommandInfo { cmd: Command::CommandPalette, id: "view.palette", label: "Command Palette…", category: Category::View, default_key: sc(CTRL_SHIFT, Key::P) },
+    CommandInfo { cmd: Command::Palette, id: "view.palette", label: "Command Palette…", category: Category::View, default_key: sc(CTRL_SHIFT, Key::P) },
     CommandInfo { cmd: Command::ToggleSidebar, id: "view.toggle_sidebar", label: "Toggle Sidebar", category: Category::View, default_key: sc(CTRL, Key::B) },
     CommandInfo { cmd: Command::ShowServers, id: "view.servers", label: "Show Servers", category: Category::View, default_key: sc(CTRL_SHIFT, Key::E) },
     CommandInfo { cmd: Command::ShowHistory, id: "view.history", label: "Show Query History", category: Category::View, default_key: sc(CTRL_SHIFT, Key::Y) },
@@ -322,9 +322,9 @@ pub fn parse_shortcut(s: &str) -> Option<KeyboardShortcut> {
     for (i, p) in parts.iter().enumerate() {
         let last = i + 1 == parts.len();
         match p.to_ascii_lowercase().as_str() {
-            "ctrl" | "control" | "cmd" | "command" if !last => mods = mods | Modifiers::COMMAND,
-            "shift" if !last => mods = mods | Modifiers::SHIFT,
-            "alt" | "option" if !last => mods = mods | Modifiers::ALT,
+            "ctrl" | "control" | "cmd" | "command" if !last => mods |= Modifiers::COMMAND,
+            "shift" if !last => mods |= Modifiers::SHIFT,
+            "alt" | "option" if !last => mods |= Modifiers::ALT,
             _ => {
                 if !last {
                     return None;
@@ -408,10 +408,10 @@ impl Keymap {
     /// Extra aliases that map to the same command as a primary binding.
     fn aliases() -> &'static [(KeyboardShortcut, Command)] {
         static ALIASES: &[(KeyboardShortcut, Command)] = &[
-            (KeyboardShortcut::new(NONE, Key::F1), Command::CommandPalette),
+            (KeyboardShortcut::new(NONE, Key::F1), Command::Palette),
             (KeyboardShortcut::new(CTRL, Key::E), Command::RunQuery),
             (KeyboardShortcut::new(CTRL, Key::F5), Command::RunCurrentStatement),
-            (KeyboardShortcut::new(CTRL, Key::P), Command::CommandPalette),
+            (KeyboardShortcut::new(CTRL, Key::P), Command::Palette),
             (KeyboardShortcut::new(CTRL, Key::Plus), Command::ZoomIn),
         ];
         ALIASES

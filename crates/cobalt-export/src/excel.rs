@@ -91,9 +91,9 @@ pub(crate) fn write_file(ctx: &Ctx<'_, '_>, path: &Path, progress: &mut dyn FnMu
             widths_done = true;
             let sample = ctx.format_batch(batch, &ctx.fmt);
             let mut widths: Vec<f64> = ctx.columns.iter().map(|c| c.name.chars().count().max(4) as f64).collect();
-            for r in 0..batch.num_rows().min(WIDTH_SAMPLE_ROWS) {
-                for (c, w) in widths.iter_mut().enumerate() {
-                    let n = sample[c][r].chars().count() as f64;
+            for (c, w) in widths.iter_mut().enumerate() {
+                for cell in sample[c].iter().take(batch.num_rows().min(WIDTH_SAMPLE_ROWS)) {
+                    let n = cell.chars().count() as f64;
                     if n > *w {
                         *w = n;
                     }

@@ -41,7 +41,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<HistoryActi
                 if icon_button(ui, icons::ARROWS_CLOCKWISE, "Refresh", true).clicked() {
                     actions.push(HistoryAction::Refresh);
                 }
-                let star = if state.history.starred_only { icons::STAR } else { icons::STAR };
+                let star = icons::STAR;
                 if icon_button(ui, star, "Starred only", true).clicked() {
                     state.history.starred_only = !state.history.starred_only;
                     actions.push(HistoryAction::Refresh);
@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<HistoryActi
                         ui.label(RichText::new(&first_line).family(egui::FontFamily::Monospace).size(12.0).color(theme.text));
                     });
                     ui.horizontal(|ui| {
-                        let mut meta = format!("{}", e.server);
+                        let mut meta = e.server.to_string();
                         if let Some(db) = &e.database {
                             meta.push_str(&format!(" · {db}"));
                         }
@@ -98,7 +98,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<HistoryActi
                             if run.on_hover_text("Open in a new tab and run").clicked() {
                                 actions.push(HistoryAction::Run(e.id));
                             }
-                            let star = if e.starred { icons::STAR } else { icons::STAR };
+                            let star = icons::STAR;
                             if ui.add(egui::Button::new(RichText::new(star).size(12.0).color(if e.starred { theme.warning } else { theme.text_faint })).frame(false)).clicked() {
                                 actions.push(HistoryAction::Star(e.id, !e.starred));
                             }

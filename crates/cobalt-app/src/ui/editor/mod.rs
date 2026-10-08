@@ -107,7 +107,7 @@ pub fn python_layout_job(text: &str, colors: &TokenColors, font: FontId, wrap_wi
                     continue;
                 }
                 if triple {
-                    if bytes[k] == quote && k + 2 < n + 0 && k + 2 <= n - 1 && bytes[k + 1] == quote && bytes[k + 2] == quote {
+                    if bytes[k] == quote && k + 2 < n && k + 2 < n && bytes[k + 1] == quote && bytes[k + 2] == quote {
                         k += 3;
                         closed = true;
                         break;
@@ -258,16 +258,16 @@ pub fn apply_pending(h: &mut EditorHost<'_>) {
         PendingEdit::SetCursor(c) => ed.cursors.set_single(Sel::cursor(c)),
         PendingEdit::Select(a, b) => ed.cursors.set_single(Sel::range(a, b)),
         PendingEdit::Replace { start, end, text, cursor_after } => {
-            ed.undo.record(EditKind::Other, &h.text, &ed.cursors);
+            ed.undo.record(EditKind::Other, h.text, &ed.cursors);
             let start = start.min(h.text.len());
             let end = end.clamp(start, h.text.len());
             h.text.replace_range(start..end, &text);
-            let after = cursor_after.unwrap_or(byte_to_char(&h.text, start + text.len()));
+            let after = cursor_after.unwrap_or(byte_to_char(h.text, start + text.len()));
             ed.cursors.set_single(Sel::cursor(after));
             ed.snippet = None;
             if let Some(stops) = ed.pending_snippet.take() {
                 // a snippet: select its first placeholder and let Tab walk the rest
-                let stops: Vec<(usize, usize)> = stops.iter().map(|&(a, b)| (byte_to_char(&h.text, a), byte_to_char(&h.text, b))).collect();
+                let stops: Vec<(usize, usize)> = stops.iter().map(|&(a, b)| (byte_to_char(h.text, a), byte_to_char(h.text, b))).collect();
                 if let Some(&(a, b)) = stops.first() {
                     ed.cursors.set_single(Sel::range(a, b));
                     if stops.len() > 1 || a != b {
@@ -277,7 +277,7 @@ pub fn apply_pending(h: &mut EditorHost<'_>) {
             }
         }
         PendingEdit::SetText { text, cursor } => {
-            ed.undo.record(EditKind::Other, &h.text, &ed.cursors);
+            ed.undo.record(EditKind::Other, h.text, &ed.cursors);
             *h.text = text;
             ed.cursors.set_single(Sel::cursor(cursor));
             ed.snippet = None;
@@ -540,7 +540,7 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
 pub fn open_completion(h: &mut EditorHost<'_>, cursor_byte: usize, anchor: Pos2, force: bool) {
     let dbs: Vec<String> = h.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
     let user = USER_SNIPPETS.read().map(|v| v.clone()).unwrap_or_default();
-    let req = cobalt_sql::completion::CompletionRequest { text: &h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user };
+    let req = cobalt_sql::completion::CompletionRequest { text: h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user };
     let c = cobalt_sql::completion::complete(&req);
     let prefix_len = c.replace_end.saturating_sub(c.replace_start);
     if c.items.is_empty() || (!force && prefix_len == 0) {
@@ -684,13 +684,13 @@ fn find_bar(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme) {
     }
     if do_replace {
         if let Some((a, b)) = h.editor.selection {
-            let ab = char_to_byte(&h.text, a);
-            let bb = char_to_byte(&h.text, b);
+            let ab = char_to_byte(h.text, a);
+            let bb = char_to_byte(h.text, b);
             let sel = &h.text[ab..bb];
             let matches = if h.editor.find_case { sel == h.editor.find_text } else { sel.eq_ignore_ascii_case(&h.editor.find_text) };
             if matches {
                 let rep = h.editor.replace_text.clone();
-                let after = byte_to_char(&h.text, ab) + rep.chars().count();
+                let after = byte_to_char(h.text, ab) + rep.chars().count();
                 h.editor.pending_edit = Some(PendingEdit::Replace { start: ab, end: bb, text: rep, cursor_after: Some(after) });
                 h.editor.cursor = after;
             }
@@ -703,7 +703,7 @@ fn find_bar(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme) {
         let new_text = if h.editor.find_case {
             h.text.replace(&needle, &rep)
         } else {
-            replace_case_insensitive(&h.text, &needle, &rep)
+            replace_case_insensitive(h.text, &needle, &rep)
         };
         let cursor = h.editor.cursor.min(new_text.chars().count());
         h.editor.pending_edit = Some(PendingEdit::SetText { text: new_text, cursor });
@@ -785,7 +785,7 @@ fn goto_bar(ui: &mut Ui, h: &mut EditorHost<'_>, theme: &Theme) {
         if let Ok(n) = h.editor.goto_line_text.trim().parse::<usize>() {
             let n = n.max(1);
             let byte = h.text.split_inclusive('\n').take(n - 1).map(|l| l.len()).sum::<usize>();
-            let c = byte_to_char(&h.text, byte);
+            let c = byte_to_char(h.text, byte);
             h.editor.pending_edit = Some(PendingEdit::SetCursor(c));
         }
         close = true;
@@ -850,7 +850,7 @@ pub fn toggle_line_comment(h: &mut EditorHost<'_>) {
             Replace { start: a, end: b, text }
         })
         .collect();
-    h.editor.undo.record(EditKind::Other, &h.text, &h.editor.cursors);
+    h.editor.undo.record(EditKind::Other, h.text, &h.editor.cursors);
     let ends = apply_replacements(&mut *h.text, &reps);
     let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
     let primary = sels.len() - 1;
@@ -884,7 +884,7 @@ pub fn toggle_block_comment(h: &mut EditorHost<'_>) {
             Replace { start: s.min(), end: s.max(), text }
         })
         .collect();
-    h.editor.undo.record(EditKind::Other, &h.text, &h.editor.cursors);
+    h.editor.undo.record(EditKind::Other, h.text, &h.editor.cursors);
     let ends = apply_replacements(&mut *h.text, &reps);
     let sels: Vec<Sel> = reps.iter().zip(ends).map(|(r, e)| Sel::range(e - r.text.chars().count(), e)).collect();
     let primary = sels.len() - 1;

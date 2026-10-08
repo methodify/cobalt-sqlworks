@@ -2159,11 +2159,10 @@ pub fn start_run_export(state: &mut AppState, cx: &Ctx) {
     state.dialog = Dialog::None;
     run(state, cx, idx, mode);
     // nothing to run (empty script)? don't leave the target armed for the next plain run
-    if state.tabs[idx].run.as_ref().map(|r| !r.is_live()).unwrap_or(true) && state.tabs[idx].pending_run.is_none() && !matches!(state.dialog, Dialog::ConfirmWrite { .. }) {
-        if state.tabs[idx].pending_export.take().is_some() {
+    if state.tabs[idx].run.as_ref().map(|r| !r.is_live()).unwrap_or(true) && state.tabs[idx].pending_run.is_none() && !matches!(state.dialog, Dialog::ConfirmWrite { .. })
+        && state.tabs[idx].pending_export.take().is_some() {
             cx.toast(ToastKind::Warning, "Nothing to run.");
         }
-    }
 }
 
 /// OneLake accepts an Azure Storage token; when the registration lacks that permission the Fabric
