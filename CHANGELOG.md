@@ -4,6 +4,11 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **`%%sql` cells work again on the local Spark kernel.** Since notebooks got their own
+  contexts, the SQL helper was only defined in the worker's shared namespace, so a `%%sql`
+  cell (or a cell switched to SQL) failed with "`__cobalt_sql` is not defined". The helpers are
+  now installed in every context. A failing SQL cell shows the Spark analysis message as one
+  error line instead of the Python traceback and the Java stack.
 - **The editor caret blinks over Remote Desktop.** 0.8.1 made it visible there, but blinking
   still waited for a window-focus signal that Remote Desktop sessions never deliver; the
   signal is now trusted only once it has been seen in the session.

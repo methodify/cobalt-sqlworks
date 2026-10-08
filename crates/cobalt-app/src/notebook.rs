@@ -1309,6 +1309,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         let Some(nb) = state.tabs[idx].notebook.as_deref_mut() else { continue };
         let Some(ci) = nb.cell_index(&req.cell_id) else { continue };
         let o = crate::kernel::outcome(&result, &blobs);
+        let is_sql = nb.language_of(ci) == CellLanguage::Sql;
         let cs = &mut nb.cells[ci];
         let Some(run) = cs.run.as_mut() else { continue };
         let interrupted = o.interrupted || matches!(&result, Err(e) if e.starts_with("interrupted"));
@@ -1320,6 +1321,9 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         }
         run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
         run.messages.extend(o.messages);
+        if o.failed && is_sql {
+            crate::kernel::compact_sql_error(&mut run.messages);
+        }
         run.state = if interrupted {
             RunViewState::Cancelled
         } else if o.failed {

@@ -386,13 +386,38 @@ def __cobalt_split_sql(text):
         out.append(s)
     return out
 
+class SparkSqlError(Exception):
+    pass
+
 def __cobalt_sql(text, limit=None):
     last = None
     for s in __cobalt_split_sql(text):
-        last = spark.sql(s)
+        try:
+            last = spark.sql(s)
+        except Exception as e:
+            # the analysis message without the JVM stack and the resolved plan dump
+            m = str(e).split("JVM stacktrace:")[0].rstrip()
+            m = "\n".join(l for l in m.splitlines() if not l.lstrip().startswith(("'", "+-", ":-")))
+            raise SparkSqlError(m.strip() or type(e).__name__) from None
     if last is not None:
         display(last, limit=limit)
 "#;
+
+/// A failed SQL cell: the Python traceback around `__cobalt_sql` is noise; keep what the
+/// `SparkSqlError` carried (the analysis message) as the one error line.
+pub fn compact_sql_error(messages: &mut Vec<MessageLine>) {
+    let Some(at) = messages.iter().position(|m| m.is_error && m.text.starts_with("SparkSqlError: ")) else { return };
+    let mut text = messages[at].text.trim_start_matches("SparkSqlError: ").to_string();
+    for m in messages.iter().skip(at + 1).filter(|m| m.is_error) {
+        if !m.text.trim().is_empty() {
+            text.push('\n');
+            text.push_str(&m.text);
+        }
+    }
+    let kept: Vec<MessageLine> = messages.drain(..).filter(|m| !m.is_error).collect();
+    *messages = kept;
+    messages.push(MessageLine { text, is_error: true, is_batch_header: false, line: None, path: None });
+}
 
 /// Everything a Fabric-bound start needs from the app besides the settings.
 pub struct FabricStart {
@@ -503,6 +528,9 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
     let mut capture = false;
     // contexts created in this worker (0.5.0), by id
     let mut created: std::collections::HashSet<String> = Default::default();
+    // the bootstrap (display hook, `__cobalt_sql`) is run again in every context the session
+    // creates: a context is its own namespace (local-spark-mcp 0.5.0)
+    let mut bootstrap_code = String::new();
     let log_tx = tx.clone();
     let log_egui = egui.clone();
     let log: cobalt_runtime::worker::LogFn = Arc::new(move |s: String| {
@@ -514,6 +542,7 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
             Cmd::Start { cfg, bootstrap, capture: cap } => {
                 capture = cap;
                 created.clear();
+                bootstrap_code = bootstrap.clone();
                 cancel.store(false, Ordering::Relaxed);
                 match Worker::start(&cfg, log.clone(), &cancel) {
                     Ok(mut w) => {
@@ -592,6 +621,16 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                                 created.insert(id.clone());
                                 let _ = tx.send(KernelEvent::ContextCreated(req.tab));
                                 let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} created (database {})", v.get("current_database").and_then(Value::as_str).unwrap_or("default"))));
+                                // the context's namespace needs the helpers too (SQL cells call `__cobalt_sql`)
+                                match w.call_cancellable("run_code", json!({"code": bootstrap_code, "context": id}), Duration::from_secs(120), &cancel) {
+                                    Ok(r) if r.get("ok").and_then(Value::as_bool) == Some(false) => {
+                                        let _ = tx.send(KernelEvent::Log(format!("cobalt: bootstrap failed in context {id}: {}", r.get("error").and_then(Value::as_str).unwrap_or(""))));
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        let _ = tx.send(KernelEvent::Log(format!("cobalt: bootstrap failed in context {id}: {e}")));
+                                    }
+                                }
                             }
                             Err(e) => {
                                 let _ = tx.send(KernelEvent::Log(format!("cobalt: context {id} could not be created, running in the shared context: {e}")));
@@ -1002,9 +1041,15 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
             // an interrupted cell's stderr is the cancellation itself (py4j errors from the
             // cancelled jobs), not the user's output
             let stderr = if interrupted { "" } else { v.get("stderr").and_then(Value::as_str).unwrap_or("") };
+            let mut dropped_prev = false;
             for line in stderr.lines() {
                 let t = line.trim_end();
-                if t.is_empty() || t.contains(" WARN ") || t.contains(" INFO ") || t.starts_with('[') && t.contains("Stage ") {
+                // Spark's structured JSON log lines (4.x) repeat what the exception already says;
+                // the worker's "[truncated, N chars total]" marker belongs to the line before it
+                let structured_log = t.starts_with("{\"ts\":") && t.contains("\"logger\":");
+                let truncation_marker = dropped_prev && t.contains("[truncated,") && t.ends_with("chars total]");
+                dropped_prev = t.is_empty() || t.contains(" WARN ") || t.contains(" INFO ") || t.starts_with('[') && t.contains("Stage ") || structured_log || truncation_marker;
+                if dropped_prev {
                     continue;
                 }
                 out.messages.push(msg(t.to_string(), false));
@@ -1040,6 +1085,19 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sql_error_is_compacted() {
+        let m = |t: &str, e: bool| MessageLine { text: t.into(), is_error: e, is_batch_header: false, line: None, path: None };
+        let mut ms = vec![m("printed first", false), m("-----", true), m("SparkSqlError  Traceback (most recent call last)", true), m("Cell In[5], line 1", true), m("", true), m("SparkSqlError: [TABLE_OR_VIEW_NOT_FOUND] The table `dbo`.`x` cannot be found.; line 1 pos 14", true)];
+        compact_sql_error(&mut ms);
+        let texts: Vec<&str> = ms.iter().map(|m| m.text.as_str()).collect();
+        assert_eq!(texts, vec!["printed first", "[TABLE_OR_VIEW_NOT_FOUND] The table `dbo`.`x` cannot be found.; line 1 pos 14"]);
+        assert!(ms[1].is_error);
+        let mut none = vec![m("ZeroDivisionError: division by zero", true)];
+        compact_sql_error(&mut none);
+        assert_eq!(none.len(), 1);
+    }
 
     #[test]
     fn outcome_reads_native_displays() {
