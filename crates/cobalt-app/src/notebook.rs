@@ -1105,13 +1105,14 @@ pub(crate) fn prepare_spark(state: &mut AppState, cx: &Ctx, idx: usize) -> Spark
                     match (want, have) {
                         (None, _) => {}
                         (Some(_), None) => {
-                            if rebind_if_unused(state) {
-                                cx.toast(ToastKind::Info, "Rebinding the Spark session to this tab's lakehouse (nothing had run in it yet).");
+                            // the rebind happens once per tab: a session that comes back unbound
+                            // must not loop; after that the run goes on as it is, with a warning
+                            let first = state.kernel.binding_warned.insert(tab);
+                            if first && rebind_if_unused(state) {
+                                cx.toast(ToastKind::Info, "Rebinding the Spark session to this tab's lakehouse.");
                                 return SparkPrep::Wait; // the request stays pending and runs on the rebound session
                             }
-                            if state.kernel.binding_warned.insert(tab) {
-                                cx.toast(ToastKind::Warning, "The running Spark session was started without a lakehouse. Restart the session (kernel menu) to use this notebook's lakehouse.");
-                            }
+                            cx.toast(ToastKind::Warning, "The running Spark session has no lakehouse; this run uses it as it is. Restart the session (session menu) to bind this tab's lakehouse.");
                         }
                         (Some(w), Some(h)) => {
                             if w.write_mode != h.write_mode {

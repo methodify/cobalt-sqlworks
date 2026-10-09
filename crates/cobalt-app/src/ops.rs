@@ -814,8 +814,12 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             state.open_spark_chip = Some(state.tabs[idx].id);
         }
         TreeAction::SparkSession(start) => {
+            // the active Spark tab or notebook lends its binding; otherwise a plain session
+            let bound = state.active_tab.filter(|&i| state.tabs[i].spark.is_some() || state.tabs[i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
             if start {
-                if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
+                if let Some(i) = bound {
+                    let _ = crate::notebook::ensure_session(state, cx, i);
+                } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
                     cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime.");
                     state.settings_open = true;
                     state.settings_scroll_to = Some("Spark runtime");

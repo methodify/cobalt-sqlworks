@@ -44,7 +44,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     // a restart finishes once the old session is gone; it rebinds to the active notebook
     if f.state.kernel_restart_pending && matches!(f.state.kernel.state, crate::kernel::KernelState::Stopped | crate::kernel::KernelState::Failed(_)) && f.state.kernel.busy.is_none() {
         f.state.kernel_restart_pending = false;
-        let active_nb = f.state.active_tab.filter(|i| f.state.tabs[*i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
+        // the active Spark notebook or Spark SQL tab decides the binding of the new session
+        let active_nb = f.state.active_tab.filter(|i| f.state.tabs[*i].spark.is_some() || f.state.tabs[*i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
         if let Some(i) = active_nb {
             // the normal path: binding resolution, OneLake token, start (no cell needed)
             let _ = crate::notebook::ensure_session(f.state, f.cx, i);
@@ -989,7 +990,8 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
         f.state.kernel.log_open = true;
     }
     if start {
-        ops::tree_action(f.state, f.cx, servers::TreeAction::SparkSession(true));
+        // through the tab's binding (lakehouse, OneLake token), not a plain session
+        let _ = crate::notebook::ensure_session(f.state, f.cx, idx);
     }
     // lakehouse chip
     let (binding, ws_name, lh_name) = {
