@@ -399,10 +399,10 @@ impl Notebook {
         self.metadata.get("microsoft").and_then(|m| m.get("language_group")).and_then(Value::as_str).map(str::to_string)
     }
 
+    /// A cell's language: a `%%sql` / `%%pyspark` / … first line decides (as on Fabric, where
+    /// the magic switches the language whatever the cell's dropdown says), then the cell's own
+    /// language metadata, then the notebook's default.
     pub fn cell_language(&self, cell: &Cell) -> CellLanguage {
-        if let Some(l) = cell.language_override() {
-            return l;
-        }
         if let (Some(magic), _) = cell.split_magic() {
             return match magic.as_str() {
                 "sql" => CellLanguage::Sql,
@@ -411,6 +411,9 @@ impl Notebook {
                 "sparkr" | "r" => CellLanguage::R,
                 other => CellLanguage::Other(other.to_string()),
             };
+        }
+        if let Some(l) = cell.language_override() {
+            return l;
         }
         self.default_language()
     }
@@ -465,6 +468,13 @@ mod tests {
         c.set_language_override(Some(&CellLanguage::Sql), Some("synapse_pyspark"));
         assert_eq!(nb.cell_language(&c), CellLanguage::Sql);
         assert_eq!(c.metadata["microsoft"]["language"], "sparksql");
+        // the magic wins over the dropdown: a "PySpark" cell that starts with %%sql is SQL
+        let mut c = Cell::code("%%sql\nSELECT 1");
+        c.set_language_override(Some(&CellLanguage::Python), Some("synapse_pyspark"));
+        assert_eq!(nb.cell_language(&c), CellLanguage::Sql);
+        let mut c = Cell::code("%%pyspark\nprint(1)");
+        c.set_language_override(Some(&CellLanguage::Sql), Some("synapse_pyspark"));
+        assert_eq!(nb.cell_language(&c), CellLanguage::Python);
         c.set_language_override(None, None);
         assert!(!c.metadata.contains_key("microsoft"));
         let sql = Notebook::new(CellLanguage::Sql);

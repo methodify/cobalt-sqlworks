@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- A notebook cell that starts with `%%sql` (or `%%pyspark`) runs as that language whatever the
+  cell's language dropdown says, as on Fabric; before, a cell marked PySpark sent the magic to
+  IPython ("Cell magic `%%sql` not found").
+
 ## 0.9.1 — 2026-10-09
 
 - **LakeSail: the lakehouse catalog comes from Fabric, nothing is mounted.** Cobalt now serves
