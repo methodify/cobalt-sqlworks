@@ -571,8 +571,26 @@ fn component_row(ui: &mut Ui, theme: &Theme, name: &str, st: &ComponentState) {
 /// remove, and the live log of the running job.
 fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, action: &mut Option<SettingsAction>) {
     let manifest = cobalt_runtime::Manifest::embedded();
-    ui.label(RichText::new("Cobalt provisions a local Spark that matches a Fabric runtime (uv, Python, pyspark + delta-spark via local-spark-mcp, and a non-Oracle JDK) into its own folder. Nothing is downloaded until you ask. PySpark and Spark SQL notebook cells run on it (kernel button on the notebook toolbar); this page installs and verifies the runtime.").size(12.0).color(theme.text_muted));
+    let sail = cobalt_runtime::Engine::parse(&draft.spark.engine).is_sail();
+    ui.label(RichText::new("Cobalt provisions a local Spark into its own folder; nothing is downloaded until you ask. Two engines: Local Spark (a JVM Spark matching a Fabric runtime: uv, Python, pyspark + delta-spark via local-spark-mcp, a non-Oracle JDK) and LakeSail (experimental: Sail, a Rust Spark Connect server — Python only, no Java). PySpark and Spark SQL cells and Spark SQL query tabs run on the chosen engine; switching restarts the session.").size(12.0).color(theme.text_muted));
     ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label("Engine");
+        for (e, label, hint) in [
+            (cobalt_runtime::Engine::PySpark, "Local Spark (JVM)", "local-spark-mcp on a Fabric runtime profile: sandbox clones, shadows, lazy Files, notebookutils. About 600 MB with the JDK."),
+            (cobalt_runtime::Engine::Sail, format!("LakeSail {} (experimental)", manifest.sail.version).as_str(), "Sail: Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs, no notebookutils yet. About 250 MB, starts in seconds."),
+        ] {
+            let r = ui.selectable_label(cobalt_runtime::Engine::parse(&draft.spark.engine) == e, label);
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
+            if r.on_hover_text(hint).clicked() {
+                draft.spark.engine = e.key().to_string();
+            }
+        }
+    });
+    if sail {
+        ui.label(RichText::new(manifest.sail.describe()).size(11.0).color(theme.text_muted));
+    }
+    if !sail {
     ui.horizontal(|ui| {
         ui.label("Runtime profile");
         let current = draft.spark.profile.clone();
@@ -625,6 +643,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             });
         }
     }
+    }
     ui.horizontal(|ui| {
         ui.label("Folder");
         let mut dir = draft.spark.runtime_dir.clone().unwrap_or_default();
@@ -650,16 +669,18 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             egui::Grid::new("spark-status").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
                 component_row(ui, theme, "uv", &st.uv);
                 component_row(ui, theme, "Python", &st.python);
-                component_row(ui, theme, "Spark", &st.env);
-                component_row(ui, theme, "Java", &st.jdk);
+                component_row(ui, theme, if st.engine.is_sail() { "LakeSail" } else { "Spark" }, &st.env);
+                if !st.engine.is_sail() {
+                    component_row(ui, theme, "Java", &st.jdk);
+                }
             });
             ui.horizontal(|ui| {
                 let ready = st.is_ready();
-                let msg = if ready && st.warm { format!("Ready — Spark {} verified", st.spark_version.clone().unwrap_or_default()) } else if ready { "Installed; run the smoke test to verify".to_string() } else { "Not installed".to_string() };
+                let msg = if ready && st.warm && st.engine.is_sail() { format!("Ready — Sail {} verified (PySpark Connect client {})", st.package_version.clone().unwrap_or_default(), st.spark_version.clone().unwrap_or_default()) } else if ready && st.warm { format!("Ready — Spark {} verified", st.spark_version.clone().unwrap_or_default()) } else if ready { "Installed; run the smoke test to verify".to_string() } else { "Not installed".to_string() };
                 ui.label(RichText::new(msg).strong().color(if ready { theme.success } else { theme.text_muted }));
                 ui.label(RichText::new(format!("· {} on disk", cobalt_runtime::fmt_bytes(st.disk_bytes))).size(11.0).color(theme.text_faint));
-                if st.profile != draft.spark.profile {
-                    ui.label(RichText::new(format!("(status is for {}; save to re-check)", st.profile)).size(11.0).color(theme.warning));
+                if st.engine != cobalt_runtime::Engine::parse(&draft.spark.engine) || (!sail && st.profile != draft.spark.profile) {
+                    ui.label(RichText::new(format!("(status is for {}; save to re-check)", if st.engine.is_sail() { "LakeSail".to_string() } else { st.profile.clone() })).size(11.0).color(theme.warning));
                 }
             });
             if let Some(e) = &st.last_error {
@@ -684,6 +705,16 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
         // what the install will actually do: present components are kept, only the rest is fetched
         let pinned = manifest.local_spark_mcp.version.clone();
         let (label, plan_text) = match runtime.status.as_ref() {
+            Some(st) if sail || st.engine.is_sail() => {
+                let kept = |c: &cobalt_runtime::ComponentState| matches!(c, cobalt_runtime::ComponentState::Managed { .. } | cobalt_runtime::ComponentState::Adopted { .. });
+                let lines = [
+                    format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }),
+                    format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }),
+                    format!("LakeSail: pysail {} + pyspark-client {} {}", manifest.sail.version, manifest.sail.pyspark_client, if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
+                    "then one Sail session to verify the wheel (a few seconds)".to_string(),
+                ];
+                (if ready && st.engine.is_sail() { "Reinstall / update LakeSail".to_string() } else { "Install LakeSail for me".to_string() }, lines.join("\n"))
+            }
             Some(st) => {
                 let kept = |c: &cobalt_runtime::ComponentState| matches!(c, cobalt_runtime::ComponentState::Managed { .. } | cobalt_runtime::ComponentState::Adopted { .. });
                 let mut lines: Vec<String> = Vec::new();
@@ -701,6 +732,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 (label, lines.join("
 "))
             }
+            None if sail => ("Install LakeSail for me".to_string(), "Downloads what is missing (uv, Python, pysail + pyspark-client), then starts Sail once to verify it.".to_string()),
             None => ("Install for me".to_string(), "Downloads what is missing (uv, Python, pyspark/delta-spark, a JDK), then starts Spark once so its jars are cached.".to_string()),
         };
         let b = ui.add_enabled(!busy, egui::Button::new(label));
@@ -712,7 +744,7 @@ Hash-checked and resumable; nothing present is downloaded again.")).clicked() {
         }
         let b = ui.add_enabled(!busy && ready, egui::Button::new("Run smoke test"));
         b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark smoke test"));
-        if b.on_hover_text("Starts a Spark session in the worker and runs SELECT 1").clicked() {
+        if b.on_hover_text(if sail { "Starts a Sail session in the worker and runs SELECT 1" } else { "Starts a Spark session in the worker and runs SELECT 1" }).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::SmokeTest, draft.clone()));
         }
         if ui.add_enabled(busy, egui::Button::new("Cancel")).clicked() {
@@ -721,14 +753,14 @@ Hash-checked and resumable; nothing present is downloaded again.")).clicked() {
         if ui.add_enabled(!busy, egui::Button::new("Re-check")).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::Refresh, draft.clone()));
         }
-        if ui.add_enabled(!busy, egui::Button::new(RichText::new("Remove runtime").color(theme.error))).on_hover_text("Deletes everything Cobalt installed in the runtime folder (tools found on the machine are untouched)").clicked() {
+        if ui.add_enabled(!busy, egui::Button::new(RichText::new(if sail { "Remove LakeSail" } else { "Remove runtime" }).color(theme.error))).on_hover_text(if sail { "Deletes the LakeSail environment (the JVM runtime, uv and Python stay)" } else { "Deletes everything Cobalt installed in the runtime folder (tools found on the machine are untouched)" }).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::Remove, draft.clone()));
         }
         if ui.small_button("Log file").clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::OpenLog, draft.clone()));
         }
     });
-    if let Some(st) = &runtime.status {
+    if let Some(st) = runtime.status.as_ref().filter(|s| !s.engine.is_sail()) {
         ui.horizontal(|ui| {
             let mb = st.mirror_bytes as f64 / 1_048_576.0;
             ui.label(RichText::new(format!("Lakehouse Files mirror: {}", if st.mirror_bytes == 0 { "empty".to_string() } else if mb < 1024.0 { format!("{mb:.0} MB") } else { format!("{:.1} GB", mb / 1024.0) })).size(12.0).color(theme.text_muted));

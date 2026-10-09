@@ -10,3 +10,6 @@ target-vendor/
 /BACKLOG.md
 SIGNING.md
 /crates/cobalt-app/mesa/
+
+# python bytecode (the runtime worker is checked in as source)
+__pycache__/

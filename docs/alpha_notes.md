@@ -456,6 +456,34 @@ copy" fetched the saved version with the new cells and their outputs. `fabric_sc
 shows what the token has.
 Agent: `notebook {action: set_lakehouse, workspace, lakehouse?, write_mode?}`, `shadows {action: status|discard|discard_written|restore, table?}`, `fabric_notebooks {workspace?}`, `notebook {action: open_fabric, item, copy?}`, `notebook {action: save_fabric}`.
 
+## LakeSail engine (0.9.0, experimental)
+
+A second engine behind the same Spark session. Settings › Notebooks & Spark › Spark runtime has
+an **Engine** row: *Local Spark (JVM)* is everything from 0.7–0.8; *LakeSail* is
+[Sail](https://github.com/lakehq/sail) 0.7.2 — a Rust Spark Connect server, no Java — installed
+as one uv environment (`envs/sail`: pysail, pyspark-client 4.1.3, IPython; about 250 MB, ~90 s)
+with "Install LakeSail for me", a smoke test and "Remove LakeSail". The Spark menu › Engine
+submenu and the notebook kernel picker switch too; a running session restarts on the new engine
+(variables and temp views are gone). Everything names the engine: status bar "Sail 0.7.2 · up
+2m", chip "LakeSail (0.7.2) · ready", history source "LakeSail (0.7.2)", the session log title.
+
+What to try: a Spark SQL tab on `test` (the session is up in ~3 s): `SELECT … FROM
+publicholidays` (mounted on first touch, ~1 s, the Messages pane says "mounted test.dbo.…"),
+`dbo.t`, `test.dbo.t`, `test_no_schema.t`, `SHOW TABLES` (mounts the current database's
+tables first), Est. plan (Sail's DataFusion plan under the usual section headers), Parse, Run to
+File, Cancel. A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+`df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
+{action: install}`, `kernel` JSON carries `engine` / `engine_version`.
+
+What LakeSail does not do (said in the chip, the pane and the errors): no sandbox — the write
+mode is *read only* (default; writes are refused with "write_mode is 'readonly'") or *write
+through* (INSERT / UPDATE / DELETE / MERGE / INSERT OVERWRITE go to OneLake; DROP TABLE only
+unmounts); no shadows, preload, lazy Files or `notebookutils` (slice B); `USE db` is rewritten
+to `USE DATABASE`; `DESCRIBE HISTORY` and `SET` are not supported by Sail; legacy top-level
+tables of a schema-enabled lakehouse are reached as `spark_catalog.<lakehouse>.<table>`.
+The OneLake catalog Sail ships is not used yet (it rejects tables with integer / decimal
+columns; reported in `docs/requests/lakesail-0.7.2.md`).
+
 ## Spark SQL query tabs (0.8.2)
 
 "Just run this query against the lakehouse" without a notebook. In the Servers sidebar the

@@ -43,7 +43,7 @@ fn main() {
         Progress::Log(s) => println!("[{:>5.0}s] {s}", started.elapsed().as_secs_f32()),
     };
     let cx = Context { dirs: &dirs, manifest: &manifest, progress: &progress, cancel: &cancel };
-    let plan = Plan { profile: profile.clone(), jdk_vendor: vendor, adopt_jdk: None, steps, driver_memory: "2g".into() };
+    let plan = Plan { engine: cobalt_runtime::Engine::PySpark, profile: profile.clone(), jdk_vendor: vendor, adopt_jdk: None, steps, driver_memory: "2g".into() };
     match provision(&cx, &plan) {
         Ok(rec) => println!("OK: {}", serde_json::to_string_pretty(&rec).unwrap()),
         Err(e) => {

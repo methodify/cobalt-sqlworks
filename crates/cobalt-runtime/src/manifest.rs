@@ -11,6 +11,9 @@ pub const EMBEDDED: &str = include_str!("../manifest.json");
 pub struct Manifest {
     pub schema: u32,
     pub local_spark_mcp: Package,
+    /// The LakeSail engine (Sail): pysail + the PySpark Connect client, no JVM.
+    #[serde(default)]
+    pub sail: SailPins,
     pub default_profile: String,
     pub profiles: BTreeMap<String, Profile>,
     pub uv: UvPins,
@@ -22,6 +25,81 @@ pub struct Package {
     pub version: String,
     /// What pip installs: a tarball URL (no git needed) or, later, a PyPI version.
     pub source: String,
+}
+
+/// Which local Spark engine a session runs on.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// local-spark-mcp: a JVM Spark matching a Fabric runtime profile.
+    #[default]
+    PySpark,
+    /// LakeSail's Sail: a Rust Spark Connect server, no Java.
+    Sail,
+}
+
+impl Engine {
+    pub fn parse(s: &str) -> Engine {
+        if s.trim().eq_ignore_ascii_case("sail") || s.trim().eq_ignore_ascii_case("lakesail") {
+            Engine::Sail
+        } else {
+            Engine::PySpark
+        }
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            Engine::PySpark => "pyspark",
+            Engine::Sail => "sail",
+        }
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            Engine::PySpark => "Local Spark (JVM)",
+            Engine::Sail => "LakeSail (experimental)",
+        }
+    }
+    pub fn is_sail(self) -> bool {
+        matches!(self, Engine::Sail)
+    }
+}
+
+/// Pins of the LakeSail engine's environment.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct SailPins {
+    /// The `pysail` wheel.
+    pub version: String,
+    /// The `pyspark-client` (Spark Connect, no jars) the worker talks with.
+    pub pyspark_client: String,
+    pub python: String,
+    pub python_windows: String,
+    /// Other packages of the environment (IPython for cells, pandas/pyarrow for results).
+    pub packages: Vec<String>,
+}
+
+impl Default for SailPins {
+    fn default() -> Self {
+        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()] }
+    }
+}
+
+impl SailPins {
+    pub fn python_for(&self, platform: Platform) -> &str {
+        if platform.is_windows() {
+            &self.python_windows
+        } else {
+            &self.python
+        }
+    }
+    /// What `uv pip install` gets.
+    pub fn requirements(&self) -> Vec<String> {
+        let mut v = vec![format!("pysail=={}", self.version), format!("pyspark-client=={}", self.pyspark_client)];
+        v.extend(self.packages.iter().cloned());
+        v
+    }
+    pub fn describe(&self) -> String {
+        format!("Sail {}: pysail {}, pyspark-client {}, Python {}, no Java", self.version, self.version, self.pyspark_client, self.python)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]

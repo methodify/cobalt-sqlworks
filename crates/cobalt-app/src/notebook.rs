@@ -655,7 +655,9 @@ fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<cr
         }
     }
     let preload = if preload.is_empty() { serde_json::Value::Null } else { serde_json::Value::Object(preload) };
-    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode: b.write_mode.clone(), slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, preload_last, persist_shadow, extra_workspaces: Vec::new() }))
+    // LakeSail has no shallow clones: its sessions are read-only or write-through
+    let write_mode = if crate::runtime::engine(cx.settings).is_sail() && b.write_mode == "sandbox" { "readonly".to_string() } else { b.write_mode.clone() };
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode, slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, preload_last, persist_shadow, extra_workspaces: Vec::new() }))
 }
 
 /// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).
@@ -1074,12 +1076,30 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
     }
     if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
         abandon_pending(state, idx);
-        cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings › Spark runtime, then run the cell again.");
+        cx.toast(ToastKind::Warning, crate::kernel::not_installed_text(cx.settings));
         state.settings_open = true;
         state.settings_scroll_to = Some("Spark runtime");
         return Err(());
     }
     Ok(true)
+}
+
+/// Switch the engine the next session runs on (Spark menu, kernel picker): remembered in the
+/// settings; a running session is restarted on the new engine.
+pub fn set_engine(state: &mut AppState, cx: &Ctx, engine: &str) {
+    let e = cobalt_runtime::Engine::parse(engine);
+    if crate::runtime::engine(cx.settings) == e && !state.settings_patch.iter().any(|p| matches!(p, crate::state::SettingsPatch::SparkEngine(_))) {
+        return;
+    }
+    state.settings_patch.push(crate::state::SettingsPatch::SparkEngine(e.key().to_string()));
+    let running = state.kernel.state.is_ready() || state.kernel.state.is_starting();
+    if running {
+        state.kernel_restart_pending = true;
+        crate::kernel::stop(&mut state.kernel);
+        cx.toast(ToastKind::Info, format!("Restarting the session on {}. Variables and temp views from before are gone.", e.label()));
+    } else {
+        cx.toast(ToastKind::Info, format!("The next Spark session runs on {}.", e.label()));
+    }
 }
 
 /// Reconcile the tab's binding with the running (or starting) session before a Spark run:
@@ -1206,7 +1226,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     let mut view = RunView::new(run_id);
     view.script_hash = hash_text(&code);
     if cx.settings.history.capture {
-        let mut e = NewHistoryEntry::new(format!("Local Spark ({})", cx.settings.spark.profile), cell.source.clone());
+        let mut e = NewHistoryEntry::new(crate::kernel::history_source(&cx.settings.spark), cell.source.clone());
         e.tab_id = Some(t.id);
         view.history_id = cx.store.add_history(&e).ok();
     }

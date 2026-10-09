@@ -404,6 +404,7 @@ impl CobaltApp {
                 SettingsPatch::Theme(t) => s.appearance.theme = t,
                 SettingsPatch::UiScale(z) => s.appearance.ui_scale = z,
                 SettingsPatch::ShowWelcome(v) => s.appearance.show_welcome = v,
+                SettingsPatch::SparkEngine(e) => s.spark.engine = e,
             }
         }
         self.apply_settings(ctx, s);

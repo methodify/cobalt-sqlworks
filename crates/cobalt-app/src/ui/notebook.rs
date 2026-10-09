@@ -31,6 +31,8 @@ enum NbAction {
     SetKind(usize, CellKind),
     SetLanguage(usize, Option<CellLanguage>),
     SetKernel(NotebookKernel),
+    /// Switch the Spark engine (`pyspark` / `sail`) and put the notebook on the Spark kernel.
+    SetEngine(String),
     SetFabric(Option<NotebookFabric>),
     SetLakehousePolicy(String, nbops::LakehousePolicy),
     LoadWorkspace(String),
@@ -99,7 +101,12 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     };
     let kernel_state = f.state.kernel.state.clone();
     let kernel_busy = f.state.kernel.busy.is_some();
-    let spark_profile = settings.spark.profile.clone();
+    let engine_name = f.state.kernel.engine_label(&settings.spark);
+    let kernel_label = f.state.kernel.state_label();
+    let sail_engine = crate::runtime::engine(settings).is_sail();
+    let sail_version = cobalt_runtime::Manifest::embedded().sail.version;
+    // LakeSail has no sandbox clones: a notebook asking for `sandbox` runs read-only there
+    let effective_mode = |m: &str| -> String { if sail_engine && m == "sandbox" { "readonly".to_string() } else { m.to_string() } };
     let nb_fabric = f.state.tabs[idx].notebook.as_deref().and_then(|nb| nb.fabric.clone());
     let fabric_item = f.state.tabs[idx].fabric_item.as_ref().map(|fi| (fi.item.display_name.clone(), fi.saving, f.state.fabric.workspace(&fi.item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default()));
     let session_fabric = f.state.kernel.fabric.clone();
@@ -184,11 +191,11 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     NotebookKernel::Spark => {
                         use crate::kernel::KernelState as K;
                         let (l, c) = match &kernel_state {
-                            K::Ready { .. } if kernel_busy => (format!("Local Spark ({spark_profile}) · running"), theme.accent),
-                            K::Ready { .. } => (format!("Local Spark ({spark_profile}) · ready"), theme.success),
-                            K::Starting { since } => (format!("Local Spark ({spark_profile}) · starting {}s", since.elapsed().as_secs()), theme.warning),
-                            K::Failed(_) => (format!("Local Spark ({spark_profile}) · failed"), theme.error),
-                            K::Stopped => (format!("Local Spark ({spark_profile})"), theme.text_muted),
+                            K::Ready { .. } if kernel_busy => (format!("{engine_name} · running"), theme.accent),
+                            K::Ready { .. } => (format!("{engine_name} · ready"), theme.success),
+                            K::Starting { since } => (format!("{engine_name} · starting {}s", since.elapsed().as_secs()), theme.warning),
+                            K::Failed(_) => (format!("{engine_name} · failed"), theme.error),
+                            K::Stopped => (engine_name.clone(), theme.text_muted),
                         };
                         (icons::FIRE, l, c)
                     }
@@ -197,6 +204,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "notebook kernel"));
                 let r = r.on_hover_text("Where code cells run. Click to choose: the tab's connection (SQL cells), or the local Spark session (PySpark and Spark SQL cells).");
                 let mut pick: Option<NotebookKernel> = None;
+                let mut engine_pick: Option<&str> = None;
                 let mut change_conn = false;
                 let mut show_log = false;
                 let mut session_cmd: Option<Command> = None;
@@ -207,8 +215,19 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         pick = Some(NotebookKernel::Connection);
                         ui.close();
                     }
-                    if ui.selectable_label(nb_kernel == NotebookKernel::Spark, format!("{} Local Spark ({spark_profile}) · PySpark + Spark SQL", icons::FIRE)).on_hover_text("Runs on the runtime from Settings › Spark runtime. The first cell starts the session (20–60 s).").clicked() {
+                    if ui.selectable_label(nb_kernel == NotebookKernel::Spark, format!("{} {engine_name} · PySpark + Spark SQL", icons::FIRE)).on_hover_text(if sail_engine { "LakeSail: Spark SQL and the DataFrame API without Java (Settings › Spark runtime). The first cell starts the session in a few seconds." } else { "Runs on the runtime from Settings › Spark runtime. The first cell starts the session (20–60 s)." }).clicked() {
                         pick = Some(NotebookKernel::Spark);
+                        ui.close();
+                    }
+                    let (other_key, other_label, other_hint) = if sail_engine {
+                        ("pyspark", format!("{} Local Spark ({}) · JVM, sandbox clones", icons::FIRE, settings.spark.profile), "Switch the Spark engine back to local-spark-mcp (restarts a running session).")
+                    } else {
+                        ("sail", format!("{} LakeSail {sail_version} · experimental, no Java", icons::FIRE), "Switch the Spark engine to Sail: a Rust Spark Connect server; read-only or write-through on OneLake, no sandbox, no notebookutils yet (restarts a running session).")
+                    };
+                    let r = ui.selectable_label(false, other_label);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {other_key}")));
+                    if r.on_hover_text(other_hint).clicked() {
+                        engine_pick = Some(other_key);
                         ui.close();
                     }
                     ui.separator();
@@ -218,7 +237,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     }
                     // the local Spark session itself
                     ui.separator();
-                    ui.label(RichText::new(format!("Session · {}{}", kernel_state.label(), if attached > 0 { format!(" · {attached} notebook{}", if attached == 1 { "" } else { "s" }) } else { String::new() })).strong());
+                    ui.label(RichText::new(format!("Session · {}{}", kernel_label, if attached > 0 { format!(" · {attached} notebook{}", if attached == 1 { "" } else { "s" }) } else { String::new() })).strong());
                     let running = kernel_state.is_ready() || kernel_state.is_starting();
                     if ui.add_enabled(!kernel_state.is_starting(), egui::Button::new(if running { format!("{} Restart session", icons::ARROWS_CLOCKWISE) } else { format!("{} Start session", icons::PLAY) })).clicked() {
                         session_cmd = Some(Command::KernelRestart);
@@ -236,7 +255,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         show_log = true;
                         ui.close();
                     }
-                    if ui.button("Lakehouse shadows…").clicked() {
+                    if !sail_engine && ui.button("Lakehouse shadows…").clicked() {
                         session_cmd = Some(Command::Shadows);
                         ui.close();
                     }
@@ -244,10 +263,13 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 if let Some(k) = pick {
                     actions.push(NbAction::SetKernel(k));
                 }
+                if let Some(e) = engine_pick {
+                    actions.push(NbAction::SetEngine(e.to_string()));
+                }
                 // lakehouse binding (Spark kernel only)
                 if nb_kernel == NotebookKernel::Spark {
                     let (label, color) = match &nb_fabric {
-                        Some(b) => (format!("{} {}{} · {}", icons::DROP, lh_name.clone().unwrap_or_else(|| "no default lakehouse".into()), if ws_name.is_empty() { String::new() } else { format!(" ({ws_name})") }, b.write_mode), if b.write_mode == "writethrough" { theme.warning } else { theme.text }),
+                        Some(b) => (format!("{} {}{} · {}", icons::DROP, lh_name.clone().unwrap_or_else(|| "no default lakehouse".into()), if ws_name.is_empty() { String::new() } else { format!(" ({ws_name})") }, effective_mode(&b.write_mode)), if b.write_mode == "writethrough" { theme.warning } else { theme.text }),
                         None => (format!("{} no lakehouse", icons::DROP), theme.text_muted),
                     };
                     let r = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(color)).small());
@@ -303,7 +325,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             }
                             ui.separator();
                             ui.label(RichText::new("Write mode").strong());
-                            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads come from OneLake; any write errors."), ("writethrough", "Write through — writes reach OneLake", "Tables are external OneLake tables: INSERT/CREATE change the lakehouse.")] {
+                            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads come from OneLake; any write errors."), ("writethrough", "Write through — writes reach OneLake", "Tables are external OneLake tables: INSERT/CREATE change the lakehouse.")].into_iter().filter(|(m, _, _)| !sail_engine || *m != "sandbox") {
                                 if ui.selectable_label(b.write_mode == mode, label).on_hover_text(hint).clicked() {
                                     set = Some(Some(NotebookFabric { write_mode: mode.into(), ..b.clone() }));
                                     ui.close();
@@ -336,7 +358,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 actions.push(NbAction::Command(Command::ShowLakehouse));
                                 ui.close();
                             }
-                            if ui.button("Lakehouse shadows…").clicked() {
+                            if !sail_engine && ui.button("Lakehouse shadows…").clicked() {
                                 open_shadows = true;
                                 ui.close();
                             }
@@ -355,10 +377,10 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     if let (Some(sf), Some(b), KernelState::Ready { .. }) = (&session_fabric, &nb_fabric, &kernel_state) {
                         // the default lakehouse is the notebook's own context and a new workspace is
                         // attached in place; only the write mode (or an unattachable workspace) needs a restart
-                        let mismatch = b.write_mode != sf.write_mode || (!sf.knows_workspace(&b.workspace_id) && !can_attach);
+                        let mismatch = effective_mode(&b.write_mode) != sf.write_mode || (!sf.knows_workspace(&b.workspace_id) && !can_attach);
                         if mismatch {
                             let r = ui.add(egui::Button::new(RichText::new(format!("{} session: {}", icons::WARNING, sf.label())).size(11.0).color(theme.warning)).small());
-                            if r.on_hover_text(if b.write_mode != sf.write_mode { "The running session is in a different write mode. Click to restart it with this notebook's." } else { "The running session does not know this workspace. Click to restart it with this notebook's." }).clicked() {
+                            if r.on_hover_text(if effective_mode(&b.write_mode) != sf.write_mode { "The running session is in a different write mode. Click to restart it with this notebook's." } else { "The running session does not know this workspace. Click to restart it with this notebook's." }).clicked() {
                                 actions.push(NbAction::Command(Command::KernelRestart));
                             }
                         }
@@ -979,6 +1001,10 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::SetKind(i, k) => nbops::set_kind(f.state, idx, i, k),
             NbAction::SetLanguage(i, l) => nbops::set_language(f.state, idx, i, l),
             NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
+            NbAction::SetEngine(e) => {
+                nbops::set_kernel(f.state, idx, NotebookKernel::Spark);
+                nbops::set_engine(f.state, f.cx, &e);
+            }
             NbAction::SetFabric(b) => nbops::set_fabric(f.state, idx, b),
             NbAction::SetLakehousePolicy(id, p) => nbops::set_lakehouse_policy(f.cx, &id, &p),
             NbAction::LoadWorkspace(ws) => {

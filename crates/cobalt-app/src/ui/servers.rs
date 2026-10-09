@@ -103,7 +103,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
 fn spark_root(ui: &mut Ui, theme: &Theme, spark: &crate::sparkq::SparkRoot, expanded: &mut bool, active: bool, filter: &str, actions: &mut Vec<TreeAction>) {
     let open = *expanded || !filter.is_empty();
     let icon_color = if spark.ready { Some(theme.success) } else if spark.starting { Some(theme.warning) } else { None };
-    let detail = spark.session.strip_prefix("Spark: ").map(str::to_string).unwrap_or_else(|| spark.session.clone());
+    let detail = spark.session.strip_prefix("Spark: ").or_else(|| spark.session.strip_prefix("Sail: ")).map(str::to_string).unwrap_or_else(|| spark.session.clone());
     let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded: open, loading: spark.starting, icon: icons::FIRE, icon_color, label: "Local Spark", detail: Some(&detail), selected: active, color_dot: None, kind: "server" });
     if r.toggle || r.response.clicked() {
         *expanded = !*expanded;

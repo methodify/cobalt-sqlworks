@@ -82,7 +82,8 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
         ui.add(egui::TextEdit::singleline(&mut state.lakehouse_pane.filter).hint_text(format!("{} Filter tables and files", icons::MAGNIFYING_GLASS)).desired_width(f32::INFINITY));
         let filter = state.lakehouse_pane.filter.trim().to_lowercase();
         let pane = &state.lakehouse_pane;
-        let session_ready = state.kernel.state.is_ready();
+        // clones, rewinds and the Files mirror are the JVM worker's; LakeSail reads OneLake directly
+        let session_ready = state.kernel.state.is_ready() && !state.kernel.is_sail();
         // shadow state per `db.table` from the session's shadow_status
         let shadows: std::collections::HashMap<String, (String, Option<String>)> = state
             .shadows

@@ -15,6 +15,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const SECRET_HEADER: &str = "X-Token-Secret";
+/// object_store's `FabricTokenOAuthProvider` (LakeSail) carries the secret here.
+pub const PARTNER_TOKEN_HEADER: &str = "x-ms-partner-token";
 
 pub struct TokenServer {
     pub url: String,
@@ -122,7 +124,9 @@ impl TokenServer {
                         let _ = req.respond(tiny_http::Response::from_string("not found").with_status_code(404));
                         continue;
                     }
-                    let ok = req.headers().iter().any(|h| h.field.equiv(SECRET_HEADER) && h.value.as_str() == secret2);
+                    // the JVM's HttpTokenProvider and the Python side send X-Token-Secret; Sail
+                    // (object_store's Fabric token provider) sends x-ms-partner-token
+                    let ok = req.headers().iter().any(|h| (h.field.equiv(SECRET_HEADER) || h.field.equiv(PARTNER_TOKEN_HEADER)) && h.value.as_str() == secret2);
                     if !ok {
                         let _ = req.respond(tiny_http::Response::from_string("forbidden").with_status_code(403));
                         continue;

@@ -1018,6 +1018,8 @@ pub enum SettingsPatch {
     Theme(ThemeChoice),
     UiScale(f32),
     ShowWelcome(bool),
+    /// `spark.engine`: `pyspark` or `sail` (the next session runs on it).
+    SparkEngine(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

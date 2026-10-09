@@ -18,7 +18,14 @@ pub mod manifest;
 pub mod status;
 pub mod worker;
 
-pub use manifest::{JdkVendor, Manifest, Platform, Profile};
+pub use manifest::{Engine, JdkVendor, Manifest, Platform, Profile, SailPins};
+
+/// Cobalt's LakeSail worker (`python -m cobalt_sail_worker`), written into the Sail
+/// environment at install time.
+pub const SAIL_WORKER: &str = include_str!("../python/cobalt_sail_worker.py");
+pub const SAIL_WORKER_MODULE: &str = "cobalt_sail_worker";
+/// The environment name under `envs/` for the LakeSail engine.
+pub const SAIL_ENV: &str = "sail";
 pub use status::{ComponentState, Installed, RuntimeStatus};
 
 use std::path::{Path, PathBuf};
@@ -87,6 +94,17 @@ impl RuntimeDirs {
     }
     pub fn jdk_dir(&self) -> PathBuf {
         self.root.join("jdk")
+    }
+    /// The LakeSail environment (pysail + pyspark-client + the worker module).
+    pub fn sail_env_dir(&self) -> PathBuf {
+        self.env_dir(SAIL_ENV)
+    }
+    pub fn sail_env_python(&self) -> PathBuf {
+        self.env_python(SAIL_ENV)
+    }
+    /// Where the worker module lives (on `PYTHONPATH` for the worker process).
+    pub fn sail_worker_file(&self) -> PathBuf {
+        self.sail_env_dir().join(format!("{SAIL_WORKER_MODULE}.py"))
     }
     pub fn ivy_dir(&self) -> PathBuf {
         self.root.join("ivy")

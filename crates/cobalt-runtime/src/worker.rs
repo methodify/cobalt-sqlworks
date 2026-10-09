@@ -41,6 +41,8 @@ pub struct WorkerConfig {
     /// Open the control socket (`--control-port`; local-spark-mcp 0.4.0+). An older worker
     /// rejects the argument, so this follows the installed package version.
     pub control: bool,
+    /// The module run with `-m`: `local_spark_mcp.worker` or Cobalt's Sail worker.
+    pub module: String,
 }
 
 /// The control connection: usable from any thread while a data call is in flight.
@@ -182,7 +184,7 @@ impl Worker {
             None
         };
         let mut cmd = Command::new(&cfg.python);
-        cmd.args(["-m", "local_spark_mcp.worker", "--port", &port.to_string()]);
+        cmd.args(["-m", &cfg.module, "--port", &port.to_string()]);
         if let Some(l) = &control_listener {
             cmd.args(["--control-port", &l.local_addr()?.port().to_string()]);
         }

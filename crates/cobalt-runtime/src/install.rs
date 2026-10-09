@@ -2,7 +2,7 @@
 //! environment, package), the JDK, and the warm-up smoke test through the worker.
 
 use crate::detect;
-use crate::manifest::{JdkVendor, Manifest, Platform, Profile};
+use crate::manifest::{Engine, JdkVendor, Manifest, Platform, Profile};
 use crate::status::Installed;
 use crate::worker::{Worker, WorkerConfig};
 use crate::{Result, RuntimeDirs, RuntimeError};
@@ -49,6 +49,8 @@ pub enum Progress {
 /// What to provision.
 #[derive(Clone, Debug)]
 pub struct Plan {
+    /// Which engine's runtime: the JVM profile below, or the LakeSail environment.
+    pub engine: Engine,
     pub profile: String,
     pub jdk_vendor: JdkVendor,
     /// Adopt this JDK instead of downloading one.
@@ -466,7 +468,142 @@ pub fn worker_config(dirs: &RuntimeDirs, profile_name: &str, jdk_home: Option<&P
     if let Some(j) = jdk_home {
         env.push(("JAVA_HOME".into(), j.to_string_lossy().to_string()));
     }
-    WorkerConfig { python: dirs.env_python(profile_name), env, init: serde_json::Value::Object(init), startup_timeout: Duration::from_secs(60 * 20), control: false }
+    WorkerConfig { python: dirs.env_python(profile_name), env, init: serde_json::Value::Object(init), startup_timeout: Duration::from_secs(60 * 20), control: false, module: "local_spark_mcp.worker".into() }
+}
+
+/// The worker configuration for the LakeSail engine: Cobalt's own worker module from the Sail
+/// environment, no JVM, the control socket always on.
+pub fn sail_worker_config(dirs: &RuntimeDirs, extra: serde_json::Map<String, serde_json::Value>) -> WorkerConfig {
+    let mut init = serde_json::Map::new();
+    init.insert("app_name".into(), serde_json::Value::String("cobalt-sqlworks".into()));
+    init.insert("state_root".into(), serde_json::Value::String(dirs.state_dir().to_string_lossy().to_string()));
+    for (k, v) in extra {
+        init.insert(k, v);
+    }
+    let env = vec![
+        ("PYTHONPATH".to_string(), dirs.sail_env_dir().to_string_lossy().to_string()),
+        ("PYTHONUNBUFFERED".to_string(), "1".to_string()),
+        ("PYTHONIOENCODING".to_string(), "utf-8".to_string()),
+        ("RUST_LOG".to_string(), "warn".to_string()),
+    ];
+    WorkerConfig { python: dirs.sail_env_python(), env, init: serde_json::Value::Object(init), startup_timeout: Duration::from_secs(60 * 5), control: true, module: crate::SAIL_WORKER_MODULE.into() }
+}
+
+/// The LakeSail environment: a venv with pysail, the PySpark Connect client and IPython, plus
+/// the worker module. `uv pip install` is idempotent, so an update is the same step.
+fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> Result<PathBuf> {
+    let pins = &cx.manifest.sail;
+    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Checking the LakeSail environment (Sail {}, created only if missing)", pins.version) });
+    let env = uv_env(cx.dirs);
+    let env_dir = cx.dirs.sail_env_dir();
+    let env_dir_s = env_dir.to_string_lossy().to_string();
+    if !cx.dirs.sail_env_python().is_file() {
+        run_tool(cx, uv, &["venv", &env_dir_s, "--python", python, "--seed"], &env)?;
+    }
+    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Installing pysail {} and pyspark-client {} (about 250 MB the first time)", pins.version, pins.pyspark_client) });
+    let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
+    let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py];
+    args.extend(pins.requirements());
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_tool(cx, uv, &argv, &env)?;
+    std::fs::write(cx.dirs.sail_worker_file(), crate::SAIL_WORKER)?;
+    let v = detect::installed_package_version(&env_dir, "pysail");
+    let pv = detect::installed_package_version(&env_dir, "pyspark-client").or_else(|| detect::installed_package_version(&env_dir, "pyspark"));
+    cx.log(format!("pysail {} + pyspark-client {} installed in {}", v.clone().unwrap_or_default(), pv.clone().unwrap_or_default(), env_dir.display()));
+    let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
+    rec.sail_env = Some(env_dir.clone());
+    rec.sail_version = v;
+    rec.sail_pyspark = pv;
+    Ok(env_dir)
+}
+
+/// Start the Sail worker once and run `SELECT 1`: proves the wheel loads on this machine.
+fn step_sail_warm(cx: &Context, rec: &mut Installed) -> Result<String> {
+    (cx.progress)(Progress::Step { step: Step::Warm, label: "Starting a LakeSail session".into() });
+    std::fs::create_dir_all(cx.dirs.state_dir())?;
+    let cfg = sail_worker_config(cx.dirs, Default::default());
+    let (ltx, lrx) = std::sync::mpsc::channel::<String>();
+    let log: crate::worker::LogFn = std::sync::Arc::new(move |s: String| {
+        let _ = ltx.send(s);
+    });
+    let mut w = Worker::start(&cfg, log, cx.cancel)?;
+    for s in lrx.try_iter() {
+        cx.log(format!("  {s}"));
+    }
+    let info = w.info.clone();
+    let sail_version = info.get("engine_version").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let spark_version = info.get("spark_version").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    cx.log(format!("Sail {sail_version} up (PySpark Connect client {spark_version})"));
+    let r = w.run_sql("SELECT 1 AS one, 'ok' AS status", Some(10))?;
+    let rows = r.get("rows").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    cx.log(format!("SELECT 1 returned {rows} row(s): {}", r.get("rows").map(|v| v.to_string()).unwrap_or_default()));
+    w.pump();
+    for s in lrx.try_iter() {
+        cx.log(format!("  {s}"));
+    }
+    w.shutdown();
+    rec.sail_warmed = true;
+    rec.sail_spark_version = Some(spark_version);
+    Ok(sail_version)
+}
+
+/// Provision the LakeSail engine: uv, Python, the environment, one session.
+fn provision_sail(cx: &Context, plan: &Plan) -> Result<Installed> {
+    std::fs::create_dir_all(cx.dirs.downloads_dir())?;
+    let mut rec = Installed::load(cx.dirs);
+    rec.last_error = None;
+    cx.log(format!("provisioning LakeSail ({}) under {}", cx.manifest.sail.describe(), cx.dirs.root.display()));
+    let result = (|| -> Result<()> {
+        let uv = step_uv(cx, &mut rec)?;
+        rec.save(cx.dirs)?;
+        let want = cx.manifest.sail.python_for(Platform::current()).to_string();
+        (cx.progress)(Progress::Step { step: Step::Python, label: format!("Checking Python {want} (installed only if missing)") });
+        let env = uv_env(cx.dirs);
+        std::fs::create_dir_all(cx.dirs.python_dir())?;
+        run_tool(cx, &uv, &["python", "install", &want], &env)?;
+        rec.save(cx.dirs)?;
+        if plan.steps.contains(&Step::Env) || !cx.dirs.sail_env_python().is_file() {
+            step_sail_env(cx, &uv, &want, &mut rec)?;
+            rec.save(cx.dirs)?;
+        } else {
+            // the worker module follows the Cobalt build, not the environment
+            std::fs::write(cx.dirs.sail_worker_file(), crate::SAIL_WORKER)?;
+        }
+        if plan.steps.contains(&Step::Warm) {
+            step_sail_warm(cx, &mut rec)?;
+            rec.save(cx.dirs)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            cx.log("done");
+            rec.save(cx.dirs)?;
+            Ok(rec)
+        }
+        Err(e) => {
+            rec.last_error = Some(e.to_string());
+            let _ = rec.save(cx.dirs);
+            cx.log(format!("failed: {e}"));
+            Err(e)
+        }
+    }
+}
+
+/// Delete the LakeSail environment only (the JVM runtime stays).
+pub fn remove_sail(dirs: &RuntimeDirs) -> std::io::Result<()> {
+    let env = dirs.sail_env_dir();
+    if env.exists() {
+        std::fs::remove_dir_all(&env)?;
+    }
+    let mut rec = Installed::load(dirs);
+    rec.sail_env = None;
+    rec.sail_version = None;
+    rec.sail_pyspark = None;
+    rec.sail_warmed = false;
+    rec.sail_spark_version = None;
+    let _ = rec.save(dirs);
+    Ok(())
 }
 
 /// Start a worker, run `SELECT 1`, report versions. The first run pulls Delta and hadoop-azure
@@ -502,6 +639,9 @@ pub fn step_warm(cx: &Context, plan: &Plan, jdk_home: &Path, rec: &mut Installed
 
 /// Run the plan's steps in order, recording progress in `runtime.json` after each one.
 pub fn provision(cx: &Context, plan: &Plan) -> Result<Installed> {
+    if plan.engine.is_sail() {
+        return provision_sail(cx, plan);
+    }
     let profile = cx.manifest.profile(&plan.profile)?.clone();
     std::fs::create_dir_all(cx.dirs.downloads_dir())?;
     let mut rec = Installed::load(cx.dirs);
@@ -594,6 +734,12 @@ mod tests {
     fn worker_config_shape() {
         let dirs = RuntimeDirs::new("/tmp/rt");
         let cfg = worker_config(&dirs, "fabric-2.0", Some(Path::new("/jdk")), "2g", Default::default());
+        assert_eq!(cfg.module, "local_spark_mcp.worker");
+        let s = sail_worker_config(&dirs, Default::default());
+        assert_eq!(s.module, crate::SAIL_WORKER_MODULE);
+        assert!(s.control);
+        assert!(s.env.iter().any(|(k, v)| k == "PYTHONPATH" && v.ends_with("sail")));
+        assert!(crate::SAIL_WORKER.contains("def run_worker"));
         assert_eq!(cfg.init["driver_memory"], "2g");
         assert_eq!(cfg.init["java_home"], "/jdk");
         assert!(cfg.init["extra_configs"]["spark.jars.ivy"].as_str().unwrap().ends_with("ivy"));

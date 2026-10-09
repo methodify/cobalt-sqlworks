@@ -203,6 +203,8 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "busy": k.busy.as_ref().map(|(t, c)| json!({"tab": t.to_string(), "cell": c})),
         "waiting": k.waiting.len(),
         "profile": k.profile,
+        "engine": k.engine.key(),
+        "engine_version": k.engine_version,
         "info": info,
         "log_tail": k.log.iter().rev().take(20).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>(),
         "fabric": k.fabric.as_ref().map(|f| json!({"workspace_id": f.workspace_id, "workspace": f.workspace_name, "lakehouses": f.lakehouses, "default_lakehouse": f.default_lakehouse, "write_mode": f.write_mode})),
@@ -1222,7 +1224,7 @@ impl AgentApp for CobaltApp {
                     Ok(new) => self.apply_settings(egui, new),
                     Err(e) => return ActionResult::BadArgs(format!("settings: {e}")),
                 }
-                ActionResult::with(&json!({"spark": {"lifecycle": self.settings.spark.lifecycle, "idle_minutes": self.settings.spark.idle_minutes, "early_start": self.settings.spark.early_start}}))
+                ActionResult::with(&json!({"spark": {"engine": self.settings.spark.engine, "lifecycle": self.settings.spark.lifecycle, "idle_minutes": self.settings.spark.idle_minutes, "early_start": self.settings.spark.early_start}}))
             }
             "kernel" => {
                 let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
@@ -1288,8 +1290,10 @@ impl AgentApp for CobaltApp {
                 ActionResult::with(&json!({
                     "dir": crate::runtime::dirs(&self.settings, &self.paths).root.to_string_lossy(),
                     "profile": self.settings.spark.profile,
+                    "engine": self.settings.spark.engine,
                     "pending": r.status_pending,
                     "status": r.status.as_ref().map(|s| json!({
+                        "engine": s.engine.key(), "package_version": s.package_version,
                         "ready": s.is_ready(), "warm": s.warm, "spark_version": s.spark_version,
                         "uv": comp(&s.uv), "python": comp(&s.python), "env": comp(&s.env), "jdk": comp(&s.jdk),
                         "jdk_candidates": s.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),

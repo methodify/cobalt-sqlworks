@@ -3,7 +3,7 @@
 
 use cobalt_core::Settings;
 use cobalt_runtime::install::{self, Plan, Progress, Step};
-use cobalt_runtime::{Installed, JdkVendor, Manifest, RuntimeDirs, RuntimeStatus};
+use cobalt_runtime::{Engine, Installed, JdkVendor, Manifest, RuntimeDirs, RuntimeStatus};
 use cobalt_store::AppPaths;
 use crossbeam_channel::{Receiver, Sender};
 use std::path::PathBuf;
@@ -103,6 +103,11 @@ pub fn dirs(settings: &Settings, paths: &AppPaths) -> RuntimeDirs {
     }
 }
 
+/// The engine the settings choose for the next session.
+pub fn engine(settings: &Settings) -> Engine {
+    Engine::parse(&settings.spark.engine)
+}
+
 pub fn jdk_vendor(settings: &Settings) -> JdkVendor {
     if settings.spark.jdk_vendor.eq_ignore_ascii_case("temurin") {
         JdkVendor::Temurin
@@ -118,6 +123,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
     }
     let dirs = dirs(settings, paths);
     let profile = settings.spark.profile.clone();
+    let engine = engine(settings);
     let jdk = settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from);
     let (tx, rx) = crossbeam_channel::bounded(1);
     let ctx = egui.clone();
@@ -127,7 +133,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
         .name("runtime-status".into())
         .spawn(move || {
             let m = Manifest::embedded();
-            let st = RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref());
+            let st = if engine.is_sail() { RuntimeStatus::inspect_sail(&dirs, &m) } else { RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref()) };
             let _ = tx.send(st);
             ctx.request_repaint();
         })
@@ -140,6 +146,7 @@ fn spawn_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &e
     }
     let dirs = dirs(settings, paths);
     let plan = Plan {
+        engine: engine(settings),
         profile: settings.spark.profile.clone(),
         jdk_vendor: jdk_vendor(settings),
         adopt_jdk: settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from),
@@ -229,9 +236,10 @@ pub fn action(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &
                 return Some("Cancel the running job first.".into());
             }
             let d = dirs(settings, paths);
-            match install::remove_all(&d) {
+            let r = if engine(settings).is_sail() { install::remove_sail(&d) } else { install::remove_all(&d) };
+            match r {
                 Ok(()) => {
-                    ui.last_result = Some(Ok(format!("Removed {}", d.root.display())));
+                    ui.last_result = Some(Ok(if engine(settings).is_sail() { format!("Removed the LakeSail environment under {}", d.root.display()) } else { format!("Removed {}", d.root.display()) }));
                     ui.last_smoke = None;
                     refresh_status(ui, settings, paths, egui);
                 }
@@ -306,7 +314,8 @@ pub fn poll(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &eg
                             if job.kind == JobKind::SmokeTest {
                                 ui.last_smoke = job.log.iter().rev().find(|l| l.contains("SELECT 1 returned")).cloned();
                             }
-                            Ok(format!("{} finished in {}s{}", if job.kind == JobKind::SmokeTest { "Smoke test" } else { "Install" }, secs, rec.spark_version.as_ref().map(|v| format!(" — Spark {v}")).unwrap_or_default()))
+                            let version = if engine(settings).is_sail() { rec.sail_version.as_ref().map(|v| format!(" — Sail {v} (PySpark Connect client {})", rec.sail_spark_version.clone().unwrap_or_default())) } else { rec.spark_version.as_ref().map(|v| format!(" — Spark {v}")) };
+                            Ok(format!("{} finished in {}s{}", if job.kind == JobKind::SmokeTest { "Smoke test" } else { "Install" }, secs, version.unwrap_or_default()))
                         }
                         Err(e) => Err(e.clone()),
                     });

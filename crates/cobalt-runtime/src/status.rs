@@ -2,7 +2,7 @@
 //! provisioning.
 
 use crate::detect;
-use crate::manifest::{JdkVendor, Manifest, Platform};
+use crate::manifest::{Engine, JdkVendor, Manifest, Platform};
 use crate::RuntimeDirs;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -26,6 +26,12 @@ pub struct Installed {
     pub warmed: bool,
     pub spark_version: Option<String>,
     pub last_error: Option<String>,
+    /// The LakeSail environment, when installed.
+    pub sail_env: Option<PathBuf>,
+    pub sail_version: Option<String>,
+    pub sail_pyspark: Option<String>,
+    pub sail_warmed: bool,
+    pub sail_spark_version: Option<String>,
 }
 
 impl Installed {
@@ -61,6 +67,8 @@ impl ComponentState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeStatus {
+    /// Which engine this status describes.
+    pub engine: Engine,
     pub profile: String,
     pub uv: ComponentState,
     pub python: ComponentState,
@@ -90,6 +98,17 @@ pub struct Health {
     pub protocol_version: Option<u64>,
 }
 
+/// The Sail worker's own healthcheck: imports and versions, no server.
+pub fn sail_healthcheck(dirs: &RuntimeDirs) -> Option<Health> {
+    let python = dirs.sail_env_python();
+    if !python.is_file() || !dirs.sail_worker_file().is_file() {
+        return None;
+    }
+    let mut cmd = std::process::Command::new(python);
+    cmd.args(["-m", crate::SAIL_WORKER_MODULE, "--healthcheck"]).env("PYTHONPATH", dirs.sail_env_dir()).env("PYTHONIOENCODING", "utf-8");
+    run_healthcheck(cmd)
+}
+
 /// Run the package's own healthcheck (no Spark): versions, profile verdict, JDK and winutils
 /// resolution, catalog jar. A couple of seconds; `java_home` is passed so the JDK verdict matches
 /// what sessions will use.
@@ -102,6 +121,10 @@ pub fn healthcheck(python: &Path, java_home: Option<&Path>, profile: &str) -> Op
     if let Some(j) = java_home {
         cmd.env("JAVA_HOME", j).env("LOCAL_SPARK_JAVA_HOME", j);
     }
+    run_healthcheck(cmd)
+}
+
+fn run_healthcheck(mut cmd: std::process::Command) -> Option<Health> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -117,7 +140,61 @@ pub fn healthcheck(python: &Path, java_home: Option<&Path>, profile: &str) -> Op
 
 impl RuntimeStatus {
     pub fn is_ready(&self) -> bool {
-        self.uv.is_ready() && self.python.is_ready() && self.env.is_ready() && self.jdk.is_ready()
+        self.uv.is_ready() && self.python.is_ready() && self.env.is_ready() && (self.engine.is_sail() || self.jdk.is_ready())
+    }
+
+    /// The LakeSail engine's status: uv, Python, the Sail environment; no JDK.
+    pub fn inspect_sail(dirs: &RuntimeDirs, manifest: &Manifest) -> Self {
+        let platform = Platform::current();
+        let record = Installed::load(dirs);
+        let pins = &manifest.sail;
+        let uv = match detect::find_uv(&dirs.uv_exe(), &manifest.uv.min_adopt) {
+            Some(c) if c.source == "managed" => ComponentState::Managed { detail: format!("uv {}", c.version) },
+            Some(c) => ComponentState::Adopted { detail: format!("uv {} at {}", c.version, c.exe.display()) },
+            None => ComponentState::Missing { reason: format!("uv {} will be downloaded", manifest.uv.version) },
+        };
+        let env_dir = dirs.sail_env_dir();
+        let env_python = dirs.sail_env_python();
+        let want_py = pins.python_for(platform).to_string();
+        let python = match detect::venv_python_version(&env_dir) {
+            Some(v) if env_python.is_file() => {
+                if v.starts_with(&want_py) {
+                    ComponentState::Managed { detail: format!("Python {v}") }
+                } else {
+                    ComponentState::Missing { reason: format!("environment has Python {v}; LakeSail needs {want_py}") }
+                }
+            }
+            _ => ComponentState::Missing { reason: format!("Python {want_py} will be installed by uv") },
+        };
+        let env = match detect::installed_package_version(&env_dir, "pysail") {
+            Some(v) if env_python.is_file() && dirs.sail_worker_file().is_file() => {
+                let client = detect::installed_package_version(&env_dir, "pyspark-client").or_else(|| detect::installed_package_version(&env_dir, "pyspark")).unwrap_or_default();
+                if v == pins.version {
+                    ComponentState::Managed { detail: format!("pysail {v} · pyspark-client {client}") }
+                } else {
+                    ComponentState::Missing { reason: format!("pysail {v} installed; {} pinned", pins.version) }
+                }
+            }
+            Some(_) => ComponentState::Missing { reason: "the worker module is missing; reinstall".into() },
+            _ => ComponentState::Missing { reason: format!("pysail {} + pyspark-client {} will be installed (about 250 MB)", pins.version, pins.pyspark_client) },
+        };
+        let health = if env.is_ready() { sail_healthcheck(dirs) } else { None };
+        Self {
+            engine: Engine::Sail,
+            profile: "sail".into(),
+            uv,
+            python,
+            env,
+            jdk: ComponentState::Managed { detail: "not needed".into() },
+            warm: record.sail_warmed,
+            spark_version: record.sail_spark_version.clone(),
+            jdk_candidates: Vec::new(),
+            disk_bytes: crate::dir_size(&env_dir),
+            mirror_bytes: 0,
+            package_version: record.sail_version.clone(),
+            last_error: record.last_error.clone(),
+            health,
+        }
     }
 
     /// Inspect the runtime folder and the machine. `jdk_override` is a user-chosen JDK home.
@@ -188,6 +265,7 @@ impl RuntimeStatus {
             None
         };
         Self {
+            engine: Engine::PySpark,
             profile: profile.to_string(),
             uv,
             python,

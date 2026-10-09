@@ -819,7 +819,7 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
                         state.spark_start_tab = Some(state.tabs[i].id); // retried by sparkq::tick
                     }
                 } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
-                    cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings › Spark runtime.");
+                    cx.toast(ToastKind::Warning, crate::kernel::not_installed_text(cx.settings));
                     state.settings_open = true;
                     state.settings_scroll_to = Some("Spark runtime");
                 }

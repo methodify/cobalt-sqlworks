@@ -227,7 +227,7 @@ fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mode: Spar
     view.script_hash = hash_text(&t.text);
     view.export_target = job.as_ref().map(|j| j.display_target());
     if cx.settings.history.capture && mode == SparkSqlMode::Run {
-        let mut e = NewHistoryEntry::new(format!("Local Spark ({})", cx.settings.spark.profile), script.clone());
+        let mut e = NewHistoryEntry::new(crate::kernel::history_source(&cx.settings.spark), script.clone());
         e.database = t.spark.as_ref().and_then(|s| s.lakehouse_name.clone());
         e.tab_id = Some(tab);
         view.history_id = cx.store.add_history(&e).ok();
@@ -879,7 +879,7 @@ pub fn root(state: &AppState, cx: &Ctx) -> SparkRoot {
     }
     let k = &state.kernel;
     SparkRoot {
-        session: k.state.label(),
+        session: k.state_label(),
         ready: k.state.is_ready(),
         starting: k.state.is_starting(),
         signed_in: state.fabric.slot.is_some(),
@@ -906,15 +906,15 @@ pub fn inherited_binding(state: &AppState) -> (Option<NotebookFabric>, Option<(S
 }
 
 /// The status bar / toolbar label of the session for a Spark tab.
-pub fn session_label(state: &AppState, settings_profile: &str) -> (String, bool) {
+pub fn session_label(state: &AppState, settings: &cobalt_core::SparkSettings) -> (String, bool) {
     let k = &state.kernel;
-    let profile = if k.profile.is_empty() { settings_profile } else { k.profile.as_str() };
+    let name = k.engine_label(settings);
     match &k.state {
-        KernelState::Ready { .. } if k.busy.is_some() => (format!("Local Spark ({profile}) · running"), true),
-        KernelState::Ready { .. } => (format!("Local Spark ({profile}) · ready"), true),
-        KernelState::Starting { since } => (format!("Local Spark ({profile}) · starting {}s", since.elapsed().as_secs()), false),
-        KernelState::Failed(_) => (format!("Local Spark ({profile}) · failed"), false),
-        KernelState::Stopped => (format!("Local Spark ({profile}) · stopped"), false),
+        KernelState::Ready { .. } if k.busy.is_some() => (format!("{name} · running"), true),
+        KernelState::Ready { .. } => (format!("{name} · ready"), true),
+        KernelState::Starting { since } => (format!("{name} · starting {}s", since.elapsed().as_secs()), false),
+        KernelState::Failed(_) => (format!("{name} · failed"), false),
+        KernelState::Stopped => (format!("{name} · stopped"), false),
     }
 }
 

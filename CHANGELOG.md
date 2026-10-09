@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- **LakeSail as a second Spark engine (experimental).** Settings › Spark runtime › Engine (also
+  the Spark menu › Engine and the notebook kernel picker) chooses between *Local Spark (JVM)* —
+  local-spark-mcp on a Fabric runtime profile, as before — and *LakeSail*: Sail 0.7.2, a Rust
+  Spark Connect server with no Java, installed as one Python environment (about 250 MB, a
+  minute) that starts in seconds. Spark SQL query tabs, notebooks (PySpark and `%%sql` cells,
+  `display`, Stop) and the Lakehouse pane run on either; switching restarts the session. On
+  LakeSail, lakehouse tables are read straight from OneLake with the signed-in account's token
+  and mounted on first use; sessions are read-only by default or write-through (INSERT / UPDATE /
+  DELETE / MERGE reach OneLake); there is no sandbox clone, no `notebookutils` and no shadows
+  yet, and the UI says so. Design: `docs/design/lakesail_runtime.md`; findings for the Sail
+  team: `docs/requests/lakesail-0.7.2.md`.
+
 ## 0.8.3 — 2026-10-08
 
 - **A Spark menu on the menu bar.** Start, restart, stop and interrupt the local Spark session,

@@ -9,6 +9,7 @@
 use crate::state::*;
 use cobalt_core::{Settings, TabId};
 use cobalt_runtime::install;
+use cobalt_runtime::Engine;
 use cobalt_runtime::worker::{ControlHandle, Worker, WorkerConfig};
 use cobalt_runtime::{Installed, RuntimeError};
 use cobalt_store::AppPaths;
@@ -200,10 +201,15 @@ impl KernelState {
             KernelState::Stopped => "Spark: stopped".into(),
             KernelState::Starting { since } => format!("Spark: starting… {}s", since.elapsed().as_secs()),
             KernelState::Ready { info, since } => {
-                let v = info.get("spark_version").and_then(Value::as_str).unwrap_or("");
                 let s = since.elapsed().as_secs();
                 let up = if s >= 3600 { format!("{}h {:02}m", s / 3600, (s % 3600) / 60) } else if s >= 60 { format!("{}m", s / 60) } else { format!("{s}s") };
-                format!("Spark {v} · up {up}")
+                if info.get("engine").and_then(Value::as_str) == Some("sail") {
+                    let v = info.get("engine_version").and_then(Value::as_str).unwrap_or("");
+                    format!("Sail {v} · up {up}")
+                } else {
+                    let v = info.get("spark_version").and_then(Value::as_str).unwrap_or("");
+                    format!("Spark {v} · up {up}")
+                }
             }
             KernelState::Failed(_) => "Spark: failed".into(),
         }
@@ -294,6 +300,10 @@ pub struct KernelUi {
     pub log: VecDeque<String>,
     pub log_open: bool,
     pub profile: String,
+    /// The engine the session was started on (the settings' engine until the first start).
+    pub engine: Engine,
+    /// Sail's version once the session is up (empty on the JVM engine).
+    pub engine_version: String,
     /// Cells to submit once the kernel is ready (filled while it starts).
     pub waiting: Vec<RunReq>,
     tx: Option<Sender<Cmd>>,
@@ -336,6 +346,35 @@ impl KernelUi {
     pub fn has(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
+    /// The session runs (or ran) on LakeSail.
+    pub fn is_sail(&self) -> bool {
+        self.engine.is_sail()
+    }
+    /// `KernelState::label()` with the engine's name: "Sail: starting… 2s" on LakeSail.
+    pub fn state_label(&self) -> String {
+        let l = self.state.label();
+        if self.engine.is_sail() {
+            l.strip_prefix("Spark").map(|rest| format!("Sail{rest}")).unwrap_or(l)
+        } else {
+            l
+        }
+    }
+    /// "Local Spark (fabric-2.0)" or "LakeSail (0.7.2)": the running session's engine, or the
+    /// settings' engine while nothing runs.
+    pub fn engine_label(&self, settings: &cobalt_core::SparkSettings) -> String {
+        let running = !matches!(self.state, KernelState::Stopped);
+        let engine = if running { self.engine } else { Engine::parse(&settings.engine) };
+        match engine {
+            Engine::Sail => {
+                let v = if running && !self.engine_version.is_empty() { self.engine_version.clone() } else { cobalt_runtime::Manifest::embedded().sail.version };
+                format!("LakeSail ({v})")
+            }
+            Engine::PySpark => {
+                let profile = if running && !self.profile.is_empty() { self.profile.as_str() } else { settings.profile.as_str() };
+                format!("Local Spark ({profile})")
+            }
+        }
+    }
     pub fn idle(&self) -> Duration {
         if self.busy.is_some() || !self.waiting.is_empty() {
             Duration::ZERO
@@ -347,7 +386,7 @@ impl KernelUi {
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now(), last_call: None }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), engine: Engine::PySpark, engine_version: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now(), last_call: None }
     }
 }
 
@@ -357,6 +396,22 @@ impl KernelUi {
     }
     pub fn token_error(&self) -> Option<String> {
         self.token_server.as_ref().and_then(|t| t.last_error.lock().clone())
+    }
+}
+
+/// The history source of a Spark run under the settings' engine.
+pub fn history_source(settings: &cobalt_core::SparkSettings) -> String {
+    match Engine::parse(&settings.engine) {
+        Engine::Sail => format!("LakeSail ({})", cobalt_runtime::Manifest::embedded().sail.version),
+        Engine::PySpark => format!("Local Spark ({})", settings.profile),
+    }
+}
+
+/// The toast for `StartError::NotProvisioned`, naming the engine the settings chose.
+pub fn not_installed_text(settings: &cobalt_core::Settings) -> String {
+    match Engine::parse(&settings.spark.engine) {
+        Engine::Sail => "The LakeSail engine is not installed yet. Install it under Settings › Spark runtime (Engine: LakeSail), or switch the engine back to Local Spark on the Spark menu.".into(),
+        Engine::PySpark => "The local Spark runtime is not installed yet. Install it under Settings › Spark runtime.".into(),
     }
 }
 
@@ -521,6 +576,9 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         return Ok(());
     }
     let dirs = crate::runtime::dirs(settings, paths);
+    if Engine::parse(&settings.spark.engine).is_sail() {
+        return start_sail(k, settings, egui, fabric, dirs);
+    }
     let profile = settings.spark.profile.clone();
     if !dirs.env_python(&profile).is_file() {
         return Err(StartError::NotProvisioned);
@@ -590,6 +648,60 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
     }
     k.native_arrow = native;
     let bootstrap = if native { BOOTSTRAP_SQL.to_string() } else { python_bootstrap(&out_dir, limit) };
+    k.engine = Engine::PySpark;
+    k.engine_version = String::new();
+    launch(k, cfg, bootstrap, native, out_dir, profile, egui);
+    Ok(())
+}
+
+/// The LakeSail path of `start`: Cobalt's own worker from the Sail environment, no JDK, no
+/// jar; the lakehouse binding and the token endpoint go to the worker as on the JVM engine.
+/// There is no sandbox: `sandbox` becomes `readonly` and the log says so.
+fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabric: Option<FabricStart>, dirs: cobalt_runtime::RuntimeDirs) -> Result<(), StartError> {
+    if !dirs.sail_env_python().is_file() || !dirs.sail_worker_file().is_file() {
+        return Err(StartError::NotProvisioned);
+    }
+    let out_dir = dirs.state_dir().join("outputs");
+    let _ = std::fs::create_dir_all(&out_dir);
+    let mut extra = serde_json::Map::new();
+    k.token_server = None;
+    k.fabric = None;
+    let mut notes: Vec<String> = Vec::new();
+    if let Some(fs) = fabric {
+        let ts = crate::onelake_tokens::TokenServer::start(fs.resolver.clone(), fs.fabric.slot, fs.fabric.tenant.clone(), fs.handle.clone()).map_err(|e| StartError::TokenServer(e.to_string()))?;
+        extra.insert("onelake".into(), json!({"endpoint": ts.url, "secret": ts.secret}));
+        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id})).collect()));
+        if let Some(d) = &fs.fabric.default_lakehouse {
+            extra.insert("default_lakehouse".into(), Value::String(d.clone()));
+        }
+        let mut f = fs.fabric;
+        if f.write_mode != "writethrough" {
+            if f.write_mode == "sandbox" {
+                notes.push("cobalt: LakeSail has no sandbox clones — this session is read-only; write-through (lakehouse button) writes to OneLake".into());
+            }
+            f.write_mode = "readonly".into();
+        }
+        extra.insert("write_mode".into(), Value::String(f.write_mode.clone()));
+        k.token_server = Some(ts);
+        k.fabric = Some(f);
+    }
+    k.binding_warned.clear();
+    extra.insert("profile".into(), Value::String("sail".into()));
+    let limit = settings.notebooks.spark_row_limit.max(1);
+    extra.insert("default_sql_limit".into(), json!(limit));
+    let cfg = install::sail_worker_config(&dirs, extra);
+    k.native_arrow = true;
+    k.engine = Engine::Sail;
+    k.engine_version = String::new();
+    launch(k, cfg, BOOTSTRAP_SQL.to_string(), true, out_dir, "sail".into(), egui);
+    for n in notes {
+        k.log.push_back(n);
+    }
+    Ok(())
+}
+
+/// Spawn the kernel thread and send it the start command (shared by both engines).
+fn launch(k: &mut KernelUi, cfg: cobalt_runtime::worker::WorkerConfig, bootstrap: String, native: bool, out_dir: PathBuf, profile: String, egui: &egui::Context) {
     let (ctx_tx, ctx_rx) = crossbeam_channel::unbounded::<Cmd>();
     let (ev_tx, ev_rx) = crossbeam_channel::unbounded::<KernelEvent>();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -609,7 +721,6 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         .spawn(move || kernel_thread(ctx_rx, ev_tx, cancel, egui2))
         .ok();
     let _ = ctx_tx.send(Cmd::Start { cfg, bootstrap, capture: native });
-    Ok(())
 }
 
 fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicBool>, egui: egui::Context) {
@@ -1075,6 +1186,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
         match ev {
             KernelEvent::Ready { info, control } => {
                 k.features = info.get("features").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default();
+                k.engine_version = info.get("engine_version").and_then(Value::as_str).unwrap_or("").to_string();
                 k.contexts.clear();
                 k.state = KernelState::Ready { info, since: Instant::now() };
                 k.control = control;

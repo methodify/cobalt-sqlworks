@@ -50,7 +50,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             // the normal path: binding resolution, OneLake token, start (no cell needed)
             let _ = crate::notebook::ensure_session(f.state, f.cx, i);
         } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut f.state.kernel, f.cx.settings, f.cx.paths, f.cx.egui, None) {
-            f.cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings › Spark runtime).");
+            f.cx.toast(ToastKind::Warning, crate::kernel::not_installed_text(f.cx.settings));
         }
     }
     kernel_log_window(ctx, f);
@@ -176,10 +176,27 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ClearFilters);
                 item(ui, &mut cmds, Command::OpenCellViewer);
             });
+            let mut engine_pick: Option<cobalt_runtime::Engine> = None;
             ui.menu_button("Spark", |ui| {
                 let k = &f.state.kernel.state;
                 let running = k.is_ready() || k.is_starting();
-                ui.label(RichText::new(format!("Session · {}", k.label())).size(11.0).color(theme.text_muted));
+                let sail = crate::runtime::engine(f.cx.settings).is_sail();
+                ui.label(RichText::new(format!("Session · {}", f.state.kernel.state_label())).size(11.0).color(theme.text_muted));
+                ui.menu_button("Engine", |ui| {
+                    let current = crate::runtime::engine(f.cx.settings);
+                    let sail_v = cobalt_runtime::Manifest::embedded().sail.version;
+                    for (e, label, hint) in [
+                        (cobalt_runtime::Engine::PySpark, format!("Local Spark (JVM) · {}", f.cx.settings.spark.profile), "local-spark-mcp: a JVM Spark matching the Fabric runtime profile, with sandbox clones, shadows and notebookutils."),
+                        (cobalt_runtime::Engine::Sail, format!("LakeSail {sail_v} · experimental, no Java"), "Sail: a Rust Spark Connect server. Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs, no notebookutils yet."),
+                    ] {
+                        let r = ui.selectable_label(current == e, label);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
+                        if r.on_hover_text(hint).clicked() {
+                            engine_pick = Some(e);
+                            ui.close();
+                        }
+                    }
+                });
                 ui.separator();
                 item(ui, &mut cmds, Command::NewSparkQuery);
                 item(ui, &mut cmds, Command::ShowLakehouse);
@@ -196,10 +213,15 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
                 ui.separator();
                 item(ui, &mut cmds, Command::KernelLog);
-                item(ui, &mut cmds, Command::Shadows);
+                if !sail {
+                    item(ui, &mut cmds, Command::Shadows);
+                }
                 ui.separator();
                 item(ui, &mut cmds, Command::SparkRuntime);
             });
+            if let Some(e) = engine_pick {
+                crate::notebook::set_engine(f.state, f.cx, e.key());
+            }
             ui.menu_button("View", |ui| {
                 item(ui, &mut cmds, Command::Palette);
                 item(ui, &mut cmds, Command::ToggleSidebar);
@@ -697,9 +719,10 @@ fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     let theme = f.theme;
     let mut open = true;
     let k = &mut f.state.kernel;
-    crate::ui::chrome::Window::new("Local Spark session").id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, theme, |ui| {
+    let title = format!("{} session", k.engine_label(&f.cx.settings.spark));
+    crate::ui::chrome::Window::new(title).id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, theme, |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(k.state.label()).strong());
+            ui.label(RichText::new(k.state_label()).strong());
             if let crate::kernel::KernelState::Ready { info, .. } = &k.state {
                 ui.label(RichText::new(format!("{} · {}", info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("master").and_then(|v| v.as_str()).unwrap_or(""))).size(11.0).color(theme.text_muted));
             }
@@ -776,7 +799,7 @@ fn spark_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         (s.binding.clone(), s.lakehouse_name.clone(), s.workspace_name.clone())
     };
     let signed_in = f.state.fabric.slot.is_some();
-    let (session, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark.profile);
+    let (session, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
     let root = crate::sparkq::root(f.state, f.cx);
     let mut choose = false;
     let mut bind: Option<crate::sparkq::SparkEntry> = None;
@@ -1069,7 +1092,8 @@ use std::sync::Arc;
 fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Command>) {
     let theme = f.theme;
     let tab_id = f.state.tabs[idx].id;
-    let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark.profile);
+    let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
+    let sail_engine = crate::runtime::engine(f.cx.settings).is_sail();
     let busy_here = f.state.kernel.busy.as_ref().map(|(t, _)| *t == tab_id).unwrap_or(false);
     let color = if busy_here { theme.accent } else if ready { theme.success } else if f.state.kernel.state.is_starting() { theme.warning } else { theme.text_muted };
     let r = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::FIRE)).size(12.0).color(color)).small());
@@ -1081,7 +1105,7 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
     egui::Popup::menu(&r).id(egui::Id::new(("spark-session-menu", tab_id))).show(|ui| {
         ui.set_min_width(240.0);
         let k = &f.state.kernel.state;
-        ui.label(RichText::new(format!("Session · {}", k.label())).strong());
+        ui.label(RichText::new(format!("Session · {}", f.state.kernel.state_label())).strong());
         let running = k.is_ready() || k.is_starting();
         if !running && ui.button(format!("{} Start session", icons::PLAY)).clicked() {
             start = true;
@@ -1104,7 +1128,7 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
             show_log = true;
             ui.close();
         }
-        if ui.button("Lakehouse shadows…").clicked() {
+        if !sail_engine && ui.button("Lakehouse shadows…").clicked() {
             session_cmd = Some(Command::Shadows);
             ui.close();
         }
@@ -1196,7 +1220,7 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
             }
             ui.separator();
             ui.label(RichText::new("Write mode").strong());
-            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads from OneLake; any write raises."), ("writethrough", "Write through — writes go to OneLake", "Writes land in the lakehouse. Needs a session started in this mode.")] {
+            for (mode, label, hint) in [("sandbox", "Sandbox — writes go to local shallow clones", "Default. OneLake is never written."), ("readonly", "Read only — writes fail", "Reads from OneLake; any write raises."), ("writethrough", "Write through — writes go to OneLake", "Writes land in the lakehouse. Needs a session started in this mode.")].into_iter().filter(|(m, _, _)| !sail_engine || *m != "sandbox") {
                 if ui.selectable_label(b.write_mode == mode, label).on_hover_text(hint).clicked() {
                     set = Some(Some(crate::state::NotebookFabric { write_mode: mode.into(), ..b.clone() }));
                     ui.close();
@@ -1416,7 +1440,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             let tab = f.state.active();
             if let Some(t) = tab {
                 if let Some(sp) = &t.spark {
-                    let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark.profile);
+                    let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
                     ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
                     match (&sp.lakehouse_name, sp.workspace_name.is_empty()) {
                         (Some(lh), false) => ui.label(format!("{lh} ({})", sp.workspace_name)),
@@ -1493,15 +1517,15 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         crate::kernel::KernelState::Failed(_) => (theme.error, icons::WARNING),
                         crate::kernel::KernelState::Stopped => (theme.text_faint, icons::CIRCLE),
                     };
-                    let mut label = if k.busy.is_some() { format!("{} · running a cell", k.state.label()) } else { k.state.label() };
+                    let mut label = if k.busy.is_some() { format!("{} · running a cell", k.state_label()) } else { k.state_label() };
                     if !k.contexts.is_empty() {
                         label.push_str(&format!(" · {} tab{}", k.contexts.len(), if k.contexts.len() == 1 { "" } else { "s" }));
                     }
                     let r = ui.label(RichText::new(format!("{icon} {label}")).color(color));
                     let hover = match &k.state {
-                        crate::kernel::KernelState::Ready { info, .. } => format!("Local Spark session ({})\nprofile {} · app {}\nStart, stop, restart and the log are on the Spark menu", k.profile, info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("app_id").and_then(|v| v.as_str()).unwrap_or("")),
-                        crate::kernel::KernelState::Failed(e) => format!("Local Spark session failed:\n{e}"),
-                        _ => "Local Spark session · start, stop, restart and the log are on the Spark menu".to_string(),
+                        crate::kernel::KernelState::Ready { info, .. } => format!("{} session\nprofile {} · app {}\nStart, stop, restart, the engine and the log are on the Spark menu", k.engine_label(&f.cx.settings.spark), info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("app_id").and_then(|v| v.as_str()).unwrap_or("")),
+                        crate::kernel::KernelState::Failed(e) => format!("{} session failed:\n{e}", k.engine_label(&f.cx.settings.spark)),
+                        _ => format!("{} session · start, stop, restart, the engine and the log are on the Spark menu", k.engine_label(&f.cx.settings.spark)),
                     };
                     r.on_hover_text(hover);
                     ui.separator();
