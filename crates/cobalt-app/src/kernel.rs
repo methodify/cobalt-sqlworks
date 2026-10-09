@@ -210,6 +210,15 @@ impl KernelState {
     }
 }
 
+/// A query tab's statements for `run_sql` (0.7.0): streamed batches of about `batch_rows`
+/// rows, at most `limit` rows per statement when set (the grid's cap; Run to File sets none).
+#[derive(Clone, Debug)]
+pub struct SqlRun {
+    pub statements: Vec<String>,
+    pub limit: Option<u64>,
+    pub batch_rows: u64,
+}
+
 /// A cell submitted to the kernel.
 #[derive(Clone, Debug)]
 pub struct RunReq {
@@ -225,6 +234,10 @@ pub struct RunReq {
     pub context_name: Option<String>,
     /// The cell's first line, for `status.cell.jobs` and the Spark UI (0.4.3).
     pub job_description: Option<String>,
+    /// A Spark SQL query tab's statements (local-spark-mcp 0.7.0 `run_sql` with `stream`): each
+    /// one streams its rows as Arrow batches and reports DML metrics. On an older worker
+    /// `code` runs instead.
+    pub sql: Option<SqlRun>,
     /// Lakehouses to attach before the cell runs (`register_lakehouse`, 0.4.3) — a notebook from
     /// a workspace the session does not know yet.
     pub register: Vec<Value>,
@@ -248,6 +261,7 @@ enum Cmd {
     Shutdown,
 }
 
+#[allow(clippy::large_enum_variant)] // transient per-event values; `Done` carries the request back
 pub enum KernelEvent {
     Ready { info: Value, control: Option<ControlHandle> },
     Log(String),
@@ -260,8 +274,15 @@ pub enum KernelEvent {
     ContextDropped(TabId),
     CallResult { tag: String, result: Result<Value, String> },
     /// A cell finished: the worker's `ExecResult` (ok, stdout, stderr, error, traceback,
-    /// displays…) with the Arrow blobs that followed it, or a transport-level error.
+    /// displays…) with the Arrow blobs that followed it, or a transport-level error. For a
+    /// `SqlRun` the result is Cobalt's summary `{"sql": true, "ok", "interrupted", "error"}`
+    /// after the per-statement events.
     Done { req: RunReq, result: Result<Value, String>, blobs: Vec<Vec<u8>> },
+    /// One streamed Arrow batch of statement `statement` of a `SqlRun`.
+    SqlBatch { tab: TabId, cell_id: String, statement: usize, bytes: Vec<u8> },
+    /// Statement `statement` of a `SqlRun` ended: the worker's `SqlResult` (row_count,
+    /// metrics, elapsed_s, notices) or its error.
+    SqlStatement { tab: TabId, cell_id: String, statement: usize, result: Result<Value, String> },
     Stopped,
     Failed(String),
 }
@@ -421,6 +442,28 @@ def __cobalt_sql_all(text, limit=None):
         else:
             print("Statement %d completed (%.1f s)" % (i, __time.time() - t0))
 "#;
+
+/// A `run_sql` error as the worker reports it (`AnalysisException: [CODE] message … JVM
+/// stacktrace: …` plus the worker's Python traceback) reduced to the message.
+pub fn compact_spark_error(text: &str) -> String {
+    let text = text.strip_prefix("worker: ").unwrap_or(text);
+    let head = text.split("JVM stacktrace:").next().unwrap_or(text);
+    let head = head.split("\nTraceback (most recent call last)").next().unwrap_or(head);
+    let mut lines: Vec<&str> = head.lines().map(str::trim_end).filter(|l| !l.trim_start().starts_with(['\'', '+', ':']) && !l.trim().is_empty()).collect();
+    if let Some(first) = lines.first_mut() {
+        if let Some((ty, rest)) = first.split_once(": ") {
+            if (ty.ends_with("Exception") || ty.ends_with("Error")) && !ty.contains(' ') {
+                *first = rest;
+            }
+        }
+    }
+    let out = lines.join("\n");
+    if out.trim().is_empty() {
+        text.lines().next().unwrap_or("the statement failed").to_string()
+    } else {
+        out
+    }
+}
 
 /// A failed SQL cell: the Python traceback around `__cobalt_sql` is noise; keep what the
 /// `SparkSqlError` carried (the analysis message) as the one error line.
@@ -658,6 +701,95 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
                         }
                     }
                 }
+                // a query tab's statements through `run_sql` (0.7.0): streamed batches and
+                // DML metrics per statement; the summary goes out as the run's `Done`
+                let sql_capable = w.info.get("features").and_then(Value::as_array).map(|a| a.iter().any(|f| f.as_str() == Some("sql_stream"))).unwrap_or(false);
+                if let Some(sqlrun) = req.sql.clone().filter(|_| sql_capable) {
+                    enum Fatal {
+                        Cancelled,
+                        Dead(String),
+                    }
+                    let mut fatal: Option<Fatal> = None;
+                    let mut failed: Option<String> = None;
+                    let mut interrupted = false;
+                    for (i, stmt) in sqlrun.statements.iter().enumerate() {
+                        let mut p = serde_json::Map::new();
+                        p.insert("sql".into(), Value::String(stmt.clone()));
+                        p.insert("stream".into(), Value::Bool(true));
+                        p.insert("batch_rows".into(), Value::from(sqlrun.batch_rows));
+                        if let Some(l) = sqlrun.limit {
+                            p.insert("limit".into(), Value::from(l));
+                        }
+                        if let Some(c) = &context {
+                            p.insert("context".into(), Value::String(c.clone()));
+                        }
+                        if let Some(d) = &req.job_description {
+                            p.insert("job_description".into(), Value::String(d.clone()));
+                        }
+                        let (btx, begui) = (tx.clone(), egui.clone());
+                        let mut on_frame = |v: &Value, blobs: Vec<Vec<u8>>| {
+                            if v.get("event").and_then(Value::as_str) == Some("batch") {
+                                if let Some(bytes) = blobs.into_iter().next() {
+                                    let _ = btx.send(KernelEvent::SqlBatch { tab, cell_id: cell_id.clone(), statement: i, bytes });
+                                    begui.request_repaint();
+                                }
+                            } else {
+                                let ev = v.get("event").and_then(Value::as_str).unwrap_or("").to_string();
+                                let text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+                                let _ = btx.send(KernelEvent::CellOutput { tab, cell_id: cell_id.clone(), stream: ev, text });
+                                begui.request_repaint_after(Duration::from_millis(100));
+                            }
+                        };
+                        match w.call_streaming_frames("run_sql", Value::Object(p), Duration::from_secs(60 * 60 * 24), &cancel, &mut on_frame) {
+                            Ok(v) => {
+                                let _ = tx.send(KernelEvent::SqlStatement { tab, cell_id: cell_id.clone(), statement: i, result: Ok(v) });
+                            }
+                            Err(RuntimeError::Cancelled) => {
+                                fatal = Some(Fatal::Cancelled);
+                                break;
+                            }
+                            Err(RuntimeError::WorkerFatal(e)) => {
+                                let _ = tx.send(KernelEvent::SqlStatement { tab, cell_id: cell_id.clone(), statement: i, result: Err(e.clone()) });
+                                fatal = Some(Fatal::Dead(e));
+                                break;
+                            }
+                            Err(e) => {
+                                let text = e.to_string();
+                                let _ = tx.send(KernelEvent::SqlStatement { tab, cell_id: cell_id.clone(), statement: i, result: Err(text.clone()) });
+                                if !w.is_alive() {
+                                    fatal = Some(Fatal::Dead(text));
+                                } else if text.contains("KeyboardInterrupt: interrupted") {
+                                    interrupted = true;
+                                } else {
+                                    failed = Some(text);
+                                }
+                                break;
+                            }
+                        }
+                        egui.request_repaint();
+                    }
+                    match fatal {
+                        Some(Fatal::Cancelled) => {
+                            if let Some(w) = worker.take() {
+                                w.kill();
+                            }
+                            let _ = tx.send(KernelEvent::Done { req, result: Err("interrupted — the local Spark session was stopped (the next run starts a new session)".into()), blobs: Vec::new() });
+                            let _ = tx.send(KernelEvent::Stopped);
+                        }
+                        Some(Fatal::Dead(e)) => {
+                            if let Some(w) = worker.take() {
+                                w.kill();
+                            }
+                            let _ = tx.send(KernelEvent::Done { req, result: Err(e.clone()), blobs: Vec::new() });
+                            let _ = tx.send(KernelEvent::Failed(e));
+                        }
+                        None => {
+                            let _ = tx.send(KernelEvent::Done { req, result: Ok(json!({"sql": true, "ok": failed.is_none() && !interrupted, "interrupted": interrupted, "error": failed})), blobs: Vec::new() });
+                        }
+                    }
+                    egui.request_repaint();
+                    continue;
+                }
                 let mut params = serde_json::Map::new();
                 params.insert("code".into(), Value::String(req.code.clone()));
                 params.insert("stream".into(), Value::Bool(stream));
@@ -885,6 +1017,10 @@ pub fn stop(k: &mut KernelUi) {
 
 pub struct PollOut {
     pub done: Vec<(RunReq, Result<Value, String>, Vec<Vec<u8>>)>,
+    /// Streamed batches of query-tab statements: `(tab, cell id, statement, Arrow IPC bytes)`.
+    pub sql_batches: Vec<(TabId, String, usize, Vec<u8>)>,
+    /// Finished query-tab statements: `(tab, cell id, statement, SqlResult or error)`.
+    pub sql_statements: Vec<(TabId, String, usize, Result<Value, String>)>,
     /// Streamed output for running cells: `(tab, cell id, stream, text)`.
     pub outputs: Vec<(TabId, String, String, String)>,
     pub ready_now: bool,
@@ -901,7 +1037,9 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
     let mut broke = None;
     let mut calls = Vec::new();
     let mut outputs = Vec::new();
-    let Some(rx) = &k.rx else { return PollOut { done, outputs, ready_now, broke, calls } };
+    let mut sql_batches = Vec::new();
+    let mut sql_statements = Vec::new();
+    let Some(rx) = &k.rx else { return PollOut { done, sql_batches, sql_statements, outputs, ready_now, broke, calls } };
     let mut events = Vec::new();
     while let Ok(ev) = rx.try_recv() {
         events.push(ev);
@@ -923,6 +1061,11 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.contexts.remove(&tab);
             }
             KernelEvent::CellOutput { tab, cell_id, stream, text } => outputs.push((tab, cell_id, stream, text)),
+            KernelEvent::SqlBatch { tab, cell_id, statement, bytes } => sql_batches.push((tab, cell_id, statement, bytes)),
+            KernelEvent::SqlStatement { tab, cell_id, statement, result } => {
+                k.last_activity = Instant::now();
+                sql_statements.push((tab, cell_id, statement, result));
+            }
             KernelEvent::Interrupted(r) => {
                 let secs = k.interrupt_sent_at.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
                 k.last_interrupt = Some((secs, match &r { Ok(v) => v.to_string(), Err(e) => e.clone() }));
@@ -981,7 +1124,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
             run(k, req);
         }
     }
-    PollOut { done, outputs, ready_now, broke, calls }
+    PollOut { done, sql_batches, sql_statements, outputs, ready_now, broke, calls }
 }
 
 /// Split a worker `ExecResult` into messages and Arrow result sets for a cell.
@@ -1108,6 +1251,15 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spark_errors_are_compacted() {
+        let raw = "AnalysisException: [TABLE_OR_VIEW_NOT_FOUND] The table or view `dbo`.`nope` cannot be found.; line 1 pos 14;\n'Project [*]\n+- 'UnresolvedRelation [dbo, nope]\n\nJVM stacktrace:\norg.apache.spark.sql.AnalysisException\n\tat x\nTraceback (most recent call last):\n  File x";
+        assert_eq!(compact_spark_error(raw), "[TABLE_OR_VIEW_NOT_FOUND] The table or view `dbo`.`nope` cannot be found.; line 1 pos 14;");
+        assert_eq!(compact_spark_error("RuntimeError: refused"), "refused");
+        assert_eq!(compact_spark_error("worker: AnalysisException: [X] no"), "[X] no");
+        assert_eq!(compact_spark_error("plain words"), "plain words");
+    }
 
     #[test]
     fn sql_error_is_compacted() {

@@ -98,9 +98,10 @@ pane already fetches. The pane follows the active Spark tab like it follows a no
 - **B — editing comfort.** Completion from the pane, Spark keywords/functions, backticks,
   text EXPLAIN plan tab, "Insert SELECT" from the pane, "Open in a Spark tab" from a
   notebook SQL cell. ≈ 2 days.
-- **C — upstream asks (later).** `run_sql` streaming batches (true Run to File and fetch
-  more), affected-row counts for DML, two-part names `schema.table` against the default
-  schema-enabled lakehouse (also hits `%%sql` today — see `docs/requests/local-spark-mcp-0.6.5-request.md`).
+- **C — upstream asks.** *Delivered by local-spark-mcp 0.6.6 (two-part names) and 0.7.0
+  (`run_sql` streaming, DML metrics, catalog listing); adopted 2026-10-08: statements stream
+  through `run_sql` per statement, Run to File streams, Messages carry the affected rows.*
+  Fetch-more stays a re-run with a bigger `LIMIT` (the stream has no cursor).
 
 ## 6. Decisions needed from the founder
 

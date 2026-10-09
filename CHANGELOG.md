@@ -4,6 +4,12 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **local-spark-mcp 0.7.0 is the new pin: Spark SQL tabs stream.** Each statement of a Spark
+  SQL tab runs through the worker's `run_sql` and its rows arrive in batches, so the grid fills
+  while the query runs and Run to File streams every row without holding the result in memory.
+  `INSERT`, `UPDATE`, `DELETE`, `MERGE` and `CREATE TABLE … AS` report "(n rows affected)", a
+  merge with its inserted / updated / deleted split. `SHOW TABLES` on a lakehouse lists every
+  table, not only the ones the session touched. Errors name the failing statement.
 - **Spark SQL query tabs.** A query tab that runs on the local Spark session instead of a
   connection: Servers → *Local Spark* lists the lakehouses bound to open notebooks and tabs,
   pinned on the Fabric panel, or used before; double-click one for `SparkSQL_1 · test`, or
@@ -16,7 +22,7 @@
   writes the collected rows to any export target; history records the run under *Local Spark*;
   the Lakehouse pane follows the tab and inserts a `SELECT` for a table; hot exit restores the
   tab with its binding. Not yet: execution plans, Parse, fetch-more on the row cap (the cap is
-  Settings → Notebooks), affected-row counts for DML (asked upstream).
+  Settings → Notebooks).
 - **local-spark-mcp 0.6.6 is the new pin.** In a context whose default lakehouse is
   schema-enabled, the lakehouse is the current catalog as on Fabric, so `publicholidays`,
   `dbo.publicholidays` and `test.dbo.publicholidays` all resolve. Settings → Spark runtime

@@ -472,22 +472,27 @@ runs in its own context, created on the first run with the lakehouse as current 
 all resolve.
 
 Run (F5), Run selection and Run current statement work as on a SQL Server tab: statements are
-split on `;`, every statement that returns rows is its own result set in the grid (filters,
-sort, viewer, copy, exports, Save as table), a statement without rows says "Statement 3
-completed (0.0 s)" in Messages, a failing statement ends the run and shows Spark's analysis
-message as one error line ("Statement 2: [TABLE_OR_VIEW_NOT_FOUND] …"), earlier result sets
+split on `;` and each runs through the worker's `run_sql` (local-spark-mcp 0.7.0) in the tab's
+context. Every statement that returns rows is its own result set in the grid (filters, sort,
+viewer, copy, exports, Save as table) and the rows stream in while the statement runs;
+`INSERT` / `UPDATE` / `DELETE` / `MERGE` / `CREATE TABLE … AS` say "(n rows affected)" in
+Messages (a merge adds "10 inserted, 50 updated, 0 deleted"), other statements without rows say
+"Statement 3 completed (0.4 s)". A failing statement ends the run and shows Spark's analysis
+message as one error line ("Statement 2: [TABLE_OR_VIEW_NOT_FOUND] …"); earlier result sets
 stay. Cancel interrupts the Spark jobs (the session survives; Cancel again kills it). The row
-cap is Settings → Notebooks → "Rows a Spark DataFrame brings back" and Messages says when a
-result was capped; there is no fetch-more (re-run with a `LIMIT`). Run to File runs without the
-cap and writes the collected rows to the chosen file or lakehouse. History lists the run under
+cap is Settings → Notebooks → "Rows a Spark DataFrame brings back"; a capped result says "the
+first 10,000 rows … there may be more" and there is no fetch-more (re-run with a `LIMIT`). Run
+to File streams every row to the chosen file or lakehouse without the cap and keeps the first
+1,000 in the grid as a preview. History lists the run under
 `Local Spark (fabric-2.0)` with the lakehouse as database. The Lakehouse pane follows a Spark
 tab: double-click a table to insert `SELECT * FROM test.dbo.publicholidays LIMIT 100` at the
 caret; a file inserts its `Files/…` path. Hot exit restores the tab with its binding (the
-session is not restarted until you run). Not there yet: Est./Actual plan and Parse (run
-`EXPLAIN` as a statement), completion from the lakehouse's tables, affected-row counts for DML.
-Known worker quirk (asked upstream, `docs/requests/local-spark-mcp-0.6.7-request.md`): `SHOW
-TABLES` lists only the tables the session has touched. Agent: `spark_query {workspace?,
-lakehouse?, write_mode?, text?}`; `state` reports `kind: "spark"` and a `spark` object per tab.
+session is not restarted until you run). `SHOW TABLES` lists every table of the lakehouse
+(0.7.0), without mounting any. Not there yet: Est./Actual plan and Parse (run `EXPLAIN` as a
+statement), completion from the lakehouse's tables. On a runtime older than 0.7.0 the tab runs
+its statements through the `%%sql` helper instead: collected, not streamed, no DML counts.
+Agent: `spark_query {workspace?, lakehouse?, write_mode?, text?}`; `state` reports
+`kind: "spark"` and a `spark` object per tab.
 
 ## Import Data from File
 

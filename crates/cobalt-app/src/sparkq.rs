@@ -4,18 +4,23 @@
 //! context, and every statement that returns rows becomes a result set of the run.
 //! Design: `docs/design/spark_query_tabs.md`.
 
-use crate::kernel::{self, KernelState, RunReq};
+use crate::kernel::{self, KernelState, RunReq, SqlRun};
 use crate::notebook::{self, SparkPrep};
 use crate::ops::{self, Ctx};
-use crate::state::{fmt_duration, hash_text, AppState, EditorTab, Followup, GridState, MessageLine, NotebookFabric, PendingEdit, ResultSetView, RunMode, RunView, RunViewState, SparkTab, ToastKind};
+use crate::state::{fmt_count, fmt_duration, hash_text, AppState, EditorTab, Followup, GridState, MessageLine, NotebookFabric, PendingEdit, ResultSetView, RunMode, RunView, RunViewState, SparkSqlRun, SparkTab, ToastKind};
 use cobalt_core::TabId;
 use cobalt_store::NewHistoryEntry;
 use serde_json::Value;
 
 /// The `cell_id` a query tab's run carries through the kernel (notebooks use their cell ids).
 pub const CELL_ID: &str = "query";
-/// Run to File collects everything: the display cap is lifted to this.
+/// Run to File collects everything: the display cap is lifted to this (the `run_code` path on
+/// a worker before 0.7.0; `run_sql` streams without a limit).
 const NO_CAP: u64 = 2_000_000_000;
+/// Rows per streamed Arrow batch (`run_sql` with `stream`, 0.7.0).
+const BATCH_ROWS: u64 = 10_000;
+/// The grid keeps this many rows of a Run to File (the rest goes to the file only).
+const EXPORT_PREVIEW_ROWS: usize = 1_000;
 const RECENT_KEY: &str = "spark:recent_lakehouses";
 const RECENT_MAX: usize = 12;
 
@@ -71,7 +76,7 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, binding: Option<NotebookFabric>, 
         (None, _) => (String::new(), None),
     };
     let t = &mut state.tabs[idx];
-    t.spark = Some(SparkTab { binding, workspace_name: ws_name, lakehouse_name: lh_name, sink: None });
+    t.spark = Some(SparkTab { binding, workspace_name: ws_name, lakehouse_name: lh_name, sink: None, sql: None });
     if let Some(text) = text {
         t.text = text;
         t.mark_saved();
@@ -168,8 +173,11 @@ fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, context_la
     let t = &mut state.tabs[idx];
     let tab = t.id;
     let job = t.pending_export.take();
-    let limit = if job.is_some() { NO_CAP } else { cx.settings.notebooks.spark_row_limit.max(1) };
+    let cap = cx.settings.notebooks.spark_row_limit.max(1);
+    let limit = if job.is_some() { NO_CAP } else { cap };
     let code = format!("__cobalt_sql_all({}, {limit})", notebook::py_literal(&script));
+    let statements = split_statements(&script);
+    let sql = Some(SqlRun { statements: statements.clone(), limit: if job.is_some() { None } else { Some(cap) }, batch_rows: BATCH_ROWS });
     let run_id = cx.session.new_run();
     let mut view = RunView::new(run_id);
     view.script_hash = hash_text(&t.text);
@@ -184,14 +192,181 @@ fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, context_la
     t.results_visible = true;
     t.results_tab = crate::state::ResultsTab::Results;
     let title = t.title.clone();
+    let export = job.is_some();
     let sink = job.map(|j| ops::spawn_run_export(state, cx, Some(tab), *j));
     if let Some(s) = state.tabs[idx].spark.as_mut() {
         s.sink = sink;
+        s.sql = Some(SparkSqlRun { statements: statements.len(), limit: if export { None } else { Some(cap) }, sets: Default::default(), export, sink_open: None });
     }
     let job_description = if want_description { script.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| l.chars().take(80).collect::<String>()) } else { None };
     let context = if use_context { Some(kernel::context_id(tab)) } else { None };
-    kernel::run(&mut state.kernel, RunReq { tab, cell_id: CELL_ID.into(), code, context, context_lakehouse, context_name: Some(title), job_description, register });
+    kernel::run(&mut state.kernel, RunReq { tab, cell_id: CELL_ID.into(), code, sql, context, context_lakehouse, context_name: Some(title), job_description, register });
     state.history.loaded = false;
+}
+
+/// Statements of a script: split on `;` outside quotes (`'`, `"`, backticks) and `--` comments;
+/// blank ones dropped. The Python helper in the worker splits the same way.
+pub fn split_statements(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            buf.push(c);
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => {
+                quote = Some(c);
+                buf.push(c);
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                buf.push(c);
+                for n in chars.by_ref() {
+                    buf.push(n);
+                    if n == '\n' {
+                        break;
+                    }
+                }
+            }
+            ';' => {
+                let st = buf.trim();
+                if !st.is_empty() {
+                    out.push(st.to_string());
+                }
+                buf.clear();
+            }
+            _ => buf.push(c),
+        }
+    }
+    let st = buf.trim();
+    if !st.is_empty() {
+        out.push(st.to_string());
+    }
+    out
+}
+
+/// A streamed batch of statement `statement`: into the statement's result set (created on its
+/// first batch) and, during Run to File, to the export sink.
+pub fn on_sql_batch(state: &mut AppState, idx: usize, statement: usize, bytes: &[u8]) {
+    use crate::session::SinkMsg;
+    let t = &mut state.tabs[idx];
+    let Some(sp) = t.spark.as_mut() else { return };
+    let Some(sql) = sp.sql.as_mut() else { return };
+    let Some(run) = t.run.as_mut() else { return };
+    if !run.is_live() {
+        return;
+    }
+    let (columns, batches) = match notebook::ipc_columns_batches(bytes) {
+        Ok(x) => x,
+        Err(e) => {
+            run.messages.push(msg(format!("Could not read a result batch: {e}"), true));
+            return;
+        }
+    };
+    let set_index = match sql.sets.get(&statement) {
+        Some(&i) => i,
+        None => {
+            let i = run.result_sets.len();
+            let rs = cobalt_results::ResultSet::new(i, columns, std::sync::Arc::new(cobalt_results::MemoryBudget::unlimited()), std::env::temp_dir());
+            if let (true, Some(sink)) = (sql.export, sp.sink.as_ref()) {
+                let _ = sink.tx.send(SinkMsg::SetStart { index: i, columns: rs.columns.clone(), schema: rs.schema.clone() });
+                sql.sink_open = Some(statement);
+            }
+            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+            sql.sets.insert(statement, i);
+            i
+        }
+    };
+    let rs = run.result_sets[set_index].rs.clone();
+    for b in batches {
+        if sql.export {
+            // the file gets every row; the grid keeps a preview
+            let cast = match notebook::append_preview(&rs, b, EXPORT_PREVIEW_ROWS) {
+                Ok(b) => b,
+                Err(e) => {
+                    run.messages.push(msg(format!("Could not read a result batch: {e}"), true));
+                    continue;
+                }
+            };
+            if let Some(sink) = sp.sink.as_ref() {
+                if sink.tx.send(SinkMsg::Batch(cast)).is_err() {
+                    run.messages.push(msg("The export stopped taking rows.".into(), true));
+                }
+            }
+        } else if let Err(e) = notebook::append_cast(&rs, b) {
+            run.messages.push(msg(format!("Could not read a result batch: {e}"), true));
+        }
+    }
+    run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
+}
+
+/// Statement `statement` ended: its result set is complete, DML metrics and completion go to
+/// Messages, an error ends the run's messages with the compacted Spark text.
+pub fn on_sql_statement(state: &mut AppState, idx: usize, statement: usize, result: &Result<Value, String>) {
+    use crate::session::SinkMsg;
+    let t = &mut state.tabs[idx];
+    let Some(sp) = t.spark.as_mut() else { return };
+    let Some(sql) = sp.sql.as_mut() else { return };
+    let Some(run) = t.run.as_mut() else { return };
+    let many = sql.statements > 1;
+    let where_ = |n: usize| if many { format!("Statement {}: ", n + 1) } else { String::new() };
+    if let Some(&i) = sql.sets.get(&statement) {
+        if let Some(v) = run.result_sets.get(i) {
+            v.rs.set_state(if result.is_ok() { cobalt_results::RunState::Complete } else { cobalt_results::RunState::Error { message: "failed".into() } });
+        }
+    }
+    if sql.sink_open == Some(statement) {
+        sql.sink_open = None;
+        if let Some(sink) = sp.sink.as_ref() {
+            let _ = sink.tx.send(if result.is_ok() { SinkMsg::SetEnd } else { SinkMsg::Failed(result.as_ref().err().map(|e| kernel::compact_spark_error(e)).unwrap_or_default()) });
+        }
+    }
+    match result {
+        Ok(v) => {
+            for n in v.get("notices").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+                run.messages.push(msg(format!("notice: {n}"), false));
+            }
+            let elapsed = v.get("elapsed_s").and_then(Value::as_f64).map(|s| format!(" ({s:.1} s)")).unwrap_or_default();
+            let rows = v.get("row_count").and_then(Value::as_u64).unwrap_or(0);
+            if let Some(m) = v.get("metrics").filter(|m| m.is_object()) {
+                // Delta answers UPDATE / DELETE / MERGE with a one-row count frame: the
+                // Messages line says it; the frame is not a result set
+                if m.get("source").and_then(Value::as_str) == Some("result") {
+                    if let Some(i) = sql.sets.remove(&statement) {
+                        if i + 1 == run.result_sets.len() {
+                            run.result_sets.pop();
+                        }
+                    }
+                }
+                let n = m.get("affected_rows").and_then(Value::as_u64);
+                let parts: Vec<String> = ["inserted", "updated", "deleted"].iter().filter_map(|k| m.get(*k).and_then(Value::as_u64).map(|x| format!("{} {}", fmt_count(x), k))).collect();
+                let detail = if parts.len() > 1 { format!(" — {}", parts.join(", ")) } else { String::new() };
+                match (n, m.get("error").and_then(Value::as_str)) {
+                    (Some(n), _) => run.messages.push(msg(format!("{}({} row{} affected{detail}){elapsed}", where_(statement), fmt_count(n), if n == 1 { "" } else { "s" }), false)),
+                    (None, Some(e)) => run.messages.push(msg(format!("{}statement completed{elapsed}; affected rows unknown: {e}", where_(statement)), false)),
+                    (None, None) => run.messages.push(msg(format!("{}statement completed{elapsed}", where_(statement)), false)),
+                }
+            } else if sql.sets.contains_key(&statement) {
+                if let Some(limit) = sql.limit {
+                    if rows >= limit {
+                        run.messages.push(msg(format!("{}the first {} rows (Settings → Notebooks → rows a Spark DataFrame brings back); there may be more", where_(statement), fmt_count(limit)), false));
+                    }
+                }
+            } else {
+                run.messages.push(msg(format!("{}statement completed{elapsed}", where_(statement)), false));
+            }
+        }
+        Err(e) => {
+            if !e.contains("KeyboardInterrupt: interrupted") {
+                run.messages.push(msg(format!("{}{}", where_(statement), kernel::compact_spark_error(e)), true));
+            }
+        }
+    }
 }
 
 /// Cancel: interrupt the session when this tab's statement is the one running; a run that is
@@ -244,6 +419,11 @@ pub fn on_output(state: &mut AppState, tab: TabId, stream: &str, text: &str) {
 /// The worker's reply for this tab's statement: result sets, messages, the run's state, the
 /// history record, and the Run to File sink when one is attached.
 pub fn on_done(state: &mut AppState, idx: usize, result: &Result<Value, String>, blobs: &[Vec<u8>]) -> Vec<Followup> {
+    if let Ok(v) = result {
+        if v.get("sql").and_then(Value::as_bool) == Some(true) {
+            return on_sql_done(state, idx, v);
+        }
+    }
     let o = kernel::outcome(result, blobs);
     let interrupted = o.interrupted || matches!(result, Err(e) if e.starts_with("interrupted"));
     let t = &mut state.tabs[idx];
@@ -277,6 +457,50 @@ pub fn on_done(state: &mut AppState, idx: usize, result: &Result<Value, String>,
         feed_sink(sink, sets, if interrupted { Some("cancelled".to_string()) } else if o.failed { Some(error_text(&state.tabs[idx])) } else { None });
     }
     followups
+}
+
+/// The end of a streamed run: state, elapsed, history, the export sink's end.
+fn on_sql_done(state: &mut AppState, idx: usize, v: &Value) -> Vec<Followup> {
+    use crate::session::SinkMsg;
+    let t = &mut state.tabs[idx];
+    let sink = t.spark.as_mut().and_then(|s| s.sink.take());
+    let sql = t.spark.as_mut().and_then(|s| s.sql.take());
+    let Some(run) = t.run.as_mut() else { return Vec::new() };
+    let interrupted = v.get("interrupted").and_then(Value::as_bool) == Some(true);
+    let failed = !interrupted && v.get("ok").and_then(Value::as_bool) != Some(true);
+    run.elapsed = run.started.elapsed();
+    for s in run.result_sets.iter() {
+        if matches!(s.rs.state(), cobalt_results::RunState::Streaming) {
+            s.rs.set_state(if interrupted { cobalt_results::RunState::Cancelled } else { cobalt_results::RunState::Complete });
+        }
+    }
+    run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
+    run.state = if interrupted {
+        RunViewState::Cancelled
+    } else if failed {
+        RunViewState::Failed
+    } else {
+        RunViewState::Done
+    };
+    if interrupted {
+        run.messages.push(msg("Interrupted (Spark jobs cancelled)".into(), false));
+    } else {
+        run.messages.push(msg(format!("Total execution time: {}", fmt_duration(run.elapsed)), false));
+    }
+    let error = run.messages.iter().rev().find(|m| m.is_error).map(|m| m.text.clone());
+    if let Some(sink) = sink {
+        let open = sql.as_ref().and_then(|s| s.sink_open).is_some();
+        let _ = sink.tx.send(if interrupted {
+            SinkMsg::Failed("cancelled".into())
+        } else if failed {
+            SinkMsg::Failed(error.clone().unwrap_or_else(|| "the statement failed".into()))
+        } else if open {
+            SinkMsg::Failed("the statement ended before its rows did".into())
+        } else {
+            SinkMsg::RunEnd
+        });
+    }
+    vec![Followup::FinishHistory { history_id: run.history_id, elapsed: run.elapsed, rows: run.total_rows, cancelled: interrupted, failed, error }]
 }
 
 fn error_text(t: &EditorTab) -> String {
@@ -329,6 +553,9 @@ pub fn fail_live(state: &mut AppState, err: &str) {
 fn finish_run(state: &mut AppState, idx: usize, st: RunViewState, error: Option<String>) {
     let t = &mut state.tabs[idx];
     let sink = t.spark.as_mut().and_then(|s| s.sink.take());
+    if let Some(s) = t.spark.as_mut() {
+        s.sql = None;
+    }
     if let Some(r) = t.run.as_mut() {
         r.state = st;
         r.elapsed = r.started.elapsed();
@@ -400,7 +627,7 @@ pub fn from_snapshot(database: &str) -> Option<SparkTab> {
     let json = database.strip_prefix("spark:")?;
     let snap: Snapshot = serde_json::from_str(json).unwrap_or_default();
     let binding = snap.workspace_id.map(|workspace_id| NotebookFabric { workspace_id, lakehouse_id: snap.lakehouse_id, write_mode: snap.write_mode.unwrap_or_else(|| "sandbox".into()), preload: false });
-    Some(SparkTab { binding, workspace_name: snap.workspace_name, lakehouse_name: snap.lakehouse_name, sink: None })
+    Some(SparkTab { binding, workspace_name: snap.workspace_name, lakehouse_name: snap.lakehouse_name, sink: None, sql: None })
 }
 
 fn remember_recent(cx: &Ctx, t: &EditorTab) {
@@ -515,7 +742,7 @@ mod tests {
     #[test]
     fn snapshot_round_trips() {
         let mut t = EditorTab::new(3);
-        t.spark = Some(SparkTab { binding: Some(NotebookFabric { workspace_id: "ws".into(), lakehouse_id: Some("lh".into()), write_mode: "readonly".into(), preload: false }), workspace_name: "Fabric test".into(), lakehouse_name: Some("test".into()), sink: None });
+        t.spark = Some(SparkTab { binding: Some(NotebookFabric { workspace_id: "ws".into(), lakehouse_id: Some("lh".into()), write_mode: "readonly".into(), preload: false }), workspace_name: "Fabric test".into(), lakehouse_name: Some("test".into()), sink: None, sql: None });
         let s = snapshot_binding(&t).unwrap();
         assert!(s.starts_with("spark:{"));
         let back = from_snapshot(&s).unwrap();
@@ -529,7 +756,7 @@ mod tests {
     #[test]
     fn titles_follow_the_lakehouse() {
         let mut t = EditorTab::new(7);
-        t.spark = Some(SparkTab { binding: None, workspace_name: String::new(), lakehouse_name: None, sink: None });
+        t.spark = Some(SparkTab { binding: None, workspace_name: String::new(), lakehouse_name: None, sink: None, sql: None });
         retitle(&mut t);
         assert_eq!(t.title, "SparkSQL_7");
         t.spark.as_mut().unwrap().lakehouse_name = Some("test".into());
@@ -539,6 +766,13 @@ mod tests {
         t.spark.as_mut().unwrap().lakehouse_name = None;
         retitle(&mut t);
         assert_eq!(t.title, "SparkSQL_7 · test");
+    }
+
+    #[test]
+    fn statements_split_outside_quotes_and_comments() {
+        let v = split_statements("SELECT ';' AS a; -- a; comment\nSELECT `x;y` FROM t;\n\nUSE db");
+        assert_eq!(v, vec!["SELECT ';' AS a", "-- a; comment\nSELECT `x;y` FROM t", "USE db"]);
+        assert!(split_statements(" ; ;").is_empty());
     }
 
     #[test]

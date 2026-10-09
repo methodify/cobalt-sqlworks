@@ -270,6 +270,20 @@ pub struct SparkTab {
     pub workspace_name: String,
     pub lakehouse_name: Option<String>,
     pub sink: Option<crate::session::RunSink>,
+    /// The streamed run in progress (`run_sql` per statement, local-spark-mcp 0.7.0).
+    pub sql: Option<SparkSqlRun>,
+}
+
+/// Bookkeeping of a Spark tab's streamed run: how many statements, which result set each
+/// statement's rows went to, and whether rows go to an export sink (Run to File) rather than
+/// beyond the grid's preview.
+pub struct SparkSqlRun {
+    pub statements: usize,
+    pub limit: Option<u64>,
+    pub sets: std::collections::HashMap<usize, usize>,
+    pub export: bool,
+    /// The statement whose set is open on the export sink (SetStart sent, SetEnd pending).
+    pub sink_open: Option<usize>,
 }
 
 /// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay

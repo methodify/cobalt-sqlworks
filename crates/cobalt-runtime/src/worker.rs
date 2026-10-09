@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 pub type LogFn = Arc<dyn Fn(String) + Send + Sync>;
 /// `(event, text)` for streamed cell output.
 pub type EventFn<'a> = &'a mut dyn FnMut(&str, &str);
+/// Every event frame of a streamed call, with the binary blobs it announced (`run_sql` batches).
+pub type FrameFn<'a> = &'a mut dyn FnMut(&Value, Vec<Vec<u8>>);
 
 #[derive(Clone, Debug)]
 pub struct WorkerConfig {
@@ -301,6 +303,18 @@ impl Worker {
     /// `stream: true`) go to `on_event` as they arrive. A reply whose id is not this request's
     /// is fatal: the socket is out of step and the worker must be respawned.
     pub fn call_streaming(&mut self, method: &str, params: Value, timeout: Duration, cancel: &AtomicBool, on_event: EventFn<'_>) -> Result<Value> {
+        let mut on_frame = |v: &Value, _blobs: Vec<Vec<u8>>| {
+            let ev = v.get("event").and_then(Value::as_str).unwrap_or("").to_string();
+            let text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            on_event(&ev, &text);
+        };
+        self.call_streaming_frames(method, params, timeout, cancel, &mut on_frame)
+    }
+
+    /// A streamed call whose event frames may carry binary blobs (`run_sql` with `stream`:
+    /// one Arrow IPC stream per `batch` event). `on_frame` sees every event frame with its
+    /// blobs; the final reply is returned.
+    pub fn call_streaming_frames(&mut self, method: &str, params: Value, timeout: Duration, cancel: &AtomicBool, on_frame: FrameFn<'_>) -> Result<Value> {
         self.next_id += 1;
         let id = self.next_id;
         self.last_blobs.clear();
@@ -315,9 +329,16 @@ impl Worker {
             match recv_frame(&mut self.stream) {
                 Ok(Some(v)) => {
                     if v.get("event").is_some() && v.get("ok").is_none() {
-                        let ev = v.get("event").and_then(Value::as_str).unwrap_or("").to_string();
-                        let text = v.get("text").and_then(Value::as_str).unwrap_or("").to_string();
-                        on_event(&ev, &text);
+                        let sizes = blob_sizes(&v);
+                        let blobs = if sizes.is_empty() {
+                            Vec::new()
+                        } else {
+                            self.stream.set_read_timeout(None)?;
+                            let b = recv_blobs(&mut self.stream, &sizes)?;
+                            self.stream.set_read_timeout(Some(Duration::from_millis(200)))?;
+                            b
+                        };
+                        on_frame(&v, blobs);
                         continue;
                     }
                     if v.get("id").and_then(Value::as_u64) != Some(id) {

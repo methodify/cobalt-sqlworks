@@ -1222,7 +1222,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     // are unknown, so the request carries the context and the thread decides
     let context = if use_context || !state.kernel.state.is_ready() { Some(kernel::context_id(tab)) } else { None };
     let context_name = Some(state.tabs[idx].title.trim_end_matches(".ipynb").to_string());
-    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code, context, context_lakehouse, context_name, job_description, register: pending_register });
+    kernel::run(&mut state.kernel, RunReq { tab, cell_id, code, sql: None, context, context_lakehouse, context_name, job_description, register: pending_register });
     state.history.loaded = false;
 }
 
@@ -1330,6 +1330,17 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         state.shadows.status = None;
         state.shadows.preload = None;
         state.shadows.loading = false;
+    }
+    // query tabs: streamed batches and finished statements
+    for (tab, _cell_id, statement, bytes) in out.sql_batches {
+        if let Some(idx) = state.tab_index(tab) {
+            crate::sparkq::on_sql_batch(state, idx, statement, &bytes);
+        }
+    }
+    for (tab, _cell_id, statement, result) in out.sql_statements {
+        if let Some(idx) = state.tab_index(tab) {
+            crate::sparkq::on_sql_statement(state, idx, statement, &result);
+        }
     }
     // streamed output lands on the running cell as it is produced; the final reply replaces it
     for (tab, cell_id, stream, text) in out.outputs {
@@ -1510,7 +1521,9 @@ pub fn load_outputs(cell: &Cell, _index: usize) -> (Option<RunView>, Vec<Output>
     (Some(run), extra)
 }
 
-pub(crate) fn result_set_from_ipc(bytes: &[u8], index: usize) -> Result<Arc<ResultSet>, String> {
+/// An Arrow IPC stream from the worker: the columns (SQL types from the stream's metadata when
+/// the worker wrote them, else suggested from the Arrow types) and its batches.
+pub(crate) fn ipc_columns_batches(bytes: &[u8]) -> Result<(Vec<ColumnInfo>, Vec<RecordBatch>), String> {
     let reader = arrow::ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None).map_err(|e| e.to_string())?;
     let schema = reader.schema();
     let batches: Vec<RecordBatch> = reader.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
@@ -1524,12 +1537,37 @@ pub(crate) fn result_set_from_ipc(bytes: &[u8], index: usize) -> Result<Arc<Resu
             ColumnInfo::new(f.name().clone(), st, f.is_nullable(), i)
         })
         .collect();
+    Ok((columns, batches))
+}
+
+/// Append a worker batch to a result set whose schema came from the SQL types: columns are cast
+/// to the set's Arrow types when they differ. Returns the batch as appended (for an export sink).
+pub(crate) fn append_cast(rs: &ResultSet, b: RecordBatch) -> Result<RecordBatch, String> {
+    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| if c.data_type() == f.data_type() { Ok(c.clone()) } else { arrow::compute::cast(c, f.data_type()).map_err(|e| e.to_string()) }).collect::<Result<_, _>>()?;
+    let b = RecordBatch::try_new(rs.schema.clone(), cols).map_err(|e| e.to_string())?;
+    rs.append(b.clone()).map_err(|e| e.to_string())?;
+    Ok(b)
+}
+
+/// Like `append_cast`, but the result set keeps only its first `preview` rows (Run to File:
+/// the rows go to the file; the grid shows a sample). The cast batch comes back whole.
+pub(crate) fn append_preview(rs: &ResultSet, b: RecordBatch, preview: usize) -> Result<RecordBatch, String> {
+    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| if c.data_type() == f.data_type() { Ok(c.clone()) } else { arrow::compute::cast(c, f.data_type()).map_err(|e| e.to_string()) }).collect::<Result<_, _>>()?;
+    let b = RecordBatch::try_new(rs.schema.clone(), cols).map_err(|e| e.to_string())?;
+    let have = rs.row_count();
+    if have < preview {
+        let take = (preview - have).min(b.num_rows());
+        rs.append(b.slice(0, take)).map_err(|e| e.to_string())?;
+    }
+    Ok(b)
+}
+
+pub(crate) fn result_set_from_ipc(bytes: &[u8], index: usize) -> Result<Arc<ResultSet>, String> {
+    let (columns, batches) = ipc_columns_batches(bytes)?;
     // the result set derives its own schema from the SQL types; cast each batch to it
     let rs = ResultSet::new(index, columns, Arc::new(cobalt_results::MemoryBudget::unlimited()), std::env::temp_dir());
     for b in batches {
-        let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| if c.data_type() == f.data_type() { Ok(c.clone()) } else { arrow::compute::cast(c, f.data_type()) }).collect::<Result<_, _>>().map_err(|e| e.to_string())?;
-        let b = RecordBatch::try_new(rs.schema.clone(), cols).map_err(|e| e.to_string())?;
-        rs.append(b).map_err(|e| e.to_string())?;
+        append_cast(&rs, b)?;
     }
     rs.set_state(cobalt_results::RunState::Complete);
     Ok(rs)
