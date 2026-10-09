@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.2 — 2026-10-08
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
