@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.1 — 2026-10-09
 
 - **LakeSail: the lakehouse catalog comes from Fabric, nothing is mounted.** Cobalt now serves
   Sail a Unity-compatible catalog on loopback, backed by Fabric's own OneLake table API: one call
