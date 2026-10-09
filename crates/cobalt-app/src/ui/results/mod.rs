@@ -19,6 +19,8 @@ use grid::GridAction;
 #[derive(Debug, Clone)]
 pub enum ResultsAction {
     FetchMore { rows: Option<u64> },
+    /// A capped Spark result: run the same text again without the row cap.
+    RerunUncapped,
     Cancel,
     Copy { set: usize, kind: CopyKind },
     Export { set: usize, selection_only: bool },
@@ -59,7 +61,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
         return actions;
     };
     let data_sets: Vec<usize> = run.result_sets.iter().enumerate().filter(|(_, s)| !s.is_plan).map(|(i, _)| i).collect();
-    let has_plan = !run.plans.is_empty();
+    let has_plan = !run.plans.is_empty() || run.text_plan.is_some();
 
     // tab strip
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
@@ -76,7 +78,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                 let count = match t {
                     ResultsTab::Results => data_sets.len(),
                     ResultsTab::Messages => run.messages.iter().filter(|m| m.is_error).count(),
-                    ResultsTab::Plan => run.plans.len(),
+                    ResultsTab::Plan => run.plans.len().max(usize::from(run.text_plan.is_some())),
                 };
                 let plan_flags: usize = if t == ResultsTab::Plan {
                     run.plans.iter().filter_map(|p| p.parsed.as_ref()).map(|p| p.all_statements().iter().map(|s| s.warnings.len() + s.missing_indexes.len() + s.nodes.iter().map(|n| n.warnings.len()).sum::<usize>()).sum::<usize>()).sum()
@@ -167,6 +169,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
 
     match tab.results_tab {
         ResultsTab::Results => {
+            if run.capped && tab.spark.is_some() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{} Capped at {} rows per statement", icons::INFO, crate::state::fmt_count(args.settings.notebooks.spark_row_limit))).size(12.0).color(theme.text_muted));
+                    if ui.add_enabled(!run.is_live(), egui::Button::new("Run again without the cap").small()).on_hover_text("Streams every row of the result; large results take memory in the grid.").clicked() {
+                        actions.push(ResultsAction::RerunUncapped);
+                    }
+                });
+            }
             if data_sets.is_empty() {
                 egui::Frame::new().fill(theme.bg_panel).show(ui, |ui| {
                     ui.set_min_size(ui.available_size());

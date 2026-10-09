@@ -231,13 +231,71 @@ pub static SYSTEM_VARIABLES: &[&str] = &[
     "@@MAX_PRECISION", "@@MICROSOFTVERSION", "@@REMSERVER",
 ];
 
+/// Which SQL the lexer and the completer speak: T-SQL (the default) or Spark SQL, which
+/// quotes identifiers with backticks, writes strings with `'` or `"`, and has its own keywords
+/// and functions on top of the shared ones.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Dialect {
+    /// SQL Server, Azure SQL, Fabric warehouse: `[name]`, `"name"`, T-SQL keywords.
+    #[default]
+    TSql,
+    /// Spark SQL on the local session: `` `name` ``, `"text"` strings, Spark keywords and functions.
+    Spark,
+}
+
+/// Spark SQL keywords that T-SQL does not have (uppercase).
+pub static SPARK_KEYWORDS: &[&str] = &[
+    "ANALYZE", "ANTI", "ARRAY", "BUCKET", "BUCKETS", "CACHE", "CATALOG", "CATALOGS", "CLONE", "CLUSTER",
+    "CLUSTERED", "CODEGEN", "COLUMNS", "COMMENT", "COST", "DATABASES", "DEEP", "DELTA", "DESCRIBE",
+    "DIRECTORY", "DISTRIBUTE", "DIV", "DRY", "EXTENDED", "FORMATTED", "FUNCTIONS", "GLOBAL", "HISTORY",
+    "IF", "IGNORE", "ILIKE", "INTERVAL", "LATERAL", "LAZY", "LIMIT", "LOCATION", "MAP", "MATCHED",
+    "MSCK", "NAMESPACE", "NAMESPACES", "NATURAL", "NULLS", "OPTIMIZE", "OPTIONS", "OVERWRITE",
+    "PARTITION", "PARTITIONED", "PARTITIONS", "PURGE", "QUALIFY", "REFRESH", "REGEXP", "RENAME",
+    "REPAIR", "REPLACE", "RESTORE", "RLIKE", "ROLLUP", "SCHEMAS", "SEMI", "SHALLOW", "SHOW", "SORT",
+    "STATISTICS", "STRUCT", "TABLES", "TABLESAMPLE", "TBLPROPERTIES", "TEMPORARY", "TIMESTAMP",
+    "TRUNCATE", "UNCACHE", "UNSET", "USING", "VACUUM", "VERSION", "VIEWS", "WINDOW", "ZORDER",
+];
+
+/// Spark SQL built-in functions that T-SQL does not have (uppercase); lexed as functions when
+/// followed by `(`.
+pub static SPARK_FUNCTIONS: &[&str] = &[
+    "AGGREGATE", "APPROX_COUNT_DISTINCT", "APPROX_PERCENTILE", "ARRAY", "ARRAY_AGG", "ARRAY_CONTAINS",
+    "ARRAY_DISTINCT", "ARRAY_EXCEPT", "ARRAY_INTERSECT", "ARRAY_JOIN", "ARRAY_MAX", "ARRAY_MIN",
+    "ARRAY_POSITION", "ARRAY_REMOVE", "ARRAY_SORT", "ARRAY_UNION", "ARRAYS_ZIP", "BOOL_AND", "BOOL_OR",
+    "COLLECT_LIST", "COLLECT_SET", "CONCAT_WS", "CURRENT_CATALOG", "CURRENT_DATABASE", "CURRENT_SCHEMA",
+    "DATE_ADD", "DATE_FORMAT", "DATE_SUB", "DATE_TRUNC", "DATEDIFF", "DAYOFWEEK", "DAYOFYEAR", "DECODE",
+    "ELEMENT_AT", "ENCODE", "EXPLODE", "EXPLODE_OUTER", "FILTER", "FIRST", "FIRST_VALUE", "FLATTEN",
+    "FROM_JSON", "FROM_UNIXTIME", "FROM_UTC_TIMESTAMP", "GET_JSON_OBJECT", "GREATEST", "HASH", "IFNULL",
+    "INITCAP", "INLINE", "INPUT_FILE_NAME", "INSTR", "JSON_TUPLE", "LAST", "LAST_DAY", "LAST_VALUE",
+    "LEAST", "LENGTH", "LEVENSHTEIN", "LOCATE", "LPAD", "MAP", "MAP_FROM_ENTRIES", "MAP_KEYS",
+    "MAP_VALUES", "MD5", "MOD", "MONTHS_BETWEEN", "NAMED_STRUCT", "NEXT_DAY", "NULLIF", "NVL", "NVL2",
+    "PERCENTILE", "PERCENTILE_APPROX", "POSEXPLODE", "POSITION", "POW", "RAISE_ERROR", "RAND", "RANDN",
+    "REGEXP_EXTRACT", "REGEXP_EXTRACT_ALL", "REGEXP_REPLACE", "REPEAT", "RPAD", "SEQUENCE", "SHA1",
+    "SHA2", "SHIFTLEFT", "SIZE", "SLICE", "SORT_ARRAY", "SPLIT", "SPLIT_PART", "STACK", "STDDEV",
+    "STDDEV_POP", "STDDEV_SAMP", "STRUCT", "SUBSTRING_INDEX", "TO_DATE", "TO_JSON", "TO_TIMESTAMP",
+    "TO_UNIX_TIMESTAMP", "TO_UTC_TIMESTAMP", "TRANSFORM", "TRY_CAST", "TRY_DIVIDE", "TRY_TO_TIMESTAMP",
+    "TYPEOF", "UNIX_TIMESTAMP", "UUID", "VARIANCE", "VAR_POP", "VAR_SAMP", "WEEKDAY", "WEEKOFYEAR",
+    "XXHASH64",
+];
+
 static KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().copied().collect());
+static SPARK_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SPARK_KEYWORDS.iter()).copied().collect());
+static SPARK_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().chain(SPARK_FUNCTIONS.iter()).copied().collect());
 static FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().copied().collect());
 static TYPE_SET: Lazy<HashSet<String>> = Lazy::new(|| TYPES.iter().map(|t| t.to_ascii_uppercase()).collect());
 
 /// True if `word` is a T-SQL keyword (case-insensitive).
 pub fn is_keyword(word: &str) -> bool {
     KEYWORD_SET.contains(word.to_ascii_uppercase().as_str())
+}
+
+/// True if `word` is a keyword of `dialect` (case-insensitive).
+pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
+    let set = match dialect {
+        Dialect::TSql => &*KEYWORD_SET,
+        Dialect::Spark => &*SPARK_KEYWORD_SET,
+    };
+    set.contains(word.to_ascii_uppercase().as_str())
 }
 
 /// True if `word` is a built-in function name (case-insensitive).
@@ -254,6 +312,14 @@ pub fn is_type(word: &str) -> bool {
 /// covers the whole input exactly.
 pub fn tokenize(src: &str) -> Vec<Token> {
     Lexer::new(src, LineState::INITIAL).run().0
+}
+
+/// Tokenize a complete script in `dialect` (Spark: backtick identifiers, `"` strings, no
+/// bracketed identifiers, Spark keywords and functions).
+pub fn tokenize_dialect(src: &str, dialect: Dialect) -> Vec<Token> {
+    let mut lx = Lexer::new(src, LineState::INITIAL);
+    lx.dialect = dialect;
+    lx.run().0
 }
 
 /// Tokenize one line (which may or may not include its line terminator) starting from
@@ -277,11 +343,12 @@ struct Lexer<'a> {
     pos: usize,
     tokens: Vec<Token>,
     state: LineState,
+    dialect: Dialect,
 }
 
 impl<'a> Lexer<'a> {
     fn new(src: &'a str, state: LineState) -> Self {
-        Lexer { src, bytes: src.as_bytes(), pos: 0, tokens: Vec::new(), state }
+        Lexer { src, bytes: src.as_bytes(), pos: 0, tokens: Vec::new(), state, dialect: Dialect::TSql }
     }
 
     fn peek(&self, off: usize) -> Option<u8> {
@@ -316,7 +383,8 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             let kind = match q {
                 '\'' => TokenKind::String,
-                '"' => TokenKind::QuotedIdentifier,
+                '"' if self.dialect == Dialect::Spark => TokenKind::String,
+                '"' | '`' => TokenKind::QuotedIdentifier,
                 _ => TokenKind::BracketedIdentifier,
             };
             self.consume_delimited(q);
@@ -377,7 +445,16 @@ impl<'a> Lexer<'a> {
             b'"' => {
                 self.pos += 1;
                 self.consume_delimited('"');
+                self.push(if self.dialect == Dialect::Spark { TokenKind::String } else { TokenKind::QuotedIdentifier }, start);
+            }
+            b'`' if self.dialect == Dialect::Spark => {
+                self.pos += 1;
+                self.consume_delimited('`');
                 self.push(TokenKind::QuotedIdentifier, start);
+            }
+            b'[' if self.dialect == Dialect::Spark => {
+                self.pos += 1;
+                self.push(TokenKind::Punct, start);
             }
             b'[' => {
                 self.pos += 1;
@@ -459,10 +536,14 @@ impl<'a> Lexer<'a> {
 
     fn classify_word(&self, word: &str) -> TokenKind {
         let upper = word.to_ascii_uppercase();
-        if FUNCTION_SET.contains(upper.as_str()) && self.next_nonspace_is_paren() {
+        let (functions, keywords) = match self.dialect {
+            Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
+            Dialect::Spark => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
+        };
+        if functions.contains(upper.as_str()) && self.next_nonspace_is_paren() {
             return TokenKind::Function;
         }
-        if KEYWORD_SET.contains(upper.as_str()) {
+        if keywords.contains(upper.as_str()) {
             return TokenKind::Keyword;
         }
         if TYPE_SET.contains(&upper) {
@@ -684,6 +765,21 @@ mod tests {
         assert!(k.contains(&(TokenKind::Keyword, "left")));
         assert!(is_keyword("Select") && is_function("getdate") && is_type("INT"));
         assert!(!is_keyword("foo"));
+        assert!(is_keyword_in("lateral", Dialect::Spark) && !is_keyword_in("lateral", Dialect::TSql));
+    }
+
+    #[test]
+    fn spark_dialect_quotes() {
+        let t = tokenize_dialect("SELECT `my col`, \"text\" FROM a[0] LATERAL VIEW explode(x)", Dialect::Spark);
+        let kinds: Vec<(TokenKind, &str)> = t.iter().map(|k| (k.kind, &"SELECT `my col`, \"text\" FROM a[0] LATERAL VIEW explode(x)"[k.start..k.end])).collect();
+        assert!(kinds.contains(&(TokenKind::QuotedIdentifier, "`my col`")));
+        assert!(kinds.contains(&(TokenKind::String, "\"text\"")));
+        assert!(kinds.contains(&(TokenKind::Punct, "[")));
+        assert!(kinds.contains(&(TokenKind::Keyword, "LATERAL")));
+        assert!(kinds.contains(&(TokenKind::Function, "explode")));
+        // T-SQL keeps its rules
+        let t = tokenize("SELECT \"col\" FROM [t]");
+        assert!(t.iter().any(|k| k.kind == TokenKind::QuotedIdentifier) && t.iter().any(|k| k.kind == TokenKind::BracketedIdentifier));
     }
 
     #[test]

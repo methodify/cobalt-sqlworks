@@ -488,11 +488,29 @@ to File streams every row to the chosen file or lakehouse without the cap and ke
 tab: double-click a table to insert `SELECT * FROM test.dbo.publicholidays LIMIT 100` at the
 caret; a file inserts its `Files/…` path. Hot exit restores the tab with its binding (the
 session is not restarted until you run). `SHOW TABLES` lists every table of the lakehouse
-(0.7.0), without mounting any. Not there yet: Est./Actual plan and Parse (run `EXPLAIN` as a
-statement), completion from the lakehouse's tables. On a runtime older than 0.7.0 the tab runs
-its statements through the `%%sql` helper instead: collected, not streamed, no DML counts.
-Agent: `spark_query {workspace?, lakehouse?, write_mode?, text?}`; `state` reports
-`kind: "spark"` and a `spark` object per tab.
+(0.7.0), without mounting any. On a runtime older than 0.7.0 the tab runs its statements
+through the `%%sql` helper instead: collected, not streamed, no DML counts.
+
+**Est. plan** (Ctrl+L) runs `EXPLAIN EXTENDED` on the selection or the statement under the
+caret and shows the Plan tab: parsed, analyzed, optimized and physical plan as collapsible
+monospace sections (the physical plan open), Copy all. A statement that does not analyze
+ends in Messages with Spark's message. **Parse** (Shift+Alt+P) analyzes every statement without
+running anything: queries through the analyzer, everything else through `EXPLAIN EXTENDED`;
+Messages says "Statement n: parsed and analyzed" or names the first failing one. Parse cannot
+see tables an earlier statement of the same script would create, so an `INSERT` into a table the
+script's own `CREATE TABLE` makes reports "not found" — that is the check working, not a bug.
+**Completion** on a Spark tab knows the bound lakehouse: tables (with their schema when the
+lakehouse has schemas), schemas and columns with types, read from each table's Delta log on
+OneLake when the tab opens (no session, nothing mounted; the pane's Refresh reads them again),
+plus Spark keywords and functions; names that need quoting get backticks. The editor highlights
+Spark SQL: backtick identifiers, `"text"` strings, Spark keywords and functions; SQL cells on the
+Spark kernel use the same. A capped result shows "Capped at 10,000 rows per statement · Run
+again without the cap" above the grid. The Servers tree's "Choose a lakehouse…" and the tab's
+lakehouse chip open a picker with workspaces and lakehouses side by side; a notebook SQL cell's
+run menu (the caret next to Run) has "Open in a Spark SQL tab", which carries the notebook's
+binding. Agent: `spark_query {workspace?, lakehouse?, write_mode?, text?}`; `state` reports
+`kind: "spark"`, a `spark` object, `catalog_objects` / `catalog_columns`, `text_plan_sections`
+and `capped` per tab; `complete {append}` works on Spark tabs.
 
 ## Import Data from File
 

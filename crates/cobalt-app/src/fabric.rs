@@ -129,6 +129,9 @@ pub enum FabricEvent {
     OneLakeToken(Result<(), String>),
     /// Lakehouse pane: the tables of a lakehouse (from OneLake's `Tables/` layout).
     PaneTables { lakehouse_id: String, result: Result<Vec<cobalt_fabric::OneLakeTable>, String> },
+    /// A Spark SQL tab's completion catalog: the lakehouse's tables and the columns read from
+    /// their Delta logs.
+    SparkCatalog { lakehouse_id: String, result: Result<std::sync::Arc<cobalt_core::DatabaseCatalog>, String> },
     /// Lakehouse pane: one `Files/` folder (`path` relative to `Files/`, `""` = root).
     PaneFiles { lakehouse_id: String, path: String, result: Result<Vec<crate::state::FileEntry>, String> },
 }
@@ -658,6 +661,58 @@ pub fn load_pane_tables(state: &mut AppState, cx: &Ctx, workspace_id: &str, lake
     });
 }
 
+/// A Spark SQL tab's completion catalog: the lakehouse's tables from OneLake's `Tables/`
+/// layout, each table's columns from the first commit of its Delta log (later schema changes
+/// are picked up from the last few commits). Nothing is mounted in the session.
+pub fn load_spark_catalog(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str, lakehouse_name: &str) {
+    let Some(slot) = state.fabric.slot else { return };
+    if !state.spark_catalog_loading.insert(lakehouse_id.to_string()) {
+        return;
+    }
+    let resolver = cx.resolver.clone();
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let tenant = tenant_hint(cx);
+    let (ws, lh, name) = (workspace_id.to_string(), lakehouse_id.to_string(), lakehouse_name.to_string());
+    cx.session.spawn(async move {
+        let result = async {
+            let tok = crate::onelake_tokens::fetch(&resolver, slot, tenant.as_deref()).await?;
+            let client = cobalt_fabric::OneLakeClient::new(tok);
+            let tables = client.list_tables(&ws, &lh).await.map_err(|e| fabric_error_text(&e))?;
+            let mut cat = cobalt_core::DatabaseCatalog { database: name.clone(), schemas: Vec::new(), objects: Vec::new(), columns: Default::default(), refreshed_at: Some(chrono::Utc::now()) };
+            for (i, t) in tables.iter().enumerate().take(400) {
+                let schema = t.schema.clone().unwrap_or_default();
+                if !schema.is_empty() && !cat.schemas.iter().any(|s| s == &schema) {
+                    cat.schemas.push(schema.clone());
+                }
+                let id = i as i32 + 1;
+                cat.objects.push(cobalt_core::ObjectRef { database: name.clone(), schema, name: t.name.clone(), kind: cobalt_core::ObjectKind::Table, object_id: Some(id) });
+                // the first commit carries the schema the table was created with; a newer
+                // metaData in the next few commits (ALTER TABLE) replaces it
+                let mut cols = Vec::new();
+                for n in 0..4u32 {
+                    let path = format!("{lh}/Tables/{}/_delta_log/{n:020}.json", t.rel_path());
+                    match client.read_text(&ws, &path).await {
+                        Ok(text) => {
+                            if let Some(c) = crate::sparkq::delta_log_columns(&text) {
+                                cols = c;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if !cols.is_empty() {
+                    cat.columns.insert(id, cols);
+                }
+            }
+            Ok::<_, String>(std::sync::Arc::new(cat))
+        }
+        .await;
+        let _ = tx.send(FabricEvent::SparkCatalog { lakehouse_id: lh, result });
+        egui.request_repaint();
+    });
+}
+
 /// Lakehouse pane: list one `Files/` folder of a lakehouse on OneLake.
 pub fn load_pane_files(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str, rel: &str) {
     let Some(slot) = state.fabric.slot else { return };
@@ -934,6 +989,21 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                     }
                     Err(e) => cx.toast(ToastKind::Error, format!("Saving to Fabric failed: {e}")),
                 }
+            }
+        }
+        FabricEvent::SparkCatalog { lakehouse_id, result } => {
+            state.spark_catalog_loading.remove(&lakehouse_id);
+            match result {
+                Ok(cat) => {
+                    state.spark_catalogs.insert(lakehouse_id.clone(), cat.clone());
+                    for t in state.tabs.iter_mut() {
+                        if t.spark.as_ref().and_then(|s| s.binding.as_ref()).and_then(|b| b.lakehouse_id.as_deref()) == Some(lakehouse_id.as_str()) {
+                            t.catalog = Some(cat.clone());
+                            t.catalog_database = Some(cat.database.clone());
+                        }
+                    }
+                }
+                Err(e) => state.kernel.log.push_back(format!("cobalt: completion catalog of lakehouse {lakehouse_id} not loaded: {e}")),
             }
         }
         FabricEvent::PaneTables { lakehouse_id, result } => {

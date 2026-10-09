@@ -809,10 +809,7 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             };
             crate::sparkq::new_tab(state, cx, binding, names, None);
         }
-        TreeAction::SparkChoose => {
-            let idx = crate::sparkq::new_tab(state, cx, None, None, None);
-            state.open_spark_chip = Some(state.tabs[idx].id);
-        }
+        TreeAction::SparkChoose => state.dialog = Dialog::SparkLakehouse { tab_index: None, workspace: None },
         TreeAction::SparkSession(start) => {
             // the active Spark tab or notebook lends its binding; otherwise a plain session
             let bound = state.active_tab.filter(|&i| state.tabs[i].spark.is_some() || state.tabs[i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
@@ -1735,6 +1732,7 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
 pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: ResultsAction) {
     match action {
         ResultsAction::FetchMore { rows } => fetch_more(state, cx, idx, rows),
+        ResultsAction::RerunUncapped => crate::sparkq::rerun_uncapped(state, cx, idx),
         ResultsAction::Cancel => cancel(state, cx, idx),
         ResultsAction::Copy { set, kind } => copy_cells(state, cx, idx, set, kind),
         ResultsAction::Export { set, selection_only } => open_export_dialog(state, cx, idx, set, selection_only),

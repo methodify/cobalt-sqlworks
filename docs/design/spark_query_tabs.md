@@ -1,8 +1,8 @@
 # Spark SQL query tabs — proposal (2026-10-08)
 
-*Status: slice A built 2026-10-08 on the recommended shape (Servers-tree entry point, one
-result set per statement; the founder agreed it is the right next thing). Slice B open; the
-slice C asks are in `docs/requests/local-spark-mcp-0.6.7-request.md`. Written after the founder
+*Status: slices A, B and C built 2026-10-08 on the recommended shape (Servers-tree entry
+point, one result set per statement; the founder agreed it is the right next thing). What is
+left is upstream-dependent: `truncated` on streamed replies (noted in the 0.7.0 reply). Written after the founder
 asked, playing with 0.8.1: "what if the query view could connect to or spawn a Spark session
 and run Spark SQL against the workspace / lakehouse of my choice?"*
 
@@ -95,9 +95,12 @@ pane already fetches. The pane follows the active Spark tab like it follows a no
   Spark root with lakehouses; Spark tab with connect / run / cancel / results / messages /
   errors / history / exports / Run to File (collected); status bar and tab title; hot-exit
   restore; the Lakehouse pane follows the tab and inserts `SELECT`s. Verified live on `test`.
-- **B — editing comfort.** Completion from the pane, Spark keywords/functions, backticks,
-  text EXPLAIN plan tab, "Insert SELECT" from the pane, "Open in a Spark tab" from a
-  notebook SQL cell. ≈ 2 days.
+- **B — editing comfort.** *Built 2026-10-08.* Completion from the lakehouse (tables, schemas,
+  columns from the Delta logs on OneLake, `fabric::load_spark_catalog`), Spark keywords and
+  functions and backticks (`cobalt_sql::Dialect::Spark` in the lexer and completer,
+  `Syntax::SparkSql`), the text `EXPLAIN EXTENDED` plan tab, Parse through `__cobalt_parse`,
+  "Insert SELECT" from the pane, "Open in a Spark SQL tab" from a notebook SQL cell, the
+  workspace / lakehouse picker (`Dialog::SparkLakehouse`), "Run again without the cap".
 - **C — upstream asks.** *Delivered by local-spark-mcp 0.6.6 (two-part names) and 0.7.0
   (`run_sql` streaming, DML metrics, catalog listing); adopted 2026-10-08: statements stream
   through `run_sql` per statement, Run to File streams, Messages carry the affected rows.*

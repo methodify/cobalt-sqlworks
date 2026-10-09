@@ -7,7 +7,7 @@
 use crate::kernel::{self, KernelState, RunReq, SqlRun};
 use crate::notebook::{self, SparkPrep};
 use crate::ops::{self, Ctx};
-use crate::state::{fmt_count, fmt_duration, hash_text, AppState, EditorTab, Followup, GridState, MessageLine, NotebookFabric, PendingEdit, ResultSetView, RunMode, RunView, RunViewState, SparkSqlRun, SparkTab, ToastKind};
+use crate::state::{fmt_count, fmt_duration, hash_text, AppState, EditorTab, Followup, GridState, MessageLine, NotebookFabric, PendingEdit, ResultSetView, ResultsTab, RunMode, RunView, RunViewState, SparkSqlMode, SparkSqlRun, SparkTab, ToastKind};
 use cobalt_core::TabId;
 use cobalt_store::NewHistoryEntry;
 use serde_json::Value;
@@ -76,7 +76,7 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, binding: Option<NotebookFabric>, 
         (None, _) => (String::new(), None),
     };
     let t = &mut state.tabs[idx];
-    t.spark = Some(SparkTab { binding, workspace_name: ws_name, lakehouse_name: lh_name, sink: None, sql: None });
+    t.spark = Some(SparkTab { binding, workspace_name: ws_name, lakehouse_name: lh_name, sink: None, sql: None, parse_next: false, uncapped_next: false });
     if let Some(text) = text {
         t.text = text;
         t.mark_saved();
@@ -85,6 +85,7 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, binding: Option<NotebookFabric>, 
     retitle(t);
     remember_recent(cx, &state.tabs[idx]);
     notebook::maybe_early_start(state, cx, idx);
+    tick(state, cx);
     idx
 }
 
@@ -123,6 +124,9 @@ pub fn set_binding(state: &mut AppState, cx: &Ctx, idx: usize, binding: Option<N
     if state.lakehouse_pane.selected.is_some() {
         state.lakehouse_pane.selected = None; // re-resolved from the new binding
     }
+    state.tabs[idx].catalog = None;
+    state.tabs[idx].catalog_database = None;
+    tick(state, cx);
 }
 
 /// Display names that arrived after the tab was made (Fabric lists loading later).
@@ -153,36 +157,76 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     if t.is_running() {
         return;
     }
-    if mode == RunMode::EstimatedPlan {
-        cx.toast(ToastKind::Info, "Execution plans are not available on Spark SQL tabs yet (run EXPLAIN as a statement).");
-        return;
-    }
     let Some((script, _)) = ops::script_for(t, mode) else { return };
     t.last_run_mode = Some(mode);
     t.pending_run = None;
+    let sql_mode = if mode == RunMode::EstimatedPlan { SparkSqlMode::Plan } else if t.spark.as_ref().map(|s| s.parse_next).unwrap_or(false) { SparkSqlMode::Parse } else { SparkSqlMode::Run };
     match notebook::prepare_spark(state, cx, idx) {
-        SparkPrep::Ready { context_lakehouse, register } => submit(state, cx, idx, script, context_lakehouse, register),
+        SparkPrep::Ready { context_lakehouse, register } => submit(state, cx, idx, script, sql_mode, context_lakehouse, register),
         SparkPrep::Wait => state.tabs[idx].pending_run = Some(mode),
         SparkPrep::Abort => {}
     }
 }
 
-fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, context_lakehouse: Option<String>, register: Vec<Value>) {
+/// Parse (Shift+Alt+P): `EXPLAIN` every statement of the text; only the outcome is shown.
+pub fn parse(state: &mut AppState, cx: &Ctx, idx: usize) {
+    if let Some(s) = state.tabs[idx].spark.as_mut() {
+        s.parse_next = true;
+    }
+    run(state, cx, idx, RunMode::All);
+    if let Some(s) = state.tabs[idx].spark.as_mut() {
+        s.parse_next = false;
+    }
+}
+
+/// The capped result's "Run again without the cap".
+pub fn rerun_uncapped(state: &mut AppState, cx: &Ctx, idx: usize) {
+    let Some(mode) = state.tabs[idx].last_run_mode.filter(|m| *m != RunMode::EstimatedPlan) else { return };
+    if let Some(s) = state.tabs[idx].spark.as_mut() {
+        s.uncapped_next = true;
+    }
+    run(state, cx, idx, mode);
+}
+
+fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mode: SparkSqlMode, context_lakehouse: Option<String>, register: Vec<Value>) {
     let use_context = state.kernel.has("contexts") || !state.kernel.state.is_ready();
     let want_description = state.kernel.has("job_description") || !state.kernel.state.is_ready();
     let t = &mut state.tabs[idx];
     let tab = t.id;
-    let job = t.pending_export.take();
+    let job = if mode == SparkSqlMode::Run { t.pending_export.take() } else { None };
+    let uncapped = t.spark.as_mut().map(|s| std::mem::take(&mut s.uncapped_next)).unwrap_or(false);
     let cap = cx.settings.notebooks.spark_row_limit.max(1);
-    let limit = if job.is_some() { NO_CAP } else { cap };
-    let code = format!("__cobalt_sql_all({}, {limit})", notebook::py_literal(&script));
-    let statements = split_statements(&script);
-    let sql = Some(SqlRun { statements: statements.clone(), limit: if job.is_some() { None } else { Some(cap) }, batch_rows: BATCH_ROWS });
+    let no_cap = job.is_some() || uncapped;
+    let limit = if no_cap { NO_CAP } else { cap };
+    let mut statements = split_statements(&script);
+    match mode {
+        SparkSqlMode::Plan => {
+            // one plan: the first statement of the selection (or the statement under the caret)
+            if statements.len() > 1 {
+                cx.toast(ToastKind::Info, "Showing the plan of the first statement; select one statement for another.");
+            }
+            statements.truncate(1);
+            statements = statements.into_iter().map(|s| format!("EXPLAIN EXTENDED {s}")).collect();
+        }
+        SparkSqlMode::Parse => {} // the helper analyzes each statement itself
+        SparkSqlMode::Run => {}
+    }
+    if statements.is_empty() {
+        return;
+    }
+    let script = statements.join(";\n");
+    // Parse goes through the helper (analysis only, nothing executed); the rest streams
+    let (code, sql) = if mode == SparkSqlMode::Parse {
+        let list = format!("[{}]", statements.iter().map(|s| notebook::py_literal(s)).collect::<Vec<_>>().join(", "));
+        (format!("__cobalt_parse({list})"), None)
+    } else {
+        (format!("__cobalt_sql_all({}, {limit})", notebook::py_literal(&script)), Some(SqlRun { statements: statements.clone(), limit: if no_cap || mode != SparkSqlMode::Run { None } else { Some(cap) }, batch_rows: BATCH_ROWS }))
+    };
     let run_id = cx.session.new_run();
     let mut view = RunView::new(run_id);
     view.script_hash = hash_text(&t.text);
     view.export_target = job.as_ref().map(|j| j.display_target());
-    if cx.settings.history.capture {
+    if cx.settings.history.capture && mode == SparkSqlMode::Run {
         let mut e = NewHistoryEntry::new(format!("Local Spark ({})", cx.settings.spark.profile), script.clone());
         e.database = t.spark.as_ref().and_then(|s| s.lakehouse_name.clone());
         e.tab_id = Some(tab);
@@ -190,13 +234,17 @@ fn submit(state: &mut AppState, cx: &Ctx, idx: usize, script: String, context_la
     }
     t.run = Some(view);
     t.results_visible = true;
-    t.results_tab = crate::state::ResultsTab::Results;
+    t.results_tab = match mode {
+        SparkSqlMode::Run => ResultsTab::Results,
+        SparkSqlMode::Plan => ResultsTab::Plan,
+        SparkSqlMode::Parse => ResultsTab::Messages,
+    };
     let title = t.title.clone();
     let export = job.is_some();
     let sink = job.map(|j| ops::spawn_run_export(state, cx, Some(tab), *j));
     if let Some(s) = state.tabs[idx].spark.as_mut() {
         s.sink = sink;
-        s.sql = Some(SparkSqlRun { statements: statements.len(), limit: if export { None } else { Some(cap) }, sets: Default::default(), export, sink_open: None });
+        s.sql = Some(SparkSqlRun { mode, statements: statements.len(), limit: if no_cap || mode != SparkSqlMode::Run { None } else { Some(cap) }, sets: Default::default(), export, sink_open: None, texts: Default::default(), failed: false });
     }
     let job_description = if want_description { script.lines().map(str::trim).find(|l| !l.is_empty()).map(|l| l.chars().take(80).collect::<String>()) } else { None };
     let context = if use_context { Some(kernel::context_id(tab)) } else { None };
@@ -268,6 +316,12 @@ pub fn on_sql_batch(state: &mut AppState, idx: usize, statement: usize, bytes: &
             return;
         }
     };
+    if sql.mode != SparkSqlMode::Run {
+        // EXPLAIN answers one `plan` string; an analysis error comes back as that string too
+        let text = batches.first().and_then(|b| b.column(0).as_any().downcast_ref::<arrow::array::StringArray>().map(|a| a.value(0).to_string())).unwrap_or_default();
+        sql.texts.insert(statement, text);
+        return;
+    }
     let set_index = match sql.sets.get(&statement) {
         Some(&i) => i,
         None => {
@@ -351,9 +405,23 @@ pub fn on_sql_statement(state: &mut AppState, idx: usize, statement: usize, resu
                     (None, Some(e)) => run.messages.push(msg(format!("{}statement completed{elapsed}; affected rows unknown: {e}", where_(statement)), false)),
                     (None, None) => run.messages.push(msg(format!("{}statement completed{elapsed}", where_(statement)), false)),
                 }
+            } else if sql.mode != SparkSqlMode::Run {
+                let text = sql.texts.remove(&statement).unwrap_or_default();
+                match explain_error(&text) {
+                    Some(e) => {
+                        sql.failed = true;
+                        run.messages.push(msg(format!("{}{e}", where_(statement)), true));
+                    }
+                    None if sql.mode == SparkSqlMode::Parse => run.messages.push(msg(format!("{}parsed and analyzed{elapsed}", where_(statement)), false)),
+                    None => {
+                        run.text_plan = Some(plan_sections(&text));
+                        run.messages.push(msg(format!("Plan ready{elapsed}"), false));
+                    }
+                }
             } else if sql.sets.contains_key(&statement) {
                 if let Some(limit) = sql.limit {
                     if rows >= limit {
+                        run.capped = true;
                         run.messages.push(msg(format!("{}the first {} rows (Settings → Notebooks → rows a Spark DataFrame brings back); there may be more", where_(statement), fmt_count(limit)), false));
                     }
                 }
@@ -428,6 +496,9 @@ pub fn on_done(state: &mut AppState, idx: usize, result: &Result<Value, String>,
     let interrupted = o.interrupted || matches!(result, Err(e) if e.starts_with("interrupted"));
     let t = &mut state.tabs[idx];
     let sink = t.spark.as_mut().and_then(|s| s.sink.take());
+    if let Some(sp) = t.spark.as_mut() {
+        sp.sql = None;
+    }
     let Some(run) = t.run.as_mut() else { return Vec::new() };
     run.elapsed = run.started.elapsed();
     run.messages.clear();
@@ -467,7 +538,10 @@ fn on_sql_done(state: &mut AppState, idx: usize, v: &Value) -> Vec<Followup> {
     let sql = t.spark.as_mut().and_then(|s| s.sql.take());
     let Some(run) = t.run.as_mut() else { return Vec::new() };
     let interrupted = v.get("interrupted").and_then(Value::as_bool) == Some(true);
-    let failed = !interrupted && v.get("ok").and_then(Value::as_bool) != Some(true);
+    let failed = !interrupted && (v.get("ok").and_then(Value::as_bool) != Some(true) || sql.as_ref().map(|s| s.failed).unwrap_or(false));
+    if sql.as_ref().map(|s| s.mode == SparkSqlMode::Plan && s.failed).unwrap_or(false) {
+        t.results_tab = ResultsTab::Messages;
+    }
     run.elapsed = run.started.elapsed();
     for s in run.result_sets.iter() {
         if matches!(s.rs.state(), cobalt_results::RunState::Streaming) {
@@ -579,6 +653,106 @@ pub fn pump_pending(state: &mut AppState, cx: &Ctx) {
     }
 }
 
+/// Each frame: a Spark tab bound to a lakehouse gets that lakehouse's completion catalog
+/// (loaded once per lakehouse, shared by its tabs).
+pub fn tick(state: &mut AppState, cx: &Ctx) {
+    let mut want: Vec<(usize, String, String, String)> = Vec::new();
+    for (i, t) in state.tabs.iter().enumerate() {
+        let Some(s) = &t.spark else { continue };
+        let Some(b) = &s.binding else { continue };
+        let Some(lh) = &b.lakehouse_id else { continue };
+        if t.catalog.is_some() {
+            continue;
+        }
+        want.push((i, b.workspace_id.clone(), lh.clone(), s.lakehouse_name.clone().unwrap_or_default()));
+    }
+    for (i, ws, lh, name) in want {
+        if let Some(cat) = state.spark_catalogs.get(&lh).cloned() {
+            state.tabs[i].catalog = Some(cat.clone());
+            state.tabs[i].catalog_database = Some(cat.database.clone());
+        } else if !state.spark_catalog_loading.contains(&lh) {
+            crate::fabric::load_spark_catalog(state, cx, &ws, &lh, &name);
+        }
+    }
+}
+
+/// The pane's Refresh on a Spark tab: the lakehouse's catalog is read again.
+pub fn refresh_catalog(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str, lakehouse_name: &str) {
+    state.spark_catalogs.remove(lakehouse_id);
+    for t in state.tabs.iter_mut() {
+        if t.spark.as_ref().and_then(|s| s.binding.as_ref()).and_then(|b| b.lakehouse_id.as_deref()) == Some(lakehouse_id) {
+            t.catalog = None;
+        }
+    }
+    crate::fabric::load_spark_catalog(state, cx, workspace_id, lakehouse_id, lakehouse_name);
+}
+
+/// The columns of a Delta table from one `_delta_log/N.json` commit file: the last
+/// `metaData.schemaString` in it, as `ColumnInfo`s with Spark types mapped to SQL types.
+pub fn delta_log_columns(text: &str) -> Option<Vec<cobalt_core::ColumnInfo>> {
+    let mut found: Option<Vec<cobalt_core::ColumnInfo>> = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(schema) = v.get("metaData").and_then(|m| m.get("schemaString")).and_then(Value::as_str) else { continue };
+        let Ok(sch) = serde_json::from_str::<Value>(schema) else { continue };
+        let fields = sch.get("fields").and_then(Value::as_array).cloned().unwrap_or_default();
+        let cols = fields
+            .iter()
+            .enumerate()
+            .filter_map(|(i, f)| {
+                let name = f.get("name").and_then(Value::as_str)?.to_string();
+                let ty = spark_type_to_sql(f.get("type").unwrap_or(&Value::Null));
+                let nullable = f.get("nullable").and_then(Value::as_bool).unwrap_or(true);
+                Some(cobalt_core::ColumnInfo::new(name, ty, nullable, i))
+            })
+            .collect();
+        found = Some(cols);
+    }
+    found
+}
+
+/// A Delta/Spark type (`"string"`, `"decimal(18,2)"`, `{"type": "array", …}`) as the SQL type
+/// the grid and the completer show.
+pub fn spark_type_to_sql(t: &Value) -> cobalt_core::SqlType {
+    use cobalt_core::SqlType as S;
+    let Some(name) = t.as_str() else {
+        let kind = t.get("type").and_then(Value::as_str).unwrap_or("struct");
+        return S::Other(kind.to_string());
+    };
+    let lower = name.to_ascii_lowercase();
+    match lower.as_str() {
+        "string" => S::NVarChar { len: None },
+        "long" | "bigint" => S::BigInt,
+        "integer" | "int" => S::Int,
+        "short" | "smallint" => S::SmallInt,
+        "byte" | "tinyint" => S::TinyInt,
+        "double" => S::Float,
+        "float" => S::Real,
+        "boolean" => S::Bit,
+        "date" => S::Date,
+        "timestamp" | "timestamp_ntz" => S::DateTime2 { scale: 6 },
+        "binary" => S::VarBinary { len: None },
+        _ if lower.starts_with("decimal") => {
+            let args: Vec<u8> = lower.trim_start_matches("decimal").trim_matches(|c| c == '(' || c == ')').split(',').filter_map(|a| a.trim().parse().ok()).collect();
+            S::Decimal { precision: args.first().copied().unwrap_or(10), scale: args.get(1).copied().unwrap_or(0) }
+        }
+        _ => S::Other(name.to_string()),
+    }
+}
+
+/// A notebook SQL cell as a Spark SQL tab with the notebook's binding.
+pub fn open_from_cell(state: &mut AppState, cx: &Ctx, idx: usize, cell: usize) {
+    let Some(nb) = state.tabs[idx].notebook.as_deref() else { return };
+    let Some(c) = nb.nb.cells.get(cell) else { return };
+    let body = c.split_magic().1.trim().to_string();
+    let binding = nb.fabric.clone();
+    let names = binding.as_ref().map(|b| {
+        let (ws, lh) = names(state, b);
+        (ws.unwrap_or_default(), lh)
+    });
+    new_tab(state, cx, binding, names, Some(body));
+}
+
 /// Release the tab's worker context ("Disconnect"); the session itself follows the lifecycle setting.
 pub fn disconnect(state: &mut AppState, idx: usize) {
     let tab = state.tabs[idx].id;
@@ -627,7 +801,7 @@ pub fn from_snapshot(database: &str) -> Option<SparkTab> {
     let json = database.strip_prefix("spark:")?;
     let snap: Snapshot = serde_json::from_str(json).unwrap_or_default();
     let binding = snap.workspace_id.map(|workspace_id| NotebookFabric { workspace_id, lakehouse_id: snap.lakehouse_id, write_mode: snap.write_mode.unwrap_or_else(|| "sandbox".into()), preload: false });
-    Some(SparkTab { binding, workspace_name: snap.workspace_name, lakehouse_name: snap.lakehouse_name, sink: None, sql: None })
+    Some(SparkTab { binding, workspace_name: snap.workspace_name, lakehouse_name: snap.lakehouse_name, sink: None, sql: None, parse_next: false, uncapped_next: false })
 }
 
 fn remember_recent(cx: &Ctx, t: &EditorTab) {
@@ -731,6 +905,47 @@ pub fn session_label(state: &AppState) -> (String, bool) {
     }
 }
 
+/// `EXPLAIN` of a statement that does not analyze answers the exception as its text
+/// (`org.apache.spark.sql.AnalysisException: [CODE] …`): that message, compacted.
+pub fn explain_error(text: &str) -> Option<String> {
+    // EXPLAIN EXTENDED puts the exception under "== Analyzed Logical Plan =="; plain EXPLAIN
+    // answers "Error occurred during query planning" without the detail (Spark 4)
+    let first = text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("== "))?;
+    if first.starts_with("Error occurred during query planning") {
+        let detail = first.trim_start_matches("Error occurred during query planning").trim_start_matches(':').trim();
+        return Some(if detail.is_empty() { "Spark could not plan this statement; use Parse or run it for the message.".to_string() } else { kernel::compact_spark_error(detail) });
+    }
+    let line = text.lines().find(|l| l.contains("Exception: ") || l.trim_start().starts_with("org.apache.spark"))?;
+    let from = text.find(line).unwrap_or(0);
+    let tail = &text[from..];
+    let msg = match tail.split_once("Exception: ") {
+        Some((_, rest)) => rest,
+        None => tail,
+    };
+    Some(kernel::compact_spark_error(msg))
+}
+
+/// Split Spark's `EXPLAIN EXTENDED` text into its `== Title ==` sections (title, body).
+pub fn plan_sections(text: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with("== ") && t.ends_with(" ==") && t.len() > 6 {
+            out.push((t[3..t.len() - 3].to_string(), String::new()));
+        } else if let Some((_, body)) = out.last_mut() {
+            body.push_str(line);
+            body.push('\n');
+        } else if !t.is_empty() {
+            out.push(("Plan".into(), format!("{line}\n")));
+        }
+    }
+    for (_, b) in out.iter_mut() {
+        let trimmed = b.trim_end().to_string();
+        *b = trimmed;
+    }
+    out
+}
+
 fn msg(text: String, is_error: bool) -> MessageLine {
     MessageLine { text, is_error, is_batch_header: false, line: None, path: None }
 }
@@ -742,7 +957,7 @@ mod tests {
     #[test]
     fn snapshot_round_trips() {
         let mut t = EditorTab::new(3);
-        t.spark = Some(SparkTab { binding: Some(NotebookFabric { workspace_id: "ws".into(), lakehouse_id: Some("lh".into()), write_mode: "readonly".into(), preload: false }), workspace_name: "Fabric test".into(), lakehouse_name: Some("test".into()), sink: None, sql: None });
+        t.spark = Some(SparkTab { binding: Some(NotebookFabric { workspace_id: "ws".into(), lakehouse_id: Some("lh".into()), write_mode: "readonly".into(), preload: false }), workspace_name: "Fabric test".into(), lakehouse_name: Some("test".into()), sink: None, sql: None, parse_next: false, uncapped_next: false });
         let s = snapshot_binding(&t).unwrap();
         assert!(s.starts_with("spark:{"));
         let back = from_snapshot(&s).unwrap();
@@ -756,7 +971,7 @@ mod tests {
     #[test]
     fn titles_follow_the_lakehouse() {
         let mut t = EditorTab::new(7);
-        t.spark = Some(SparkTab { binding: None, workspace_name: String::new(), lakehouse_name: None, sink: None, sql: None });
+        t.spark = Some(SparkTab { binding: None, workspace_name: String::new(), lakehouse_name: None, sink: None, sql: None, parse_next: false, uncapped_next: false });
         retitle(&mut t);
         assert_eq!(t.title, "SparkSQL_7");
         t.spark.as_mut().unwrap().lakehouse_name = Some("test".into());
@@ -773,6 +988,41 @@ mod tests {
         let v = split_statements("SELECT ';' AS a; -- a; comment\nSELECT `x;y` FROM t;\n\nUSE db");
         assert_eq!(v, vec!["SELECT ';' AS a", "-- a; comment\nSELECT `x;y` FROM t", "USE db"]);
         assert!(split_statements(" ; ;").is_empty());
+    }
+
+    #[test]
+    fn explain_text_splits_into_sections() {
+        let v = plan_sections("== Parsed Logical Plan ==\n'Project [*]\n+- 'UnresolvedRelation [t]\n\n== Physical Plan ==\n*(1) Scan parquet\n");
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].0, "Parsed Logical Plan");
+        assert_eq!(v[0].1, "'Project [*]\n+- 'UnresolvedRelation [t]");
+        assert_eq!(v[1], ("Physical Plan".to_string(), "*(1) Scan parquet".to_string()));
+        assert_eq!(plan_sections("just text")[0].0, "Plan");
+        assert_eq!(explain_error("== Physical Plan ==
+org.apache.spark.sql.AnalysisException: [TABLE_OR_VIEW_NOT_FOUND] The table `nope` cannot be found.; line 1 pos 14;
+'Project [*]
+"), Some("[TABLE_OR_VIEW_NOT_FOUND] The table `nope` cannot be found.; line 1 pos 14;".to_string()));
+        assert!(explain_error("== Parsed Logical Plan ==
+'Project [*]").is_none());
+        // EXPLAIN EXTENDED carries the analysis error in the second section
+        let extended = "== Parsed Logical Plan ==\n'Project [*]\n\n== Analyzed Logical Plan ==\norg.apache.spark.sql.AnalysisException: [TABLE_OR_VIEW_NOT_FOUND] The table `dbo`.`nope` cannot be found.; line 1 pos 31;\n'Project [*]\n";
+        assert_eq!(explain_error(extended).as_deref(), Some("[TABLE_OR_VIEW_NOT_FOUND] The table `dbo`.`nope` cannot be found.; line 1 pos 31;"));
+        assert!(explain_error("Error occurred during query planning: ").unwrap().starts_with("Spark could not plan"));
+    }
+
+    #[test]
+    fn delta_log_schema_becomes_columns() {
+        let log = r#"{"commitInfo":{"operation":"CREATE TABLE"}}
+{"metaData":{"id":"x","schemaString":"{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false,\"metadata\":{}},{\"name\":\"amount\",\"type\":\"decimal(18,2)\",\"nullable\":true,\"metadata\":{}},{\"name\":\"tags\",\"type\":{\"type\":\"array\",\"elementType\":\"string\",\"containsNull\":true},\"nullable\":true,\"metadata\":{}}]}","partitionColumns":[]}}
+{"add":{"path":"part-0.parquet"}}"#;
+        let cols = delta_log_columns(log).unwrap();
+        assert_eq!(cols.len(), 3);
+        assert_eq!(cols[0].name, "id");
+        assert_eq!(cols[0].sql_type, cobalt_core::SqlType::BigInt);
+        assert!(!cols[0].nullable);
+        assert_eq!(cols[1].sql_type, cobalt_core::SqlType::Decimal { precision: 18, scale: 2 });
+        assert_eq!(cols[2].sql_type, cobalt_core::SqlType::Other("array".into()));
+        assert!(delta_log_columns("{\"add\":{}}").is_none());
     }
 
     #[test]

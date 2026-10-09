@@ -272,18 +272,37 @@ pub struct SparkTab {
     pub sink: Option<crate::session::RunSink>,
     /// The streamed run in progress (`run_sql` per statement, local-spark-mcp 0.7.0).
     pub sql: Option<SparkSqlRun>,
+    /// The next run is a Parse (set by the Parse command around `run`).
+    pub parse_next: bool,
+    /// The next run lifts the row cap ("Run again without the cap").
+    pub uncapped_next: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SparkSqlMode {
+    Run,
+    /// `EXPLAIN EXTENDED <statement>`: the plan text goes to the Plan tab, not the grid.
+    Plan,
+    /// `EXPLAIN <statement>` per statement: only the outcome is reported (Parse).
+    Parse,
 }
 
 /// Bookkeeping of a Spark tab's streamed run: how many statements, which result set each
 /// statement's rows went to, and whether rows go to an export sink (Run to File) rather than
 /// beyond the grid's preview.
 pub struct SparkSqlRun {
+    /// What the run is for: rows, an `EXPLAIN` plan, or a parse check.
+    pub mode: SparkSqlMode,
     pub statements: usize,
     pub limit: Option<u64>,
     pub sets: std::collections::HashMap<usize, usize>,
     pub export: bool,
     /// The statement whose set is open on the export sink (SetStart sent, SetEnd pending).
     pub sink_open: Option<usize>,
+    /// Plan / Parse: the `EXPLAIN` text per statement (Spark answers an analysis error as text).
+    pub texts: std::collections::HashMap<usize, String>,
+    /// A Plan / Parse statement whose `EXPLAIN` text was an error.
+    pub failed: bool,
 }
 
 /// A notebook tab: the document plus per-cell UI state. `nb.cells[i]` and `cells[i]` stay
@@ -630,6 +649,10 @@ pub struct RunView {
     /// the editor gutter while the editor text still matches `script_hash`.
     pub batch_times: Vec<(u32, Option<Duration>, bool)>,
     pub script_hash: u64,
+    /// A Spark `EXPLAIN` plan: `(section title, text)` per `== … ==` block.
+    pub text_plan: Option<Vec<(String, String)>>,
+    /// A Spark result hit the row cap (a one-click uncapped re-run is offered).
+    pub capped: bool,
 }
 
 impl RunView {
@@ -652,6 +675,8 @@ impl RunView {
             export_target: None,
             batch_times: Vec::new(),
             script_hash: 0,
+            text_plan: None,
+            capped: false,
         }
     }
     pub fn is_live(&self) -> bool {
@@ -952,6 +977,10 @@ pub struct AppState {
     pub recently_closed_count: usize,
     /// The Servers tree's Local Spark root is open.
     pub spark_root_expanded: bool,
+    /// Completion catalogs of lakehouses (tables, schemas, columns from the Delta logs), by
+    /// lakehouse id; Spark SQL tabs bound to the lakehouse share the Arc.
+    pub spark_catalogs: std::collections::HashMap<String, Arc<DatabaseCatalog>>,
+    pub spark_catalog_loading: std::collections::HashSet<String>,
     /// Open the Spark tab's lakehouse menu on the next frame (Connect / Change connection on a Spark tab).
     pub open_spark_chip: Option<TabId>,
     pub export_progress: Option<Arc<parking_lot::Mutex<(usize, usize)>>>,
@@ -1040,6 +1069,8 @@ pub enum Dialog {
     ChangeConnection { tab_index: usize },
     ExecOptions { tab_index: usize, opts: ExecOptions },
     Rename { tab_index: usize, title: String },
+    /// Pick a workspace and lakehouse for a Spark SQL tab (`tab_index` None = a new tab).
+    SparkLakehouse { tab_index: Option<usize>, workspace: Option<String> },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { version: String, url: String, notes: String },
 }
@@ -1192,6 +1223,8 @@ impl AppState {
             last_hot_exit_save: Instant::now(),
             recently_closed_count: 0,
             spark_root_expanded: true,
+            spark_catalogs: Default::default(),
+            spark_catalog_loading: Default::default(),
             open_spark_chip: None,
             export_progress: None,
             settings_patch: Vec::new(),

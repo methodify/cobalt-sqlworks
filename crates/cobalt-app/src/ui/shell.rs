@@ -890,7 +890,11 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
             let body = egui::Rect::from_min_max(egui::pos2(res_rect.left(), res_rect.top() + 30.0), res_rect.max);
             let mut plan_ui = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
             plan_ui.set_clip_rect(body);
-            plan::show(&mut plan_ui, tab, theme, f.cx.settings);
+            if tab.run.as_ref().map(|r| r.text_plan.is_some()).unwrap_or(false) {
+                text_plan(&mut plan_ui, tab, theme);
+            } else {
+                plan::show(&mut plan_ui, tab, theme, f.cx.settings);
+            }
         }
         for a in actions {
             ops::results_action(f.state, f.cx, idx, a);
@@ -1017,6 +1021,7 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
     let mut load_ws: Option<String> = None;
     let mut need_workspaces = false;
     let mut show_pane = false;
+    let mut choose = false;
     egui::Popup::menu(&r).id(popup_id).show(|ui| {
         ui.set_min_width(320.0);
         if !signed_in {
@@ -1081,6 +1086,11 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
                 ui.close();
             }
         }
+        ui.separator();
+        if ui.button(format!("{} Choose a lakehouse…", icons::DOTS_THREE)).on_hover_text("Workspace and lakehouse side by side").clicked() {
+            choose = true;
+            ui.close();
+        }
     });
     if need_workspaces && f.state.fabric.workspaces.get().is_none() && !f.state.fabric.workspaces.is_loading() {
         crate::fabric::load_workspaces(f.state, f.cx);
@@ -1098,7 +1108,42 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
     if show_pane {
         cmds.push(Command::ShowLakehouse);
     }
+    if choose {
+        f.state.dialog = crate::state::Dialog::SparkLakehouse { tab_index: Some(idx), workspace: binding.as_ref().map(|b| b.workspace_id.clone()) };
+    }
     ui.separator();
+    let running = f.state.tabs[idx].is_running();
+    if tool_button(ui, icons::TREE_STRUCTURE, "Est. plan", "Spark plan of the selection or the statement under the caret (EXPLAIN EXTENDED, Ctrl+L)", !running).clicked() {
+        cmds.push(Command::EstimatedPlan);
+    }
+    if tool_button(ui, icons::CHECK, "Parse", "Check every statement without running it (EXPLAIN, Shift+Alt+P)", !running).clicked() {
+        cmds.push(Command::ParseQuery);
+    }
+    ui.separator();
+}
+
+/// A Spark `EXPLAIN` plan: one collapsible section per `== … ==` block, monospace, copyable.
+fn text_plan(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
+    let Some(sections) = tab.run.as_ref().and_then(|r| r.text_plan.clone()) else { return };
+    egui::ScrollArea::both().id_salt(("text-plan", tab.id)).auto_shrink([false, false]).show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Spark plan (EXPLAIN EXTENDED)").strong());
+            if ui.small_button("Copy all").clicked() {
+                let all: String = sections.iter().map(|(t, b)| format!("== {t} ==\n{b}\n")).collect::<Vec<_>>().join("\n");
+                ui.ctx().copy_text(all);
+            }
+        });
+        for (i, (title, body)) in sections.iter().enumerate() {
+            let open = i + 1 == sections.len(); // the physical plan is the one people read first
+            egui::CollapsingHeader::new(RichText::new(title).strong()).id_salt(("plan-section", tab.id, i)).default_open(open).show(ui, |ui| {
+                let mut text = body.clone();
+                ui.add(egui::TextEdit::multiline(&mut text).font(egui::FontId::monospace(12.0)).code_editor().desired_width(f32::INFINITY).frame(egui::Frame::NONE).interactive(true));
+            });
+        }
+        ui.add_space(12.0);
+    });
+    let _ = theme;
 }
 
 fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
@@ -1687,7 +1732,7 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             if let Some(i) = idx {
                 let t = &state.tabs[i];
                 if t.spark.is_some() {
-                    cx.toast(ToastKind::Info, "Parse is not available on Spark SQL tabs; run EXPLAIN as a statement.");
+                    crate::sparkq::parse(state, cx, i);
                     return;
                 }
                 let script = format!("SET PARSEONLY ON;\n{}\nSET PARSEONLY OFF;", t.text);

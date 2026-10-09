@@ -108,6 +108,10 @@ impl CobaltApp {
                     "cursors": t.editor.cursors.sels.iter().map(|s| json!([s.anchor, s.head])).collect::<Vec<_>>(),
                     "primary": t.editor.cursors.primary,
                     "actual_plan": t.actual_plan,
+                    "catalog_objects": t.catalog.as_ref().map(|c| c.objects.len()),
+                    "catalog_columns": t.catalog.as_ref().map(|c| c.columns.values().map(|v| v.len()).sum::<usize>()),
+                    "text_plan_sections": t.run.as_ref().and_then(|r| r.text_plan.as_ref()).map(|p| p.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()),
+                    "capped": t.run.as_ref().map(|r| r.capped),
                     "run": run,
                 })
             })
@@ -178,6 +182,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ChangeConnection { .. } => "change_connection",
         ExecOptions { .. } => "exec_options",
         Rename { .. } => "rename",
+        SparkLakehouse { .. } => "spark_lakehouse",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }

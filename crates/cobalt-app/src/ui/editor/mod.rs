@@ -16,7 +16,7 @@ use super::theme::{Theme, TokenColors};
 use crate::state::{CompletionEntry, CompletionPopup, EditorState, EditorTab, Loadable, PendingEdit};
 use cobalt_core::DatabaseInfo;
 use cobalt_core::Settings;
-use cobalt_sql::lexer::{tokenize, TokenKind};
+use cobalt_sql::lexer::TokenKind;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Shape, Stroke, TextEdit, Ui, Vec2};
 
@@ -38,15 +38,28 @@ pub struct EditorOutput {
 pub enum Syntax {
     #[default]
     Sql,
+    /// Spark SQL: backtick identifiers, `"` strings, Spark keywords and functions.
+    SparkSql,
     Python,
     /// Markdown and anything else: no highlighting.
     Plain,
+}
+
+impl Syntax {
+    /// SQL of either dialect: statements, completion, the current-statement highlight.
+    pub fn is_sql(self) -> bool {
+        matches!(self, Syntax::Sql | Syntax::SparkSql)
+    }
+    pub fn dialect(self) -> cobalt_sql::Dialect {
+        if self == Syntax::SparkSql { cobalt_sql::Dialect::Spark } else { cobalt_sql::Dialect::TSql }
+    }
 }
 
 /// Build a highlighted layout job for `text` in the given syntax.
 pub fn layout_job_for(syntax: Syntax, text: &str, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
     match syntax {
         Syntax::Sql => layout_job(text, colors, font, wrap_width),
+        Syntax::SparkSql => layout_job_dialect(text, cobalt_sql::Dialect::Spark, colors, font, wrap_width),
         Syntax::Python => python_layout_job(text, colors, font, wrap_width),
         Syntax::Plain => {
             let mut job = LayoutJob::default();
@@ -187,9 +200,13 @@ pub fn python_layout_job(text: &str, colors: &TokenColors, font: FontId, wrap_wi
 
 /// Build a highlighted layout job for `text` (T-SQL).
 pub fn layout_job(text: &str, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
+    layout_job_dialect(text, cobalt_sql::Dialect::TSql, colors, font, wrap_width)
+}
+
+pub fn layout_job_dialect(text: &str, dialect: cobalt_sql::Dialect, colors: &TokenColors, font: FontId, wrap_width: f32) -> LayoutJob {
     let mut job = LayoutJob::default();
     job.wrap.max_width = wrap_width;
-    let tokens = tokenize(text);
+    let tokens = cobalt_sql::tokenize_dialect(text, dialect);
     let mut last = 0usize;
     for t in &tokens {
         if t.start > last {
@@ -323,7 +340,8 @@ pub enum EditorLayout {
 
 impl EditorTab {
     pub fn host(&mut self) -> EditorHost<'_> {
-        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax: Syntax::Sql }
+        let syntax = if self.spark.is_some() { Syntax::SparkSql } else { Syntax::Sql };
+        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax }
     }
 }
 
@@ -470,8 +488,8 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                 h.editor.line_count = text.matches('\n').count() + 1;
 
                 // current statement highlight (SQL only)
-                h.editor.statement_range = if syntax == Syntax::Sql { cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end)) } else { None };
-                if highlight_statement && out.focused && syntax == Syntax::Sql {
+                h.editor.statement_range = if syntax.is_sql() { cobalt_sql::statements::statement_at(text, out.cursor_byte).map(|s| (s.start, s.end)) } else { None };
+                if highlight_statement && out.focused && syntax.is_sql() {
                     if let Some((s, e)) = h.editor.statement_range {
                         let cs = byte_to_char(text, s);
                         let ce = byte_to_char(text, e);
@@ -515,7 +533,7 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
                     h.editor.completion = None;
                     // not while a snippet's placeholders are being filled in: Tab must stay the
                     // way to the next stop (Ctrl+Space still opens suggestions on demand)
-                    if output.typed && syntax == Syntax::Sql && h.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
+                    if output.typed && syntax.is_sql() && h.editor.snippet.is_none() && settings.editor.completion_enabled && settings.editor.completion_on_type {
                         let before = text[..out.cursor_byte].chars().next_back();
                         if matches!(before, Some(c) if c.is_alphanumeric() || c == '_' || c == '.' || c == '@' || c == '#') {
                             let anchor = gpos + widget::caret_rect(galley, h.editor.cursor, row_h).left_bottom().to_vec2();
@@ -540,7 +558,7 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
 pub fn open_completion(h: &mut EditorHost<'_>, cursor_byte: usize, anchor: Pos2, force: bool) {
     let dbs: Vec<String> = h.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
     let user = USER_SNIPPETS.read().map(|v| v.clone()).unwrap_or_default();
-    let req = cobalt_sql::completion::CompletionRequest { text: h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user };
+    let req = cobalt_sql::completion::CompletionRequest { text: h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user, dialect: h.syntax.dialect() };
     let c = cobalt_sql::completion::complete(&req);
     let prefix_len = c.replace_end.saturating_sub(c.replace_start);
     if c.items.is_empty() || (!force && prefix_len == 0) {

@@ -4,6 +4,16 @@
 
 - The changelog window substitutes the one arrow character the UI font lacks, so
   "Settings › Editor" no longer shows a box.
+- **Spark SQL tabs: plans, Parse, completion, Spark syntax, a lakehouse picker.** Est. plan
+  shows `EXPLAIN EXTENDED` of the selection or the statement under the caret in the Plan tab
+  (parsed, analyzed, optimized and physical sections, copyable); Parse analyzes every
+  statement without running anything and names the first one that fails. Completion knows the
+  lakehouse: tables, schemas and columns (read from the tables' Delta logs, no session
+  needed), with backtick quoting where a name needs it. The editor highlights Spark SQL:
+  backtick identifiers, `"text"` strings, Spark keywords and functions (SQL cells on the Spark
+  kernel too). A capped result offers "Run again without the cap". Servers → Local Spark →
+  "Choose a lakehouse…" and the tab's lakehouse chip open a workspace / lakehouse picker. A
+  notebook SQL cell's run menu has "Open in a Spark SQL tab".
 - **local-spark-mcp 0.7.0 is the new pin: Spark SQL tabs stream.** Each statement of a Spark
   SQL tab runs through the worker's `run_sql` and its rows arrive in batches, so the grid fills
   while the query runs and Run to File streams every row without holding the result in memory.

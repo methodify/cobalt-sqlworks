@@ -456,6 +456,9 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
         A::Refresh => {
             state.lakehouse_pane.reset_data();
             state.shadows.status = None;
+            if state.active().map(|t| t.spark.is_some()).unwrap_or(false) {
+                crate::sparkq::refresh_catalog(state, cx, &ws, &lh_id, &lh_name);
+            }
             lakehouse_pane_shown(state, cx);
             // re-list the folders that are open
             let open: Vec<String> = state.lakehouse_pane.expanded.iter().cloned().collect();
@@ -1229,6 +1232,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
 /// Each frame: finished Spark cells become outputs; a kernel that just came up gets the queued
 /// cells; a kernel that died fails the cells still marked running.
 pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
+    crate::sparkq::tick(state, cx);
     let out = crate::kernel::poll(&mut state.kernel);
     // a session that starts with a preload: ask for its progress once so the window has it
     if out.ready_now && state.kernel.fabric.as_ref().map(|f| !f.preload.is_null()).unwrap_or(false) {

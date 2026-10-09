@@ -38,6 +38,8 @@ enum NbAction {
     ClearOutputs(Option<usize>),
     Results(usize, ResultsAction),
     Command(Command),
+    /// A SQL cell's text as a Spark SQL query tab with the notebook's binding.
+    OpenSparkTab(usize),
 }
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
@@ -485,6 +487,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                         actions.push(NbAction::Run((i..n).collect()));
                                         ui.close();
                                     }
+                                    if nb_kernel == NotebookKernel::Spark && lang == CellLanguage::Sql {
+                                        ui.separator();
+                                        let r = ui.button(format!("{} Open in a Spark SQL tab", icons::FIRE));
+                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} open in spark tab", i + 1)));
+                                        if r.on_hover_text("The cell's SQL in a query tab on the same lakehouse: streamed rows, plans, exports.").clicked() {
+                                            actions.push(NbAction::OpenSparkTab(i));
+                                            ui.close();
+                                        }
+                                    }
                                     if queued {
                                         ui.separator();
                                         if ui.button("Cancel queued run").clicked() {
@@ -558,7 +569,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             let host_id = egui::Id::new(("cobalt-cell", tab_id, cell_id.as_str()));
                             let cs = &mut nb.cells[i];
                             let syntax = match (cell_kind, &lang) {
-                                (CellKind::Code, CellLanguage::Sql) => editor::Syntax::Sql,
+                                (CellKind::Code, CellLanguage::Sql) => if nb_kernel == NotebookKernel::Spark { editor::Syntax::SparkSql } else { editor::Syntax::Sql },
                                 (CellKind::Code, CellLanguage::Python) => editor::Syntax::Python,
                                 _ => editor::Syntax::Plain,
                             };
@@ -980,6 +991,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             }
             NbAction::Cancel => nbops::cancel(f.state, cx, idx),
             NbAction::ClearOutputs(only) => nbops::clear_outputs(f.state, idx, only),
+            NbAction::OpenSparkTab(i) => crate::sparkq::open_from_cell(f.state, f.cx, idx, i),
             NbAction::Results(cell, action) => nbops::results_action(f.state, cx, idx, cell, action),
             NbAction::Command(c) => dispatch(f, c),
         }

@@ -455,6 +455,92 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::ExecOptions { tab_index, opts };
             }
         }
+        Dialog::SparkLakehouse { tab_index, workspace } => {
+            let mut workspace = workspace;
+            let mut pick: Option<(String, String)> = None; // (workspace id, lakehouse id)
+            let mut cancel = false;
+            let mut open_fabric = false;
+            let signed_in = f.state.fabric.slot.is_some();
+            let workspaces: Vec<(String, String)> = f.state.fabric.workspaces.get().map(|v| v.iter().map(|w| (w.id.clone(), w.display_name.clone())).collect()).unwrap_or_default();
+            let lakehouses: Option<Vec<(String, String)>> = workspace.as_ref().and_then(|w| f.state.fabric.lakehouses(w));
+            let mut load_ws: Option<String> = None;
+            let (_, close) = modal(ctx, theme, "spark-lakehouse", 560.0, |ui| {
+                ui.heading(if tab_index.is_some() { "Bind a lakehouse" } else { "New Spark SQL query on a lakehouse" });
+                ui.label(RichText::new("The session sees the workspace's lakehouses; the one you pick is the default for unqualified names.").size(12.0).color(theme.text_muted));
+                ui.add_space(8.0);
+                if !signed_in {
+                    ui.label(RichText::new("Sign in on the Fabric panel first.").color(theme.warning));
+                    if ui.button("Open the Fabric panel").clicked() {
+                        open_fabric = true;
+                    }
+                }
+                ui.columns(2, |cols| {
+                    cols[0].label(RichText::new("Workspace").strong());
+                    egui::ScrollArea::vertical().id_salt("spark-lh-ws").max_height(300.0).auto_shrink([false, true]).show(&mut cols[0], |ui| {
+                        if workspaces.is_empty() && signed_in {
+                            ui.label(RichText::new("Loading workspaces…").size(11.0).color(theme.text_faint));
+                        }
+                        for (id, name) in &workspaces {
+                            if ui.selectable_label(workspace.as_deref() == Some(id.as_str()), name).clicked() {
+                                workspace = Some(id.clone());
+                                load_ws = Some(id.clone());
+                            }
+                        }
+                    });
+                    cols[1].label(RichText::new("Lakehouse").strong());
+                    egui::ScrollArea::vertical().id_salt("spark-lh-lh").max_height(300.0).auto_shrink([false, true]).show(&mut cols[1], |ui| match (&workspace, &lakehouses) {
+                        (None, _) => {
+                            ui.label(RichText::new("Pick a workspace").size(11.0).color(theme.text_faint));
+                        }
+                        (Some(_), None) => {
+                            ui.label(RichText::new("Loading lakehouses…").size(11.0).color(theme.text_faint));
+                        }
+                        (Some(ws), Some(lhs)) => {
+                            if lhs.is_empty() {
+                                ui.label(RichText::new("No lakehouses in this workspace").size(11.0).color(theme.text_faint));
+                            }
+                            for (name, id) in lhs {
+                                let r = ui.add(egui::Button::new(format!("{} {name}", icons::DROP)).frame(false).min_size(Vec2::new(ui.available_width(), 24.0)));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("lakehouse {name}")));
+                                if r.clicked() {
+                                    pick = Some((ws.clone(), id.clone()));
+                                }
+                            }
+                        }
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if open_fabric {
+                f.state.sidebar_visible = true;
+                f.state.sidebar_view = crate::state::SidebarView::Fabric;
+                crate::fabric::on_panel_shown(f.state, f.cx);
+            }
+            if signed_in && workspaces.is_empty() && f.state.fabric.workspaces.get().is_none() && !f.state.fabric.workspaces.is_loading() {
+                crate::fabric::load_workspaces(f.state, f.cx);
+            }
+            if let Some(ws) = load_ws.clone().or_else(|| workspace.clone()) {
+                if f.state.fabric.lakehouses(&ws).is_none() && !f.state.fabric.items.get(&ws).map(|l| l.is_loading()).unwrap_or(false) {
+                    crate::fabric::load_items(f.state, f.cx, &ws);
+                }
+            }
+            if let Some((ws, lh)) = pick {
+                let binding = crate::state::NotebookFabric { workspace_id: ws, lakehouse_id: Some(lh), write_mode: "sandbox".into(), preload: false };
+                match tab_index.filter(|&i| f.state.tabs.get(i).map(|t| t.spark.is_some()).unwrap_or(false)) {
+                    Some(i) => crate::sparkq::set_binding(f.state, f.cx, i, Some(binding)),
+                    None => {
+                        crate::sparkq::new_tab(f.state, f.cx, Some(binding), None, None);
+                    }
+                }
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::SparkLakehouse { tab_index, workspace };
+            }
+        }
         Dialog::Rename { tab_index, mut title } => {
             let mut ok = false;
             let mut cancel = false;

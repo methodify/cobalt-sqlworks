@@ -423,6 +423,33 @@ def __cobalt_sql(text, limit=None):
     if last is not None:
         display(last, limit=limit)
 
+def __cobalt_parse(stmts):
+    # Parse: analyze every statement without running it. A query analyzes when the DataFrame
+    # is built (nothing runs); anything else goes through EXPLAIN, which Spark answers with a
+    # plan or with "Error occurred during query planning" (the detail is not given).
+    import re as __re
+    for i, s in enumerate(stmts, 1):
+        where = "Statement %d: " % i if len(stmts) > 1 else ""
+        head = __re.match(r"\s*(\w+)", s)
+        word = head.group(1).upper() if head else ""
+        try:
+            if word in ("SELECT", "WITH", "VALUES", "TABLE", "FROM", "SHOW", "DESCRIBE", "DESC"):
+                spark.sql(s).schema  # the schema forces analysis; nothing runs
+            else:
+                txt = spark.sql("EXPLAIN EXTENDED " + s).collect()[0][0]
+                for line in txt.splitlines():
+                    if "Exception: " in line:
+                        raise SparkSqlError(where + line.split("Exception: ", 1)[1].strip())
+                if txt.strip().startswith("Error occurred"):
+                    raise SparkSqlError(where + "Spark could not plan this statement (run it for the message)")
+        except SparkSqlError:
+            raise
+        except Exception as e:
+            m = str(e).split("JVM stacktrace:")[0].rstrip()
+            m = "\n".join(l for l in m.splitlines() if not l.lstrip().startswith(("'", "+-", ":-")))
+            raise SparkSqlError(where + (m.strip() or type(e).__name__)) from None
+        print("%sparsed and analyzed" % where)
+
 def __cobalt_sql_all(text, limit=None):
     # a Spark SQL query tab: every statement's rows become a result set; statements without
     # rows (DDL, DML, USE) report that they completed

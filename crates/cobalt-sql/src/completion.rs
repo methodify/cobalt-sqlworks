@@ -12,7 +12,7 @@
 //! fails on broken SQL — unknown things simply yield fewer candidates.
 
 use crate::batches::split_batches;
-use crate::lexer::{tokenize, Token, TokenKind, FUNCTIONS, KEYWORDS, SYSTEM_VARIABLES, TYPES};
+use crate::lexer::{tokenize_dialect, Dialect, Token, TokenKind, FUNCTIONS, KEYWORDS, SPARK_FUNCTIONS, SPARK_KEYWORDS, SYSTEM_VARIABLES, TYPES};
 use crate::snippets::SNIPPETS;
 use crate::statements::statement_at;
 use cobalt_core::{quote_ident, ColumnInfo, DatabaseCatalog, ObjectKind, ObjectRef};
@@ -118,6 +118,9 @@ pub struct CompletionRequest<'a> {
     pub max_items: usize,
     /// The user's own snippets (`snippets.toml`), offered next to the built-ins.
     pub user_snippets: &'a [crate::snippets::UserSnippet],
+    /// T-SQL (bracket quoting, T-SQL keywords) or Spark SQL (backticks, Spark keywords and
+    /// functions, no `dbo` default).
+    pub dialect: Dialect,
 }
 
 /// Result of [`complete`]: the items plus the byte range of `text` they replace.
@@ -292,6 +295,7 @@ impl TableRef {
 
 struct Ctx<'a> {
     text: &'a str,
+    dialect: Dialect,
     tokens: Vec<Token>,
     /// Indices (into `tokens`) of significant tokens ending at or before the word.
     before: Vec<usize>,
@@ -307,7 +311,7 @@ struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     fn new(text: &'a str, word_start: usize, req: &CompletionRequest<'a>) -> Self {
-        let tokens = tokenize(text);
+        let tokens = tokenize_dialect(text, req.dialect);
         let before: Vec<usize> =
             (0..tokens.len()).filter(|&i| !tokens[i].kind.is_trivia() && tokens[i].end <= word_start).collect();
 
@@ -338,7 +342,8 @@ impl<'a> Ctx<'a> {
                 _ => {}
             }
         }
-        Ctx { text, tokens, before, catalog: req.catalog, databases: req.databases, user_snippets: req.user_snippets, stmt, batch, cursor_paren_depth: depth }
+        Ctx { text,
+            dialect: req.dialect, tokens, before, catalog: req.catalog, databases: req.databases, user_snippets: req.user_snippets, stmt, batch, cursor_paren_depth: depth }
     }
 
     fn tok(&self, i: usize) -> &Token {
@@ -548,8 +553,16 @@ impl<'a> Ctx<'a> {
         self.keywords(true)
     }
 
+    /// Quote a name the way the dialect wants it, only when it needs quoting.
+    fn q(&self, name: &str) -> String {
+        quote_for(name, self.dialect)
+    }
+
     fn keywords(&self, with_snippets: bool) -> Vec<CompletionItem> {
         let mut v: Vec<CompletionItem> = KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)).collect();
+        if self.dialect == Dialect::Spark {
+            v.extend(SPARK_KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)));
+        }
         v.extend(self.functions());
         if with_snippets {
             v.extend(SNIPPETS.iter().map(|s| item(s.prefix, s.body, CompletionKind::Snippet, Some(s.label.to_string()))));
@@ -559,18 +572,18 @@ impl<'a> Ctx<'a> {
     }
 
     fn functions(&self) -> Vec<CompletionItem> {
-        FUNCTIONS
-            .iter()
-            .filter(|f| !f.starts_with('@'))
-            .map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into())))
-            .collect()
+        let mut v: Vec<CompletionItem> = FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect();
+        if self.dialect == Dialect::Spark {
+            v.extend(SPARK_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
+        }
+        v
     }
 
     fn types(&self) -> Vec<CompletionItem> {
         let mut v: Vec<CompletionItem> = TYPES.iter().map(|t| item(*t, *t, CompletionKind::Type, Some("Type".into()))).collect();
         if let Some(cat) = self.catalog {
             for o in cat.objects.iter().filter(|o| o.kind == ObjectKind::TableType) {
-                v.push(item(o.name.clone(), qualified_insert(o), CompletionKind::Type, Some(o.kind.label().to_string())));
+                v.push(item(o.name.clone(), qualified_insert(o, self.dialect), CompletionKind::Type, Some(o.kind.label().to_string())));
             }
         }
         v
@@ -579,7 +592,7 @@ impl<'a> Ctx<'a> {
     fn databases(&self) -> Vec<CompletionItem> {
         self.databases
             .iter()
-            .map(|d| item(d.clone(), quote_ident(d), CompletionKind::Database, Some("Database".into())))
+            .map(|d| item(d.clone(), self.q(d), CompletionKind::Database, Some("Database".into())))
             .collect()
     }
 
@@ -587,11 +600,11 @@ impl<'a> Ctx<'a> {
         let mut v = Vec::new();
         if let Some(cat) = self.catalog {
             for s in &cat.schemas {
-                v.push(item(s.clone(), quote_ident(s), CompletionKind::Schema, Some("Schema".into())));
+                v.push(item(s.clone(), self.q(s), CompletionKind::Schema, Some("Schema".into())));
             }
             for o in cat.objects.iter().filter(|o| filter.accepts(o.kind)) {
                 if let Some(kind) = kind_for(o) {
-                    v.push(item(o.name.clone(), qualified_insert(o), kind, Some(object_detail(o))));
+                    v.push(item(o.name.clone(), qualified_insert(o, self.dialect), kind, Some(object_detail(o))));
                 }
             }
         }
@@ -599,7 +612,7 @@ impl<'a> Ctx<'a> {
             v.extend(self.temp_tables());
             // CTE names declared in this statement.
             for r in self.table_refs().iter().filter(|r| r.object.is_none() && r.parts.len() == 1 && !r.text_columns.is_empty()) {
-                v.push(item(r.parts[0].clone(), quote_ident(&r.parts[0]), CompletionKind::Table, Some("Common Table Expression".into())));
+                v.push(item(r.parts[0].clone(), self.q(&r.parts[0]), CompletionKind::Table, Some("Common Table Expression".into())));
             }
         }
         v
@@ -662,9 +675,9 @@ impl<'a> Ctx<'a> {
         let mut v = self.columns();
         for r in self.table_refs() {
             if let Some(a) = &r.alias {
-                v.push(item(a.clone(), quote_ident(a), CompletionKind::Alias, Some(format!("Alias for {}", r.parts.join(".")))));
+                v.push(item(a.clone(), self.q(a), CompletionKind::Alias, Some(format!("Alias for {}", r.parts.join(".")))));
             } else if let Some(n) = r.parts.last() {
-                v.push(item(n.clone(), quote_ident(n), CompletionKind::Alias, Some("Table".into())));
+                v.push(item(n.clone(), self.q(n), CompletionKind::Alias, Some("Table".into())));
             }
         }
         v.extend(self.variables().into_iter().filter(|it| !it.label.starts_with("@@")));
@@ -681,7 +694,7 @@ impl<'a> Ctx<'a> {
             let src = r.display();
             for (name, detail) in self.columns_of(r) {
                 let d = if multi { format!("{detail} · {src}") } else { detail };
-                v.push(item(name.clone(), quote_ident(&name), CompletionKind::Column, Some(d)));
+                v.push(item(name.clone(), self.q(&name), CompletionKind::Column, Some(d)));
             }
         }
         v
@@ -753,7 +766,7 @@ impl<'a> Ctx<'a> {
                         }
                     }
                     if v.is_empty() && (cat.database.eq_ignore_ascii_case(q) || self.databases.iter().any(|d| d.eq_ignore_ascii_case(q))) {
-                        v.extend(cat.schemas.iter().map(|s| item(s.clone(), quote_ident(s), CompletionKind::Schema, Some("Schema".into()))));
+                        v.extend(cat.schemas.iter().map(|s| item(s.clone(), self.q(s), CompletionKind::Schema, Some("Schema".into()))));
                     }
                 }
                 v
@@ -787,7 +800,7 @@ impl<'a> Ctx<'a> {
     fn columns_of_ref(&self, r: &TableRef) -> Vec<CompletionItem> {
         self.columns_of(r)
             .into_iter()
-            .map(|(name, detail)| item(name.clone(), quote_ident(&name), CompletionKind::Column, Some(detail)))
+            .map(|(name, detail)| item(name.clone(), self.q(&name), CompletionKind::Column, Some(detail)))
             .collect()
     }
 
@@ -796,7 +809,7 @@ impl<'a> Ctx<'a> {
         cat.objects
             .iter()
             .filter(|o| o.schema.eq_ignore_ascii_case(schema) && filter.accepts(o.kind))
-            .filter_map(|o| kind_for(o).map(|k| item(o.name.clone(), quote_ident(&o.name), k, Some(object_detail(o)))))
+            .filter_map(|o| kind_for(o).map(|k| item(o.name.clone(), self.q(&o.name), k, Some(object_detail(o)))))
             .collect()
     }
 
@@ -1025,11 +1038,29 @@ fn object_detail(o: &ObjectRef) -> String {
     }
 }
 
-fn qualified_insert(o: &ObjectRef) -> String {
-    if o.schema.eq_ignore_ascii_case("dbo") {
-        quote_ident(&o.name)
+/// `name` or `schema.name`: the default schema (`dbo` on both engines; a lakehouse without
+/// schemas has none) is left out.
+fn qualified_insert(o: &ObjectRef, dialect: Dialect) -> String {
+    if o.schema.eq_ignore_ascii_case("dbo") || o.schema.is_empty() {
+        quote_for(&o.name, dialect)
     } else {
-        format!("{}.{}", quote_ident(&o.schema), quote_ident(&o.name))
+        format!("{}.{}", quote_for(&o.schema, dialect), quote_for(&o.name, dialect))
+    }
+}
+
+/// Quote `name` for `dialect` only when it needs quoting: `[name]` in T-SQL, `` `name` `` in
+/// Spark SQL.
+pub fn quote_for(name: &str, dialect: Dialect) -> String {
+    match dialect {
+        Dialect::TSql => quote_ident(name),
+        Dialect::Spark => {
+            let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if simple {
+                name.to_string()
+            } else {
+                format!("`{}`", name.replace('`', "``"))
+            }
+        }
     }
 }
 
@@ -1063,7 +1094,7 @@ mod tests {
     fn run(text: &str, cursor: usize) -> Completions {
         let cat = catalog();
         let dbs = vec!["master".to_string(), "Shop".to_string()];
-        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0, user_snippets: &[] })
+        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0, user_snippets: &[], dialect: Dialect::TSql })
     }
 
     /// Complete at the `|` marker.
@@ -1273,11 +1304,11 @@ mod tests {
         let text = "SELECT o.| FROM sales.Orders o";
         let cursor = text.find('|').unwrap();
         let text = text.replacen('|', "", 1);
-        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5, user_snippets: &[] });
+        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql });
         assert!(c.items.is_empty());
-        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5, user_snippets: &[] });
+        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql });
         assert!(c.items.len() <= 5);
-        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3, user_snippets: &[] });
+        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3, user_snippets: &[], dialect: Dialect::TSql });
         assert_eq!(c.items.len(), 3);
         assert_eq!((c.replace_start, c.replace_end), (0, 3));
     }
@@ -1297,7 +1328,7 @@ mod tests {
         let b = at("SELECT | FROM dbo.Customers");
         assert_eq!(a, b);
         let cat = catalog();
-        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4, user_snippets: &[] });
+        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4, user_snippets: &[], dialect: Dialect::TSql });
         assert_eq!(c.items.len(), 4);
     }
 

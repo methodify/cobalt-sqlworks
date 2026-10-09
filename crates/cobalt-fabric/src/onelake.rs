@@ -117,6 +117,21 @@ impl OneLakeClient {
         Ok(out)
     }
 
+    /// The text of one file (`<lakehouse-id>/Tables/<t>/_delta_log/….json`); small files only.
+    pub async fn read_text(&self, workspace_id: &str, path: &str) -> Result<String> {
+        let url = format!("{}/{workspace_id}/{}", self.base, path.split('/').map(urlencode).collect::<Vec<_>>().join("/"));
+        let resp = self.http.get(&url).bearer_auth(&self.token).header("x-ms-version", API_VERSION).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        if !status.is_success() {
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let code = v.pointer("/error/code").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let message = v.pointer("/error/message").and_then(|c| c.as_str()).unwrap_or(&body).lines().next().unwrap_or("").to_string();
+            return Err(FabricError::Api { status: status.as_u16(), code, message });
+        }
+        Ok(body)
+    }
+
     /// Every Delta table under `Tables/`: top-level folders with a `_delta_log`, and, for folders
     /// without one (schemas), their table folders. Sorted by `schema/name`.
     pub async fn list_tables(&self, workspace_id: &str, lakehouse_id: &str) -> Result<Vec<OneLakeTable>> {
