@@ -454,6 +454,9 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
             }
         }
         A::Refresh => {
+            if let (Some(cat), Some((_, _, lh_id))) = (&state.kernel.sail_catalog, state.lakehouse_pane.selected.clone()) {
+                cat.invalidate(Some(&lh_id));
+            }
             state.lakehouse_pane.reset_data();
             state.shadows.status = None;
             if state.active().map(|t| t.spark.is_some()).unwrap_or(false) {

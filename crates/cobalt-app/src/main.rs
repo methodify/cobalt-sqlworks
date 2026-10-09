@@ -12,6 +12,7 @@ mod fabric;
 mod gpu;
 mod kernel;
 mod onelake_tokens;
+mod sail_catalog;
 mod notebook;
 mod ops;
 mod runtime;

@@ -118,9 +118,9 @@ same methods where they make sense:
 |---|---|
 | `init` | sets `SAIL_*` and `AZURE_*` env (token service URL + secret from Cobalt's endpoint, `AZURE_ALLOW_HTTP`, the catalog list), starts `SparkConnectServer` in-process on a random port, creates the root session, records lakehouses; result = `info()` with `engine: "sail"`, `engine_version`, `spark_version` (client), `features` |
 | `create_context` / `drop_context` | one Spark Connect session per context (`builder.remote(url).create()`), one IPython namespace per context (same swap technique as the JVM worker), `USE CATALOG` / `USE DATABASE` for the default lakehouse |
-| `register_lakehouse` | records name / id / workspace; lists `Tables/` (and schema folders) through the OneLake DFS API with the host token; a schema-enabled lakehouse is a memory catalog named after it (one database per schema), a plain one is a database of the default catalog; tables are mounted lazily |
+| `register_lakehouse` | records name / id / workspace and restarts the embedded server with the lakehouse as one more Unity catalog (Cobalt's endpoint answers for it) |
 | `run_code` | IPython `run_cell` with the `_Tee` streaming; `display(df)` and a captured bare DataFrame via `df.limit(n+1).toArrow()`; the namespace has `spark`, `F`, `T`, `Window`, `display` and a `notebookutils` stub that raises a clear error (slice B brings the shim) |
-| `run_sql` | `spark.sql`; `stream: true` iterates the client's Arrow batches and emits `batch` events; DML returns `metrics {affected_rows, source: "result"}` from Sail's `count` frame; automount on `TABLE_OR_VIEW_NOT_FOUND`: resolve the name against the registered lakehouses (current catalog and database first), `CREATE TABLE … USING delta LOCATION 'abfss://…'`, retry once |
+| `run_sql` | `spark.sql` (analysis forced so an unknown table fails with the statement); `stream: true` iterates the client's Arrow batches and emits `batch` events; DML returns `metrics {affected_rows, source: "result"}` from Sail's `count` frame |
 | `list_tables` | from the DFS listing (cached per lakehouse, refreshed on demand) |
 | `interrupt` (control) | `session.interruptAll()` for the context + `interrupt_main()` for Python |
 | `status` (control) | `cell_running`, elapsed, context — no job list |
@@ -131,6 +131,25 @@ same methods where they make sense:
 contexts sql_stream commit_metrics catalog_listing engine_sail`. Fatal detection: a dead
 server (the in-process server stopping, `UNAVAILABLE` gRPC status) marks the reply `fatal`, and
 Cobalt respawns the worker as it does for a dead JVM.
+
+**The lakehouse catalog (built 2026-10-09, replacing the first slice's mounting).** The first
+build registered tables lazily as external Delta tables (`CREATE TABLE … LOCATION`, ~0.75 s
+each, serial, once per context), which did not survive a lakehouse with hundreds of tables.
+Measured alternatives: parallel registration (5 tables 3.9 s → 1.5 s) still pays per table per
+context; explicit column lists do not skip the Delta-log read and must match the metadata
+exactly. What shipped instead: `sail_catalog.rs`, a loopback Unity-Catalog-compatible endpoint
+in Cobalt (next to the token endpoint) backed by Fabric's OneLake table API
+(`onelake.table.fabric.microsoft.com/delta/<ws>/<lh>/api/2.1/unity-catalog`, the storage
+token). Sail gets one `unity` catalog per lakehouse pointing at it. GET /schemas and /tables
+are one Fabric call each (cached), /tables/{name} one call per table on first touch; the
+endpoint normalises Spark type names to Unity's spelling (the bug in Sail's own OneLake
+catalog), rewrites storage locations to the `abfss://` form by ids, refuses DELETE (Fabric
+deletes the folder) and serves Unity's staging flow for CREATE in write-through mode only.
+Verified live: SHOW DATABASES / TABLES, SELECT on every fixture table, DESCRIBE, EXPLAIN,
+INSERT / UPDATE / DELETE / MERGE / INSERT OVERWRITE and time travel through the catalog; a
+whole session costs five upstream calls. Plain lakehouses are `<lakehouse>.dbo.<table>`
+(Fabric's own mapping); legacy top-level tables of a schema-enabled lakehouse appear as schemas
+in Fabric's listing and stay path-only.
 
 **Tokens.** `onelake_tokens::TokenServer` accepts the secret in `x-ms-partner-token` as well as
 `X-Token-Secret` (object_store's Fabric provider sends the former) and ignores the

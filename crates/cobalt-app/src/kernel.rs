@@ -316,6 +316,8 @@ pub struct KernelUi {
     /// A Fabric-bound start waiting for its OneLake token (interactive sign-in may be running).
     pub pending_fabric_start: Option<KernelFabric>,
     token_server: Option<crate::onelake_tokens::TokenServer>,
+    /// LakeSail: Cobalt's loopback lakehouse catalog (Unity-compatible, over Fabric's table API).
+    pub sail_catalog: Option<crate::sail_catalog::CatalogServer>,
     /// Notebooks already warned that their binding differs from the running session's.
     pub binding_warned: std::collections::HashSet<TabId>,
     /// The worker's control socket (protocol 2): interrupts go here while a cell runs.
@@ -386,7 +388,7 @@ impl KernelUi {
 
 impl Default for KernelUi {
     fn default() -> Self {
-        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), engine: Engine::PySpark, engine_version: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now(), last_call: None }
+        Self { state: KernelState::Stopped, busy: None, log: VecDeque::new(), log_open: false, profile: String::new(), engine: Engine::PySpark, engine_version: String::new(), waiting: Vec::new(), tx: None, rx: None, cancel: Arc::new(AtomicBool::new(false)), out_dir: None, fabric: None, pending_fabric_start: None, token_server: None, sail_catalog: None, binding_warned: Default::default(), control: None, interrupting: None, interrupt_sent_at: None, last_interrupt: None, ev_tx: None, native_arrow: false, features: Default::default(), contexts: Default::default(), last_activity: Instant::now(), last_call: None }
     }
 }
 
@@ -589,6 +591,7 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
     let _ = std::fs::create_dir_all(&out_dir);
     let mut extra = serde_json::Map::new();
     k.token_server = None;
+    k.sail_catalog = None;
     k.fabric = None;
     if let Some(fs) = fabric {
         let scala = cobalt_runtime::Manifest::embedded().profile(&profile).map(|p| p.scala.clone()).unwrap_or_else(|_| "2.13".into());
@@ -665,8 +668,10 @@ fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabri
     let _ = std::fs::create_dir_all(&out_dir);
     let mut extra = serde_json::Map::new();
     k.token_server = None;
+    k.sail_catalog = None;
     k.fabric = None;
     let mut notes: Vec<String> = Vec::new();
+    k.sail_catalog = None;
     if let Some(fs) = fabric {
         let ts = crate::onelake_tokens::TokenServer::start(fs.resolver.clone(), fs.fabric.slot, fs.fabric.tenant.clone(), fs.handle.clone()).map_err(|e| StartError::TokenServer(e.to_string()))?;
         extra.insert("onelake".into(), json!({"endpoint": ts.url, "secret": ts.secret}));
@@ -682,6 +687,11 @@ fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabri
             f.write_mode = "readonly".into();
         }
         extra.insert("write_mode".into(), Value::String(f.write_mode.clone()));
+        // the lakehouse catalog Sail reads: Cobalt's endpoint over Fabric's table API
+        let refs: Vec<crate::sail_catalog::LakehouseRef> = f.lakehouses.iter().map(|(name, id)| crate::sail_catalog::LakehouseRef { name: name.clone(), id: id.clone(), workspace_id: f.workspace_id.clone() }).collect();
+        let cat = crate::sail_catalog::CatalogServer::start(fs.resolver.clone(), f.slot, f.tenant.clone(), fs.handle.clone(), refs, &f.write_mode).map_err(|e| StartError::TokenServer(format!("lakehouse catalog endpoint: {e}")))?;
+        extra.insert("catalog".into(), json!({"endpoint": cat.url}));
+        k.sail_catalog = Some(cat);
         k.token_server = Some(ts);
         k.fabric = Some(f);
     }
@@ -1014,6 +1024,13 @@ fn kernel_thread(rx: Receiver<Cmd>, tx: Sender<KernelEvent>, cancel: Arc<AtomicB
 /// Submit a cell. While the kernel starts, the request waits in `waiting`.
 pub fn run(k: &mut KernelUi, req: RunReq) {
     k.last_activity = Instant::now();
+    if let Some(cat) = &k.sail_catalog {
+        for lh in &req.register {
+            if let (Some(name), Some(id), Some(ws)) = (lh.get("name").and_then(Value::as_str), lh.get("id").and_then(Value::as_str), lh.get("workspace_id").and_then(Value::as_str)) {
+                cat.register(crate::sail_catalog::LakehouseRef { name: name.into(), id: id.into(), workspace_id: ws.into() });
+            }
+        }
+    }
     if k.state.is_ready() {
         if let Some(tx) = &k.tx {
             k.busy.get_or_insert((req.tab, req.cell_id.clone()));
@@ -1235,6 +1252,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.tx = None;
                 k.waiting.clear();
                 k.token_server = None;
+    k.sail_catalog = None;
                 k.fabric = None;
                 k.control = None;
                 k.interrupting = None;
@@ -1248,6 +1266,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 k.tx = None;
                 k.waiting.clear();
                 k.token_server = None;
+    k.sail_catalog = None;
                 k.fabric = None;
                 k.control = None;
                 k.interrupting = None;

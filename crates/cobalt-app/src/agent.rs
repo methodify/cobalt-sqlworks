@@ -221,6 +221,7 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "protocol_version": if let K::Ready { info, .. } = &k.state { info.get("protocol_version").cloned() } else { None },
         "token_requests": k.token_requests(),
         "token_error": k.token_error(),
+        "catalog": k.sail_catalog.as_ref().map(|c| json!({"url": c.url, "requests": c.requests.load(std::sync::atomic::Ordering::Relaxed), "upstream_calls": c.upstream_calls.load(std::sync::atomic::Ordering::Relaxed), "last_error": c.last_error.lock().clone(), "lakehouses": c.lakehouses().iter().map(|l| l.name.clone()).collect::<Vec<_>>()})),
     })
 }
 

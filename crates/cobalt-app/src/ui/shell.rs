@@ -777,6 +777,16 @@ fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
             if let crate::kernel::KernelState::Ready { info, .. } = &k.state {
                 ui.label(RichText::new(format!("{} · {}", info.get("profile").and_then(|v| v.as_str()).unwrap_or(""), info.get("master").and_then(|v| v.as_str()).unwrap_or(""))).size(11.0).color(theme.text_muted));
             }
+            if let Some(cat) = &k.sail_catalog {
+                // the lakehouse catalog Cobalt serves to Sail: what it answered, what it asked Fabric
+                let (served, upstream) = (cat.requests.load(std::sync::atomic::Ordering::Relaxed), cat.upstream_calls.load(std::sync::atomic::Ordering::Relaxed));
+                let lakehouses = cat.lakehouses().iter().map(|l| l.name.clone()).collect::<Vec<_>>().join(", ");
+                let r = ui.label(RichText::new(format!("catalog · {served} answered · {upstream} Fabric calls")).size(11.0).color(theme.text_muted));
+                r.on_hover_text(format!("Cobalt serves Sail a Unity-compatible catalog over Fabric's OneLake table API for {lakehouses}; listings and columns are cached for the session (the Lakehouse pane's Refresh forgets one lakehouse).\n{}", cat.url));
+                if let Some(e) = cat.last_error.lock().clone() {
+                    ui.label(RichText::new(e).size(11.0).color(theme.error));
+                }
+            }
             if let crate::kernel::KernelState::Failed(e) = &k.state {
                 ui.label(RichText::new(e).size(11.0).color(theme.error));
             }

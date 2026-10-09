@@ -9,13 +9,14 @@ interrupt all work unchanged:
 
 - ``init`` starts ``pysail.spark.SparkConnectServer`` on a random loopback port, with OneLake
   credentials taken from Cobalt's token endpoint through object_store's Fabric token provider
-  (``AZURE_FABRIC_TOKEN_SERVICE_URL`` + ``AZURE_FABRIC_SESSION_TOKEN``), one memory catalog per
-  schema-enabled lakehouse and a database per plain lakehouse;
+  (``AZURE_FABRIC_TOKEN_SERVICE_URL`` + ``AZURE_FABRIC_SESSION_TOKEN``) and a memory catalog
+  ``spark_catalog`` for scratch tables;
 - a context is one Spark Connect session (``builder.remote(url).create()``: its own temp views,
   current catalog / database, conf) plus one IPython namespace, swapped into the single shell
   per cell exactly as the JVM worker does;
-- lakehouse tables are mounted lazily as external Delta tables by their OneLake path the first
-  time a statement names one that the session does not know (``TABLE_OR_VIEW_NOT_FOUND``);
+- every lakehouse is a Unity catalog served by Cobalt's loopback endpoint over Fabric's table
+  API (``init.catalog.endpoint``): Sail asks for schemas, tables and columns as statements name
+  them, so nothing is mounted and a lakehouse with thousands of tables costs one listing;
 - ``run_sql`` streams the client's Arrow batches as ``batch`` events; DML reports Sail's
   ``count`` frame as ``metrics``; ``interrupt`` on the control socket is
   ``session.interruptAll()`` plus a KeyboardInterrupt for Python code.
@@ -189,6 +190,8 @@ class Context:
     # tables mounted in this session, as "lh.schema.t" / "lh.t"
     mounted: set = field(default_factory=set)
     prepared: bool = False
+    # a rewritten CREATE TABLE in flight: (scratch name, lakehouse, schema, table)
+    pending_create: object = None
 
     @property
     def ns(self) -> dict:
@@ -246,6 +249,7 @@ _NOT_FOUND = (
     re.compile(r"table\s+'?([`\w.]+)'?\s+not found", re.IGNORECASE),
 )
 _USE_PLAIN = re.compile(r"^\s*USE\s+(?!CATALOG\b|DATABASE\b|SCHEMA\b|NAMESPACE\b)", re.IGNORECASE)
+_CREATE_HEAD = re.compile(r"^\s*CREATE\s+(?:OR\s+REPLACE\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[`\w.]+\s*", re.IGNORECASE)
 _SHOW_TABLES = re.compile(r"^\s*SHOW\s+TABLES(?:\s+(?:IN|FROM)\s+([`\w.]+))?\s*;?\s*$", re.IGNORECASE)
 
 
@@ -301,9 +305,10 @@ class SailEngine:
 
     def __init__(self, onelake: dict | None = None, lakehouses=(), default_lakehouse: str | None = None,
                  write_mode: str = "readonly", default_sql_limit: int = 1000, app_name: str = "cobalt-sqlworks",
-                 state_root: str | None = None, sail_options: dict | None = None, **_ignored):
+                 state_root: str | None = None, sail_options: dict | None = None, catalog: dict | None = None, **_ignored):
         self.started_at = time.time()
         self.onelake = onelake or {}
+        self.catalog = catalog or {}
         self.write_mode = "writethrough" if write_mode == "writethrough" else "readonly"
         self.requested_write_mode = write_mode
         self.default_sql_limit = int(default_sql_limit or 1000)
@@ -335,8 +340,6 @@ class SailEngine:
             if info is None:
                 raise ValueError(f"unknown default lakehouse {default_lakehouse!r}; known: {sorted(self.lakehouses)}")
             self.default_lakehouse = info.name
-        # the listings decide which lakehouses are schema-enabled, which decides the catalogs
-        self._list_all()
         self._start_server()
         from IPython.core.interactiveshell import InteractiveShell
 
@@ -376,98 +379,42 @@ class SailEngine:
                 return lh
         return None
 
-    def _token(self, scope: str = "https://storage.azure.com/.default") -> str:
-        endpoint, secret = self.onelake.get("endpoint"), self.onelake.get("secret")
-        if not endpoint:
-            raise RuntimeError("no OneLake token endpoint: the session was started without a Fabric account")
-        url = endpoint + ("&" if "?" in endpoint else "?") + "scope=" + urllib.parse.quote(scope, safe="")
-        req = urllib.request.Request(url, headers={"X-Token-Secret": secret or ""})
-        with urllib.request.urlopen(req, timeout=60) as r:
-            return r.read().decode("utf-8").strip()
-
-    def _dfs_list(self, workspace_id: str, directory: str) -> list[tuple[str, bool]]:
-        """Children of `directory` (relative to the workspace filesystem): (name, is_dir)."""
-        token = self._token()
-        out: list[tuple[str, bool]] = []
-        cont = None
-        while True:
-            q = {"resource": "filesystem", "directory": directory, "recursive": "false", "maxResults": "5000"}
-            if cont:
-                q["continuation"] = cont
-            url = f"{ONELAKE_DFS}/{urllib.parse.quote(workspace_id)}?" + urllib.parse.urlencode(q)
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "x-ms-version": "2023-11-03"})
+    def _schemas_of(self, lh: Lakehouse, sess=None) -> list[str]:
+        """The lakehouse's schemas from the catalog (Fabric reports `dbo` for a plain lakehouse
+        too); cached on the lakehouse record."""
+        if lh.schemas is None:
+            sess = sess or self._root_session
             try:
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    body = json.loads(r.read().decode("utf-8") or "{}")
-                    cont = r.headers.get("x-ms-continuation")
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:300]
-                if e.code == 404:
-                    return []
-                raise RuntimeError(f"OneLake listing of {directory} failed: HTTP {e.code} {detail}") from None
-            for p in body.get("paths", []):
-                name = str(p.get("name", "")).rsplit("/", 1)[-1]
-                is_dir = str(p.get("isDirectory", "false")).lower() == "true"
-                out.append((name, is_dir))
-            if not cont:
-                return out
-
-    def _list_lakehouse(self, lh: Lakehouse, force: bool = False) -> Lakehouse:
-        """Tables/ of a lakehouse: top-level entries are tables (a `_delta_log` inside) or schema
-        folders. Each entry costs one listing; they run eight at a time."""
-        if lh.listed_at and not force and lh.tables is not None:
-            return lh
-        from concurrent.futures import ThreadPoolExecutor
-
-        top = [n for n, d in self._dfs_list(lh.workspace_id, f"{lh.id}/Tables") if d]
-
-        def classify(name: str):
-            children = self._dfs_list(lh.workspace_id, f"{lh.id}/Tables/{name}")
-            if any(n == "_delta_log" for n, _ in children):
-                return name, None
-            return name, [n for n, d in children if d and n != "_delta_log"]
-
-        tables: list[str] = []
-        schema_tables: dict = {}
-        if top:
-            with ThreadPoolExecutor(max_workers=8) as pool:
-                for name, kids in pool.map(classify, top):
-                    if kids is None:
-                        tables.append(name)
-                    else:
-                        schema_tables[name] = kids
-        lh.tables = sorted(tables)
-        lh.schema_tables = {k: sorted(v) for k, v in schema_tables.items()}
-        if lh.schemas is None or force:
-            lh.schemas = sorted(schema_tables)
-        lh.listed_at = time.time()
-        return lh
-
-    def _list_all(self) -> None:
-        if not self.onelake.get("endpoint"):
-            return
-        for lh in self.lakehouses.values():
-            try:
-                self._list_lakehouse(lh)
+                rows = sess.sql(f"SHOW DATABASES IN {_q(lh.name)}").collect()
+                names = []
+                for r in rows:
+                    n = str(r[0])
+                    names.append(n.split(".")[-1] if n.startswith(lh.name + ".") else n)
+                lh.schemas = names
             except Exception as exc:
-                self.warnings.append(f"could not list lakehouse {lh.name}: {type(exc).__name__}: {exc}")
-                lh.schemas = lh.schemas or []
-                lh.tables = lh.tables or []
+                self.warnings.append(f"could not list the schemas of {lh.name}: {type(exc).__name__}: {str(exc).splitlines()[0][:200]}")
+                lh.schemas = ["dbo"]
+        return lh.schemas
 
-    def _default_schema(self, lh_name: str | None) -> str | None:
+    def _default_schema(self, lh_name: str | None, sess=None) -> str | None:
         lh = self._resolve_lakehouse(lh_name)
-        if lh is None or not lh.schema_enabled:
+        if lh is None:
             return None
-        return "dbo" if "dbo" in (lh.schemas or []) else (lh.schemas or [None])[0]
+        schemas = self._schemas_of(lh, sess)
+        return "dbo" if "dbo" in schemas or not schemas else schemas[0]
 
     def list_tables(self, lakehouse: str) -> list[str]:
         lh = self._resolve_lakehouse(lakehouse)
         if lh is None:
             raise ValueError(f"unknown lakehouse {lakehouse!r}; known: {sorted(self.lakehouses)}")
-        self._list_lakehouse(lh, force=True)
-        out = list(lh.tables or [])
-        for s, ts in lh.schema_tables.items():
-            out.extend(f"{s}/{t}" for t in ts)
+        lh.schemas = None
+        out: list[str] = []
+        for s in self._schemas_of(lh):
+            try:
+                for r in self._root_session.sql(f"SHOW TABLES IN {_q(lh.name)}.{_q(s)}").collect():
+                    out.append(f"{s}/{r[1]}")
+            except Exception:
+                pass
         return out
 
     def register_lakehouse(self, lh: dict) -> dict:
@@ -478,18 +425,9 @@ class SailEngine:
             if existing is not None:
                 raise ValueError(f"lakehouse name {lh.get('name')!r} is already attached from another workspace")
             info = self._add_lakehouse(lh)
-            try:
-                self._list_lakehouse(info)
-            except Exception as exc:
-                self.warnings.append(f"could not list lakehouse {info.name}: {type(exc).__name__}: {exc}")
-                info.schemas, info.tables = info.schemas or [], info.tables or []
-            if info.schema_enabled:
-                # a schema-enabled lakehouse is a catalog, and catalogs are fixed at server start
-                self._restart_server()
-            else:
-                for ctx in self.contexts.values():
-                    self._prepare_session(ctx.session, None, None, only=info)
-        return {"name": info.name, "id": info.id, "workspace_id": info.workspace_id, "schemas": info.schemas or [],
+            # every lakehouse is a catalog, and the catalog list is server configuration
+            self._restart_server()
+        return {"name": info.name, "id": info.id, "workspace_id": info.workspace_id, "schemas": self._schemas_of(info),
                 "lakehouses": sorted(self.lakehouses)}
 
     def unregister_lakehouse(self, name: str) -> dict:
@@ -502,11 +440,14 @@ class SailEngine:
     # ---- the server ----
 
     def _catalog_list(self) -> str:
+        """`spark_catalog` (memory, scratch tables and views) plus one Unity catalog per lakehouse
+        served by Cobalt's loopback endpoint over Fabric's table API: no table is ever mounted,
+        Sail asks for schemas, tables and columns as statements name them."""
         items = [f'{{type="memory", name="{DEFAULT_CATALOG}", initial_database=["default"]}}']
-        for lh in self.lakehouses.values():
-            if lh.schema_enabled:
-                first = self._default_schema(lh.name) or "dbo"
-                items.append(f'{{type="memory", name="{_toml(lh.name)}", initial_database=["{_toml(first)}"]}}')
+        endpoint = (self.catalog or {}).get("endpoint")
+        if endpoint:
+            for lh in self.lakehouses.values():
+                items.append(f'{{type="unity", name="{_toml(lh.name)}", uri="{_toml(endpoint)}", default_catalog="{_toml(lh.name)}"}}')
         return "[" + ", ".join(items) + "]"
 
     def _start_server(self) -> None:
@@ -520,6 +461,7 @@ class SailEngine:
             env["AZURE_ALLOW_HTTP"] = "true"
         env["SAIL_CATALOG__LIST"] = self._catalog_list()
         env["SAIL_CATALOG__DEFAULT_CATALOG"] = DEFAULT_CATALOG
+        env["UNITY_ALLOW_HTTP_URL"] = "true"  # Cobalt's catalog endpoint is plain HTTP on loopback
         for k, v in self.sail_options.items():
             env[str(k)] = str(v)
         from pysail.spark import SparkConnectServer
@@ -563,32 +505,18 @@ class SailEngine:
 
         return SparkSession.builder.remote(self.url).create()
 
-    def _prepare_session(self, sess, default_lakehouse: str | None, default_schema: str | None, only: Lakehouse | None = None) -> None:
-        """Databases for every lakehouse (memory catalogs are per session), then the default."""
-        for lh in self.lakehouses.values():
-            if only is not None and lh is not only:
-                continue
-            try:
-                if lh.schema_enabled:
-                    for s in lh.schemas or []:
-                        sess.sql(f"CREATE DATABASE IF NOT EXISTS {_q(lh.name)}.{_q(s)}").collect()
-                    if lh.tables:
-                        sess.sql(f"CREATE DATABASE IF NOT EXISTS {_q(DEFAULT_CATALOG)}.{_q(lh.name)}").collect()
-                else:
-                    sess.sql(f"CREATE DATABASE IF NOT EXISTS {_q(DEFAULT_CATALOG)}.{_q(lh.name)}").collect()
-            except Exception as exc:
-                self.warnings.append(f"could not prepare databases for {lh.name}: {type(exc).__name__}: {exc}")
-        if only is not None:
-            return
+    def _prepare_session(self, sess, default_lakehouse: str | None, default_schema: str | None) -> None:
+        """The context's default lakehouse is its current catalog, its default schema the
+        current database; nothing else to set up (the catalogs are Cobalt's endpoint)."""
         lh = self._resolve_lakehouse(default_lakehouse)
-        if lh is not None:
-            if lh.schema_enabled:
-                schema = default_schema or self._default_schema(lh.name) or "dbo"
-                sess.sql(f"USE CATALOG {_q(lh.name)}").collect()
-                sess.sql(f"USE DATABASE {_q(schema)}").collect()
-            else:
-                sess.sql(f"USE CATALOG {_q(DEFAULT_CATALOG)}").collect()
-                sess.sql(f"USE DATABASE {_q(lh.name)}").collect()
+        if lh is None:
+            return
+        schema = default_schema or self._default_schema(lh.name, sess) or "dbo"
+        try:
+            sess.sql(f"USE CATALOG {_q(lh.name)}").collect()
+            sess.sql(f"USE DATABASE {_q(schema)}").collect()
+        except Exception as exc:
+            self.warnings.append(f"could not select {lh.name}.{schema}: {type(exc).__name__}: {str(exc).splitlines()[0][:200]}")
 
     # ---- namespaces and contexts ----
 
@@ -862,145 +790,95 @@ class SailEngine:
 
     # ---- lakehouse tables: lazy mounts ----
 
-    def _resolve_table(self, parts: list[str], ctx: Context) -> tuple[Lakehouse, str | None, str] | None:
-        """(lakehouse, schema, table) for a name the session did not know, or None."""
-        if not parts:
-            return None
-        default = self._resolve_lakehouse(ctx.default_lakehouse)
-        if len(parts) == 1:
-            t = parts[0]
-            if default is None:
-                return None
-            self._list_lakehouse(default)
-            if default.schema_enabled:
-                s = ctx.default_schema or self._default_schema(default.name)
-                if s and t in default.schema_tables.get(s, []):
-                    return default, s, t
-            if t in (default.tables or []):
-                return default, None, t
-            return None
-        if len(parts) == 2:
-            a, t = parts
-            lh = self._resolve_lakehouse(a)
-            if lh is not None:
-                self._list_lakehouse(lh)
-                if t in (lh.tables or []):
-                    return lh, None, t
-                if lh.schema_enabled:
-                    s = self._default_schema(lh.name)
-                    if s and t in lh.schema_tables.get(s, []):
-                        return lh, s, t
-                return None
-            if default is not None and default.schema_enabled:
-                self._list_lakehouse(default)
-                if t in default.schema_tables.get(a, []):
-                    return default, a, t
-            return None
-        lh_name, s, t = parts[-3], parts[-2], parts[-1]
-        lh = self._resolve_lakehouse(lh_name)
-        if lh is None:
-            if lh_name == DEFAULT_CATALOG:
-                lh2 = self._resolve_lakehouse(s)
-                if lh2 is not None:
-                    self._list_lakehouse(lh2)
-                    if t in (lh2.tables or []):
-                        return lh2, None, t
-            return None
-        self._list_lakehouse(lh)
-        if t in lh.schema_tables.get(s, []):
-            return lh, s, t
-        return None
-
-    def _mount(self, sess, ctx: Context, lh: Lakehouse, schema: str | None, table: str) -> str | None:
-        """An external Delta table on the OneLake path, in `lh.schema` (schema-enabled: the
-        lakehouse is a catalog) or `spark_catalog.lh` (plain lakehouse, or a legacy top-level
-        table of a schema-enabled one). Returns the key, or None when it was mounted before
-        (so a retry loop stops)."""
-        key = f"{lh.name}.{schema}.{table}" if schema else f"{lh.name}.{table}"
-        with self._lock:
-            if key in ctx.mounted:
-                return None
-            db = f"{_q(lh.name)}.{_q(schema)}" if schema else f"{_q(DEFAULT_CATALOG)}.{_q(lh.name)}"
-            t0 = time.time()
-            sess.sql(f"CREATE TABLE IF NOT EXISTS {db}.{_q(table)} USING delta LOCATION '{lh.path(schema, table)}'").collect()
-            ctx.mounted.add(key)
-            self._notices.append(f"mounted {key} in {time.time() - t0:.1f} s (external table on OneLake)")
-            return key
-
     def _sql_with_automount(self, sql: str, ctx: Context):
-        """`spark.sql` plus analysis (a Connect DataFrame is lazy: the missing table only shows
-        when the schema is asked for), mounting lakehouse tables the statement names on the
-        way. Several tables may be missing; each retry mounts one more."""
-        sess = ctx.session
-        if (show := _SHOW_TABLES.match(sql)) is not None:
-            self._mount_db(ctx, show.group(1))
-        for _ in range(8):
-            try:
-                df = sess.sql(sql)
-                df.columns  # noqa: B018 — forces analysis
-                return df
-            except Exception as exc:
-                parts = _missing_table(exc)
-                if not parts:
-                    raise
-                resolved = self._resolve_table(parts, ctx)
-                if resolved is None:
-                    raise
-                key = self._mount(sess, ctx, *resolved)
-                if key is None:
-                    raise
-        return sess.sql(sql)
+        """`spark.sql` plus analysis (a Connect DataFrame is lazy: an unknown table only shows
+        when the schema is asked for; raising here keeps the error with the statement)."""
+        df = ctx.session.sql(sql)
+        df.columns  # noqa: B018 — forces analysis
+        return df
 
-    def _mount_db(self, ctx: Context, target: str | None) -> None:
-        """Every table of a database, for SHOW TABLES: the current one, `schema`, `lh.schema`
-        or `spark_catalog.lh` (a memory catalog lists only what was mounted)."""
-        from concurrent.futures import ThreadPoolExecutor
-
-        lh = schema = None
-        parts = _parts(target) if target else []
-        default = self._resolve_lakehouse(ctx.default_lakehouse)
-        if not parts:
-            lh, schema = default, (ctx.default_schema if default is not None and default.schema_enabled else None)
-        elif len(parts) == 1:
-            cand = self._resolve_lakehouse(parts[0])
-            if cand is not None and not cand.schema_enabled:
-                lh = cand
-            elif default is not None and default.schema_enabled and parts[0] in (default.schemas or []):
-                lh, schema = default, parts[0]
-        elif len(parts) == 2:
-            if parts[0] == DEFAULT_CATALOG:
-                lh = self._resolve_lakehouse(parts[1])
-            else:
-                cand = self._resolve_lakehouse(parts[0])
-                if cand is not None and parts[1] in (cand.schemas or []):
-                    lh, schema = cand, parts[1]
+    def _lakehouse_target(self, target: str, ctx: Context) -> tuple[Lakehouse, str, str] | None:
+        """(lakehouse, schema, table) when a write target names a lakehouse table: three parts
+        with a lakehouse first, or one / two parts in a context whose current catalog is a
+        lakehouse. `spark_catalog.…` and plain sessions are not lakehouse targets."""
+        parts = _parts(target)
+        if len(parts) >= 3:
+            lh = self._resolve_lakehouse(".".join(parts[:-2]))
+            return (lh, parts[-2], parts[-1]) if lh is not None else None
+        lh = self._resolve_lakehouse(ctx.default_lakehouse)
         if lh is None:
-            return
-        self._list_lakehouse(lh)
-        names = lh.schema_tables.get(schema, []) if schema else (lh.tables or [])
-        todo = [t for t in names if (f"{lh.name}.{schema}.{t}" if schema else f"{lh.name}.{t}") not in ctx.mounted]
-        if not todo:
-            return
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(lambda t: _safe(lambda: self._mount(ctx.session, ctx, lh, schema, t)), todo))
+            return None
+        schema = parts[0] if len(parts) == 2 else (ctx.default_schema or self._default_schema(lh.name) or "dbo")
+        return lh, schema, parts[-1]
 
-    def _guard_write(self, sql: str, ctx: Context) -> None:
-        if self.write_mode == "writethrough":
-            return
+    def _guard_write(self, sql: str, ctx: Context) -> str:
+        """Read-only sessions refuse writes that would reach a lakehouse: a target in a lakehouse
+        catalog (named, or the context's current one), or a CREATE at an abfss:// location.
+        Scratch tables in `spark_catalog` and temp views are fine. In write-through, DROP TABLE
+        on a lakehouse table is refused too (Fabric would delete the folder), and CREATE TABLE
+        is rewritten to create the Delta table at its lakehouse path (Sail's catalog-managed
+        CREATE needs a Unity table id Fabric does not issue). Returns the SQL to run."""
         target = _sql_write_target(sql)
         if not target:
-            return
-        parts = _parts(target)
-        lakehouse_table = self._resolve_table(parts, ctx) is not None
+            return sql
+        verb = _write_verb(sql) or "write"
+        resolved = self._lakehouse_target(target, ctx)
+        lakehouse_table = resolved is not None or ("abfss://" in sql.lower() and verb == "CREATE")
         if not lakehouse_table:
-            key = ".".join(parts)
-            lakehouse_table = any(m.lower() == key.lower() or m.lower().endswith("." + key.lower()) for m in ctx.mounted)
-        if not lakehouse_table and "abfss://" in sql.lower() and _write_verb(sql) == "CREATE":
-            lakehouse_table = True
-        if lakehouse_table:
-            raise RuntimeError(f"write_mode is 'readonly': refusing to {_write_verb(sql) or 'write'} {target} on OneLake. "
+            return sql
+        if self.write_mode != "writethrough":
+            raise RuntimeError(f"write_mode is 'readonly': refusing to {verb} {target} on OneLake. "
                                "Switch the session to write-through (lakehouse button) to write to the lakehouse; "
                                "LakeSail has no sandbox clones.")
+        if verb == "DROP":
+            raise RuntimeError(f"DROP TABLE {target} is not done through LakeSail (Fabric would delete the lakehouse folder). "
+                               "Delete the table in Fabric, or drop it on the Local Spark engine.")
+        if verb == "CREATE" and resolved is not None and not re.search(r"\bLOCATION\s+'", sql, re.IGNORECASE):
+            return self._rewrite_create(sql, ctx, *resolved)
+        return sql
+
+    def _rewrite_create(self, sql: str, ctx: Context, lh: Lakehouse, schema: str, table: str) -> str:
+        """`CREATE TABLE [lh.][schema.]t …` → the same statement on a scratch name in
+        `spark_catalog` with `USING delta LOCATION '<abfss…/Tables/schema/t>'`, so the data lands
+        in the lakehouse and Fabric lists the table; the scratch registration is dropped and the
+        catalog listing refreshed afterwards (`ctx.pending_create`)."""
+        m = _CREATE_HEAD.match(sql)
+        if not m:
+            return sql
+        rest = sql[m.end():]
+        scratch = f"{_q(DEFAULT_CATALOG)}.{_q('default')}.{_q('__cobalt_create_' + table)}"
+        location = f"LOCATION '{lh.path(schema, table)}'"
+        if re.search(r"\bUSING\s+delta\b", rest, re.IGNORECASE):
+            rest = re.sub(r"\bUSING\s+delta\b", lambda mm: f"{mm.group(0)} {location}", rest, count=1, flags=re.IGNORECASE)
+        elif re.search(r"\bUSING\s+\w+", rest, re.IGNORECASE):
+            raise RuntimeError(f"CREATE TABLE {table}: lakehouse tables are Delta tables; use USING delta (or no USING)")
+        else:
+            m_as = re.search(r"\bAS\b", rest, re.IGNORECASE)
+            rest = (rest[:m_as.start()] + f"USING delta {location} " + rest[m_as.start():]) if m_as else (rest.rstrip().rstrip(";") + f" USING delta {location}")
+        ctx.pending_create = (scratch, lh, schema, table)
+        return f"CREATE TABLE {scratch} {rest}"
+
+    def _finish_create(self, ctx: Context) -> None:
+        """After a rewritten CREATE: forget the scratch registration (the data stays) and tell
+        Cobalt's catalog endpoint to list the schema again."""
+        pending, ctx.pending_create = ctx.pending_create, None
+        if not pending:
+            return
+        scratch, lh, schema, table = pending
+        try:
+            ctx.session.sql(f"DROP TABLE IF EXISTS {scratch}").collect()
+        except Exception:
+            pass
+        endpoint = (self.catalog or {}).get("endpoint")
+        if endpoint:
+            try:
+                base = endpoint.split("/api/2.1/unity-catalog")[0]
+                req = urllib.request.Request(f"{base}/cobalt/invalidate", data=json.dumps({"lakehouse": lh.name, "schema": schema, "created": table}).encode(), method="POST",
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=10).read()
+            except Exception:
+                pass
+        self._notices.append(f"created {lh.name}.{schema}.{table} in the lakehouse")
 
     def _dml_metrics(self, sql: str, df) -> dict | None:
         if not _sql_write_target(sql):
@@ -1079,10 +957,11 @@ class SailEngine:
         t0 = time.time()
         if _USE_PLAIN.match(sql):
             sql = re.sub(r"^\s*USE\s+", "USE DATABASE ", sql, count=1, flags=re.IGNORECASE)
-        self._guard_write(sql, ctx)
+        sql = self._guard_write(sql, ctx)
         with self._running("run_sql", job_description):
             try:
                 df = self._sql_with_automount(sql, ctx)
+                self._finish_create(ctx)
                 columns = list(df.columns)
                 metrics = self._dml_metrics(sql, df)
                 if metrics is not None and "error" not in metrics:
@@ -1187,14 +1066,12 @@ class _SessionProxy:
             return self._session.sql(sqlQuery, args, **kwargs)
         if _USE_PLAIN.match(sqlQuery):
             sqlQuery = re.sub(r"^\s*USE\s+", "USE DATABASE ", sqlQuery, count=1, flags=re.IGNORECASE)
-        self._engine._guard_write(sqlQuery, self._ctx)
-        return self._engine._sql_with_automount(sqlQuery, self._ctx)
+        sqlQuery = self._engine._guard_write(sqlQuery, self._ctx)
+        df = self._engine._sql_with_automount(sqlQuery, self._ctx)
+        self._engine._finish_create(self._ctx)
+        return df
 
     def table(self, tableName):  # noqa: N803
-        parts = _parts(tableName)
-        resolved = self._engine._resolve_table(parts, self._ctx)
-        if resolved is not None:
-            self._engine._mount(self._session, self._ctx, *resolved)
         return self._session.table(tableName)
 
     def __getattr__(self, name):

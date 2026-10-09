@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **LakeSail: the lakehouse catalog comes from Fabric, nothing is mounted.** Cobalt now serves
+  Sail a Unity-compatible catalog on loopback, backed by Fabric's own OneLake table API: one call
+  lists a lakehouse's schemas, one lists a schema's tables, one fetches a table's columns the
+  first time a statement names it, all cached for the session and shared by every tab and
+  notebook. A lakehouse with thousands of tables is ready as soon as the session is; `SHOW
+  TABLES` is instant; Spark type names are normalised so every table loads (the gap in Sail's
+  own OneLake catalog); `DROP TABLE` through the catalog is refused instead of deleting the
+  OneLake folder; in write-through mode `CREATE TABLE` lands under `Tables/<schema>/<name>`.
+  Plain lakehouses expose their tables as `<lakehouse>.dbo.<table>`, as Fabric reports them.
+  The Lakehouse pane's Refresh forgets the cached listing of that lakehouse.
+
 ## 0.9.0 — 2026-10-09
 
 - **LakeSail as a second Spark engine (experimental).** Settings › Spark runtime › Engine (also

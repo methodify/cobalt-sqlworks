@@ -468,10 +468,11 @@ submenu and the notebook kernel picker switch too; a running session restarts on
 2m", chip "LakeSail (0.7.2) · ready", history source "LakeSail (0.7.2)", the session log title.
 
 What to try: a Spark SQL tab on `test` (the session is up in ~3 s): `SELECT … FROM
-publicholidays` (mounted on first touch, ~1 s, the Messages pane says "mounted test.dbo.…"),
-`dbo.t`, `test.dbo.t`, `test_no_schema.t`, `SHOW TABLES` (mounts the current database's
-tables first), Est. plan (Sail's DataFusion plan under the usual section headers), Parse, Run to
-File, Cancel. A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+publicholidays`, `dbo.t`, `test.dbo.t`, `test_no_schema.dbo.t`, `SHOW TABLES` (instant: the
+catalog is Fabric's own table listing, served to Sail by Cobalt on loopback, cached per
+session; the first touch of a table costs one metadata call, ~0.5 s), Est. plan (Sail's
+DataFusion plan under the usual section headers), Parse, Run to File, Cancel. The agent's
+`kernel` JSON has a `catalog` block (requests served, upstream calls, last error). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
@@ -479,10 +480,12 @@ What LakeSail does not do (said in the chip, the pane and the errors): no sandbo
 mode is *read only* (default; writes are refused with "write_mode is 'readonly'") or *write
 through* (INSERT / UPDATE / DELETE / MERGE / INSERT OVERWRITE go to OneLake; DROP TABLE only
 unmounts); no shadows, preload, lazy Files or `notebookutils` (slice B); `USE db` is rewritten
-to `USE DATABASE`; `DESCRIBE HISTORY` and `SET` are not supported by Sail; legacy top-level
-tables of a schema-enabled lakehouse are reached as `spark_catalog.<lakehouse>.<table>`.
-The OneLake catalog Sail ships is not used yet (it rejects tables with integer / decimal
-columns; reported in `docs/requests/lakesail-0.7.2.md`).
+to `USE DATABASE`; `DESCRIBE HISTORY` and `SET` are not supported by Sail; `DROP TABLE` on a
+lakehouse table is refused (Fabric would delete the folder); legacy top-level tables of a
+schema-enabled lakehouse show up as schemas in Fabric's listing and are reached by path.
+Sail's own OneLake catalog is not used (it rejects tables with integer / decimal columns;
+reported in `docs/requests/lakesail-0.7.2.md`); Cobalt's loopback catalog normalises the
+types itself.
 
 ## Spark SQL query tabs (0.8.2)
 
