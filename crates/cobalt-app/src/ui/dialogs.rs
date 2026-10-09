@@ -236,6 +236,39 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 }
             }
         }
+        Dialog::ConfirmCloseMany { tab_ids, dirty } => {
+            let mut choice = 0;
+            let n = tab_ids.len();
+            let (_, close) = modal(ctx, theme, "confirm-close-many", 420.0, |ui| {
+                ui.heading("Unsaved changes");
+                ui.label(format!("{} of the {n} tab{} to close {} unsaved changes:", dirty.len(), if n == 1 { "" } else { "s" }, if dirty.len() == 1 { "has" } else { "have" }));
+                egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                    for t in &dirty {
+                        ui.label(RichText::new(format!("  {t}")).size(12.0));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(RichText::new("Closed tabs can be restored with Ctrl+Shift+T for a while; their text is kept.").size(11.0).color(theme.text_faint));
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if mnemonic_button(ui, theme, "Do&n't save", ButtonStyle::Primary, true, Some(Key::Enter)) {
+                        choice = 2;
+                    }
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                        choice = 3;
+                    }
+                });
+            });
+            match choice {
+                2 => ops::close_tabs(f.state, f.cx, &tab_ids),
+                3 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::ConfirmCloseMany { tab_ids, dirty };
+                    }
+                }
+            }
+        }
         Dialog::ConfirmDeleteProfile { profile } => {
             let name = f.state.library.profile(profile).map(|p| p.display_name()).unwrap_or_default();
             let (choice, close) = modal(ctx, theme, "del-profile", 380.0, |ui| {
@@ -570,40 +603,143 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::Rename { tab_index, title };
             }
         }
-        Dialog::UpdateAvailable { version, url, notes } => {
+        Dialog::UpdateAvailable { info } => {
+            use crate::update::InstallWhen;
+            let version = info.version.clone();
             let mut done = false;
             let mut skip = false;
-            let (_, close) = modal(ctx, theme, "update", 520.0, |ui| {
+            let mut start: Option<InstallWhen> = None;
+            let mut cancel_download = false;
+            // the download in flight (or done) for this version, if any
+            let dl = f.state.update_download.clone().filter(|d| d.version == version);
+            let snapshot = dl.as_ref().map(|d| {
+                let p = d.progress.lock();
+                (p.done, p.total, p.stage.clone(), p.finished.clone(), d.when, d.name.clone())
+            });
+            let (_, close) = modal(ctx, theme, "update", 540.0, |ui| {
                 ui.heading(format!("Cobalt SQL Works {version} is available"));
                 ui.label(RichText::new(format!("You have {}.", crate::update::CURRENT_VERSION)).color(theme.text_muted));
-                if !notes.trim().is_empty() {
+                if !info.notes.trim().is_empty() {
                     ui.add_space(6.0);
-                    egui::ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
-                        let shown: String = notes.chars().take(4000).collect();
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        let shown: String = info.notes.chars().take(4000).collect();
                         ui.label(RichText::new(shown).size(12.0));
                     });
                 }
                 ui.add_space(10.0);
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(RichText::new("Open download page").color(egui::Color32::WHITE)).fill(theme.accent)).clicked() {
-                        cobalt_auth::entra::open_in_browser(&url);
-                        done = true;
+                match &snapshot {
+                    Some((done_b, total, stage, None, when, name)) => {
+                        let frac = if *total > 0 { (*done_b as f32 / *total as f32).min(1.0) } else { 0.0 };
+                        let text = if *total > 0 { format!("{stage} — {} / {}", cobalt_runtime::fmt_bytes(*done_b), cobalt_runtime::fmt_bytes(*total)) } else { stage.clone() };
+                        ui.add(egui::ProgressBar::new(frac).text(RichText::new(text).size(12.0)).animate(*total == 0));
+                        ui.label(RichText::new(format!("{name} · {}", match when { InstallWhen::Now => "Cobalt closes and the installer starts as soon as the download is verified.", InstallWhen::OnExit => "The installer starts when you close Cobalt." })).size(11.0).color(theme.text_muted));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Cancel download").clicked() {
+                                cancel_download = true;
+                                done = true;
+                            }
+                            if ui.button("Hide").on_hover_text("The download goes on; Help › Check for updates brings this back.").clicked() {
+                                done = true;
+                            }
+                        });
                     }
-                    if ui.button("Skip this version").clicked() {
-                        skip = true;
-                        done = true;
+                    Some((_, _, _, Some(Ok(path)), when, _)) => {
+                        ui.label(RichText::new(format!("{} Downloaded and verified: {}", icons::CHECK_CIRCLE, path.display())).size(12.0).color(theme.success));
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if *when == InstallWhen::OnExit {
+                                ui.label(RichText::new("The installer starts when you close Cobalt.").size(12.0));
+                                if mnemonic_button(ui, theme, "&Install now", ButtonStyle::Primary, true, Some(Key::Enter)) {
+                                    start = Some(InstallWhen::Now);
+                                }
+                            }
+                            if ui.button("Later").clicked() {
+                                done = true;
+                            }
+                        });
                     }
-                    if ui.button("Later").clicked() {
-                        done = true;
+                    Some((_, _, _, Some(Err(e)), _, _)) => {
+                        ui.add(egui::Label::new(RichText::new(format!("Download failed: {e}")).size(12.0).color(theme.error)).wrap());
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if mnemonic_button(ui, theme, "&Try again", ButtonStyle::Primary, info.asset.is_some(), None) {
+                                start = Some(InstallWhen::Now);
+                            }
+                            if ui.button("Open download page").clicked() {
+                                cobalt_auth::entra::open_in_browser(&info.url);
+                                done = true;
+                            }
+                            if ui.button("Later").clicked() {
+                                cancel_download = true;
+                                done = true;
+                            }
+                        });
                     }
-                });
+                    None => {
+                        match &info.asset {
+                            Some(a) => {
+                                ui.label(RichText::new(format!("{} ({})", a.name, cobalt_runtime::fmt_bytes(a.size))).size(11.0).color(theme.text_faint));
+                                ui.add_space(4.0);
+                            }
+                            None => {
+                                ui.label(RichText::new("No installer for this platform in the release; the download page has every build.").size(12.0).color(theme.warning));
+                                ui.add_space(4.0);
+                            }
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if mnemonic_button(ui, theme, "&Download and install", ButtonStyle::Primary, info.asset.is_some(), Some(Key::Enter)) {
+                                start = Some(InstallWhen::Now);
+                            }
+                            if mnemonic_button(ui, theme, "Install &when I close Cobalt", ButtonStyle::Normal, info.asset.is_some(), None) {
+                                start = Some(InstallWhen::OnExit);
+                            }
+                            if ui.button("Open download page").clicked() {
+                                cobalt_auth::entra::open_in_browser(&info.url);
+                                done = true;
+                            }
+                            if ui.button("Skip this version").clicked() {
+                                skip = true;
+                                done = true;
+                            }
+                            if ui.button("Later").clicked() {
+                                done = true;
+                            }
+                        });
+                        ui.label(RichText::new(if cfg!(windows) { "The installer is checked against the release's SHA256SUMS before it runs; it updates in place and keeps your settings." } else { "The package is checked against the release's SHA256SUMS, then opened with the system installer." }).size(11.0).color(theme.text_faint));
+                    }
+                }
                 false
             });
             if skip {
                 f.state.skip_version_request = Some(version.clone());
             }
+            if cancel_download {
+                f.state.update_download = None;
+                f.state.pending_installer = None;
+            }
+            if let Some(when) = start {
+                match snapshot.as_ref().and_then(|s| s.3.clone()) {
+                    Some(Ok(path)) => {
+                        // already on disk and verified: install now
+                        f.state.pending_installer = Some(path);
+                        f.state.close_for_update = true;
+                        done = true;
+                    }
+                    _ => {
+                        let progress = std::sync::Arc::new(parking_lot::Mutex::new(crate::update::DownloadProgress::default()));
+                        let name = info.asset.as_ref().map(|a| a.name.clone()).unwrap_or_default();
+                        f.state.update_download = Some(crate::update::UpdateDownload { version: version.clone(), name, when, progress: progress.clone() });
+                        f.state.pending_installer = None;
+                        crate::update::spawn_download(f.cx.session, f.cx.egui.clone(), &info, f.cx.paths.local_data_dir.join("updates"), progress);
+                        if when == InstallWhen::OnExit {
+                            f.cx.toast(ToastKind::Info, format!("Downloading Cobalt {version}; the installer starts when you close Cobalt."));
+                        }
+                    }
+                }
+            }
             if !done && !close {
-                f.state.dialog = Dialog::UpdateAvailable { version, url, notes };
+                f.state.dialog = Dialog::UpdateAvailable { info };
             }
         }
         Dialog::AdsImport { mut path, summary, error } => {

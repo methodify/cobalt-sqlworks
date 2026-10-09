@@ -546,9 +546,8 @@ fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<Resul
     let col = popup.column;
     let name = rs.columns.get(col).map(|c| c.name.clone()).unwrap_or_default();
     let id = egui::Id::new(("filter-popup", rs.index, col));
-    let mut window = egui::Window::new(format!("Filter: {name}"))
+    let mut window = crate::ui::chrome::Window::new(format!("Filter: {name}"))
         .id(id)
-        .collapsible(false)
         .resizable(true)
         .default_width(300.0)
         .default_height(420.0);
@@ -558,7 +557,8 @@ fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<Resul
         window = window.current_pos(popup.pos);
         popup.placed = true;
     }
-    window.show(ui.ctx(), |ui| {
+    let mut open = true;
+    window.open(&mut open).show(ui.ctx(), theme, |ui| {
             ui.horizontal(|ui| {
                 ui.label("Condition");
                 egui::ComboBox::from_id_salt(id.with("op")).selected_text(CONDITION_OPS[popup.condition_op]).show_ui(ui, |ui| {
@@ -656,7 +656,7 @@ fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<Resul
                 }
             });
         });
-    if ui.input(|i| i.key_pressed(Key::Escape)) {
+    if !open || ui.input(|i| i.key_pressed(Key::Escape)) {
         close = true;
     }
     if close {

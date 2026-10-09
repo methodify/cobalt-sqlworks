@@ -13,6 +13,21 @@
   DELETE / MERGE reach OneLake); there is no sandbox clone, no `notebookutils` and no shadows
   yet, and the UI says so. Design: `docs/design/lakesail_runtime.md`; findings for the Sail
   team: `docs/requests/lakesail-0.7.2.md`.
+- **Updates install themselves.** When a newer release is found (Help › Check for updates, or
+  the start-up check), "Download and install" fetches the installer for this machine, checks
+  it against the release's SHA256SUMS, closes Cobalt and runs it; "Install when I close Cobalt"
+  does the same at exit; the download page stays a click away.
+- **Tabs.** Right-click › Close others (and the new Close all) now close every other tab,
+  asking once for the ones with unsaved changes instead of silently skipping them. The + on
+  the tab strip has a menu (and a right-click) for a query, a Spark SQL query or a notebook, and
+  which one a plain click opens is a choice in that menu.
+- **Dialog buttons answer to their letter alone**: S / N / C in the "Unsaved changes"
+  dialog, no Alt needed (Alt still works; typing in a text field is never intercepted).
+- **Ctrl+Enter runs the selection** when there is one (like F5); without a selection it runs
+  the statement under the caret as before.
+- The column filter window uses the same window chrome as the rest of the app.
+- The "Search commands" button on the menu bar opens the command palette (it used to close
+  itself at once).
 
 ## 0.8.3 — 2026-10-08
 

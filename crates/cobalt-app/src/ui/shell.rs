@@ -247,8 +247,10 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let r = ui.add(egui::Button::new(format!("{}  Search commands  {}", icons::MAGNIFYING_GLASS, km.shortcut_text(ui.ctx(), Command::Palette))).frame(false));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "search commands"));
                 if r.clicked() {
                     cmds.push(Command::Palette);
+                    f.state.palette_just_opened = true;
                 }
             });
             for c in cmds {
@@ -384,6 +386,9 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let mut rename: Option<usize> = None;
     let mut pin: Option<usize> = None;
     let mut close_others: Option<usize> = None;
+    let mut close_all = false;
+    let mut new_spark = false;
+    let mut new_tab_kind: Option<&str> = None;
     egui::Frame::new().fill(theme.bg_sidebar).show(ui, |ui| {
         ui.set_width(ui.available_width());
         egui::ScrollArea::horizontal().id_salt("tabs-scroll").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
@@ -462,6 +467,10 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                             close_others = Some(i);
                             ui.close();
                         }
+                        if ui.button("Close all").clicked() {
+                            close_all = true;
+                            ui.close();
+                        }
                     });
                 }
                 let (rect, resp) = ui.allocate_exact_size(Vec2::new(32.0, 32.0), Sense::click());
@@ -469,18 +478,51 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.painter().rect_filled(rect.shrink(4.0), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::PLUS, egui::FontId::proportional(16.0), theme.text_muted);
-                resp.context_menu(|ui| {
-                    if ui.button("New query").clicked() {
-                        new_tab = true;
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab"));
+                let default_kind = f.cx.settings.appearance.new_tab_kind.clone();
+                let (default_label, default_key) = match default_kind.as_str() {
+                    "spark" => ("Spark SQL query", ""),
+                    "notebook" => ("notebook", " (Ctrl+Shift+N)"),
+                    _ => ("query", " (Ctrl+N)"),
+                };
+                // the chevron opens the menu; a click on + opens the default kind
+                let (crect, cresp) = ui.allocate_exact_size(Vec2::new(14.0, 32.0), Sense::click());
+                if cresp.hovered() {
+                    ui.painter().rect_filled(crect.shrink2(Vec2::new(0.0, 4.0)), 4.0, theme.bg_hover);
+                }
+                ui.painter().text(crect.center(), egui::Align2::CENTER_CENTER, icons::CARET_DOWN, egui::FontId::proportional(11.0), theme.text_faint);
+                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab menu"));
+                let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
+                    ui.set_min_width(230.0);
+                    if ui.button(format!("{} New query{}", icons::DATABASE, if default_kind == "query" { "   (default)" } else { "" })).clicked() {
+                        *new_tab = true;
                         ui.close();
                     }
-                    if ui.button("New notebook").clicked() {
-                        new_notebook = true;
+                    if ui.button(format!("{} New Spark SQL query{}", icons::FIRE, if default_kind == "spark" { "   (default)" } else { "" })).clicked() {
+                        *new_spark = true;
                         ui.close();
                     }
-                });
-                if resp.on_hover_text("New query (Ctrl+N) · right-click for a notebook").clicked() {
-                    new_tab = true;
+                    if ui.button(format!("{} New notebook{}", icons::NOTEBOOK, if default_kind == "notebook" { "   (default)" } else { "" })).clicked() {
+                        *new_notebook = true;
+                        ui.close();
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("A click on + opens").size(11.0).color(theme.text_muted));
+                    for (k, label) in [("query", "a query"), ("spark", "a Spark SQL query"), ("notebook", "a notebook")] {
+                        if ui.selectable_label(default_kind == k, label).clicked() {
+                            *new_tab_kind = Some(k);
+                            ui.close();
+                        }
+                    }
+                };
+                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_notebook, &mut new_tab_kind));
+                resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_notebook, &mut new_tab_kind));
+                if resp.on_hover_text(format!("New {default_label}{default_key} · the arrow (or a right-click) offers the other kinds")).clicked() {
+                    match default_kind.as_str() {
+                        "spark" => new_spark = true,
+                        "notebook" => new_notebook = true,
+                        _ => new_tab = true,
+                    }
                 }
             });
         });
@@ -501,16 +543,25 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
             ops::close_tab(f.state, f.cx, i, false);
         }
     }
-    if let Some(keep) = close_others {
-        let ids: Vec<TabId> = f.state.tabs.iter().enumerate().filter(|(j, t)| *j != keep && !t.pinned && !t.is_dirty()).map(|(_, t)| t.id).collect();
-        for id in ids {
-            if let Some(idx) = f.state.tab_index(id) {
-                ops::close_tab(f.state, f.cx, idx, true);
-            }
+    if close_others.is_some() || close_all {
+        // pinned tabs stay; clean tabs go at once; the dirty ones are confirmed together
+        let keep = close_others;
+        let victims: Vec<(TabId, String, bool)> = f.state.tabs.iter().enumerate().filter(|(j, t)| Some(*j) != keep && !t.pinned).map(|(_, t)| (t.id, t.title.clone(), t.is_dirty() && (t.is_notebook() || !t.text.trim().is_empty()))).collect();
+        let dirty: Vec<String> = victims.iter().filter(|(_, _, d)| *d).map(|(_, title, _)| title.clone()).collect();
+        if dirty.is_empty() {
+            ops::close_tabs(f.state, f.cx, &victims.iter().map(|(id, _, _)| *id).collect::<Vec<_>>());
+        } else {
+            f.state.dialog = Dialog::ConfirmCloseMany { tab_ids: victims.iter().map(|(id, _, _)| *id).collect(), dirty };
         }
+    }
+    if let Some(k) = new_tab_kind {
+        f.state.settings_patch.push(SettingsPatch::NewTabKind(k.to_string()));
     }
     if new_tab {
         dispatch(f, Command::NewQuery);
+    }
+    if new_spark {
+        dispatch(f, Command::NewSparkQuery);
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);

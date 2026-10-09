@@ -174,6 +174,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         AuthWaiting { .. } => "auth_waiting",
         Group { .. } => "group",
         ConfirmClose { .. } => "confirm_close",
+        ConfirmCloseMany { .. } => "confirm_close_many",
         ConfirmDeleteProfile { .. } => "confirm_delete_profile",
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
         ConfirmWrite { .. } => "confirm_write",

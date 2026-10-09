@@ -18,6 +18,7 @@ default = []
 agent = ["dep:egui_agent", "dep:egui_agent_macros"]
 
 [dependencies]
+sha2.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 cobalt-core.workspace = true
 cobalt-driver.workspace = true

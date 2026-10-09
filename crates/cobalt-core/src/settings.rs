@@ -40,10 +40,12 @@ pub struct Appearance {
     pub spid_in_tab_title: bool,
     /// Show the getting-started pane next to a fresh, empty query tab.
     pub show_welcome: bool,
+    /// What the + on the tab strip opens: `query`, `spark` or `notebook`.
+    pub new_tab_kind: String,
 }
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0, spid_in_tab_title: false, show_welcome: true }
+        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0, spid_in_tab_title: false, show_welcome: true, new_tab_kind: "query".into() }
     }
 }
 

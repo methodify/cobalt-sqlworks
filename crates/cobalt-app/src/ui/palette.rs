@@ -175,9 +175,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, keymap: &Keymap) -
             });
         });
     });
-    // click outside closes
+    // click outside closes (not the click that opened it: the toolbar button is outside)
     let palette_rect = egui::Rect::from_min_size(egui::pos2(screen.center().x - width / 2.0, screen.top() + 80.0), Vec2::new(width + 16.0, 480.0));
-    if ui.input(|i| i.pointer.any_click()) {
+    let just_opened = std::mem::take(&mut state.palette_just_opened);
+    if !just_opened && ui.input(|i| i.pointer.any_click()) {
         if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
             if !palette_rect.contains(p) {
                 close = true;

@@ -17,12 +17,13 @@ pub struct Window<'a> {
     default_size: Vec2,
     resizable: bool,
     min_size: Vec2,
+    current_pos: Option<egui::Pos2>,
 }
 
 impl<'a> Window<'a> {
     pub fn new(title: impl Into<String>) -> Self {
         let title = title.into();
-        Self { id: Id::new(("cobalt-window", title.as_str())), title, open: None, default_size: Vec2::new(520.0, 400.0), resizable: true, min_size: Vec2::new(280.0, 120.0) }
+        Self { id: Id::new(("cobalt-window", title.as_str())), title, open: None, default_size: Vec2::new(520.0, 400.0), resizable: true, min_size: Vec2::new(280.0, 120.0), current_pos: None }
     }
     pub fn id(mut self, id: Id) -> Self {
         self.id = id;
@@ -58,6 +59,11 @@ impl<'a> Window<'a> {
         self.min_size = size.into();
         self
     }
+    /// Place the window at this position this frame (a popup opening under its anchor).
+    pub fn current_pos(mut self, pos: impl Into<egui::Pos2>) -> Self {
+        self.current_pos = Some(pos.into());
+        self
+    }
 
     /// Show the window. Returns the content closure's value when the window was drawn.
     pub fn show<R>(self, ctx: &egui::Context, theme: &Theme, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
@@ -73,7 +79,10 @@ impl<'a> Window<'a> {
             .inner_margin(0.0);
         let mut close = false;
         let title = self.title.clone();
-        let win = egui::Window::new(&self.title).id(self.id).title_bar(false).collapsible(false).frame(frame).default_size(self.default_size).min_size(self.min_size).resizable(self.resizable).movable(true);
+        let mut win = egui::Window::new(&self.title).id(self.id).title_bar(false).collapsible(false).frame(frame).default_size(self.default_size).min_size(self.min_size).resizable(self.resizable).movable(true);
+        if let Some(p) = self.current_pos {
+            win = win.current_pos(p);
+        }
         let inner = win.show(ctx, |ui| {
             // title bar: drag handle, title on the left, a flat close button on the right
             let bar_w = ui.available_width();

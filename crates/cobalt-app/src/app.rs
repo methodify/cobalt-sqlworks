@@ -363,7 +363,7 @@ impl CobaltApp {
                 Available { info, manual } => {
                     let skipped = self.settings.updates.skipped_version.as_deref() == Some(info.version.as_str());
                     if manual || !skipped {
-                        self.state.dialog = crate::state::Dialog::UpdateAvailable { version: info.version, url: info.url, notes: info.notes };
+                        self.state.dialog = crate::state::Dialog::UpdateAvailable { info };
                     }
                 }
                 UpToDate { manual: true } => {
@@ -379,6 +379,29 @@ impl CobaltApp {
             let mut s = self.settings.clone();
             s.updates.skipped_version = Some(v);
             self.apply_settings(ctx, s);
+        }
+        // a finished installer download: arm it for exit, and close now when asked to
+        if let Some(d) = self.state.update_download.clone() {
+            let finished = d.progress.lock().finished.clone();
+            if let Some(Ok(path)) = finished {
+                if self.state.pending_installer.as_ref() != Some(&path) {
+                    self.state.pending_installer = Some(path.clone());
+                    match d.when {
+                        crate::update::InstallWhen::Now => self.state.close_for_update = true,
+                        crate::update::InstallWhen::OnExit => {
+                            self.toasts.success(format!("Cobalt {} is downloaded and verified; the installer starts when you close Cobalt.", d.version)).closable(true);
+                        }
+                    }
+                }
+            } else if let Some(Err(e)) = finished {
+                if !self.state.dialog.is_open() {
+                    self.toasts.warning(format!("The update download failed: {e}")).closable(true);
+                    self.state.update_download = None;
+                }
+            }
+        }
+        if std::mem::take(&mut self.state.close_for_update) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // follow the OS theme when set to System
         if self.settings.appearance.theme == ThemeChoice::System {
@@ -405,6 +428,7 @@ impl CobaltApp {
                 SettingsPatch::UiScale(z) => s.appearance.ui_scale = z,
                 SettingsPatch::ShowWelcome(v) => s.appearance.show_welcome = v,
                 SettingsPatch::SparkEngine(e) => s.spark.engine = e,
+                SettingsPatch::NewTabKind(k) => s.appearance.new_tab_kind = k,
             }
         }
         self.apply_settings(ctx, s);
@@ -562,6 +586,12 @@ impl eframe::App for CobaltApp {
         let cx = make_ctx!(self, &egui, &toasts);
         ops::snapshot_tabs(&mut self.state, &cx, true);
         self.session.send(crate::session::Command::Shutdown);
+        // "Install when I close Cobalt" / "Download and install": the verified installer starts now
+        if let Some(p) = self.state.pending_installer.take() {
+            if let Err(e) = crate::update::launch_installer(&p) {
+                tracing::warn!("could not start the installer {}: {e}", p.display());
+            }
+        }
     }
 }
 

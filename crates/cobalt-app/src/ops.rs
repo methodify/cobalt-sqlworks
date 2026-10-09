@@ -930,6 +930,17 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     }
 }
 
+/// Close these tabs without asking (the caller confirmed the dirty ones); pinned tabs stay.
+pub fn close_tabs(state: &mut AppState, cx: &Ctx, ids: &[TabId]) {
+    for id in ids {
+        if let Some(idx) = state.tab_index(*id) {
+            if !state.tabs[idx].pinned {
+                close_tab(state, cx, idx, true);
+            }
+        }
+    }
+}
+
 pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
     let Ok(list) = cx.store.recently_closed(1) else { return };
     let Some(snap) = list.into_iter().next() else { return };
@@ -1166,13 +1177,17 @@ pub fn read_only_violation(script: &str) -> Option<String> {
 pub(crate) fn script_for(t: &EditorTab, mode: RunMode) -> Option<(String, u32)> {
     let (script, start_line) = match mode {
         RunMode::All | RunMode::EstimatedPlan | RunMode::Selection => crate::ui::editor::selected_script(t).unwrap_or_else(|| (t.text.clone(), 1)),
-        RunMode::Current => {
-            let cursor = char_to_byte(&t.text, t.editor.cursor);
-            match cobalt_sql::statements::statement_at(&t.text, cursor) {
-                Some(s) => (t.text[s.start..s.end].to_string(), s.line),
-                None => (t.text.clone(), 1),
+        // Ctrl+Enter: the selection when there is one (as F5), else the statement under the caret
+        RunMode::Current => match crate::ui::editor::selected_script(t) {
+            Some(sel) => sel,
+            None => {
+                let cursor = char_to_byte(&t.text, t.editor.cursor);
+                match cobalt_sql::statements::statement_at(&t.text, cursor) {
+                    Some(s) => (t.text[s.start..s.end].to_string(), s.line),
+                    None => (t.text.clone(), 1),
+                }
             }
-        }
+        },
     };
     if script.trim().is_empty() {
         return None;

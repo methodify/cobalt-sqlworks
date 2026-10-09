@@ -959,6 +959,8 @@ pub struct AppState {
     pub formatter: CellFormatter,
     pub dialog: Dialog,
     pub palette_open: bool,
+    /// The palette was opened by a click this frame: that click must not count as "outside".
+    pub palette_just_opened: bool,
     pub palette_query: String,
     pub palette_selected: usize,
     pub history: HistoryView,
@@ -971,6 +973,12 @@ pub struct AppState {
     pub update_check_requested: bool,
     /// The update dialog asked to skip this version; the app persists it in settings.
     pub skip_version_request: Option<String>,
+    /// An installer download in flight or done (Help › Check for updates › Download and install).
+    pub update_download: Option<crate::update::UpdateDownload>,
+    /// A verified installer to start when Cobalt exits ("Install when I close Cobalt").
+    pub pending_installer: Option<std::path::PathBuf>,
+    /// Set by the update dialog: close the app now (the installer is started on exit).
+    pub close_for_update: bool,
     pub focus: Focus,
     pub status_flash: Option<(String, Instant)>,
     pub last_hot_exit_save: Instant,
@@ -1020,6 +1028,8 @@ pub enum SettingsPatch {
     ShowWelcome(bool),
     /// `spark.engine`: `pyspark` or `sail` (the next session runs on it).
     SparkEngine(String),
+    /// `appearance.new_tab_kind`: what the + on the tab strip opens.
+    NewTabKind(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1066,6 +1076,8 @@ pub enum Dialog {
     AuthWaiting { profile: ConnectionProfile, purpose: ConnectPurpose, message: String, device: Arc<parking_lot::Mutex<Option<(String, String)>>>, url: Arc<parking_lot::Mutex<Option<String>>>, cancel: Arc<std::sync::atomic::AtomicBool>, started: Instant },
     Group { group: ServerGroup, is_new: bool },
     ConfirmClose { tab_index: usize },
+    /// Close several tabs at once (Close others / Close all); the dirty ones are listed.
+    ConfirmCloseMany { tab_ids: Vec<TabId>, dirty: Vec<String> },
     ConfirmDeleteProfile { profile: ProfileId },
     ConfirmDeleteGroup { group: GroupId },
     ConfirmWrite { tab_index: usize, statement_preview: String, script: String, opts: ExecOptions, start_line: u32 },
@@ -1077,7 +1089,7 @@ pub enum Dialog {
     /// Pick a workspace and lakehouse for a Spark SQL tab (`tab_index` None = a new tab).
     SparkLakehouse { tab_index: Option<usize>, workspace: Option<String> },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
-    UpdateAvailable { version: String, url: String, notes: String },
+    UpdateAvailable { info: crate::update::UpdateInfo },
 }
 
 impl Dialog {
@@ -1214,6 +1226,7 @@ impl AppState {
             formatter: CellFormatter::default(),
             dialog: Dialog::None,
             palette_open: false,
+            palette_just_opened: false,
             palette_query: String::new(),
             palette_selected: 0,
             history: HistoryView::default(),
@@ -1222,6 +1235,9 @@ impl AppState {
             changelog: ChangelogUi::default(),
             update_check_requested: false,
             skip_version_request: None,
+            update_download: None,
+            pending_installer: None,
+            close_for_update: false,
             shortcuts_open: false,
             focus: Focus::Editor,
             status_flash: None,

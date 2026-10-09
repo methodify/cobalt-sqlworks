@@ -72,10 +72,13 @@ pub fn mnemonic_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonSty
     let mut hit = r.clicked();
     if let Some(c) = letter {
         let name = c.to_ascii_uppercase().to_string();
-        hint.push_str(&format!("Alt+{name}"));
+        hint.push_str(&format!("{name} or Alt+{name}"));
         if enabled {
             if let Some(k) = egui::Key::from_name(&name) {
-                if ui.input_mut(|i| i.consume_key(egui::Modifiers::ALT, k)) {
+                // Alt+letter always; the bare letter too while no text field has the keyboard
+                // (dialogs with inputs keep typing intact)
+                let typing = ui.ctx().egui_wants_keyboard_input();
+                if ui.input_mut(|i| i.consume_key(egui::Modifiers::ALT, k) || (!typing && i.consume_key(egui::Modifiers::NONE, k))) {
                     hit = true;
                 }
             }
