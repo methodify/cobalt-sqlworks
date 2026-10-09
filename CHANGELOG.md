@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.3 — 2026-10-08
 
 - **A Spark menu on the menu bar.** Start, restart, stop and interrupt the local Spark session,
   open its log and the Lakehouse shadows, reach the runtime settings, start a Spark SQL query
