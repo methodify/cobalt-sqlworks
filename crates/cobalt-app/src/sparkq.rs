@@ -422,7 +422,7 @@ pub fn on_sql_statement(state: &mut AppState, idx: usize, statement: usize, resu
                 if let Some(limit) = sql.limit {
                     if rows >= limit {
                         run.capped = true;
-                        run.messages.push(msg(format!("{}the first {} rows (Settings → Notebooks → rows a Spark DataFrame brings back); there may be more", where_(statement), fmt_count(limit)), false));
+                        run.messages.push(msg(format!("{}the first {} rows (Settings › Notebooks › rows a Spark DataFrame brings back); there may be more", where_(statement), fmt_count(limit)), false));
                     }
                 }
             } else {
@@ -656,6 +656,20 @@ pub fn pump_pending(state: &mut AppState, cx: &Ctx) {
 /// Each frame: a Spark tab bound to a lakehouse gets that lakehouse's completion catalog
 /// (loaded once per lakehouse, shared by its tabs).
 pub fn tick(state: &mut AppState, cx: &Ctx) {
+    // a start asked for from the Spark menu while the tab's lakehouse list was still loading:
+    // try again until the session is on its way
+    if let Some(tab) = state.spark_start_tab {
+        if !matches!(state.kernel.state, KernelState::Stopped | KernelState::Failed(_)) || state.kernel.pending_fabric_start.is_some() {
+            state.spark_start_tab = None;
+        } else if let Some(i) = state.tab_index(tab) {
+            match notebook::ensure_session(state, cx, i) {
+                Ok(false) => {}
+                _ => state.spark_start_tab = None,
+            }
+        } else {
+            state.spark_start_tab = None;
+        }
+    }
     let mut want: Vec<(usize, String, String, String)> = Vec::new();
     for (i, t) in state.tabs.iter().enumerate() {
         let Some(s) = &t.spark else { continue };
@@ -892,10 +906,9 @@ pub fn inherited_binding(state: &AppState) -> (Option<NotebookFabric>, Option<(S
 }
 
 /// The status bar / toolbar label of the session for a Spark tab.
-pub fn session_label(state: &AppState) -> (String, bool) {
+pub fn session_label(state: &AppState, settings_profile: &str) -> (String, bool) {
     let k = &state.kernel;
-    let profile = &k.profile;
-    let profile = if profile.is_empty() { "local" } else { profile.as_str() };
+    let profile = if k.profile.is_empty() { settings_profile } else { k.profile.as_str() };
     match &k.state {
         KernelState::Ready { .. } if k.busy.is_some() => (format!("Local Spark ({profile}) · running"), true),
         KernelState::Ready { .. } => (format!("Local Spark ({profile}) · ready"), true),

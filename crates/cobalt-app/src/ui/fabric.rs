@@ -387,6 +387,10 @@ fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, nam
             ui.close();
         }
         ui.separator();
+        if is_lakehouse && ui.button(format!("{} New Spark SQL query", icons::FIRE)).on_hover_text("A query tab on the local Spark session with this lakehouse as its default").clicked() {
+            actions.push(FabricAction::SparkQuery { item_id: item_id.to_string() });
+            ui.close();
+        }
         if is_lakehouse && ui.add_enabled(known, egui::Button::new(format!("{} Export results here…", icons::CLOUD))).clicked() {
             actions.push(FabricAction::ExportHere { item_id: item_id.to_string() });
             ui.close();

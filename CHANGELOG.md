@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **A Spark menu on the menu bar.** Start, restart, stop and interrupt the local Spark session,
+  open its log and the Lakehouse shadows, reach the runtime settings, start a Spark SQL query
+  or show the Lakehouse pane, whatever tab is open and whether or not the session is up. The
+  status bar's Spark entry is now a readout only (its right-click menu moved here).
+- **Getting to a lakehouse from a new Spark SQL tab.** File → New Spark SQL Query asks for the
+  workspace and lakehouse when there is nothing to inherit; the tab keeps its toolbar while the
+  getting-started pane is shown, and that pane is now about Spark: choose or change the
+  lakehouse, the lakehouses you have used, the session state, Spark tips. A lakehouse's
+  context menu on the Fabric panel has "New Spark SQL query". "Connect this tab" on a Spark tab
+  opens the picker.
+- The arrow character the UI font lacks is no longer used in buttons and messages
+  ("Settings › Editor" instead of a box).
+
 ## 0.8.2 — 2026-10-08
 
 - The changelog window substitutes the one arrow character the UI font lacks, so

@@ -983,6 +983,9 @@ pub struct AppState {
     pub spark_catalog_loading: std::collections::HashSet<String>,
     /// Open the Spark tab's lakehouse menu on the next frame (Connect / Change connection on a Spark tab).
     pub open_spark_chip: Option<TabId>,
+    /// A session start asked for (Spark menu, tree) for this tab's binding, retried while its
+    /// workspace items load.
+    pub spark_start_tab: Option<TabId>,
     pub export_progress: Option<Arc<parking_lot::Mutex<(usize, usize)>>>,
     /// Settings changes requested by ops/UI; applied by the app (which owns `Settings`).
     pub settings_patch: Vec<SettingsPatch>,
@@ -1226,6 +1229,7 @@ impl AppState {
             spark_catalogs: Default::default(),
             spark_catalog_loading: Default::default(),
             open_spark_chip: None,
+            spark_start_tab: None,
             export_progress: None,
             settings_patch: Vec::new(),
             settings_draft: None,

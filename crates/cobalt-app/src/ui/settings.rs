@@ -691,7 +691,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 lines.push(format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }));
                 let pkg_update = st.package_version.as_deref().map(|v| v != pinned).unwrap_or(false);
                 lines.push(match (&st.package_version, kept(&st.env)) {
-                    (Some(v), false) if pkg_update => format!("Spark package: local-spark-mcp {v} → {pinned} (pyspark/delta-spark kept)"),
+                    (Some(v), false) if pkg_update => format!("Spark package: local-spark-mcp {v} › {pinned} (pyspark/delta-spark kept)"),
                     (_, true) => format!("Spark package: local-spark-mcp {pinned} reinstalled over itself (fast, cached)"),
                     _ => format!("Spark package: local-spark-mcp {pinned} + pyspark/delta-spark installed"),
                 });

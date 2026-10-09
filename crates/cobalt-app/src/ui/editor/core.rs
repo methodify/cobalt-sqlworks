@@ -1262,7 +1262,7 @@ mod tests {
         // typing "t" replaces the selected placeholder: 5 chars → 1
         s.adjust(24, -4);
         assert_eq!(s.stops, vec![(24, 25), (25, 25)]);
-        s.adjust(25, 2); // "t" → "tbl"
+        s.adjust(25, 2); // "t" › "tbl"
         assert_eq!(s.stops, vec![(24, 27), (27, 27)]);
         assert_eq!(s.step(false), Some((27, 27)));
         assert_eq!(s.step(false), None);

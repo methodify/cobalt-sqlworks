@@ -461,8 +461,13 @@ Agent: `notebook {action: set_lakehouse, workspace, lakehouse?, write_mode?}`, `
 "Just run this query against the lakehouse" without a notebook. In the Servers sidebar the
 **Local Spark** root shows the session's state and the lakehouses it knows: those bound to open
 Spark notebooks and tabs, the ones pinned on the Fabric panel, and the ones used before.
-Double-click a lakehouse (or right-click → New Spark SQL query; File → New Spark SQL Query
-inherits the active tab's binding) for a tab named `SparkSQL_1 · test`. Its toolbar carries the
+Double-click a lakehouse (or right-click › New Spark SQL query; File › New Spark SQL Query
+inherits the active tab's binding and otherwise asks for the workspace and lakehouse; a
+lakehouse on the Fabric panel has "New Spark SQL query" in its context menu) for a tab named
+`SparkSQL_1 · test`. A fresh tab shows its toolbar and a Spark getting-started pane (choose
+or change the lakehouse, lakehouses used before, the session state). The **Spark** menu on the
+menu bar starts, restarts, stops and interrupts the session, opens the log and the shadows,
+and reaches the runtime settings, from any tab; the status bar's Spark entry is a readout. Its toolbar carries the
 session chip (`Local Spark (fabric-2.0) · ready`, with Start / Restart / Stop / Interrupt /
 Session log) and the lakehouse chip (`test (Fabric test)`: workspace, default lakehouse, write
 mode — the same binding a notebook has; "Connect" or "Change connection" on such a tab opens it).

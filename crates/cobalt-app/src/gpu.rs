@@ -52,7 +52,7 @@ pub fn choose_renderer(setting: &str) -> eframe::Renderer {
         eframe::Renderer::Glow
     } else {
         WARP_WITHOUT_MESA.store(true, Ordering::Relaxed);
-        tracing::warn!("no GPU adapter and no {MESA_DLL} next to the executable: falling back to WARP (slow). See docs/alpha_notes.md → Running without a GPU.");
+        tracing::warn!("no GPU adapter and no {MESA_DLL} next to the executable: falling back to WARP (slow). See docs/alpha_notes.md › Running without a GPU.");
         eframe::Renderer::Wgpu
     }
 }

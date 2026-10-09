@@ -90,7 +90,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
                     actions.push(TreeAction::NewConnection { group: None });
                 }
                 ui.add_space(6.0);
-                ui.label(RichText::new("or File → Import Azure Data Studio connections").size(11.0).color(theme.text_faint));
+                ui.label(RichText::new("or File › Import Azure Data Studio connections").size(11.0).color(theme.text_faint));
             });
         }
         ui.add_space(40.0);
@@ -723,7 +723,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
                 if let Some(Loadable::Loaded(keys)) = dbn.keys.get(&oid) {
                     for k in keys {
                         let detail = match (&k.kind, &k.references) {
-                            (KeyKind::ForeignKey, Some((t, cols))) => format!("→ {}.{} ({})", t.schema, t.name, cols.join(", ")),
+                            (KeyKind::ForeignKey, Some((t, cols))) => format!("› {}.{} ({})", t.schema, t.name, cols.join(", ")),
                             (KeyKind::Check, _) | (KeyKind::Default, _) => k.definition.clone().unwrap_or_default(),
                             _ => format!("({})", k.columns.join(", ")),
                         };

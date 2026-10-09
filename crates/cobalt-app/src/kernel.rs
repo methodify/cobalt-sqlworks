@@ -932,7 +932,7 @@ pub fn drop_context(k: &mut KernelUi, tab: TabId) {
                 .spawn(move || {
                     let r = ctl.call("drop_context", json!({"id": id2, "force": true}), Duration::from_secs(30));
                     let _ = ev.send(KernelEvent::Log(match r {
-                        Ok(v) => format!("cobalt: context {id2} drop requested while its cell runs → {v}"),
+                        Ok(v) => format!("cobalt: context {id2} drop requested while its cell runs › {v}"),
                         Err(e) => format!("cobalt: context {id2} forced drop failed: {e}"),
                     }));
                 })
@@ -1097,7 +1097,7 @@ pub fn poll(k: &mut KernelUi) -> PollOut {
                 let secs = k.interrupt_sent_at.map(|t| t.elapsed().as_secs_f32()).unwrap_or(0.0);
                 k.last_interrupt = Some((secs, match &r { Ok(v) => v.to_string(), Err(e) => e.clone() }));
                 k.log.push_back(match &r {
-                    Ok(v) => format!("cobalt: interrupt → {} after {secs:.1} s{}", v.get("state").and_then(Value::as_str).unwrap_or("?"), v.get("detail").and_then(Value::as_str).map(|d| format!(" ({d})")).unwrap_or_default()),
+                    Ok(v) => format!("cobalt: interrupt › {} after {secs:.1} s{}", v.get("state").and_then(Value::as_str).unwrap_or("?"), v.get("detail").and_then(Value::as_str).map(|d| format!(" ({d})")).unwrap_or_default()),
                     Err(e) if e.contains("timed out") => format!("cobalt: interrupt sent; the worker's acknowledgement did not arrive in time (the cell is still being cancelled — Stop again to end the session): {e}"),
                     Err(e) => format!("cobalt: interrupt failed: {e}"),
                 });
@@ -1188,7 +1188,7 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
                 }
                 if d.get("truncated").and_then(Value::as_bool) == Some(true) {
                     let limit = d.get("limit").and_then(Value::as_u64).unwrap_or(0);
-                    out.messages.push(msg(format!("Result {}: the first {} rows (Settings → Notebooks → rows a Spark DataFrame brings back)", out.result_sets.len() + 1, crate::state::fmt_count(limit)), false));
+                    out.messages.push(msg(format!("Result {}: the first {} rows (Settings › Notebooks › rows a Spark DataFrame brings back)", out.result_sets.len() + 1, crate::state::fmt_count(limit)), false));
                 }
                 match blobs.get(i) {
                     Some(bytes) => match crate::notebook::result_set_from_ipc(bytes, out.result_sets.len()) {

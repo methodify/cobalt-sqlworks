@@ -557,7 +557,7 @@ pub fn lifecycle_tick(state: &mut AppState, cx: &Ctx) {
     let limit = std::time::Duration::from_secs(60 * cx.settings.spark.idle_minutes.max(1) as u64);
     if state.kernel.idle() >= limit {
         crate::kernel::stop(&mut state.kernel);
-        cx.toast(ToastKind::Info, format!("The local Spark session stopped after {} minutes without a cell (Settings → Notebooks & Spark → Session lifecycle).", cx.settings.spark.idle_minutes.max(1)));
+        cx.toast(ToastKind::Info, format!("The local Spark session stopped after {} minutes without a cell (Settings › Notebooks & Spark › Session lifecycle).", cx.settings.spark.idle_minutes.max(1)));
     }
 }
 
@@ -569,7 +569,7 @@ pub fn on_spark_notebook_closed(state: &mut AppState, cx: &Ctx) {
     let any = state.tabs.iter().any(|t| t.spark.is_some() || t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
     if !any && !matches!(state.kernel.state, crate::kernel::KernelState::Stopped) {
         crate::kernel::stop(&mut state.kernel);
-        cx.toast(ToastKind::Info, "The last Spark notebook or tab closed; the local Spark session stopped (Settings → Notebooks & Spark → Session lifecycle).");
+        cx.toast(ToastKind::Info, "The last Spark notebook or tab closed; the local Spark session stopped (Settings › Notebooks & Spark › Session lifecycle).");
     }
 }
 
@@ -1074,7 +1074,7 @@ pub fn ensure_session(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<bool
     }
     if let Err(StartError::NotProvisioned) = kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
         abandon_pending(state, idx);
-        cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime, then run the cell again.");
+        cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings › Spark runtime, then run the cell again.");
         state.settings_open = true;
         state.settings_scroll_to = Some("Spark runtime");
         return Err(());

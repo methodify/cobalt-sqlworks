@@ -475,7 +475,7 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
         AuthMethod::WindowsIntegrated => finish_connect(state, cx, profile, ResolvedCredentials::WindowsIntegrated, purpose),
         AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. } | AuthMethod::AzureCli { .. } | AuthMethod::EntraServicePrincipal { .. } | AuthMethod::ManagedIdentity { .. } => {
             if matches!(profile.auth, AuthMethod::EntraInteractive { .. } | AuthMethod::EntraDeviceCode { .. }) && cx.settings.connections.effective_entra_client_id().is_empty() {
-                let msg = "No Entra client ID is configured. Set one in Settings → Connections (or use Azure CLI authentication after `az login`).";
+                let msg = "No Entra client ID is configured. Set one in Settings › Connections (or use Azure CLI authentication after `az login`).";
                 cx.toast(ToastKind::Error, msg);
                 if let ConnectPurpose::Tab { tab, .. } = &purpose {
                     if let Some(t) = state.tab_mut(*tab) {
@@ -815,9 +815,11 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             let bound = state.active_tab.filter(|&i| state.tabs[i].spark.is_some() || state.tabs[i].notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false));
             if start {
                 if let Some(i) = bound {
-                    let _ = crate::notebook::ensure_session(state, cx, i);
+                    if matches!(crate::notebook::ensure_session(state, cx, i), Ok(false)) {
+                        state.spark_start_tab = Some(state.tabs[i].id); // retried by sparkq::tick
+                    }
                 } else if let Err(crate::kernel::StartError::NotProvisioned) = crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, None) {
-                    cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings → Spark runtime.");
+                    cx.toast(ToastKind::Warning, "The local Spark runtime is not installed yet. Install it under Settings › Spark runtime.");
                     state.settings_open = true;
                     state.settings_scroll_to = Some("Spark runtime");
                 }
@@ -2226,7 +2228,7 @@ pub(crate) async fn onelake_token(resolver: Arc<CredentialResolver>, slot: Profi
     }
     match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
         Ok(ts) => Ok(ts.access.token.expose().to_string()),
-        Err(e) => Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")),
+        Err(e) => Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage › user_impersonation (or Power BI Service › OneLake.ReadWrite.All) to the app registration and sign in again.")),
     }
 }
 
@@ -2239,7 +2241,7 @@ pub(crate) async fn onelake_storage_token(resolver: Arc<CredentialResolver>, slo
     }
     match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
         Ok(ts) => Ok(ts.access.token.expose().to_string()),
-        Err(e) => Err(format!("OneLake sign-in failed: {e}. The Spark session needs an Azure Storage token (delegated permission Azure Storage → user_impersonation on the app registration); sign in again on the Fabric panel.")),
+        Err(e) => Err(format!("OneLake sign-in failed: {e}. The Spark session needs an Azure Storage token (delegated permission Azure Storage › user_impersonation on the app registration); sign in again on the Fabric panel.")),
     }
 }
 
@@ -2529,7 +2531,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 None => match resolver.onelake_token(slot, tenant.as_deref(), hint.as_deref(), &prompter).await {
                     Ok(ts) => ts.access.token.expose().to_string(),
                     Err(e) => {
-                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage → user_impersonation (or Power BI Service → OneLake.ReadWrite.All) to the app registration and sign in again.")), tab: None, path: None });
+                        let _ = tx2.send(ExportDone { result: Err(format!("OneLake sign-in failed: {e}. Add the delegated permission Azure Storage › user_impersonation (or Power BI Service › OneLake.ReadWrite.All) to the app registration and sign in again.")), tab: None, path: None });
                         egui2.request_repaint();
                         return;
                     }

@@ -153,6 +153,8 @@ pub enum FabricAction {
     ToggleItem { item_id: String },
     /// Open the export dialog for the active tab's results with this lakehouse preselected.
     ExportHere { item_id: String },
+    /// A Spark SQL query tab bound to this lakehouse.
+    SparkQuery { item_id: String },
     /// An action from the inline object explorer.
     Tree(TreeAction),
     /// Open a notebook item as a tab bound to it (`copy` = a detached local notebook).
@@ -307,6 +309,12 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             }
         }
         FabricAction::ExportHere { item_id } => export_here(state, cx, &item_id),
+        FabricAction::SparkQuery { item_id } => {
+            let Some(item) = state.fabric.item(&item_id).cloned() else { return };
+            let ws_name = state.fabric.workspace(&item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default();
+            let binding = crate::state::NotebookFabric { workspace_id: item.workspace_id.clone(), lakehouse_id: Some(item.id.clone()), write_mode: "sandbox".into(), preload: false };
+            crate::sparkq::new_tab(state, cx, Some(binding), Some((ws_name, Some(item.display_name.clone()))), None);
+        }
         FabricAction::Tree(a) => ops::tree_action(state, cx, a),
     }
 }
@@ -394,7 +402,7 @@ fn try_silent_adopt(state: &mut AppState, cx: &Ctx) {
 
 pub fn sign_in(state: &mut AppState, cx: &Ctx) {
     if cx.settings.connections.effective_entra_client_id().is_empty() {
-        cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings → Connections).");
+        cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings › Connections).");
         return;
     }
     // reuse an existing slot, or pick the first Entra profile, or mint a dedicated slot id
@@ -446,7 +454,7 @@ pub fn sign_in(state: &mut AppState, cx: &Ctx) {
 /// only ever yields the permissions consented at the time it was issued.
 pub fn grant_permissions(state: &mut AppState, cx: &Ctx) {
     if cx.settings.connections.effective_entra_client_id().is_empty() {
-        cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings → Connections).");
+        cx.toast(ToastKind::Error, "No Entra client ID is configured (Settings › Connections).");
         return;
     }
     let slot = state.fabric.slot.or_else(|| state.library.profiles.iter().find(|p| matches!(p.auth, AuthMethod::EntraInteractive { .. })).map(|p| p.id)).unwrap_or_default();
@@ -1027,8 +1035,8 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                     let fs = crate::kernel::FabricStart { fabric, resolver: cx.resolver.clone(), handle: cx.session.handle() };
                     match crate::kernel::start(&mut state.kernel, cx.settings, cx.paths, cx.egui, Some(fs)) {
                         Ok(()) => {}
-                        Err(crate::kernel::StartError::NotProvisioned) => cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings → Spark runtime)."),
-                        Err(crate::kernel::StartError::NoJar) => cx.toast(ToastKind::Error, "The OneLake catalog jar is missing from the runtime environment; reinstall under Settings → Spark runtime."),
+                        Err(crate::kernel::StartError::NotProvisioned) => cx.toast(ToastKind::Warning, "The local Spark runtime is not installed (Settings › Spark runtime)."),
+                        Err(crate::kernel::StartError::NoJar) => cx.toast(ToastKind::Error, "The OneLake catalog jar is missing from the runtime environment; reinstall under Settings › Spark runtime."),
                         Err(crate::kernel::StartError::TokenServer(e)) => cx.toast(ToastKind::Error, format!("Could not start the OneLake token endpoint: {e}")),
                     }
                     crate::notebook::pump_all_spark(state, cx);

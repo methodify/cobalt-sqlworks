@@ -844,7 +844,7 @@ impl AgentApp for CobaltApp {
                     "refresh" => FA::Refresh,
                     "grant" => FA::GrantPermissions,
                     "expand" => match arg_str(args, "workspace").and_then(|n| find_ws(&n)) { Some(id) => FA::ToggleWorkspace(id), None => return ActionResult::BadArgs("no such workspace".into()) },
-                    "open" | "pin" | "save" | "copy" | "portal" | "explore" | "export_here" => {
+                    "open" | "pin" | "save" | "copy" | "portal" | "explore" | "export_here" | "spark_query" => {
                         let Some(id) = arg_str(args, "item").and_then(|n| find_item(&n)) else { return ActionResult::BadArgs("no such item (expand its workspace first)".into()) };
                         match act.as_str() {
                             "open" => FA::Open { item_id: id },
@@ -853,6 +853,7 @@ impl AgentApp for CobaltApp {
                             "copy" => FA::CopyConnectionString { item_id: id },
                             "explore" => FA::ToggleItem { item_id: id },
                             "export_here" => FA::ExportHere { item_id: id },
+                            "spark_query" => FA::SparkQuery { item_id: id },
                             _ => FA::OpenInPortal { item_id: id },
                         }
                     }

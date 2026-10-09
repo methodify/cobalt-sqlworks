@@ -35,6 +35,10 @@ pub enum Command {
     AddCodeCell,
     AddMarkdownCell,
     SparkRuntime,
+    /// Start the local Spark session (with the active Spark tab's or notebook's lakehouse).
+    KernelStart,
+    /// Interrupt whatever statement or cell the session is running.
+    KernelInterrupt,
     KernelRestart,
     KernelStop,
     KernelLog,
@@ -181,6 +185,8 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::AddCodeCell, id: "notebook.add_code", label: "Add Code Cell", category: Category::Editor, default_key: None },
     CommandInfo { cmd: Command::AddMarkdownCell, id: "notebook.add_markdown", label: "Add Markdown Cell", category: Category::Editor, default_key: None },
     CommandInfo { cmd: Command::SparkRuntime, id: "view.spark_runtime", label: "Spark Runtime…", category: Category::View, default_key: None },
+    CommandInfo { cmd: Command::KernelStart, id: "spark.session_start", label: "Start Local Spark Session", category: Category::Query, default_key: None },
+    CommandInfo { cmd: Command::KernelInterrupt, id: "spark.interrupt", label: "Interrupt the Running Spark Statement", category: Category::Query, default_key: None },
     CommandInfo { cmd: Command::KernelRestart, id: "notebook.kernel_restart", label: "Restart Local Spark Session", category: Category::Query, default_key: None },
     CommandInfo { cmd: Command::KernelStop, id: "notebook.kernel_stop", label: "Stop Local Spark Session", category: Category::Query, default_key: None },
     CommandInfo { cmd: Command::KernelLog, id: "notebook.kernel_log", label: "Local Spark Session Log", category: Category::View, default_key: None },
@@ -391,7 +397,7 @@ mod tests {
         for s in ["Ctrl+Shift+P", "Alt+F1", "F5", "Ctrl+1", "Ctrl+Enter", "Shift+Alt+F", "Ctrl+/", "Ctrl+,"] {
             let sc = parse_shortcut(s).unwrap_or_else(|| panic!("parse {s}"));
             let back = shortcut_label(sc);
-            assert_eq!(parse_shortcut(&back), Some(sc), "{s} → {back}");
+            assert_eq!(parse_shortcut(&back), Some(sc), "{s} › {back}");
         }
         assert!(parse_shortcut("").is_none());
         assert!(parse_shortcut("Ctrl+").is_none());

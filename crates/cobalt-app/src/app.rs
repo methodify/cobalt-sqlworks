@@ -239,7 +239,7 @@ impl CobaltApp {
             app.state.new_tab();
         }
         if crate::gpu::warp_without_mesa() {
-            app.flush_toasts(vec![(ToastKind::Warning, format!("No GPU found: drawing falls back to Windows' slow software rasterizer. Put Mesa's {} next to cobalt.exe for a much faster one (Help → Running without a GPU).", crate::gpu::MESA_DLL))]);
+            app.flush_toasts(vec![(ToastKind::Warning, format!("No GPU found: drawing falls back to Windows' slow software rasterizer. Put Mesa's {} next to cobalt.exe for a much faster one (Help › Running without a GPU).", crate::gpu::MESA_DLL))]);
         }
         app
     }

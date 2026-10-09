@@ -207,7 +207,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         pick = Some(NotebookKernel::Connection);
                         ui.close();
                     }
-                    if ui.selectable_label(nb_kernel == NotebookKernel::Spark, format!("{} Local Spark ({spark_profile}) · PySpark + Spark SQL", icons::FIRE)).on_hover_text("Runs on the runtime from Settings → Spark runtime. The first cell starts the session (20–60 s).").clicked() {
+                    if ui.selectable_label(nb_kernel == NotebookKernel::Spark, format!("{} Local Spark ({spark_profile}) · PySpark + Spark SQL", icons::FIRE)).on_hover_text("Runs on the runtime from Settings › Spark runtime. The first cell starts the session (20–60 s).").clicked() {
                         pick = Some(NotebookKernel::Spark);
                         ui.close();
                     }
