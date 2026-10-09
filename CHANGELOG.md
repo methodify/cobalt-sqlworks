@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-10-09
 
 - **LakeSail as a second Spark engine (experimental).** Settings › Spark runtime › Engine (also
   the Spark menu › Engine and the notebook kernel picker) chooses between *Local Spark (JVM)* —
