@@ -677,7 +677,7 @@ fn changelog_window(ctx: &egui::Context, f: &mut Frame<'_>) {
         egui::ScrollArea::vertical().id_salt("changelog-scroll").auto_shrink([false, false]).show(ui, |ui| {
             ui.set_width(ui.available_width() - 8.0);
             // the UI font has no U+2192 (the arrow in "Settings → Editor"); the Markdown viewer cannot fall back for it
-            let text = text.replace('{2192}', "\u{203a}");
+            let text = text.replace('\u{2192}', "\u{203a}");
             egui_commonmark::CommonMarkViewer::new().max_image_width(Some(700)).show(ui, &mut cl.cache, &text);
         });
     });
