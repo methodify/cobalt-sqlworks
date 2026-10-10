@@ -429,9 +429,22 @@ impl CobaltApp {
                 SettingsPatch::ShowWelcome(v) => s.appearance.show_welcome = v,
                 SettingsPatch::SparkEngine(e) => s.spark.engine = e,
                 SettingsPatch::NewTabKind(k) => s.appearance.new_tab_kind = k,
+                SettingsPatch::AddPythonPackages(specs) => {
+                    for spec in specs {
+                        let name = cobalt_runtime::libraries::python_dist_name(&spec);
+                        if !s.spark.python_packages.iter().any(|x| cobalt_runtime::libraries::python_dist_name(x) == name) {
+                            s.spark.python_packages.push(spec);
+                        }
+                    }
+                }
             }
         }
         self.apply_settings(ctx, s);
+        if std::mem::take(&mut self.state.install_libraries_requested) {
+            if let Some(err) = crate::runtime::action(&mut self.state.runtime, &self.settings, &self.paths, ctx, crate::runtime::RuntimeAction::InstallLibraries) {
+                self.toasts.warning(err);
+            }
+        }
     }
 }
 

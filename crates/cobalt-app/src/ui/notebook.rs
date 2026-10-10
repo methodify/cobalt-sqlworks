@@ -42,6 +42,12 @@ enum NbAction {
     Command(Command),
     /// A SQL cell's text as a Spark SQL query tab with the notebook's binding.
     OpenSparkTab(usize),
+    /// Mark / unmark the parameters cell (Fabric's `parameters` tag).
+    SetParameters(usize, bool),
+    /// Open the Run with parameters dialog.
+    RunWithParameters,
+    /// A cell's reported `%pip install` packages into the runtime's libraries, and install.
+    AddPipPackages(usize),
 }
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
@@ -147,6 +153,12 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             }
             if icon_button(ui, icons::ARROW_LINE_UP, "Run cells above", !running && selected > 0).clicked() {
                 actions.push(NbAction::Run((0..selected).collect()));
+            }
+            let has_params = f.state.tabs[idx].notebook.as_deref().map(|nb| nb.nb.parameters_cell().is_some()).unwrap_or(false);
+            let r = ui.add_enabled(!running && has_params, egui::Button::new(RichText::new("Run with parameters…").size(12.0)).small());
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "run with parameters"));
+            if r.on_hover_text(if has_params { "Override the parameters cell's values for one run, then run every cell (what Fabric's Run with parameters and notebookutils.notebook.run(path, args) do)." } else { "Mark a Python cell as the parameters cell first (its run menu › Parameters cell)." }).clicked() {
+                actions.push(NbAction::RunWithParameters);
             }
             let r = icon_button(ui, icons::STOP, "Stop", running);
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "stop notebook"));
@@ -456,6 +468,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             let is_live = nb.cells[i].run.as_ref().map(|r| r.is_live()).unwrap_or(false);
             let queued = nb.is_queued(&cell_id);
             let has_selection = nb.cells[i].editor.cursors.has_selection();
+            let is_params = nb.nb.cells[i].is_parameters();
+            let pip_packages = nb.cells[i].pip_packages.clone();
             let frame_id = egui::Id::new(("nbcell-frame", tab_id, cell_id.as_str()));
             let hovered_before: bool = ui.memory(|m| m.data.get_temp(frame_id)).unwrap_or(false);
             let stroke = if is_selected { egui::Stroke::new(1.0, theme.accent) } else if hovered_before { egui::Stroke::new(1.0, theme.border_strong) } else { egui::Stroke::new(1.0, theme.border) };
@@ -512,6 +526,15 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                         actions.push(NbAction::Run((i..n).collect()));
                                         ui.close();
                                     }
+                                    if nb_kernel == NotebookKernel::Spark && lang == CellLanguage::Python {
+                                        ui.separator();
+                                        let r = ui.selectable_label(is_params, "Parameters cell");
+                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} parameters", i + 1)));
+                                        if r.on_hover_text("Fabric's convention: the cell tagged `parameters` holds `name = value` defaults; Run with parameters… (toolbar) overrides them for one run, as notebookutils.notebook.run(path, args) does.").clicked() {
+                                            actions.push(NbAction::SetParameters(i, !is_params));
+                                            ui.close();
+                                        }
+                                    }
                                     if nb_kernel == NotebookKernel::Spark && lang == CellLanguage::Sql {
                                         ui.separator();
                                         let r = ui.button(format!("{} Open in a Spark SQL tab", icons::FIRE));
@@ -561,6 +584,9 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 });
                                 let _ = &group;
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if is_params {
+                                        ui.label(RichText::new("parameters").size(10.0).color(theme.accent)).on_hover_text("The parameters cell: Run with parameters… overrides the values assigned here.");
+                                    }
                                     if icon_button(ui, icons::TRASH, "Delete cell (D D)", !is_live).clicked() {
                                         actions.push(NbAction::Delete(i));
                                     }
@@ -639,6 +665,18 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             } else if click.clicked() {
                                 nb.selected = i;
                             }
+                        }
+                        // `%pip install` lines the last run carried: reported here with the way in
+                        if cell_kind == CellKind::Code && !pip_packages.is_empty() {
+                            ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                ui.label(RichText::new(format!("{} pip: {}", icons::PACKAGE, pip_packages.join(", "))).size(11.0).color(theme.text_muted)).on_hover_text("%pip lines are not run in the session; the packages belong to the runtime environment (Settings › Notebooks & Spark › Libraries).");
+                                let r = ui.small_button("Add to runtime");
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} add pip packages", i + 1)));
+                                if r.on_hover_text("Adds the packages to the runtime's Python packages and installs them into every installed engine environment.").clicked() {
+                                    actions.push(NbAction::AddPipPackages(i));
+                                }
+                            });
                         }
                         // outputs: an indented block under the editor with a rule on the left, like a
                         // notebook's Out[] area; text comes as blocks, result sets as grids
@@ -1003,6 +1041,12 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             NbAction::Move(i, d) => nbops::move_cell(f.state, idx, i, d),
             NbAction::SetKind(i, k) => nbops::set_kind(f.state, idx, i, k),
             NbAction::SetLanguage(i, l) => nbops::set_language(f.state, idx, i, l),
+            NbAction::SetParameters(i, on) => nbops::set_parameters(f.state, idx, i, on),
+            NbAction::RunWithParameters => match nbops::parameters_of(f.state, idx) {
+                Some((_, params)) => f.state.dialog = Dialog::RunWithParameters { tab_index: idx, params },
+                None => f.cx.toast(ToastKind::Warning, "No parameters cell: mark one from a cell's run menu (Parameters cell)."),
+            },
+            NbAction::AddPipPackages(i) => nbops::add_pip_packages(f.state, f.cx, idx, i),
             NbAction::SetKernel(k) => nbops::set_kernel(f.state, idx, k),
             NbAction::SetEngine(e) => {
                 nbops::set_kernel(f.state, idx, NotebookKernel::Spark);

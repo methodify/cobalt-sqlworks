@@ -155,8 +155,9 @@ Shipped: Cobalt's loopback token endpoint (`crates/cobalt-app/src/onelake_tokens
 registration and write modes per notebook (`NotebookFabric`, written into `dependencies.lakehouse`),
 the Shadows window, Notebook items in the explorer with open / open-a-copy / save-back through
 `getDefinition` / `updateDefinition` (needs `Item.ReadWrite.All`; verified on the test tenant
-once the permission was added). Not yet: Files mirror and sync, parameters cell and "Run
-with parameters", `%pip` reporting, "Save as new Fabric notebook" (the client call exists).
+once the permission was added). Done since: Files mirror and sync (0.8.x), the parameters cell
+with "Run with parameters…" and `%pip` reporting with "Add to runtime" (0.9.5). Not yet: "Save as
+new Fabric notebook" (the client call exists).
 
 - Cobalt's own loopback token endpoint; lakehouse registration from the explorer; default
   lakehouse per notebook; write modes with the Shadows panel; Files mirror and sync.

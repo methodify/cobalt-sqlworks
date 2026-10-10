@@ -409,11 +409,14 @@ pub struct CellState {
     pub cached: bool,
     pub md_editing: bool,
     pub outputs_collapsed: bool,
+    /// `%pip install` packages the last run of this cell carried: reported, not installed from
+    /// the notebook; "Add to runtime" puts them in the runtime's Python packages.
+    pub pip_packages: Vec<String>,
 }
 
 impl CellState {
     pub fn new(id: String) -> Self {
-        Self { id, editor: EditorState::default(), run: None, extra_outputs: Vec::new(), cached: false, md_editing: false, outputs_collapsed: false }
+        Self { id, editor: EditorState::default(), run: None, extra_outputs: Vec::new(), cached: false, md_editing: false, outputs_collapsed: false, pip_packages: Vec::new() }
     }
 }
 
@@ -1000,6 +1003,9 @@ pub struct AppState {
     pub export_progress: Option<Arc<parking_lot::Mutex<(usize, usize)>>>,
     /// Settings changes requested by ops/UI; applied by the app (which owns `Settings`).
     pub settings_patch: Vec<SettingsPatch>,
+    /// A notebook asked for its `%pip` packages to be installed: start the Libraries job once
+    /// the settings patch that added them is applied.
+    pub install_libraries_requested: bool,
     pub settings_draft: Option<Settings>,
     /// Scroll the settings window to this section when it opens.
     pub settings_scroll_to: Option<&'static str>,
@@ -1033,6 +1039,8 @@ pub enum SettingsPatch {
     SparkEngine(String),
     /// `appearance.new_tab_kind`: what the + on the tab strip opens.
     NewTabKind(String),
+    /// `spark.python_packages`: add these specs (a notebook's `%pip install` lines) when absent.
+    AddPythonPackages(Vec<String>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -1081,6 +1089,8 @@ pub enum Dialog {
     ConfirmClose { tab_index: usize },
     /// Close several tabs at once (Close others / Close all); the dirty ones are listed.
     ConfirmCloseMany { tab_ids: Vec<TabId>, dirty: Vec<String> },
+    /// Run a notebook with the parameters cell's assignments overridden (`params` = name, value).
+    RunWithParameters { tab_index: usize, params: Vec<(String, String)> },
     ConfirmDeleteProfile { profile: ProfileId },
     ConfirmDeleteGroup { group: GroupId },
     ConfirmWrite { tab_index: usize, statement_preview: String, script: String, opts: ExecOptions, start_line: u32 },
@@ -1253,6 +1263,7 @@ impl AppState {
             spark_start_tab: None,
             export_progress: None,
             settings_patch: Vec::new(),
+            install_libraries_requested: false,
             settings_draft: None,
             settings_scroll_to: None,
             runtime: Default::default(),

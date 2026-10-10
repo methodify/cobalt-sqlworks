@@ -67,6 +67,8 @@ impl CobaltApp {
                         "md_editing": c.md_editing,
                         "cached": c.cached,
                         "queued": nb.is_queued(&c.id),
+                        "parameters": cell.is_parameters(),
+                        "pip_packages": c.pip_packages,
                         "run": c.run.as_ref().map(|r| json!({
                             "state": format!("{:?}", r.state).to_lowercase(),
                             "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
@@ -175,6 +177,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         Group { .. } => "group",
         ConfirmClose { .. } => "confirm_close",
         ConfirmCloseMany { .. } => "confirm_close_many",
+        RunWithParameters { .. } => "run_with_parameters",
         ConfirmDeleteProfile { .. } => "confirm_delete_profile",
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
         ConfirmWrite { .. } => "confirm_write",
@@ -1034,6 +1037,27 @@ impl AgentApp for CobaltApp {
                             _ => CellKind::Code,
                         };
                         crate::notebook::set_kind(&mut self.state, idx.unwrap(), ci, kind);
+                        ActionResult::ok()
+                    }
+                    "set_parameters" => {
+                        // {index, on?: true}: the parameters cell (Fabric's `parameters` tag)
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let on = args.and_then(|a| a.get("on")).and_then(|v| v.as_bool()).unwrap_or(true);
+                        crate::notebook::set_parameters(&mut self.state, idx.unwrap(), ci, on);
+                        ActionResult::with(&json!({"parameters": crate::notebook::parameters_of(&self.state, idx.unwrap()).map(|(i, a)| json!({"index": i, "assignments": a}))}))
+                    }
+                    "parameters" => ActionResult::with(&json!({"parameters": crate::notebook::parameters_of(&self.state, idx.unwrap()).map(|(i, a)| json!({"index": i, "assignments": a}))})),
+                    "run_with_parameters" => {
+                        // {params: {name: "value expression", ...}}: every code cell, the overrides appended to the parameters cell for this run
+                        let params: Vec<(String, String)> = args.and_then(|a| a.get("params")).and_then(|v| v.as_object()).map(|m| m.iter().map(|(k, v)| (k.clone(), match v { Value::String(s) => s.clone(), other => other.to_string() })).collect()).unwrap_or_default();
+                        let i = idx.unwrap();
+                        self.with_ctx(egui, |s, cx| crate::notebook::run_with_parameters(s, cx, i, params));
+                        ActionResult::ok()
+                    }
+                    "add_pip_packages" => {
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let i = idx.unwrap();
+                        self.with_ctx(egui, |s, cx| crate::notebook::add_pip_packages(s, cx, i, ci));
                         ActionResult::ok()
                     }
                     "select" => {

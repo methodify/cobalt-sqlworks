@@ -868,6 +868,73 @@ pub fn run_cells(state: &mut AppState, cx: &Ctx, idx: usize, cells: Vec<usize>) 
     pump(state, cx, tab, false);
 }
 
+/// Mark a cell as the notebook's parameters cell (Fabric's `parameters` tag), or unmark it;
+/// one cell carries the tag at a time.
+pub fn set_parameters(state: &mut AppState, idx: usize, cell: usize, on: bool) {
+    let Some(nb) = state.tabs.get_mut(idx).and_then(|t| t.notebook.as_deref_mut()) else { return };
+    if cell >= nb.nb.cells.len() {
+        return;
+    }
+    for (i, c) in nb.nb.cells.iter_mut().enumerate() {
+        c.set_parameters(on && i == cell);
+    }
+    nb.dirty = true;
+}
+
+/// The parameters cell and its assignments, for the Run with parameters dialog.
+pub fn parameters_of(state: &AppState, idx: usize) -> Option<(usize, Vec<(String, String)>)> {
+    let nb = state.tabs.get(idx)?.notebook.as_deref()?;
+    let i = nb.nb.parameters_cell()?;
+    Some((i, nb.nb.cells[i].assignments()))
+}
+
+/// Run every code cell with the parameters cell's assignments overridden: the overrides are
+/// appended to that cell's text for this run only (what Fabric's "Run with parameters" and
+/// `notebookutils.notebook.run(path, args)` do), the source stays as written.
+pub fn run_with_parameters(state: &mut AppState, cx: &Ctx, idx: usize, params: Vec<(String, String)>) {
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    let Some(nb) = t.notebook.as_deref_mut() else { return };
+    let Some(pi) = nb.nb.parameters_cell() else {
+        cx.toast(ToastKind::Warning, "No parameters cell: mark one from a cell's run menu (Parameters cell).");
+        return;
+    };
+    if nb.kernel != NotebookKernel::Spark || nb.language_of(pi) != CellLanguage::Python {
+        cx.toast(ToastKind::Warning, "Run with parameters needs a Python parameters cell on the Spark kernel.");
+        return;
+    }
+    let current = nb.nb.cells[pi].assignments();
+    let overrides: Vec<String> = params.iter().filter(|(n, v)| !v.trim().is_empty() && current.iter().find(|(cn, _)| cn == n).map(|(_, cv)| cv != v.trim()).unwrap_or(true)).map(|(n, v)| format!("{n} = {}", v.trim())).collect();
+    let injected = if overrides.is_empty() { None } else { Some(format!("{}\n\n# Cobalt: run with parameters\n{}\n", nb.nb.cells[pi].source.trim_end(), overrides.join("\n"))) };
+    for i in 0..nb.nb.cells.len() {
+        let c = &nb.nb.cells[i];
+        if c.kind != CellKind::Code {
+            continue;
+        }
+        let id = c.id.clone();
+        if !nb.is_queued(&id) {
+            nb.queue.push_back(QueuedCell { id, text: if i == pi { injected.clone() } else { None } });
+        }
+    }
+    let tab = t.id;
+    if !overrides.is_empty() {
+        cx.toast(ToastKind::Info, format!("Running with {} parameter{} overridden", overrides.len(), if overrides.len() == 1 { "" } else { "s" }));
+    }
+    pump(state, cx, tab, false);
+}
+
+/// A cell's reported `%pip install` packages go into the runtime's Python packages and the
+/// Libraries install starts (every installed engine environment gets them).
+pub fn add_pip_packages(state: &mut AppState, cx: &Ctx, idx: usize, cell: usize) {
+    let Some(cs) = state.tabs.get(idx).and_then(|t| t.notebook.as_deref()).and_then(|nb| nb.cells.get(cell)) else { return };
+    if cs.pip_packages.is_empty() {
+        return;
+    }
+    let specs = cs.pip_packages.clone();
+    cx.toast(ToastKind::Info, format!("Adding {} to the runtime's Python packages and installing them (Settings › Notebooks & Spark › Libraries shows progress)", specs.join(", ")));
+    state.settings_patch.push(SettingsPatch::AddPythonPackages(specs));
+    state.install_libraries_requested = true;
+}
+
 /// Run only the selected text of a cell (Ctrl+Shift+Enter); the whole cell when nothing is
 /// selected. The cell's source is left alone; its outputs show the selection's result.
 pub fn run_selection(state: &mut AppState, cx: &Ctx, idx: usize, cell: usize) {
@@ -1222,11 +1289,18 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
         }
     };
     nb.queue.pop_front();
+    // `%pip install` lines are reported, not run in the session: the packages belong to the
+    // runtime environment (Add to runtime under the cell puts them there)
+    let (code, pip_packages) = if lang == CellLanguage::Python { cobalt_notebook::strip_pip_lines(&code) } else { (code, Vec::new()) };
+    let code = if code.trim().is_empty() && !pip_packages.is_empty() { "pass".to_string() } else { code };
     if code.trim().is_empty() {
         return pump(state, cx, tab, false);
     }
     let run_id = cx.session.new_run();
     let mut view = RunView::new(run_id);
+    if !pip_packages.is_empty() {
+        view.messages.push(msg(format!("pip: {} — not installed from the notebook here; Add to runtime (under this cell) puts the package{} in the runtime's Python packages and installs {}.", pip_packages.join(", "), if pip_packages.len() == 1 { "" } else { "s" }, if pip_packages.len() == 1 { "it" } else { "them" }), false));
+    }
     view.script_hash = hash_text(&code);
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(crate::kernel::history_source(&cx.settings.spark), cell.source.clone());
@@ -1241,6 +1315,7 @@ fn pump_spark(state: &mut AppState, cx: &Ctx, idx: usize, cell_idx: usize, overr
     cs.cached = false;
     cs.extra_outputs.clear();
     cs.outputs_collapsed = false;
+    cs.pip_packages = pip_packages;
     let cell_id = cs.id.clone();
     nb.dirty = true;
     let job_description = if want_description { code.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("%%")).map(|l| l.chars().take(80).collect::<String>()) } else { None };

@@ -23,6 +23,14 @@
   answered and how long it took. The LakeSail catalog uses the same client. A request to the
   local-spark-mcp team asks the JVM worker to take this listing from Cobalt
   (`docs/requests/local-spark-mcp-0.8.2-request.md`).
+- **Notebooks: parameters cell, Run with parameters, `%pip` reporting.** A Python cell's run
+  menu has *Parameters cell* (Fabric's `parameters` tag; the badge shows on the cell), and the
+  toolbar's *Run with parameters…* lists its `name = value` lines for editing and runs every
+  cell with the changed values appended to that cell for the run only, the way Fabric's Run
+  with parameters and `notebookutils.notebook.run(path, args)` do. `%pip install` / `!pip
+  install` lines in a cell are no longer sent to the session: the cell reports the packages
+  and *Add to runtime* puts them in the runtime's Python packages and starts the install into
+  every engine environment.
 
 ## 0.9.4 — 2026-10-10
 

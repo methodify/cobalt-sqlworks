@@ -300,6 +300,13 @@ impl Cell {
         }
     }
 
+    /// The `name = value` assignments of a parameters cell, in order: one per line, `value`
+    /// as written (an inline `# comment` dropped). Fabric's "Run with parameters" and
+    /// `notebookutils.notebook.run(path, args)` override exactly these.
+    pub fn assignments(&self) -> Vec<(String, String)> {
+        parse_assignments(&self.source)
+    }
+
     /// The cell's own language override (`metadata.microsoft.language`), if any.
     pub fn language_override(&self) -> Option<CellLanguage> {
         self.metadata.get("microsoft").and_then(|m| m.get("language")).and_then(Value::as_str).map(CellLanguage::from_name)
@@ -502,5 +509,121 @@ mod tests {
     #[test]
     fn ansi_stripped() {
         assert_eq!(strip_ansi("\u{1b}[0;31mNameError\u{1b}[0m: x"), "NameError: x");
+    }
+}
+
+impl Notebook {
+    /// The cell tagged `parameters` (the first one when several carry the tag).
+    pub fn parameters_cell(&self) -> Option<usize> {
+        self.cells.iter().position(|c| c.kind == CellKind::Code && c.is_parameters())
+    }
+}
+
+/// `name = value` lines of Python source (a parameters cell). Lines that are not a simple
+/// assignment (calls, blocks, comments, `a, b = …`, `x += 1`) are left out.
+pub fn parse_assignments(source: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in source.lines() {
+        let l = line.trim();
+        if l.is_empty() || l.starts_with('#') || line.starts_with(' ') || line.starts_with('\t') {
+            continue;
+        }
+        let Some((name, value)) = l.split_once('=') else { continue };
+        let name = name.trim();
+        if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') || name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(true) {
+            continue;
+        }
+        if value.starts_with('=') {
+            continue; // `==`
+        }
+        let value = strip_inline_comment(value).trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        if let Some(e) = out.iter_mut().find(|(n, _)| n == name) {
+            e.1 = value;
+        } else {
+            out.push((name.to_string(), value));
+        }
+    }
+    out
+}
+
+fn strip_inline_comment(v: &str) -> &str {
+    let mut quote: Option<char> = None;
+    let mut prev = ' ';
+    for (i, c) in v.char_indices() {
+        match quote {
+            Some(q) if c == q && prev != '\\' => quote = None,
+            Some(_) => {}
+            None if c == '\'' || c == '"' => quote = Some(c),
+            None if c == '#' => return &v[..i],
+            None => {}
+        }
+        prev = c;
+    }
+    v
+}
+
+/// Split a cell's source into the code to run and the `%pip install` / `!pip install` /
+/// `%conda install` lines it carried (the package specs of those lines). Fabric runs them in
+/// the session; locally the packages belong to the runtime environment, so the host reports them.
+pub fn strip_pip_lines(source: &str) -> (String, Vec<String>) {
+    let mut code = String::new();
+    let mut packages: Vec<String> = Vec::new();
+    for line in source.lines() {
+        let l = line.trim();
+        let rest = l.strip_prefix("%pip").or_else(|| l.strip_prefix("!pip")).or_else(|| l.strip_prefix("%conda")).or_else(|| l.strip_prefix("!conda")).or_else(|| l.strip_prefix("!python -m pip")).or_else(|| l.strip_prefix("!uv pip"));
+        match rest.map(str::trim_start) {
+            Some(r) if r.starts_with("install") => {
+                let args = r["install".len()..].trim();
+                for tok in args.split_whitespace() {
+                    if tok.starts_with('-') || tok == "install" {
+                        continue;
+                    }
+                    let spec = tok.trim_matches(|c| c == '"' || c == '\'').to_string();
+                    if !spec.is_empty() && !packages.contains(&spec) {
+                        packages.push(spec);
+                    }
+                }
+            }
+            _ => {
+                code.push_str(line);
+                code.push('\n');
+            }
+        }
+    }
+    if packages.is_empty() {
+        return (source.to_string(), packages);
+    }
+    (code.trim_end().to_string(), packages)
+}
+
+#[cfg(test)]
+mod parameters_tests {
+    use super::*;
+
+    #[test]
+    fn assignments_of_a_parameters_cell() {
+        let src = "# params\nstart_date = '2026-01-01'  # inclusive\nlimit = 100\nname = \"a # not a comment\"\nx == 3\nif True:\n    y = 2\nfoo(z=1)\nlimit = 200\n";
+        let a = parse_assignments(src);
+        assert_eq!(a, vec![("start_date".to_string(), "'2026-01-01'".to_string()), ("limit".to_string(), "200".to_string()), ("name".to_string(), "\"a # not a comment\"".to_string())]);
+        let mut c = Cell::code(src);
+        assert!(c.assignments().len() == 3);
+        c.set_parameters(true);
+        let nb = Notebook { cells: vec![Cell::markdown("x"), c], ..Default::default() };
+        assert_eq!(nb.parameters_cell(), Some(1));
+    }
+
+    #[test]
+    fn pip_lines_come_out() {
+        let (code, pk) = strip_pip_lines("%pip install polars==1.9 \"dwlib>=0.3\" -q\nimport polars\n!pip install --upgrade pandas\nprint(1)");
+        assert_eq!(pk, vec!["polars==1.9", "dwlib>=0.3", "pandas"]);
+        assert_eq!(code, "import polars\nprint(1)");
+        let (code, pk) = strip_pip_lines("print(1)");
+        assert!(pk.is_empty() && code == "print(1)");
+        let (code, pk) = strip_pip_lines("%pip install x");
+        assert_eq!(pk, vec!["x"]);
+        assert!(code.is_empty());
     }
 }

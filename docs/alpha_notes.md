@@ -495,6 +495,17 @@ them (saveAsTable on a new lakehouse table lands as a Delta write at the table's
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
+**Parameters and `%pip` (0.9.5).** A Python cell's run menu (the caret next to its play button)
+has *Parameters cell*: the cell gets Fabric's `parameters` tag and a badge, and the toolbar's
+*Run with parameters…* lists its `name = value` lines for editing; Run appends the changed
+values to that cell for the run only and runs every cell (Fabric's Run with parameters, and what
+`notebookutils.notebook.run(path, args)` does). A cell with `%pip install x` / `!pip install x`
+lines runs the rest of its code and reports the packages under the cell with *Add to runtime*,
+which puts them in Settings › Notebooks & Spark › Libraries and starts the install into every
+engine environment. The agent: `notebook {action: set_parameters, index, on}`, `{action:
+parameters}`, `{action: run_with_parameters, params: {name: "expr"}}`, `{action: add_pip_packages,
+index}`; cells carry `parameters` and `pip_packages`.
+
 What LakeSail does not do (said in the chip, the pane and the errors): no sandbox — the write
 mode is *read only* (default; writes are refused with "write_mode is 'readonly'") or *write
 through* (INSERT / UPDATE / DELETE / MERGE / INSERT OVERWRITE go to OneLake; DROP TABLE only

@@ -269,6 +269,51 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 }
             }
         }
+        Dialog::RunWithParameters { tab_index, params } => {
+            let mut params = params;
+            let mut choice = 0;
+            let (_, close) = modal(ctx, theme, "run-with-parameters", 460.0, |ui| {
+                ui.heading("Run with parameters");
+                ui.label(RichText::new("The parameters cell's assignments; a changed value is applied for this run only (the cell keeps its text), then every code cell runs.").size(12.0).color(theme.text_muted));
+                ui.add_space(6.0);
+                if params.is_empty() {
+                    ui.label(RichText::new("The parameters cell has no `name = value` lines.").color(theme.warning));
+                } else {
+                    egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                        egui::Grid::new("run-params").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                            for (i, (name, value)) in params.iter_mut().enumerate() {
+                                ui.label(RichText::new(name.as_str()).monospace());
+                                let r = ui.add(egui::TextEdit::singleline(value).desired_width(300.0).font(egui::TextStyle::Monospace));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("parameter {name}")));
+                                if i == 0 {
+                                    r.request_focus();
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    ui.label(RichText::new("Values are Python expressions, as in the cell: '2026-01-01', 100, True.").size(11.0).color(theme.text_faint));
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if mnemonic_button(ui, theme, "&Run", ButtonStyle::Primary, !params.is_empty(), Some(Key::Enter)) {
+                        choice = 1;
+                    }
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                        choice = 2;
+                    }
+                });
+            });
+            match choice {
+                1 => crate::notebook::run_with_parameters(f.state, f.cx, tab_index, params),
+                2 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::RunWithParameters { tab_index, params };
+                    }
+                }
+            }
+        }
         Dialog::ConfirmDeleteProfile { profile } => {
             let name = f.state.library.profile(profile).map(|p| p.display_name()).unwrap_or_default();
             let (choice, close) = modal(ctx, theme, "del-profile", 380.0, |ui| {
