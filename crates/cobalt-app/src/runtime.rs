@@ -37,7 +37,9 @@ impl RuntimeUi {
         }
         let d = dirs(settings, paths);
         let libs = libraries(settings);
-        let py = cobalt_runtime::libraries::python_status(&d.env_dir(&settings.spark.profile), &libs.python);
+        // the selected engine's environment: packages go into every installed one, so either answers
+        let env_dir = if engine(settings).is_sail() { d.sail_env_dir() } else { d.env_dir(&settings.spark.profile) };
+        let py = cobalt_runtime::libraries::python_status(&env_dir, &libs.python);
         let mut jars: Vec<(String, bool)> = libs.jars.iter().map(|j| (j.to_string_lossy().to_string(), j.is_file())).collect();
         for m in &libs.maven {
             let ok = cobalt_runtime::libraries::MavenCoord::parse(m).map(|c| cobalt_runtime::libraries::maven_jar_path(&d, &c).is_file()).unwrap_or(false);
@@ -184,6 +186,7 @@ fn spawn_libraries_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths
     }
     let dirs = dirs(settings, paths);
     let profile = settings.spark.profile.clone();
+    let sail = engine(settings).is_sail();
     let libs = libraries(settings);
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = crossbeam_channel::unbounded::<JobEvent>();
@@ -200,10 +203,34 @@ fn spawn_libraries_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths
                 ctx2.request_repaint();
             };
             let cx = install::Context { dirs: &dirs, manifest: &m, progress: &progress, cancel: &c2 };
-            let r = cobalt_runtime::libraries::install(&cx, &profile, &libs).map(|summary| {
+            // every provisioned engine environment gets the packages, so switching engines keeps them
+            let mut targets: Vec<String> = Vec::new();
+            if dirs.env_python(&profile).is_file() {
+                targets.push(profile.clone());
+            }
+            if dirs.sail_env_python().is_file() {
+                targets.push(cobalt_runtime::SAIL_ENV.to_string());
+            }
+            let wanted = if sail { cobalt_runtime::SAIL_ENV.to_string() } else { profile.clone() };
+            let r = if !targets.contains(&wanted) {
+                Err(cobalt_runtime::RuntimeError::Manifest(format!("the {} environment is not installed — install it first (Settings › Spark runtime)", if sail { "LakeSail" } else { "Spark" })))
+            } else {
+                let mut summaries = Vec::new();
+                let mut outcome = Ok(());
+                for t in &targets {
+                    match cobalt_runtime::libraries::install(&cx, t, &libs) {
+                        Ok(summary) => summaries.push(format!("{}: {summary}", if t == cobalt_runtime::SAIL_ENV { "LakeSail" } else { t.as_str() })),
+                        Err(e) => {
+                            outcome = Err(e);
+                            break;
+                        }
+                    }
+                }
+                outcome.map(|_| summaries.join(" · "))
+            }
+            .map(|summary| {
                 let mut rec = Installed::load(&dirs);
                 rec.last_error = None;
-                rec.spark_version = rec.spark_version.clone();
                 let _ = rec.save(&dirs);
                 (rec, summary)
             });

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Settings › Libraries installs Python packages into every installed engine environment (Local Spark and LakeSail), so a wheel added for one engine is importable on the other; the status column reads the selected engine's environment. Before, LakeSail sessions never saw the packages.
 - A notebook cell that starts with `%%sql` (or `%%pyspark`) runs as that language whatever the
   cell's language dropdown says, as on Fabric; before, a cell marked PySpark sent the magic to
   IPython ("Cell magic `%%sql` not found").

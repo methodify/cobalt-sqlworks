@@ -430,7 +430,7 @@ fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {
 
 /// Settings → Notebooks & Spark → Libraries: Python packages and Java libraries for the runtime.
 fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut RuntimeUi, _paths_info: &str, action: &mut Option<SettingsAction>) {
-    ui.label(RichText::new("Python packages are installed into the runtime's environment with uv and are importable in Spark sessions (restart a running session). Jar files and Maven coordinates are handed to each Spark session as it starts: jars join spark.jars, Maven packages are resolved by Ivy with their dependencies (the first start with a new package waits on the download).").size(12.0).color(theme.text_muted));
+    ui.label(RichText::new("Python packages are installed with uv into every installed engine environment (Local Spark and LakeSail) and are importable in Spark sessions (restart a running session). Jar files and Maven coordinates are handed to each Spark session as it starts: jars join spark.jars, Maven packages are resolved by Ivy with their dependencies (the first start with a new package waits on the download).").size(12.0).color(theme.text_muted));
     ui.add_space(4.0);
     let (py_status, jar_status) = {
         // status comes from the saved settings' runtime folder; the lists edited here are the draft
