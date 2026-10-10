@@ -159,12 +159,17 @@ heuristic as the completion catalog) on first touch and rewrites every column's 
 so nested, decimal and timestamp types reach Sail exactly. On the Cobalt side, nested Arrow
 columns are rendered to text with Arrow's own formatter instead of `cast` (which has no
 struct → text), which fixed the same table on the JVM engine. The Sail environment can also
-carry a **Fabric package roster** (`manifest.json` `sail.fabric_packages["fabric-2.0"]`, the
-Python packages of Fabric Runtime 2.0 at Fabric's versions as listed in Microsoft's
-`synapse-spark-runtime` repository, minus Fabric-only and GPU/Linux-only wheels; setting
-`spark.sail_profile`); the install tries the roster as one resolution and falls back to one
-package at a time, naming what would not install. local-spark-mcp has no package manifest to
-draw from (its profiles pin only pyspark and delta-spark); an upstream ask could add one.
+carry a **Fabric package roster** (the Python packages of a Fabric runtime at Fabric's versions
+as listed in Microsoft's `synapse-spark-runtime` repository, minus Fabric-only and GPU/Linux-only
+wheels; setting `spark.sail_profile`); the install tries the roster as one resolution and falls
+back to one package at a time, naming what would not install. Cobalt first carried its own
+34-package list for fabric-2.0 and sent local-spark-mcp an advisory
+(`docs/requests/local-spark-mcp-fabric-packages.md`); local-spark-mcp 0.8.0 answered with a
+curated roster per profile in its `profiles.json` (56 for fabric-2.0, 57 for fabric-1.3, with the
+source file and commit and an exclusion list), so since then the rosters come from the copy of
+that file embedded in `cobalt-runtime` (`Manifest::rosters()`, which also supplies the profile
+pins that `manifest.json` used to mirror by hand) and the same list serves both engines: the JVM
+profile's environment gets it through `spark.profile_packages`.
 
 **Tokens.** `onelake_tokens::TokenServer` accepts the secret in `x-ms-partner-token` as well as
 `X-Token-Secret` (object_store's Fabric provider sends the former) and ignores the

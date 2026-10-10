@@ -600,7 +600,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             if r.on_hover_text("Only what LakeSail itself needs (pysail, the PySpark Connect client, IPython, pandas, pyarrow) plus your Libraries.").clicked() {
                 draft.spark.sail_profile = "none".into();
             }
-            for (name, roster) in &manifest.sail.fabric_packages {
+            for (name, roster) in &manifest.rosters() {
                 let r = ui.selectable_label(draft.spark.sail_profile == *name, format!("{name} ({} packages)", roster.packages.len()));
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sail profile {name}")));
                 if r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update LakeSail\"; packages without a wheel for this machine are skipped and listed.", roster.note, roster.source)).clicked() {
@@ -623,6 +623,15 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             ui.label(RichText::new(p.describe()).size(11.0).color(theme.text_muted));
         }
     });
+    if let Some(roster) = manifest.roster(&draft.spark.profile) {
+        ui.horizontal(|ui| {
+            ui.label("Fabric packages");
+            let r = ui.checkbox(&mut draft.spark.profile_packages, format!("{} ({} packages at Fabric Runtime {}'s versions)", roster.profile, roster.packages.len(), roster.fabric_runtime));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "profile packages"));
+            r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update\" and by \"Install Python packages\"; packages without a wheel for this machine are skipped and listed. A few hundred MB.", roster.note, roster.source));
+            ui.label(RichText::new("pandas, scikit-learn, plotly, the azure-* clients… so notebooks written for Fabric import what they expect.").size(11.0).color(theme.text_muted));
+        });
+    }
     ui.horizontal(|ui| {
         ui.label("JDK");
         let vendor = if draft.spark.jdk_vendor.eq_ignore_ascii_case("temurin") { JdkVendor::Temurin } else { JdkVendor::Microsoft };
@@ -699,7 +708,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 let msg = if ready && st.warm && st.engine.is_sail() { format!("Ready — Sail {} verified (PySpark Connect client {})", st.package_version.clone().unwrap_or_default(), st.spark_version.clone().unwrap_or_default()) } else if ready && st.warm { format!("Ready — Spark {} verified", st.spark_version.clone().unwrap_or_default()) } else if ready { "Installed; run the smoke test to verify".to_string() } else { "Not installed".to_string() };
                 ui.label(RichText::new(msg).strong().color(if ready { theme.success } else { theme.text_muted }));
                 ui.label(RichText::new(format!("· {} on disk", cobalt_runtime::fmt_bytes(st.disk_bytes))).size(11.0).color(theme.text_faint));
-                if st.engine != cobalt_runtime::Engine::parse(&draft.spark.engine) || (!sail && st.profile != draft.spark.profile) || (sail && st.roster.as_ref().map(|r| r.profile.clone()).unwrap_or_else(|| "none".into()) != draft.spark.sail_profile) {
+                if st.engine != cobalt_runtime::Engine::parse(&draft.spark.engine) || (!sail && (st.profile != draft.spark.profile || st.roster.is_some() != draft.spark.profile_packages)) || (sail && st.roster.as_ref().map(|r| r.profile.clone()).unwrap_or_else(|| "none".into()) != draft.spark.sail_profile) {
                     ui.label(RichText::new(format!("(status is for {}; save to re-check)", if st.engine.is_sail() { "LakeSail".to_string() } else { st.profile.clone() })).size(11.0).color(theme.warning));
                 }
             });
@@ -707,14 +716,23 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 ui.label(RichText::new(format!("Last run failed: {e}")).size(12.0).color(theme.error));
             }
             if let Some(r) = &st.roster {
-                let ok = r.missing.is_empty();
-                let text = if ok { format!("Fabric packages ({}): all {} installed", r.profile, r.total) } else { format!("Fabric packages ({}): {} of {} installed — install to add the rest", r.profile, r.installed, r.total) };
+                let ok = r.complete();
+                let text = if ok {
+                    format!("Fabric packages ({}): all {} at Fabric's version", r.profile, r.total)
+                } else if r.missing.is_empty() {
+                    format!("Fabric packages ({}): {} of {} at Fabric's version", r.profile, r.installed, r.total)
+                } else {
+                    format!("Fabric packages ({}): {} of {} at Fabric's version, {} missing — install to add the rest", r.profile, r.installed, r.total, r.missing.len())
+                };
                 ui.label(RichText::new(text).size(12.0).color(if ok { theme.success } else { theme.warning }));
+                if !r.mismatched.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(format!("  other version: {}", r.mismatched.join(", "))).size(11.0).color(theme.text_muted)).wrap());
+                }
                 if !r.failed.is_empty() {
                     ui.add(egui::Label::new(RichText::new(format!("  not installable here: {}", r.failed.join(", "))).size(11.0).color(theme.text_muted)).wrap());
                 }
-            } else if st.engine.is_sail() && draft.spark.sail_profile != "none" {
-                ui.label(RichText::new(format!("Fabric packages ({}): not installed yet — Install adds them", draft.spark.sail_profile)).size(12.0).color(theme.warning));
+            } else if (st.engine.is_sail() && draft.spark.sail_profile != "none") || (!st.engine.is_sail() && draft.spark.profile_packages) {
+                ui.label(RichText::new(format!("Fabric packages ({}): not installed yet — Install adds them", if sail { draft.spark.sail_profile.clone() } else { draft.spark.profile.clone() })).size(12.0).color(theme.warning));
             }
             if let Some(h) = &st.health {
                 let text = if h.ok { format!("Healthcheck OK{}", h.protocol_version.map(|v| format!(" · worker protocol v{v}")).unwrap_or_default()) } else { format!("Healthcheck: {} problem{}", h.problems.len(), if h.problems.len() == 1 { "" } else { "s" }) };
@@ -741,7 +759,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }),
                     format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }),
                     format!("LakeSail: pysail {} + pyspark-client {} {}", manifest.sail.version, manifest.sail.pyspark_client, if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
-                    match manifest.sail.fabric_packages.get(&draft.spark.sail_profile) {
+                    match manifest.roster(&draft.spark.sail_profile) {
                         Some(r) => format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", draft.spark.sail_profile, r.packages.len()),
                         None => "Fabric packages: none".to_string(),
                     },
@@ -760,6 +778,11 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     (_, true) => format!("Spark package: local-spark-mcp {pinned} reinstalled over itself (fast, cached)"),
                     _ => format!("Spark package: local-spark-mcp {pinned} + pyspark/delta-spark installed"),
                 });
+                if draft.spark.profile_packages {
+                    if let Some(r) = manifest.roster(&draft.spark.profile) {
+                        lines.push(format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", r.profile, r.packages.len()));
+                    }
+                }
                 lines.push(format!("JDK: {}", if kept(&st.jdk) { "kept" } else { "downloaded" }));
                 lines.push("then one Spark start to cache its jars (~20 s)".into());
                 let label = if pkg_update && kept(&st.uv) && kept(&st.python) && kept(&st.jdk) { format!("Update Spark to {pinned}") } else if ready { "Reinstall / update".to_string() } else { "Install for me".to_string() };

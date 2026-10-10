@@ -126,6 +126,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
     let dirs = dirs(settings, paths);
     let profile = settings.spark.profile.clone();
     let sail_profile = settings.spark.sail_profile.clone();
+    let packages = settings.spark.profile_packages;
     let engine = engine(settings);
     // another engine's status must not stand in while this one is inspected
     if ui.status.as_ref().map(|s| s.engine != engine).unwrap_or(false) {
@@ -140,7 +141,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
         .name("runtime-status".into())
         .spawn(move || {
             let m = Manifest::embedded();
-            let st = if engine.is_sail() { RuntimeStatus::inspect_sail(&dirs, &m, &sail_profile) } else { RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref()) };
+            let st = if engine.is_sail() { RuntimeStatus::inspect_sail(&dirs, &m, &sail_profile) } else { RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref(), packages) };
             let _ = tx.send(st);
             ctx.request_repaint();
         })
@@ -155,6 +156,7 @@ fn spawn_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &e
     let plan = Plan {
         engine: engine(settings),
         sail_profile: settings.spark.sail_profile.clone(),
+        profile_packages: settings.spark.profile_packages,
         profile: settings.spark.profile.clone(),
         jdk_vendor: jdk_vendor(settings),
         adopt_jdk: settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from),
@@ -194,6 +196,9 @@ fn spawn_libraries_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths
     let profile = settings.spark.profile.clone();
     let sail = engine(settings).is_sail();
     let libs = libraries(settings);
+    // the Fabric package rosters each environment is set to carry go in with the libraries
+    let sail_roster = settings.spark.sail_profile.clone();
+    let profile_roster = settings.spark.profile_packages;
     let cancel = Arc::new(AtomicBool::new(false));
     let (tx, rx) = crossbeam_channel::unbounded::<JobEvent>();
     let ctx = egui.clone();
@@ -224,8 +229,14 @@ fn spawn_libraries_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths
                 let mut summaries = Vec::new();
                 let mut outcome = Ok(());
                 for t in &targets {
-                    match cobalt_runtime::libraries::install(&cx, t, &libs) {
-                        Ok(summary) => summaries.push(format!("{}: {summary}", if t == cobalt_runtime::SAIL_ENV { "LakeSail" } else { t.as_str() })),
+                    let is_sail = t == cobalt_runtime::SAIL_ENV;
+                    let roster = if is_sail { (sail_roster != "none").then(|| sail_roster.clone()) } else { profile_roster.then(|| t.clone()) };
+                    let r = cobalt_runtime::libraries::install(&cx, t, &libs).and_then(|summary| match roster {
+                        Some(name) => install::install_roster(&cx, t, &name).map(|s| format!("{summary}; {s}")),
+                        None => Ok(summary),
+                    });
+                    match r {
+                        Ok(summary) => summaries.push(format!("{}: {summary}", if is_sail { "LakeSail" } else { t.as_str() })),
                         Err(e) => {
                             outcome = Err(e);
                             break;

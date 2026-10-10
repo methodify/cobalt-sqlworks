@@ -1,11 +1,16 @@
-//! Version pins. Mirrors `profiles.py` in local-spark-mcp until that project ships a
-//! machine-readable manifest (see `docs/requests/local-spark-mcp.md`).
+//! Version pins. Cobalt's own (`manifest.json`: the local-spark-mcp release, Sail, uv, the JDKs)
+//! plus local-spark-mcp's machine-readable manifest (`local-spark-mcp-profiles.json`, a verbatim
+//! copy of `profiles.json` at the pinned tag): the runtime profiles and, since 0.8.0, each
+//! profile's Fabric Python package roster. Bumping the pin means copying that file again; a test
+//! keeps the two versions in step.
 
 use crate::{Result, RuntimeError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const EMBEDDED: &str = include_str!("../manifest.json");
+/// `profiles.json` of the pinned local-spark-mcp release.
+pub const LSM_PROFILES: &str = include_str!("../local-spark-mcp-profiles.json");
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct Manifest {
@@ -15,9 +20,35 @@ pub struct Manifest {
     #[serde(default)]
     pub sail: SailPins,
     pub default_profile: String,
+    /// The runtime profiles, from local-spark-mcp's manifest (`manifest.json` may override).
+    #[serde(default)]
     pub profiles: BTreeMap<String, Profile>,
+    /// Packages of Fabric's environment files that no roster carries, with the reason
+    /// (pyspark, Fabric-only wheels, the torch stack…), from local-spark-mcp's manifest.
+    #[serde(default)]
+    pub python_packages_excluded: BTreeMap<String, String>,
     pub uv: UvPins,
     pub jdk: JdkPins,
+}
+
+/// The shape of local-spark-mcp's `profiles.json`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct LsmManifest {
+    pub schema: u32,
+    pub package: String,
+    pub version: String,
+    #[serde(default)]
+    pub protocol_version: Option<u64>,
+    pub default_profile: String,
+    #[serde(default)]
+    pub python_packages_excluded: BTreeMap<String, String>,
+    pub profiles: BTreeMap<String, Profile>,
+}
+
+impl LsmManifest {
+    pub fn embedded() -> Self {
+        serde_json::from_str(LSM_PROFILES).expect("embedded local-spark-mcp profiles parse")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -75,22 +106,38 @@ pub struct SailPins {
     pub python_windows: String,
     /// Other packages of the environment (IPython for cells, pandas/pyarrow for results).
     pub packages: Vec<String>,
-    /// Optional package rosters mirroring a Fabric runtime's Python environment, by profile name.
-    pub fabric_packages: BTreeMap<String, Roster>,
 }
 
-/// A Fabric runtime's Python packages, as far as they install on this platform from PyPI.
+/// A Fabric runtime's notebook-facing Python packages at Fabric's versions, as pip
+/// requirements (`name==version`), with where the list came from. Built from a profile's
+/// `python_packages`; installed opt-in into either engine's environment.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Roster {
+    /// The profile the roster belongs to (`fabric-2.0`).
+    pub profile: String,
+    /// The Fabric runtime version (`2.0`).
+    pub fabric_runtime: String,
+    /// URL of the environment file the versions were taken from.
     pub source: String,
     pub note: String,
     pub packages: Vec<String>,
 }
 
+/// Where a profile's package roster was taken from (`python_packages_source`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PackageSource {
+    pub repo: String,
+    pub commit: String,
+    pub date: String,
+    pub file: String,
+    pub url: String,
+}
+
 impl Default for SailPins {
     fn default() -> Self {
-        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()], fabric_packages: BTreeMap::new() }
+        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()] }
     }
 }
 
@@ -127,9 +174,36 @@ pub struct Profile {
     pub scala: String,
     pub hadoop_azure: String,
     pub spark_major: u32,
+    /// Fabric's notebook-facing Python packages at the runtime's versions (name → version),
+    /// curated by local-spark-mcp from Microsoft's `synapse-spark-runtime` environment file.
+    #[serde(default)]
+    pub python_packages: BTreeMap<String, String>,
+    #[serde(default)]
+    pub python_packages_source: Option<PackageSource>,
 }
 
 impl Profile {
+    /// The profile's Fabric package roster as pip requirements, or None when the manifest has
+    /// no packages for it.
+    pub fn roster(&self, name: &str) -> Option<Roster> {
+        if self.python_packages.is_empty() {
+            return None;
+        }
+        let src = self.python_packages_source.clone().unwrap_or_default();
+        let commit = src.commit.chars().take(7).collect::<String>();
+        Some(Roster {
+            profile: name.to_string(),
+            fabric_runtime: self.fabric_runtime.clone(),
+            source: if src.url.is_empty() { src.repo.clone() } else { src.url.clone() },
+            note: format!(
+                "The Python packages Fabric Runtime {} ships that a notebook can import, at Fabric's versions, as listed in Microsoft's synapse-spark-runtime repository ({}{}). Left out: pyspark and delta-spark (the engine's own), notebookutils, synapseml and semantic-link (Fabric-only wheels), the torch stack and packages with no PyPI release.",
+                self.fabric_runtime,
+                if src.file.is_empty() { "environment file".to_string() } else { src.file.clone() },
+                if commit.is_empty() { String::new() } else { format!(", commit {commit}, {}", src.date) }
+            ),
+            packages: self.python_packages.iter().map(|(n, v)| format!("{n}=={v}")).collect(),
+        })
+    }
     /// The Python version to install for this platform.
     pub fn python_for(&self, platform: Platform) -> &str {
         if platform.is_windows() {
@@ -246,12 +320,32 @@ impl Platform {
 }
 
 impl Manifest {
+    /// Cobalt's manifest with local-spark-mcp's profiles folded in: the profiles and the
+    /// exclusion list come from the package's own manifest unless `manifest.json` carries its own.
     pub fn embedded() -> Self {
-        serde_json::from_str(EMBEDDED).expect("embedded manifest parses")
+        let mut m: Manifest = serde_json::from_str(EMBEDDED).expect("embedded manifest parses");
+        let lsm = LsmManifest::embedded();
+        if m.profiles.is_empty() {
+            m.profiles = lsm.profiles;
+        }
+        if m.python_packages_excluded.is_empty() {
+            m.python_packages_excluded = lsm.python_packages_excluded;
+        }
+        m
     }
 
     pub fn profile(&self, name: &str) -> Result<&Profile> {
         self.profiles.get(name).ok_or_else(|| RuntimeError::Manifest(format!("unknown runtime profile {name:?}; known: {}", self.profiles.keys().cloned().collect::<Vec<_>>().join(", "))))
+    }
+
+    /// The Fabric package rosters, by profile name (only profiles that carry packages).
+    pub fn rosters(&self) -> BTreeMap<String, Roster> {
+        self.profiles.iter().filter_map(|(n, p)| p.roster(n).map(|r| (n.clone(), r))).collect()
+    }
+
+    /// The Fabric package roster of a profile (`none` or an unknown name → None).
+    pub fn roster(&self, name: &str) -> Option<Roster> {
+        self.profiles.get(name).and_then(|p| p.roster(name))
     }
 
     pub fn uv_asset(&self, platform: Platform) -> Result<&Asset> {
@@ -309,6 +403,34 @@ mod tests {
         }
         assert!(m.requirement(p).starts_with("local-spark-mcp[fabric-2.0] @ https://"));
         assert!(m.temurin_url(21, Platform::WindowsX64).contains("/21/"));
+    }
+
+    #[test]
+    fn local_spark_mcp_profiles_follow_the_pin() {
+        let m = Manifest::embedded();
+        let lsm = LsmManifest::embedded();
+        // the copied profiles.json is the pinned release's
+        assert_eq!(lsm.version, m.local_spark_mcp.version, "copy profiles.json from the pinned local-spark-mcp tag");
+        assert!(m.local_spark_mcp.source.contains(&format!("v{}", m.local_spark_mcp.version)));
+        assert_eq!(lsm.protocol_version, Some(2));
+        assert!(m.profiles.contains_key("fabric-1.3") && m.profiles.contains_key("fabric-2.0"));
+        // every profile carries a roster at Fabric's versions, with its source
+        let rosters = m.rosters();
+        assert_eq!(rosters.len(), 2);
+        let r = m.roster("fabric-2.0").unwrap();
+        assert!(r.packages.len() >= 50, "{}", r.packages.len());
+        assert!(r.packages.contains(&"pandas==2.3.3".to_string()));
+        assert!(r.packages.iter().all(|p| p.contains("==")));
+        assert!(r.source.starts_with("https://github.com/microsoft/synapse-spark-runtime/blob/"));
+        assert!(r.note.contains("Fabric Runtime 2.0"));
+        assert_eq!(r.fabric_runtime, "2.0");
+        assert!(m.roster("fabric-1.3").unwrap().packages.contains(&"pandas==2.1.4".to_string()));
+        assert!(m.roster("none").is_none());
+        // the engine's own pins never come through the roster
+        for r in rosters.values() {
+            assert!(!r.packages.iter().any(|p| p.starts_with("pyspark==") || p.starts_with("delta-spark==") || p.starts_with("notebookutils")));
+        }
+        assert!(m.python_packages_excluded.contains_key("pyspark"));
     }
 
     #[test]

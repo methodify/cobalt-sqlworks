@@ -29,7 +29,7 @@ fn main() {
     };
     let dirs = RuntimeDirs::new(root);
     let manifest = Manifest::embedded();
-    let status = RuntimeStatus::inspect(&dirs, &manifest, &profile, None);
+    let status = RuntimeStatus::inspect(&dirs, &manifest, &profile, None, false);
     println!("before: uv={:?}\n python={:?}\n env={:?}\n jdk={:?}\n candidates={:?}", status.uv, status.python, status.env, status.jdk, status.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>());
     let cancel = AtomicBool::new(false);
     let started = std::time::Instant::now();
@@ -43,7 +43,7 @@ fn main() {
         Progress::Log(s) => println!("[{:>5.0}s] {s}", started.elapsed().as_secs_f32()),
     };
     let cx = Context { dirs: &dirs, manifest: &manifest, progress: &progress, cancel: &cancel };
-    let plan = Plan { engine: cobalt_runtime::Engine::PySpark, sail_profile: "none".into(), profile: profile.clone(), jdk_vendor: vendor, adopt_jdk: None, steps, driver_memory: "2g".into() };
+    let plan = Plan { engine: cobalt_runtime::Engine::PySpark, sail_profile: "none".into(), profile_packages: false, profile: profile.clone(), jdk_vendor: vendor, adopt_jdk: None, steps, driver_memory: "2g".into() };
     match provision(&cx, &plan) {
         Ok(rec) => println!("OK: {}", serde_json::to_string_pretty(&rec).unwrap()),
         Err(e) => {
@@ -51,6 +51,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let status = RuntimeStatus::inspect(&dirs, &manifest, &profile, None);
+    let status = RuntimeStatus::inspect(&dirs, &manifest, &profile, None, false);
     println!("after: ready={} warm={} spark={:?} disk={}", status.is_ready(), status.warm, status.spark_version, cobalt_runtime::fmt_bytes(status.disk_bytes));
 }

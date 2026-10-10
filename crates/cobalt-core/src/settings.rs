@@ -313,6 +313,9 @@ pub struct SparkSettings {
     pub sail_profile: String,
     /// Runtime profile: `fabric-2.0` or `fabric-1.3`.
     pub profile: String,
+    /// Local Spark only: also install the profile's Fabric Python package roster (pandas,
+    /// scikit-learn, plotly, the azure-* clients… at Fabric's versions) into its environment.
+    pub profile_packages: bool,
     /// `microsoft` (Microsoft Build of OpenJDK) or `temurin`.
     pub jdk_vendor: String,
     /// A JDK home to use instead of a managed one ("Use what I have").
@@ -340,7 +343,7 @@ pub struct SparkSettings {
 }
 impl Default for SparkSettings {
     fn default() -> Self {
-        Self { engine: "pyspark".into(), sail_profile: "none".into(), profile: "fabric-2.0".into(), jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new(), lifecycle: "idle".into(), idle_minutes: 60, early_start: "notebook_open".into(), files_mode: "lazy".into() }
+        Self { engine: "pyspark".into(), sail_profile: "none".into(), profile: "fabric-2.0".into(), profile_packages: false, jdk_vendor: "microsoft".into(), java_home: None, driver_memory: "4g".into(), runtime_dir: None, python_packages: Vec::new(), jars: Vec::new(), maven: Vec::new(), lifecycle: "idle".into(), idle_minutes: 60, early_start: "notebook_open".into(), files_mode: "lazy".into() }
     }
 }
 

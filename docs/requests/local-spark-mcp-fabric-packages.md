@@ -1,5 +1,9 @@
 # Advisory for local-spark-mcp: carry Fabric's Python packages in the runtime profiles (2026-10-09)
 
+*Answered the same day by local-spark-mcp 0.8.0 (all four asks; see
+`local-spark-mcp-0.8.0-reply.md`). Cobalt reads the rosters from the package's `profiles.json`
+since 0.9.4 and no longer carries the list in section 3.*
+
 *From the Cobalt SQL Works side. Cobalt now installs a roster of Fabric Runtime 2.0's Python
 packages into its LakeSail environment, so notebooks written for Fabric import what they expect.
 The JVM engine (local-spark-mcp) would benefit from the same, and the profile is the natural

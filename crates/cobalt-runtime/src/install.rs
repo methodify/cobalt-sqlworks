@@ -53,6 +53,8 @@ pub struct Plan {
     pub engine: Engine,
     /// LakeSail: the Fabric package roster to install (`none` for none).
     pub sail_profile: String,
+    /// Local Spark: install the profile's own Fabric package roster into its environment.
+    pub profile_packages: bool,
     pub profile: String,
     pub jdk_vendor: JdkVendor,
     /// Adopt this JDK instead of downloading one.
@@ -519,18 +521,15 @@ fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> 
     Ok(env_dir)
 }
 
-/// The Fabric package roster into the LakeSail environment: all at once when the resolver
-/// agrees, otherwise one package at a time so the ones with no wheel for this platform (or a
-/// conflict) are skipped and named, never fatal.
-fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Installed) -> Result<()> {
-    let Some(roster) = cx.manifest.sail.fabric_packages.get(roster_name) else {
-        rec.sail_roster = None;
-        rec.sail_roster_failed.clear();
-        return Ok(());
-    };
-    (cx.progress)(Progress::Step { step: Step::Libraries, label: format!("Installing the {roster_name} package roster ({} packages, Fabric's versions)", roster.packages.len()) });
+/// A Fabric package roster into an engine's environment: all at once when the resolver agrees
+/// (one resolution, consistent versions), otherwise one package at a time so the ones with no
+/// wheel for this platform (or a conflict) are skipped and named, never fatal. Returns the
+/// requirements that did not install. The same procedure as local-spark-mcp's own
+/// `fabric_packages install`, run by Cobalt so both engines' environments get it with the live log.
+fn step_roster(cx: &Context, uv: &Path, env_python: &Path, roster: &crate::manifest::Roster) -> Result<Vec<String>> {
+    (cx.progress)(Progress::Step { step: Step::Libraries, label: format!("Installing the {} package roster ({} packages, Fabric Runtime {}'s versions)", roster.profile, roster.packages.len(), roster.fabric_runtime) });
     let env = uv_env(cx.dirs);
-    let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
+    let py = env_python.to_string_lossy().to_string();
     let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py.clone()];
     args.extend(roster.packages.iter().cloned());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -549,9 +548,60 @@ fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Inst
         }
     }
     let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
-    cx.log(format!("roster {roster_name}: {} of {} packages installed", roster.packages.len() - failed.len(), roster.packages.len()));
+    cx.log(format!("roster {}: {} of {} packages installed{}", roster.profile, roster.packages.len() - failed.len(), roster.packages.len(), if failed.is_empty() { String::new() } else { format!(" · not installable here: {}", failed.join(", ")) }));
+    Ok(failed)
+}
+
+/// The roster chosen for the LakeSail environment (`none` clears the record).
+fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Installed) -> Result<()> {
+    let Some(roster) = cx.manifest.roster(roster_name) else {
+        rec.sail_roster = None;
+        rec.sail_roster_failed.clear();
+        return Ok(());
+    };
+    let failed = step_roster(cx, uv, &cx.dirs.sail_env_python(), &roster)?;
     rec.sail_roster = Some(roster_name.to_string());
     rec.sail_roster_failed = failed;
+    Ok(())
+}
+
+/// The roster into an installed environment outside a provisioning run (the "Install Python
+/// packages" button): `env` is a profile name or [`crate::SAIL_ENV`], `roster_name` the profile
+/// whose packages go in. Records the outcome like the install steps do; returns a summary line.
+pub fn install_roster(cx: &Context, env: &str, roster_name: &str) -> Result<String> {
+    let Some(roster) = cx.manifest.roster(roster_name) else {
+        return Ok("no Fabric package roster".into());
+    };
+    let uv = detect::find_uv(&cx.dirs.uv_exe(), &cx.manifest.uv.min_adopt).map(|c| c.exe).ok_or_else(|| RuntimeError::Manifest("uv is not installed — install the runtime first".into()))?;
+    let sail = env == crate::SAIL_ENV;
+    let py = if sail { cx.dirs.sail_env_python() } else { cx.dirs.env_python(env) };
+    if !py.is_file() {
+        return Err(RuntimeError::Manifest(format!("the {env} environment is not installed — install the runtime first")));
+    }
+    let failed = step_roster(cx, &uv, &py, &roster)?;
+    let mut rec = Installed::load(cx.dirs);
+    if sail {
+        rec.sail_roster = Some(roster_name.to_string());
+        rec.sail_roster_failed = failed.clone();
+    } else {
+        rec.profile_packages = Some(roster_name.to_string());
+        rec.profile_packages_failed = failed.clone();
+    }
+    rec.save(cx.dirs)?;
+    Ok(format!("Fabric packages ({roster_name}): {} of {} installed{}", roster.packages.len() - failed.len(), roster.packages.len(), if failed.is_empty() { String::new() } else { format!(", not installable here: {}", failed.join(", ")) }))
+}
+
+/// The profile's own roster into the Local Spark environment, when the plan asks for it.
+fn step_profile_packages(cx: &Context, uv: &Path, plan: &Plan, rec: &mut Installed) -> Result<()> {
+    let roster = if plan.profile_packages { cx.manifest.roster(&plan.profile) } else { None };
+    let Some(roster) = roster else {
+        rec.profile_packages = None;
+        rec.profile_packages_failed.clear();
+        return Ok(());
+    };
+    let failed = step_roster(cx, uv, &cx.dirs.env_python(&plan.profile), &roster)?;
+    rec.profile_packages = Some(plan.profile.clone());
+    rec.profile_packages_failed = failed;
     Ok(())
 }
 
@@ -644,6 +694,8 @@ pub fn remove_sail(dirs: &RuntimeDirs) -> std::io::Result<()> {
     rec.sail_pyspark = None;
     rec.sail_warmed = false;
     rec.sail_spark_version = None;
+    rec.sail_roster = None;
+    rec.sail_roster_failed.clear();
     let _ = rec.save(dirs);
     Ok(())
 }
@@ -701,6 +753,10 @@ pub fn provision(cx: &Context, plan: &Plan) -> Result<Installed> {
         rec.save(cx.dirs)?;
         if plan.steps.contains(&Step::Env) {
             step_env(cx, &uv, &plan.profile, &profile, &python, &mut rec)?;
+            rec.save(cx.dirs)?;
+        }
+        if plan.steps.contains(&Step::Env) || plan.steps.contains(&Step::Libraries) {
+            step_profile_packages(cx, &uv, plan, &mut rec)?;
             rec.save(cx.dirs)?;
         }
         let jdk = if plan.steps.contains(&Step::Jdk) || rec.jdk_home.is_none() {

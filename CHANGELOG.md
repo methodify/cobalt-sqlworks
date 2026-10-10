@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.4 — unreleased
+
+- **One Fabric package roster for both engines, from local-spark-mcp 0.8.0.** The
+  local-spark-mcp team answered Cobalt's advisory with 0.8.0: every runtime profile now carries
+  a curated roster of Fabric's notebook-facing Python packages (56 for fabric-2.0, 57 for
+  fabric-1.3, at Fabric's versions, from Microsoft's published environment files at a recorded
+  commit), opt-in, in a machine-readable manifest. Cobalt now reads the rosters from that
+  manifest (a copy of the package's `profiles.json` at the pinned tag, which also replaces the
+  profile pins Cobalt kept by hand) instead of its own 34-package list. Settings › Spark runtime:
+  on Local Spark a **Fabric packages** checkbox installs the profile's roster into its
+  environment (Install, Reinstall / update and Install Python packages all honour it); on LakeSail
+  the roster picker offers both profiles' rosters. The status line counts the packages at
+  Fabric's version and names the ones at another version and the ones that would not install
+  here. The pin moves to local-spark-mcp 0.8.0 (additive, worker protocol 2).
+
 ## 0.9.3 — 2026-10-09
 
 - **LakeSail: Fabric packages.** Settings › Spark runtime › Fabric packages (LakeSail only):

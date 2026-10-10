@@ -35,6 +35,9 @@ pub struct Installed {
     /// The Fabric package roster installed into the LakeSail environment, and what failed.
     pub sail_roster: Option<String>,
     pub sail_roster_failed: Vec<String>,
+    /// The profile whose roster went into the Local Spark environment, and what failed.
+    pub profile_packages: Option<String>,
+    pub profile_packages_failed: Vec<String>,
 }
 
 impl Installed {
@@ -90,18 +93,45 @@ pub struct RuntimeStatus {
     /// `python -m local_spark_mcp.healthcheck --json` from the environment (None when it is not
     /// installed or the check could not run).
     pub health: Option<Health>,
-    /// LakeSail: the Fabric package roster asked for — (profile, installed, total, missing names).
+    /// The Fabric package roster the settings ask for, against the environment's dist-info.
     pub roster: Option<RosterStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RosterStatus {
     pub profile: String,
+    /// Packages present at Fabric's version.
     pub installed: usize,
     pub total: usize,
     pub missing: Vec<String>,
+    /// Present at another version: `name have (Fabric want)`.
+    pub mismatched: Vec<String>,
     /// Packages the last install could not put in (no wheel for this platform, a conflict…).
     pub failed: Vec<String>,
+}
+
+impl RosterStatus {
+    /// Everything is there at Fabric's version.
+    pub fn complete(&self) -> bool {
+        self.missing.is_empty() && self.mismatched.is_empty()
+    }
+
+    /// Read the environment: which of the roster's pins are in, at which version.
+    pub fn read(env_dir: &Path, roster: &crate::manifest::Roster, failed: &[String]) -> Self {
+        let mut missing = Vec::new();
+        let mut mismatched = Vec::new();
+        let mut installed = 0;
+        for spec in &roster.packages {
+            let name = crate::libraries::python_dist_name(spec);
+            let want = spec.split_once("==").map(|(_, v)| v.trim()).unwrap_or("");
+            match detect::installed_package_version(env_dir, &name) {
+                None => missing.push(name),
+                Some(have) if have == want || want.is_empty() => installed += 1,
+                Some(have) => mismatched.push(format!("{name} {have} (Fabric {want})")),
+            }
+        }
+        Self { profile: roster.profile.clone(), installed, total: roster.packages.len(), missing, mismatched, failed: failed.to_vec() }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,11 +225,7 @@ impl RuntimeStatus {
             _ => ComponentState::Missing { reason: format!("pysail {} + pyspark-client {} will be installed (about 250 MB)", pins.version, pins.pyspark_client) },
         };
         let health = if env.is_ready() { sail_healthcheck(dirs) } else { None };
-        let roster = manifest.sail.fabric_packages.get(roster).map(|r| {
-            let st = crate::libraries::python_status(&env_dir, &r.packages);
-            let missing: Vec<String> = st.iter().filter(|(_, v)| v.is_none()).map(|(s, _)| crate::libraries::python_dist_name(s)).collect();
-            RosterStatus { profile: roster.to_string(), installed: r.packages.len() - missing.len(), total: r.packages.len(), missing, failed: record.sail_roster_failed.clone() }
-        });
+        let roster = manifest.roster(roster).map(|r| RosterStatus::read(&env_dir, &r, &record.sail_roster_failed));
         Self {
             engine: Engine::Sail,
             profile: "sail".into(),
@@ -219,11 +245,13 @@ impl RuntimeStatus {
         }
     }
 
-    /// Inspect the runtime folder and the machine. `jdk_override` is a user-chosen JDK home.
-    pub fn inspect(dirs: &RuntimeDirs, manifest: &Manifest, profile: &str, jdk_override: Option<&Path>) -> Self {
+    /// Inspect the runtime folder and the machine. `jdk_override` is a user-chosen JDK home;
+    /// `packages` says whether the settings ask for the profile's Fabric package roster.
+    pub fn inspect(dirs: &RuntimeDirs, manifest: &Manifest, profile: &str, jdk_override: Option<&Path>, packages: bool) -> Self {
         let platform = Platform::current();
         let record = Installed::load(dirs);
         let prof = manifest.profile(profile).ok();
+        let roster = if packages { manifest.roster(profile).map(|r| RosterStatus::read(&dirs.env_dir(profile), &r, &record.profile_packages_failed)) } else { None };
         let uv = match detect::find_uv(&dirs.uv_exe(), &manifest.uv.min_adopt) {
             Some(c) if c.source == "managed" => ComponentState::Managed { detail: format!("uv {}", c.version) },
             Some(c) => ComponentState::Adopted { detail: format!("uv {} at {}", c.version, c.exe.display()) },
@@ -301,7 +329,7 @@ impl RuntimeStatus {
             package_version: record.package_version.clone(),
             last_error: record.last_error.clone(),
             health,
-            roster: None,
+            roster,
         }
     }
 

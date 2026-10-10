@@ -475,10 +475,15 @@ DataFusion plan under the usual section headers), Parse, Run to File, Cancel. Th
 `kernel` JSON has a `catalog` block (requests served, upstream calls, last error). Tables with
 struct / array / map columns read on both engines (nested values show as text in the grid; the
 LakeSail catalog takes the exact schema from the table's Delta log). Settings › Spark runtime ›
-**Fabric packages** (LakeSail): *fabric-2.0* installs the Python packages Fabric Runtime 2.0
-ships (34 of them, Fabric's versions, from Microsoft's published environment file; pyspark,
-notebookutils, synapseml and semantic-link are not on PyPI for us) into the LakeSail
-environment; the status line counts them and names any that would not install here. A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+**Fabric packages**: the Python packages a Fabric runtime ships that a notebook imports (pandas,
+scikit-learn, plotly, the azure-* clients… 56 for fabric-2.0, 57 for fabric-1.3, at Fabric's
+versions; pyspark, notebookutils, synapseml and semantic-link are not on PyPI for us). The list
+is local-spark-mcp's own since its 0.8.0 (its `profiles.json`, curated from Microsoft's published
+environment files), so both engines offer the same packages: on Local Spark a checkbox installs
+the profile's roster into its environment, on LakeSail the picker offers *None* / *fabric-2.0* /
+*fabric-1.3*. Opt-in, a few hundred MB; the status line counts the packages at Fabric's version
+and names any at another version or that would not install here (on Windows, fabric-2.0's
+`scipy==1.18.0` has no wheel for Python 3.11; a compatible scipy comes in as a dependency). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
