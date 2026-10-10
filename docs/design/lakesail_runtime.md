@@ -195,11 +195,23 @@ and the Shadows window check the engine. The kernel picker and the Spark menu of
 engines; the restart consumer carries the chosen engine. The agent's `kernel` JSON and
 `runtime {engine}` expose it; `settings` patches `spark.engine`.
 
-**Files / notebookutils (slice B).** The pure-Python halves of local-spark-mcp (`lazy_files`,
-`files`, `host_credential`, `notebookutils_shim`) have no JVM dependency; the Sail environment
-installs the base `local-spark-mcp` package (no `fabric-*` extra, so no pyspark/delta-spark)
-and the worker wires the same hooks: `/lakehouse/default/Files/...` for Python, `notebookutils.fs`
-over `abfss://`, `getSecret`, `variableLibrary`. Spark-side `Files/` stays absolute.
+**Files / notebookutils (slice B, built 2026-10-10).** The pure-Python halves of local-spark-mcp
+(`lazy_files`, `files`, `host_credential`, `notebookutils_shim`) have no JVM dependency; the Sail
+environment installs the base `local-spark-mcp` package (no `fabric-*` extra, so no
+pyspark/delta-spark; `Manifest::sail_requirements`) and the worker's `_FilesMixin` wires the
+same objects over the Sail engine: a `FilesMirror` on the same `<state>/lakehouses` folder the
+JVM engine uses, `LazyFilesHooks` (lazy by default, `files_mode` from the settings),
+`link_default` for `/lakehouse/default`, `HostTokenCredential` against Cobalt's token endpoint,
+the `NotebookUtils` shim in `sys.modules` and the namespace (`fs` over `/lakehouse/...` and
+`abfss://`, `runtime.context`, `notebook.exit` → a clean cell end, `credentials`,
+`variableLibrary`; `notebook.run` raises: Local Spark only), and `mirror_status` / `sync_files`
+/ `clear_mirror` for the pane. The worker advertises `files` and `notebookutils` in `features`;
+the pane enables its Files actions on Sail from that. The DataFrame API gets the same write rules
+as SQL by patching the Connect client's writer classes once per process: read-only refuses
+`save` to an `abfss://` OneLake path, `saveAsTable` / `insertInto` / `writeTo` on a lakehouse
+table; write-through turns `saveAsTable` on a lakehouse table into a Delta write at the table's
+path plus a catalog refresh (Sail's catalog-managed create needs a Unity table id), and refuses
+`writeTo(...).create()` with that hint. Spark-side `Files/` stays absolute (`abfss://`).
 
 ## 5. Slices
 
@@ -211,9 +223,11 @@ over `abfss://`, `getSecret`, `variableLibrary`. Spark-side `Files/` stays absol
   shadows UI hidden on Sail; agent surface; alpha notes; verified live: Spark tab (select, cap,
   Run to File, DML counts, errors, plan, Parse, completion), notebook (PySpark cell, `%%sql`,
   display, Stop), switching engines both ways, hot-exit restore.
-- **Slice B — parity (0.9.x).** `notebookutils` + lazy Files on Sail; Python-write guard in
-  readonly; DESCRIBE / SHOW parity notes; per-lakehouse table cache refresh from the pane; Sail
-  version bump path (manifest only); upstream reports filed and tracked.
+- **Slice B — parity (0.9.5).** Built: `notebookutils` + lazy Files on Sail (local-spark-mcp's
+  modules over the Sail engine), the DataFrame write guard in readonly and the `saveAsTable`
+  path rewrite in write-through, the pane's Files actions on Sail, `notebook.exit`. Left as
+  notes: DESCRIBE HISTORY / SET are Sail's own gaps (upstream list); the Sail version bump is
+  manifest-only already.
 - **Slice C — later.** Sandbox on Sail (delta-rs shallow clone); native OneLake catalog mode once
   the type-name bug is fixed; Flight SQL straight from Rust for Spark SQL tabs (no Python in the
   path); session presets that bundle engine + write mode + libraries.

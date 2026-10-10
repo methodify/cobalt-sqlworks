@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.5 — unreleased
+
+- **LakeSail: lakehouse Files for Python, `notebookutils`, and the DataFrame write guard
+  (slice B).** On the LakeSail engine `/lakehouse/default/Files/...` now works for plain Python
+  IO the way it does on Local Spark (fetch on first open, folder listings from OneLake, writes
+  into the local mirror and pushed to OneLake in write-through), `import notebookutils` /
+  `mssparkutils` resolve to the same shim (`fs` over `/lakehouse/...` and `abfss://` paths,
+  `runtime.context`, `notebook.exit`, `credentials`, `variableLibrary`; `notebook.run` says it is
+  Local Spark only), and the Lakehouse pane's Pull / Refresh / Remove local copy work on Sail.
+  The LakeSail environment installs the base local-spark-mcp package (no pyspark, no Java) for
+  these pure-Python halves, so the two engines share one implementation. A read-only session
+  now refuses `df.write` to OneLake too (an `abfss://` path or a lakehouse table), not only SQL;
+  in write-through `df.write.saveAsTable("dbo.t")` on a lakehouse table becomes a Delta write at
+  the table's path followed by a catalog refresh, and `writeTo(...).create()` says to use
+  `saveAsTable` or SQL. `notebookutils.notebook.exit(value)` ends the cell cleanly.
+
 ## 0.9.4 — 2026-10-10
 
 - **One Fabric package roster for both engines, from local-spark-mcp 0.8.0.** The

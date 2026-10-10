@@ -187,7 +187,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     let sail_v = cobalt_runtime::Manifest::embedded().sail.version;
                     for (e, label, hint) in [
                         (cobalt_runtime::Engine::PySpark, format!("Local Spark (JVM) · {}", f.cx.settings.spark.profile), "local-spark-mcp: a JVM Spark matching the Fabric runtime profile, with sandbox clones, shadows and notebookutils."),
-                        (cobalt_runtime::Engine::Sail, format!("LakeSail {sail_v} · experimental, no Java"), "Sail: a Rust Spark Connect server. Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs, no notebookutils yet."),
+                        (cobalt_runtime::Engine::Sail, format!("LakeSail {sail_v} · experimental, no Java"), "Sail: a Rust Spark Connect server. Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs; notebookutils and lakehouse Files for Python work as on Local Spark."),
                     ] {
                         let r = ui.selectable_label(current == e, label);
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));

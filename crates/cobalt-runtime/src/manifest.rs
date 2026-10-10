@@ -502,6 +502,26 @@ impl Manifest {
             format!("local-spark-mcp[{}]=={}", profile.extra, self.local_spark_mcp.version)
         }
     }
+
+    /// The base package without a profile extra (no pyspark, no delta-spark): what the LakeSail
+    /// environment installs for the pure-Python halves (lazy Files, the notebookutils shim, the
+    /// host credential).
+    pub fn base_requirement(&self) -> String {
+        let src = &self.local_spark_mcp.source;
+        if src.starts_with("http") || src.starts_with("git+") {
+            format!("local-spark-mcp @ {src}")
+        } else {
+            format!("local-spark-mcp=={}", self.local_spark_mcp.version)
+        }
+    }
+
+    /// Everything `uv pip install` gets for the LakeSail environment: Sail's own pins plus the
+    /// base local-spark-mcp package.
+    pub fn sail_requirements(&self) -> Vec<String> {
+        let mut v = self.sail.requirements();
+        v.push(self.base_requirement());
+        v
+    }
 }
 
 /// `"0.12.3"` → `[0, 12, 3]` for comparisons.

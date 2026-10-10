@@ -507,7 +507,7 @@ fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> 
     (cx.progress)(Progress::Step { step: Step::Env, label: format!("Installing pysail {} and pyspark-client {} (about 250 MB the first time)", pins.version, pins.pyspark_client) });
     let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
     let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py];
-    args.extend(pins.requirements());
+    args.extend(cx.manifest.sail_requirements());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_tool(cx, uv, &argv, &env)?;
     std::fs::write(cx.dirs.sail_worker_file(), crate::SAIL_WORKER)?;
@@ -587,7 +587,7 @@ fn reassert_sail_pins(cx: &Context, uv: &Path) -> Result<()> {
     cx.log("re-asserting LakeSail's own pins over the roster");
     let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
     let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py];
-    args.extend(cx.manifest.sail.requirements());
+    args.extend(cx.manifest.sail_requirements());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_tool(cx, uv, &argv, &uv_env(cx.dirs))?;
     let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());

@@ -222,7 +222,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     let (other_key, other_label, other_hint) = if sail_engine {
                         ("pyspark", format!("{} Local Spark ({}) · JVM, sandbox clones", icons::FIRE, settings.spark.profile), "Switch the Spark engine back to local-spark-mcp (restarts a running session).")
                     } else {
-                        ("sail", format!("{} LakeSail {sail_version} · experimental, no Java", icons::FIRE), "Switch the Spark engine to Sail: a Rust Spark Connect server; read-only or write-through on OneLake, no sandbox, no notebookutils yet (restarts a running session).")
+                        ("sail", format!("{} LakeSail {sail_version} · experimental, no Java", icons::FIRE), "Switch the Spark engine to Sail: a Rust Spark Connect server; read-only or write-through on OneLake, no sandbox (restarts a running session).")
                     };
                     let r = ui.selectable_label(false, other_label);
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {other_key}")));

@@ -82,8 +82,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
         ui.add(egui::TextEdit::singleline(&mut state.lakehouse_pane.filter).hint_text(format!("{} Filter tables and files", icons::MAGNIFYING_GLASS)).desired_width(f32::INFINITY));
         let filter = state.lakehouse_pane.filter.trim().to_lowercase();
         let pane = &state.lakehouse_pane;
-        // clones, rewinds and the Files mirror are the JVM worker's; LakeSail reads OneLake directly
+        // clones and rewinds are the JVM worker's (LakeSail has no sandbox); the Files mirror
+        // exists on both engines once the worker says so
         let session_ready = state.kernel.state.is_ready() && !state.kernel.is_sail();
+        let files_ready = state.kernel.state.is_ready() && (!state.kernel.is_sail() || state.kernel.has("files"));
         // shadow state per `db.table` from the session's shadow_status
         let shadows: std::collections::HashMap<String, (String, Option<String>)> = state
             .shadows
@@ -153,11 +155,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<LakehouseAc
                     let local = m.get("local_bytes").and_then(|v| v.as_u64()).unwrap_or(0) + m.get("fetched_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
                     let text = if local == 0 { "nothing local".to_string() } else { format!("{} local", fmt_bytes(local)) };
                     ui.label(RichText::new(text).size(11.0).color(theme.text_faint)).on_hover_text("Files fetched on first open or pulled into the local mirror for this lakehouse. Spark reads Files/ from OneLake directly; only Python's /lakehouse/default/Files and explicit pulls use the mirror.");
-                } else if !session_ready {
+                } else if !files_ready {
                     ui.label(RichText::new("session stopped — listing from OneLake only").size(11.0).color(theme.text_faint));
                 }
             });
-            files_children(ui, theme, sql_tab, pane, "", 0, &filter, &pulled, &fetched, session_ready, &mut actions);
+            files_children(ui, theme, sql_tab, pane, "", 0, &filter, &pulled, &fetched, files_ready, &mut actions);
         });
         if let Some(n) = &pane.note {
             ui.label(RichText::new(n).size(11.0).color(theme.text_muted));

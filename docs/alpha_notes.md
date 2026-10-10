@@ -486,14 +486,19 @@ and names any at another version or that would not install here (on Windows, fab
 `scipy==1.18.0` has no wheel for Python 3.11, so the manifest's platform fallback `scipy>=1.15,<1.18`
 goes in and the status line says "platform fallback"; on LakeSail protobuf is not taken from the
 roster because the PySpark Connect client needs its own newer line, so that engine shows 55 of
-the 56). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+the 56). Lakehouse Files for Python on Sail (0.9.5): `open('/lakehouse/default/Files/x.csv')`,
+`os.listdir`, `notebookutils.fs.ls / head / put / exists` on `/lakehouse/...` and `abfss://` paths,
+`notebookutils.runtime.context`, `notebookutils.notebook.exit`, and the pane's Pull / Remove
+local copy, all as on Local Spark (the same mirror folder, lazy by default); a read-only session
+refuses `df.write.saveAsTable("dbo.t")` and `df.write.save("abfss://…")`, write-through writes
+them (saveAsTable on a new lakehouse table lands as a Delta write at the table's path). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
 What LakeSail does not do (said in the chip, the pane and the errors): no sandbox — the write
 mode is *read only* (default; writes are refused with "write_mode is 'readonly'") or *write
 through* (INSERT / UPDATE / DELETE / MERGE / INSERT OVERWRITE go to OneLake; DROP TABLE only
-unmounts); no shadows, preload, lazy Files or `notebookutils` (slice B); `USE db` is rewritten
+unmounts); no shadows or preload; `notebookutils.notebook.run` is Local Spark only; `USE db` is rewritten
 to `USE DATABASE`; `DESCRIBE HISTORY` and `SET` are not supported by Sail; `DROP TABLE` on a
 lakehouse table is refused (Fabric would delete the folder); legacy top-level tables of a
 schema-enabled lakehouse show up as schemas in Fabric's listing and are reached by path.

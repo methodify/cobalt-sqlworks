@@ -687,6 +687,10 @@ fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabri
             f.write_mode = "readonly".into();
         }
         extra.insert("write_mode".into(), Value::String(f.write_mode.clone()));
+        // lakehouse Files for Python (`/lakehouse/default/Files`, notebookutils.fs): the same
+        // mirror folder as the JVM engine, lazy by default
+        extra.insert("files_mode".into(), Value::String(if settings.spark.files_mode == "mirror" { "mirror".into() } else { "lazy".into() }));
+        extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
         // the lakehouse catalog Sail reads: Cobalt's endpoint over Fabric's table API
         let refs: Vec<crate::sail_catalog::LakehouseRef> = f.lakehouses.iter().map(|(name, id)| crate::sail_catalog::LakehouseRef { name: name.clone(), id: id.clone(), workspace_id: f.workspace_id.clone() }).collect();
         let cat = crate::sail_catalog::CatalogServer::start(fs.resolver.clone(), f.slot, f.tenant.clone(), fs.handle.clone(), refs, &f.write_mode).map_err(|e| StartError::TokenServer(format!("lakehouse catalog endpoint: {e}")))?;

@@ -300,12 +300,392 @@ def _missing_table(exc: BaseException) -> list[str] | None:
     return None
 
 
-class SailEngine:
+def _lsm_available() -> bool:
+    """The base local-spark-mcp package (no pyspark) is in the environment: its pure-Python
+    halves give LakeSail the lakehouse Files mirror, the lazy hooks and the notebookutils shim."""
+    try:
+        import local_spark_mcp.files  # noqa: F401
+        import local_spark_mcp.lazy_files  # noqa: F401
+        import local_spark_mcp.notebookutils_shim  # noqa: F401
+        import local_spark_mcp.host_credential  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
+class _FilesMixin:
+    """Lakehouse Files for Python and `notebookutils` on LakeSail (slice B), built on
+    local-spark-mcp's own modules so the behaviour matches the JVM engine: `FilesMirror` keeps
+    `<mirror_root>/<ws>/<lh>/Files`, `LazyFilesHooks` make `/lakehouse/default/Files/...` fetch
+    on first open and list from OneLake, `NotebookUtils` is the shim `import notebookutils`
+    resolves to, and `HostTokenCredential` takes every token from Cobalt's endpoint. Spark-side
+    paths stay `abfss://` (Sail reads OneLake through object_store), so nothing here touches the
+    server."""
+
+    files = None
+    files_mode = "lazy"
+    files_link: dict | None = None
+    _lazy_hooks = None
+    _shim = None
+    _cred = None
+    _fabric_client = None
+
+    def _init_files(self, files_mode: str | None, mirror_root: str | None) -> None:
+        self.files_mode = "mirror" if files_mode == "mirror" else "lazy"
+        self.mirror_root = mirror_root
+        if not _lsm_available():
+            self.warnings.append("lakehouse Files and notebookutils are off: the base local-spark-mcp package is not in the LakeSail environment (Settings › Spark runtime › Reinstall / update LakeSail)")
+            return
+        if not self.onelake.get("endpoint"):
+            # no lakehouse in this session: the shim and the write guard still exist, Files do not
+            self._install_notebookutils()
+            _install_write_guard(self)
+            return
+        from pathlib import Path
+
+        from local_spark_mcp.files import FilesMirror
+
+        root = Path(mirror_root).expanduser() if mirror_root else Path(self.state_root or "~/.cobalt-sail").expanduser() / "lakehouses"
+        ws = next((lh.workspace_id for lh in self.lakehouses.values()), "")
+        self.files = FilesMirror(root=root, workspace_id=ws, lakehouses=self.lakehouses, write_mode=self.write_mode, credential_factory=self.credential)
+        if self.files_mode == "lazy":
+            from local_spark_mcp.lazy_files import LazyFilesHooks
+
+            self._lazy_hooks = LazyFilesHooks(self)
+            self._lazy_hooks.install()
+        if self.default_lakehouse:
+            try:
+                self.files_link = self.files.link_default(self.default_lakehouse)
+            except Exception as exc:
+                self.warnings.append(f"/lakehouse/default could not be linked: {type(exc).__name__}: {exc}")
+        self._install_notebookutils()
+        _install_write_guard(self)
+
+    def _install_notebookutils(self) -> None:
+        from IPython.core.interactiveshell import InteractiveShell
+        from local_spark_mcp.notebookutils_shim import NotebookExit, NotebookUtils
+
+        shim = NotebookUtils(_SailShim(self))
+        sys.modules["notebookutils"] = shim
+        sys.modules["mssparkutils"] = shim
+        self._shim = shim
+
+        # notebookutils.notebook.exit(value) ends the cell; IPython must not print it as an error
+        def _quiet_exit(shell, etype, value, tb, tb_offset=None):
+            return []
+
+        InteractiveShell.instance().set_custom_exc((NotebookExit,), _quiet_exit)
+
+    def _notebookutils(self):
+        return self._shim if self._shim is not None else _NotebookUtilsStub()
+
+    @property
+    def files_hooks(self) -> bool:
+        return bool(self._lazy_hooks is not None and self._lazy_hooks.installed)
+
+    # ---- what the shim and the mirror ask the engine for ----
+
+    def credential(self):
+        if self._cred is None:
+            if not self.onelake.get("endpoint"):
+                raise RuntimeError("no Fabric sign-in in this session: attach a lakehouse (lakehouse button) so Cobalt serves tokens to the session")
+            from local_spark_mcp.host_credential import HostTokenCredential
+
+            self._cred = HostTokenCredential(self.onelake["endpoint"], self.onelake.get("secret", ""))
+        return self._cred
+
+    def workspace_id(self) -> str:
+        for lh in self.lakehouses.values():
+            return lh.workspace_id
+        raise RuntimeError("no lakehouse is attached to this session")
+
+    def fabric_client(self):
+        if self._fabric_client is None:
+            from local_spark_mcp.discovery import FabricAPIClient
+
+            self._fabric_client = FabricAPIClient(credential=self.credential())
+        return self._fabric_client
+
+    def runtime_context(self) -> dict:
+        ctx = self._active
+        name = (ctx.default_lakehouse if ctx is not None else None) or self.default_lakehouse
+        lh = self._resolve_lakehouse(name) if name else None
+        return {"currentWorkspaceId": lh.workspace_id if lh else None, "defaultLakehouseId": lh.id if lh else None,
+                "defaultLakehouseName": lh.name if lh else None, "currentNotebookName": ctx.name if ctx is not None else None}
+
+    def run_notebook(self, path, **_kw):
+        raise NotImplementedError("notebookutils.notebook.run is not available on the LakeSail engine; run the notebook on Local Spark (JVM)")
+
+    def _ctx_default_lakehouse(self) -> str | None:
+        ctx = self._active
+        return (ctx.default_lakehouse if ctx is not None else None) or self.default_lakehouse
+
+    def files_resolve(self, path: str):
+        if self.files is None:
+            return None
+        return self.files.resolve(path, self._ctx_default_lakehouse())
+
+    def files_mount(self, source: str, mount_point: str) -> dict:
+        if self.files is None:
+            raise RuntimeError("lakehouse Files are not available in this session (no lakehouse attached)")
+        return self.files.mount(source, mount_point, self._ctx_default_lakehouse())
+
+    def files_mounts(self) -> list[dict]:
+        if self.files is None:
+            return []
+        return [{"mountPoint": mp, "source": f"/lakehouse/{name}", "localPath": str(self.files.mirror_dir(name))} for mp, name in self.files.mounts.items()]
+
+    def mirror_status(self) -> dict:
+        if self.files is None:
+            raise RuntimeError("lakehouse Files are not available in this session (no lakehouse attached)")
+        out = self.files.status()
+        out["files_mode"] = self.files_mode
+        return out
+
+    def clear_mirror(self, lakehouse: str | None = None, paths: list[str] | None = None) -> dict:
+        if self.files is None:
+            raise RuntimeError("lakehouse Files are not available in this session (no lakehouse attached)")
+        return self.files.clear(lakehouse, paths)
+
+    def sync_files(self, paths: list[str] | None = None, direction: str = "pull", lakehouse: str | None = None) -> dict:
+        if self.files is None:
+            raise RuntimeError("lakehouse Files are not available in this session (no lakehouse attached)")
+        name = lakehouse or self._ctx_default_lakehouse()
+        if not name:
+            raise RuntimeError("no lakehouse given and no default lakehouse in this context")
+        if direction == "pull":
+            return self.files.pull(name, paths or None).to_dict()
+        if direction == "push":
+            return self.files.push(name, paths).to_dict()
+        raise ValueError("direction must be 'pull' or 'push'")
+
+    # ---- the OneLake data plane for abfss:// paths (notebookutils.fs) ----
+
+    def _onelake_fs(self, path: str):
+        from azure.storage.filedatalake import DataLakeServiceClient
+
+        u = urllib.parse.urlparse(path)
+        workspace = u.username or u.netloc.split("@")[0]
+        service = DataLakeServiceClient(f"https://{u.hostname}", credential=self.credential())
+        return service.get_file_system_client(workspace), u.path.lstrip("/")
+
+    def _onelake_guard_write(self, path: str, op: str) -> None:
+        if self.write_mode != "writethrough":
+            raise PermissionError(f"notebookutils.fs.{op}: write_mode is '{self.write_mode}', so {path} on OneLake is not modified. "
+                                  "Use a /lakehouse/... path (the local mirror) or switch the session to write-through (lakehouse button).")
+
+    def onelake_ls(self, path: str) -> list:
+        from local_spark_mcp.notebookutils_shim import FileInfo
+
+        fs, rel = self._onelake_fs(path)
+        base = path.rstrip("/")
+        return [FileInfo(name=p.name.rsplit("/", 1)[-1], path=f"{base}/{p.name.rsplit('/', 1)[-1]}", size=p.content_length or 0, isDir=bool(p.is_directory))
+                for p in fs.get_paths(path=rel, recursive=False)]
+
+    def onelake_exists(self, path: str) -> bool:
+        return self.onelake_is_dir(path) is not None
+
+    def onelake_is_dir(self, path: str) -> bool | None:
+        fs, rel = self._onelake_fs(path)
+        try:
+            props = fs.get_file_client(rel).get_file_properties()
+        except Exception:
+            return None
+        return str((props.metadata or {}).get("hdi_isfolder", "")).lower() == "true"
+
+    def onelake_read(self, path: str, max_bytes: int | None = None) -> bytes:
+        fs, rel = self._onelake_fs(path)
+        client = fs.get_file_client(rel)
+        dl = client.download_file(offset=0, length=max_bytes) if max_bytes else client.download_file()
+        return dl.readall()
+
+    def onelake_write(self, path: str, data: bytes, overwrite: bool = False) -> None:
+        self._onelake_guard_write(path, "put")
+        fs, rel = self._onelake_fs(path)
+        if not overwrite and self.onelake_is_dir(path) is not None:
+            raise FileExistsError(f"{path} exists; pass overwrite=True")
+        fs.get_file_client(rel).upload_data(data, overwrite=True)
+
+    def onelake_append(self, path: str, data: bytes, create: bool = False) -> None:
+        self._onelake_guard_write(path, "append")
+        fs, rel = self._onelake_fs(path)
+        client = fs.get_file_client(rel)
+        try:
+            size = int(client.get_file_properties().size or 0)
+        except Exception:
+            if not create:
+                raise FileNotFoundError(f"{path} does not exist (pass createFileIfNotExists=True)")
+            client.create_file()
+            size = 0
+        client.append_data(data, offset=size)
+        client.flush_data(size + len(data))
+
+    def onelake_mkdirs(self, path: str) -> None:
+        self._onelake_guard_write(path, "mkdirs")
+        fs, rel = self._onelake_fs(path)
+        fs.get_directory_client(rel).create_directory()
+
+    def onelake_rm(self, path: str, recurse: bool = False) -> None:
+        self._onelake_guard_write(path, "rm")
+        fs, rel = self._onelake_fs(path)
+        is_dir = self.onelake_is_dir(path)
+        if is_dir is None:
+            raise FileNotFoundError(path)
+        if is_dir:
+            if not recurse and any(True for _ in fs.get_paths(path=rel, recursive=False)):
+                raise IsADirectoryError(f"{path} is a non-empty directory; pass recurse=True")
+            fs.get_directory_client(rel).delete_directory()
+        else:
+            fs.get_file_client(rel).delete_file()
+
+    def onelake_rename(self, src: str, dst: str) -> None:
+        self._onelake_guard_write(dst, "mv")
+        fs, rel = self._onelake_fs(src)
+        fs2, rel2 = self._onelake_fs(dst)
+        if fs.file_system_name != fs2.file_system_name:
+            raise ValueError("mv across workspaces: copy then remove")
+        if self.onelake_is_dir(src):
+            fs.get_directory_client(rel).rename_directory(f"{fs.file_system_name}/{rel2}")
+        else:
+            fs.get_file_client(rel).rename_file(f"{fs.file_system_name}/{rel2}")
+
+    def _invalidate_catalog(self, lh, schema: str, created: str | None = None) -> None:
+        """Tell Cobalt's catalog endpoint to list the schema again (a table was created by path)."""
+        endpoint = (self.catalog or {}).get("endpoint")
+        if not endpoint:
+            return
+        try:
+            base = endpoint.split("/api/2.1/unity-catalog")[0]
+            body = {"lakehouse": lh.name, "schema": schema}
+            if created:
+                body["created"] = created
+            req = urllib.request.Request(f"{base}/cobalt/invalidate", data=json.dumps(body).encode(), method="POST", headers={"Content-Type": "application/json"})
+            urllib.request.urlopen(req, timeout=10).read()
+        except Exception:
+            pass
+
+    def _files_teardown(self) -> None:
+        if self._lazy_hooks is not None:
+            try:
+                self._lazy_hooks.uninstall()
+            except Exception:
+                pass
+        if self.files is not None:
+            try:
+                self.files.release_link()
+            except Exception:
+                pass
+
+
+class _SailShim:
+    """The narrow surface local-spark-mcp's notebookutils shim needs, over the Sail engine."""
+
+    def __init__(self, engine):
+        self._e = engine
+
+    def __getattr__(self, name):
+        return getattr(self._e, name)
+
+    @property
+    def write_mode(self):
+        return self._e.write_mode
+
+    @property
+    def files_hooks(self) -> bool:
+        return self._e.files_hooks
+
+
+_WRITE_GUARD_INSTALLED = False
+_WRITE_GUARD_ENGINE = None
+
+
+def _install_write_guard(engine) -> None:
+    """The DataFrame API's writes get the same rules as SQL: a read-only session refuses
+    `df.write` to OneLake (an abfss:// path or a lakehouse table), and in write-through
+    `saveAsTable` on a lakehouse table becomes a Delta write at the table's path (Sail's
+    catalog-managed create needs a Unity table id Fabric does not issue), followed by a catalog
+    refresh. Patched once per process on the Connect client's writer classes."""
+    global _WRITE_GUARD_INSTALLED, _WRITE_GUARD_ENGINE
+    _WRITE_GUARD_ENGINE = engine
+    if _WRITE_GUARD_INSTALLED:
+        return
+    try:
+        from pyspark.sql.connect.readwriter import DataFrameWriter, DataFrameWriterV2
+    except Exception:
+        return
+
+    def _eng():
+        return _WRITE_GUARD_ENGINE
+
+    def _refuse(what: str):
+        raise PermissionError(f"write_mode is 'readonly': refusing to write {what} on OneLake. "
+                              "Switch the session to write-through (lakehouse button) to write to the lakehouse; LakeSail has no sandbox clones.")
+
+    def _is_onelake_path(p) -> bool:
+        return isinstance(p, str) and p.lower().startswith("abfss://") and "onelake" in p.lower()
+
+    orig_save, orig_insert, orig_save_as_table = DataFrameWriter.save, DataFrameWriter.insertInto, DataFrameWriter.saveAsTable
+
+    def save(self, path=None, format=None, mode=None, partitionBy=None, **options):
+        e = _eng()
+        target = path if path is not None else getattr(self._write, "path", None) or getattr(self._write, "options", {}).get("path")
+        if e is not None and e.write_mode != "writethrough" and _is_onelake_path(target):
+            _refuse(target)
+        return orig_save(self, path, format, mode, partitionBy, **options)
+
+    def insertInto(self, tableName, overwrite=None):  # noqa: N802,N803
+        e = _eng()
+        if e is not None and e.write_mode != "writethrough" and e._active is not None and e._lakehouse_target(tableName, e._active) is not None:
+            _refuse(f"table {tableName}")
+        return orig_insert(self, tableName, overwrite)
+
+    def saveAsTable(self, name, format=None, mode=None, partitionBy=None, **options):  # noqa: N802
+        e = _eng()
+        resolved = e._lakehouse_target(name, e._active) if e is not None and e._active is not None else None
+        if resolved is None:
+            return orig_save_as_table(self, name, format, mode, partitionBy, **options)
+        if e.write_mode != "writethrough":
+            _refuse(f"table {name}")
+        lh, schema, table = resolved
+        fmt = (format or getattr(self._write, "source", None) or "delta").lower()
+        if fmt != "delta":
+            raise ValueError(f"saveAsTable({name!r}): lakehouse tables are Delta tables; use format='delta' (got {fmt!r})")
+        orig_save(self, lh.path(schema, table), "delta", mode, partitionBy, **options)
+        e._invalidate_catalog(lh, schema, created=table)
+        e._notices.append(f"wrote {lh.name}.{schema}.{table} in the lakehouse (saveAsTable as a Delta write at the table's path)")
+
+    DataFrameWriter.save, DataFrameWriter.insertInto, DataFrameWriter.saveAsTable = save, insertInto, saveAsTable
+
+    def _v2(name: str, creates: bool):
+        orig = getattr(DataFrameWriterV2, name)
+
+        def method(self, *args, **kwargs):
+            e = _eng()
+            tname = getattr(self, "_table_name", "")
+            resolved = e._lakehouse_target(tname, e._active) if e is not None and e._active is not None else None
+            if resolved is not None:
+                if e.write_mode != "writethrough":
+                    _refuse(f"table {tname}")
+                if creates:
+                    raise ValueError(f"writeTo({tname!r}).{name}(): creating a lakehouse table through the catalog is not supported on LakeSail; use df.write.saveAsTable({tname!r}) (a Delta write at the table's path) or CREATE TABLE … AS in SQL")
+            return orig(self, *args, **kwargs)
+
+        method.__name__ = name
+        method.__doc__ = orig.__doc__
+        return method
+
+    for name, creates in (("create", True), ("replace", True), ("createOrReplace", True), ("append", False), ("overwrite", False), ("overwritePartitions", False)):
+        setattr(DataFrameWriterV2, name, _v2(name, creates))
+    _WRITE_GUARD_INSTALLED = True
+
+
+class SailEngine(_FilesMixin):
     """The Sail server, its sessions and the lakehouse registry."""
 
     def __init__(self, onelake: dict | None = None, lakehouses=(), default_lakehouse: str | None = None,
                  write_mode: str = "readonly", default_sql_limit: int = 1000, app_name: str = "cobalt-sqlworks",
-                 state_root: str | None = None, sail_options: dict | None = None, catalog: dict | None = None, **_ignored):
+                 state_root: str | None = None, sail_options: dict | None = None, catalog: dict | None = None,
+                 files_mode: str | None = None, mirror_root: str | None = None, **_ignored):
         self.started_at = time.time()
         self.onelake = onelake or {}
         self.catalog = catalog or {}
@@ -341,6 +721,8 @@ class SailEngine:
                 raise ValueError(f"unknown default lakehouse {default_lakehouse!r}; known: {sorted(self.lakehouses)}")
             self.default_lakehouse = info.name
         self._start_server()
+        # lakehouse Files for Python and notebookutils (local-spark-mcp's modules; see _FilesMixin)
+        self._init_files(files_mode, mirror_root)
         from IPython.core.interactiveshell import InteractiveShell
 
         self.shell = InteractiveShell.instance()
@@ -525,8 +907,8 @@ class SailEngine:
         import pyspark.sql.types as T
         from pyspark.sql import Window
 
-        ns.update({"spark": spark, "F": F, "T": T, "Window": Window, "display": self.display,
-                   "notebookutils": _NotebookUtilsStub(), "mssparkutils": _NotebookUtilsStub()})
+        nbu = self._notebookutils()
+        ns.update({"spark": spark, "F": F, "T": T, "Window": Window, "display": self.display, "notebookutils": nbu, "mssparkutils": nbu})
 
     def _bind_proxy(self, ctx: Context) -> None:
         """`spark` in the context's namespace mounts lakehouse tables on first use."""
@@ -674,6 +1056,13 @@ class SailEngine:
                 cap_stderr += f"\ncobalt-sail: could not capture the result as Arrow: {type(exc).__name__}: {exc}\n"
         error = tb = None
         exc = result.error_before_exec or result.error_in_exec
+        if exc is not None and type(exc).__name__ == "NotebookExit":
+            # notebookutils.notebook.exit(value): the cell ends the notebook, not an error
+            self._notices.append(f"notebook exit: {getattr(exc, 'value', None)!r}")
+            exc = None
+            ok = True
+        else:
+            ok = bool(result.success)
         if exc is not None:
             error = f"{type(exc).__name__}: {exc}" if str(exc) else repr(exc)
             if result.error_in_exec is not None:
@@ -685,7 +1074,7 @@ class SailEngine:
                 stdout += text + "\n"
         if error and exc is not None and self._interrupt_requested and not isinstance(exc, KeyboardInterrupt):
             error = f"KeyboardInterrupt: interrupted (Spark operations cancelled); underlying {error}"
-        return ExecResult(ok=bool(result.success), stdout=_truncate(stdout), stderr=_truncate(cap_stderr), error=error,
+        return ExecResult(ok=ok, stdout=_truncate(stdout), stderr=_truncate(cap_stderr), error=error,
                           interrupted=exc is not None and (isinstance(exc, KeyboardInterrupt) or self._interrupt_requested),
                           displays=list(self._displays), traceback=_truncate(tb) if tb else None,
                           execution_count=self.shell.execution_count)
@@ -869,15 +1258,7 @@ class SailEngine:
             ctx.session.sql(f"DROP TABLE IF EXISTS {scratch}").collect()
         except Exception:
             pass
-        endpoint = (self.catalog or {}).get("endpoint")
-        if endpoint:
-            try:
-                base = endpoint.split("/api/2.1/unity-catalog")[0]
-                req = urllib.request.Request(f"{base}/cobalt/invalidate", data=json.dumps({"lakehouse": lh.name, "schema": schema, "created": table}).encode(), method="POST",
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=10).read()
-            except Exception:
-                pass
+        self._invalidate_catalog(lh, schema, created=table)
         self._notices.append(f"created {lh.name}.{schema}.{table} in the lakehouse")
 
     def _dml_metrics(self, sql: str, df) -> dict | None:
@@ -1019,10 +1400,20 @@ class SailEngine:
             "lakehouse_schemas": {n: list(lh.schemas or []) for n, lh in self.lakehouses.items()},
             "default_lakehouse": self.default_lakehouse, "write_mode": self.write_mode, "requested_write_mode": self.requested_write_mode,
             "started_at": self.started_at, "uptime_s": round(time.time() - self.started_at, 1), "python": sys.version.split()[0],
-            "protocol_version": PROTOCOL_VERSION, "features": list(FEATURES), "default_sql_limit": self.default_sql_limit,
+            "protocol_version": PROTOCOL_VERSION, "features": self.features(), "default_sql_limit": self.default_sql_limit,
+            "files_mode": self.files_mode, "files_hooks": self.files_hooks, "files_link": self.files_link,
+            "mirror_root": str(self.files.root) if self.files is not None else None,
             "execution_count": getattr(self.shell, "execution_count", None), "contexts": sorted(self.contexts),
             "active_context": self._active.id if self._active else None, "warnings": list(self.warnings),
         }
+
+    def features(self) -> list[str]:
+        out = list(FEATURES)
+        if self._shim is not None:
+            out.append("notebookutils")
+        if self.files is not None:
+            out += ["files", "lazy_files" if self.files_hooks else "mirror_files"]
+        return out
 
     def alive(self) -> bool:
         try:
@@ -1031,6 +1422,7 @@ class SailEngine:
             return False
 
     def stop(self) -> None:
+        self._files_teardown()
         for ctx in list(self.contexts.values()):
             try:
                 ctx.session.stop()
@@ -1125,8 +1517,17 @@ def healthcheck() -> dict:
             warnings.append(f"pandas {pandas.__version__}: PySpark does not fully support pandas 3 yet")
     except Exception:
         pass
+    features = list(FEATURES)
+    try:
+        versions["local-spark-mcp"] = md.version("local-spark-mcp")
+    except Exception:
+        versions["local-spark-mcp"] = None
+    if _lsm_available():
+        features += ["files", "notebookutils"]
+    else:
+        warnings.append("lakehouse Files for Python and notebookutils are off: the base local-spark-mcp package is missing (Reinstall / update LakeSail adds it)")
     return {"ok": not problems, "problems": problems, "warnings": warnings, "versions": versions, "engine": ENGINE,
-            "profile": "sail", "protocol_version": PROTOCOL_VERSION, "features": list(FEATURES)}
+            "profile": "sail", "protocol_version": PROTOCOL_VERSION, "features": features}
 
 
 # ---- the worker loop (local-spark-mcp worker.py) ----
@@ -1197,6 +1598,12 @@ def _handle(engine, method: str, params: dict):
         return engine.info(), engine
     if method == "status":
         return engine.status(params.get("context")), engine
+    if method == "mirror_status":
+        return engine.mirror_status(), engine
+    if method == "clear_mirror":
+        return engine.clear_mirror(params.get("lakehouse"), params.get("paths")), engine
+    if method == "sync_files":
+        return engine.sync_files(params.get("paths"), params.get("direction", "pull"), params.get("lakehouse")), engine
     raise ValueError(f"unknown method: {method!r} (not available on the LakeSail engine)")
 
 

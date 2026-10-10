@@ -580,7 +580,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
         ui.label("Engine");
         for (e, label, hint) in [
             (cobalt_runtime::Engine::PySpark, "Local Spark (JVM)", "local-spark-mcp on a Fabric runtime profile: sandbox clones, shadows, lazy Files, notebookutils. About 600 MB with the JDK."),
-            (cobalt_runtime::Engine::Sail, format!("LakeSail {} (experimental)", manifest.sail.version).as_str(), "Sail: Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs, no notebookutils yet. About 250 MB, starts in seconds."),
+            (cobalt_runtime::Engine::Sail, format!("LakeSail {} (experimental)", manifest.sail.version).as_str(), "Sail: Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs; notebookutils and lakehouse Files for Python work as on Local Spark. About 250 MB, starts in seconds."),
         ] {
             let r = ui.selectable_label(cobalt_runtime::Engine::parse(&draft.spark.engine) == e, label);
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
