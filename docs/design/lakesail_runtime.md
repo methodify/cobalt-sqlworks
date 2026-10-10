@@ -169,7 +169,16 @@ curated roster per profile in its `profiles.json` (56 for fabric-2.0, 57 for fab
 source file and commit and an exclusion list), so since then the rosters come from the copy of
 that file embedded in `cobalt-runtime` (`Manifest::rosters()`, which also supplies the profile
 pins that `manifest.json` used to mirror by hand) and the same list serves both engines: the JVM
-profile's environment gets it through `spark.profile_packages`.
+profile's environment gets it through `spark.profile_packages`. local-spark-mcp 0.8.1 added
+per-platform fallbacks as data (`python_packages_fallbacks`: scipy on Python < 3.12), which Cobalt
+applies per the environment's Python and reports as "platform fallback". One lesson from the
+first live run: a roster pin can silently move a package the engine itself depends on (a resolver
+does not re-check what it was not asked about) — Fabric 2.0's `protobuf==5.29.6` under
+pyspark-client 4.1.3, whose generated code needs protobuf 6.33, stopped the Connect client
+loading. `sail.reserved` in `manifest.json` names such packages (left out of the roster on Sail,
+`Roster::without`), `sail.packages` carries the floor (`protobuf>=6.33,<7`), and the engine's
+pins are re-asserted after every roster install (`reassert_sail_pins`). The JVM engine takes the
+roster whole: local-spark-mcp validated it against its own pins, and a smoke test here confirmed.
 
 **Tokens.** `onelake_tokens::TokenServer` accepts the secret in `x-ms-partner-token` as well as
 `X-Token-Secret` (object_store's Fabric provider sends the former) and ignores the

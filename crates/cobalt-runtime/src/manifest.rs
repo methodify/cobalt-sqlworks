@@ -104,8 +104,12 @@ pub struct SailPins {
     pub pyspark_client: String,
     pub python: String,
     pub python_windows: String,
-    /// Other packages of the environment (IPython for cells, pandas/pyarrow for results).
+    /// Other packages of the environment (IPython for cells, pandas/pyarrow for results, the
+    /// protobuf line the Connect client's generated code needs).
     pub packages: Vec<String>,
+    /// Roster packages the engine owns (name → why): left out of a Fabric roster on this engine
+    /// and re-asserted from `packages` after a roster install.
+    pub reserved: BTreeMap<String, String>,
 }
 
 /// A Fabric runtime's notebook-facing Python packages at Fabric's versions, as pip
@@ -157,6 +161,26 @@ impl Roster {
     /// The fallback that applies to `name` on `python`, if any.
     pub fn fallback_for(&self, name: &str, python: Option<(u32, u32)>) -> Option<&Fallback> {
         self.fallbacks.get(name).filter(|fb| marker_applies(&fb.marker, python))
+    }
+
+    /// The roster without the named packages (an engine's own), with the note saying so.
+    pub fn without(&self, reserved: &BTreeMap<String, String>) -> Roster {
+        if reserved.is_empty() {
+            return self.clone();
+        }
+        let mut r = self.clone();
+        let dropped: Vec<String> = r.packages.iter().filter(|p| reserved.contains_key(&crate::libraries::python_dist_name(p))).cloned().collect();
+        if dropped.is_empty() {
+            return r;
+        }
+        r.packages.retain(|p| !reserved.contains_key(&crate::libraries::python_dist_name(p)));
+        for name in dropped.iter().map(|p| crate::libraries::python_dist_name(p)) {
+            r.fallbacks.remove(&name);
+            if let Some(why) = reserved.get(&name) {
+                r.note.push_str(&format!(" Not from the roster on this engine: {name} ({why})."));
+            }
+        }
+        r
     }
 }
 
@@ -226,7 +250,7 @@ pub struct PackageSource {
 
 impl Default for SailPins {
     fn default() -> Self {
-        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()] }
+        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into(), "protobuf>=6.33,<7".into()], reserved: BTreeMap::new() }
     }
 }
 
@@ -441,6 +465,18 @@ impl Manifest {
         self.profiles.get(name).and_then(|p| p.roster(name))
     }
 
+    /// The roster as installed on an engine: LakeSail leaves out the packages it owns
+    /// (`sail.reserved`), Local Spark takes it whole (local-spark-mcp validated it).
+    pub fn engine_roster(&self, engine: Engine, name: &str) -> Option<Roster> {
+        let r = self.roster(name)?;
+        Some(if engine.is_sail() { r.without(&self.sail.reserved) } else { r })
+    }
+
+    /// Every roster as an engine installs it.
+    pub fn engine_rosters(&self, engine: Engine) -> BTreeMap<String, Roster> {
+        self.rosters().into_keys().filter_map(|n| self.engine_roster(engine, &n).map(|r| (n, r))).collect()
+    }
+
     pub fn uv_asset(&self, platform: Platform) -> Result<&Asset> {
         self.uv.assets.get(platform.key()).ok_or_else(|| RuntimeError::Manifest(format!("no uv build pinned for {}", platform.key())))
     }
@@ -533,6 +569,14 @@ mod tests {
         assert!(on_313.contains(&"scipy==1.18.0".to_string()));
         assert_eq!(on_311.len(), r.packages.len());
         assert!(r.fallback_for("scipy", Some((3, 11))).is_some() && r.fallback_for("scipy", Some((3, 12))).is_none() && r.fallback_for("scipy", None).is_none());
+        // LakeSail keeps its own protobuf line: the roster's pin would break the Connect client
+        assert!(m.sail.reserved.contains_key("protobuf"));
+        assert!(m.sail.packages.iter().any(|p| p.starts_with("protobuf>=6.33")));
+        let sail = m.engine_roster(Engine::Sail, "fabric-2.0").unwrap();
+        assert_eq!(sail.packages.len(), r.packages.len() - 1);
+        assert!(!sail.packages.iter().any(|p| p.starts_with("protobuf==")) && sail.note.contains("protobuf"));
+        assert_eq!(m.engine_roster(Engine::PySpark, "fabric-2.0").unwrap().packages.len(), r.packages.len());
+        assert_eq!(m.engine_rosters(Engine::Sail).len(), 2);
     }
 
     #[test]

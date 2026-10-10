@@ -15,8 +15,10 @@
   Fabric's version and names the ones at another version and the ones that would not install
   here. Where a Fabric pin has no wheel for the environment's Python (fabric-2.0's scipy on
   Python 3.11), the manifest's platform fallback is installed instead and the status says
-  "platform fallback" rather than counting it as drift. The pin moves to local-spark-mcp 0.8.1
-  (additive, worker protocol 2).
+  "platform fallback" rather than counting it as drift. On LakeSail the roster leaves out
+  protobuf (Fabric 2.0's 5.29.6 would stop the PySpark Connect client loading; Sail keeps its own
+  6.33 line) and the engine's own pins are re-asserted after a roster install. The pin moves to
+  local-spark-mcp 0.8.1 (additive, worker protocol 2).
 
 ## 0.9.3 — 2026-10-09
 

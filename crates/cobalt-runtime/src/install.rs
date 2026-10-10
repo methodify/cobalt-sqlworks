@@ -569,14 +569,28 @@ pub(crate) fn env_python_version(env_dir: &Path) -> Option<(u32, u32)> {
 
 /// The roster chosen for the LakeSail environment (`none` clears the record).
 fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Installed) -> Result<()> {
-    let Some(roster) = cx.manifest.roster(roster_name) else {
+    let Some(roster) = cx.manifest.engine_roster(Engine::Sail, roster_name) else {
         rec.sail_roster = None;
         rec.sail_roster_failed.clear();
         return Ok(());
     };
     let failed = step_roster(cx, uv, &cx.dirs.sail_env_dir(), &cx.dirs.sail_env_python(), &roster)?;
+    reassert_sail_pins(cx, uv)?;
     rec.sail_roster = Some(roster_name.to_string());
     rec.sail_roster_failed = failed;
+    Ok(())
+}
+
+/// After a roster install, put LakeSail's own requirements back where the roster's pins moved
+/// them (a resolver does not re-check what it was not asked about).
+fn reassert_sail_pins(cx: &Context, uv: &Path) -> Result<()> {
+    cx.log("re-asserting LakeSail's own pins over the roster");
+    let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
+    let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py];
+    args.extend(cx.manifest.sail.requirements());
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_tool(cx, uv, &argv, &uv_env(cx.dirs))?;
+    let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
     Ok(())
 }
 
@@ -584,17 +598,20 @@ fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Inst
 /// packages" button): `env` is a profile name or [`crate::SAIL_ENV`], `roster_name` the profile
 /// whose packages go in. Records the outcome like the install steps do; returns a summary line.
 pub fn install_roster(cx: &Context, env: &str, roster_name: &str) -> Result<String> {
-    let Some(roster) = cx.manifest.roster(roster_name) else {
+    let sail = env == crate::SAIL_ENV;
+    let Some(roster) = cx.manifest.engine_roster(if sail { Engine::Sail } else { Engine::PySpark }, roster_name) else {
         return Ok("no Fabric package roster".into());
     };
     let uv = detect::find_uv(&cx.dirs.uv_exe(), &cx.manifest.uv.min_adopt).map(|c| c.exe).ok_or_else(|| RuntimeError::Manifest("uv is not installed — install the runtime first".into()))?;
-    let sail = env == crate::SAIL_ENV;
     let py = if sail { cx.dirs.sail_env_python() } else { cx.dirs.env_python(env) };
     if !py.is_file() {
         return Err(RuntimeError::Manifest(format!("the {env} environment is not installed — install the runtime first")));
     }
     let env_dir = if sail { cx.dirs.sail_env_dir() } else { cx.dirs.env_dir(env) };
     let failed = step_roster(cx, &uv, &env_dir, &py, &roster)?;
+    if sail {
+        reassert_sail_pins(cx, &uv)?;
+    }
     let mut rec = Installed::load(cx.dirs);
     if sail {
         rec.sail_roster = Some(roster_name.to_string());
@@ -609,7 +626,7 @@ pub fn install_roster(cx: &Context, env: &str, roster_name: &str) -> Result<Stri
 
 /// The profile's own roster into the Local Spark environment, when the plan asks for it.
 fn step_profile_packages(cx: &Context, uv: &Path, plan: &Plan, rec: &mut Installed) -> Result<()> {
-    let roster = if plan.profile_packages { cx.manifest.roster(&plan.profile) } else { None };
+    let roster = if plan.profile_packages { cx.manifest.engine_roster(Engine::PySpark, &plan.profile) } else { None };
     let Some(roster) = roster else {
         rec.profile_packages = None;
         rec.profile_packages_failed.clear();

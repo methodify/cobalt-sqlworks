@@ -600,7 +600,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             if r.on_hover_text("Only what LakeSail itself needs (pysail, the PySpark Connect client, IPython, pandas, pyarrow) plus your Libraries.").clicked() {
                 draft.spark.sail_profile = "none".into();
             }
-            for (name, roster) in &manifest.rosters() {
+            for (name, roster) in &manifest.engine_rosters(cobalt_runtime::Engine::Sail) {
                 let r = ui.selectable_label(draft.spark.sail_profile == *name, format!("{name} ({} packages)", roster.packages.len()));
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sail profile {name}")));
                 if r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update LakeSail\"; packages without a wheel for this machine are skipped and listed.", roster.note, roster.source)).clicked() {
@@ -623,7 +623,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             ui.label(RichText::new(p.describe()).size(11.0).color(theme.text_muted));
         }
     });
-    if let Some(roster) = manifest.roster(&draft.spark.profile) {
+    if let Some(roster) = manifest.engine_roster(cobalt_runtime::Engine::PySpark, &draft.spark.profile) {
         ui.horizontal(|ui| {
             ui.label("Fabric packages");
             let r = ui.checkbox(&mut draft.spark.profile_packages, format!("{} ({} packages at Fabric Runtime {}'s versions)", roster.profile, roster.packages.len(), roster.fabric_runtime));
@@ -762,7 +762,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }),
                     format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }),
                     format!("LakeSail: pysail {} + pyspark-client {} {}", manifest.sail.version, manifest.sail.pyspark_client, if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
-                    match manifest.roster(&draft.spark.sail_profile) {
+                    match manifest.engine_roster(cobalt_runtime::Engine::Sail, &draft.spark.sail_profile) {
                         Some(r) => format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", draft.spark.sail_profile, r.packages.len()),
                         None => "Fabric packages: none".to_string(),
                     },
@@ -782,7 +782,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     _ => format!("Spark package: local-spark-mcp {pinned} + pyspark/delta-spark installed"),
                 });
                 if draft.spark.profile_packages {
-                    if let Some(r) = manifest.roster(&draft.spark.profile) {
+                    if let Some(r) = manifest.engine_roster(cobalt_runtime::Engine::PySpark, &draft.spark.profile) {
                         lines.push(format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", r.profile, r.packages.len()));
                     }
                 }

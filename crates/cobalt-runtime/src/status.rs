@@ -236,7 +236,7 @@ impl RuntimeStatus {
             _ => ComponentState::Missing { reason: format!("pysail {} + pyspark-client {} will be installed (about 250 MB)", pins.version, pins.pyspark_client) },
         };
         let health = if env.is_ready() { sail_healthcheck(dirs) } else { None };
-        let roster = manifest.roster(roster).map(|r| RosterStatus::read(&env_dir, &r, &record.sail_roster_failed));
+        let roster = manifest.engine_roster(Engine::Sail, roster).map(|r| RosterStatus::read(&env_dir, &r, &record.sail_roster_failed));
         Self {
             engine: Engine::Sail,
             profile: "sail".into(),
@@ -262,7 +262,7 @@ impl RuntimeStatus {
         let platform = Platform::current();
         let record = Installed::load(dirs);
         let prof = manifest.profile(profile).ok();
-        let roster = if packages { manifest.roster(profile).map(|r| RosterStatus::read(&dirs.env_dir(profile), &r, &record.profile_packages_failed)) } else { None };
+        let roster = if packages { manifest.engine_roster(Engine::PySpark, profile).map(|r| RosterStatus::read(&dirs.env_dir(profile), &r, &record.profile_packages_failed)) } else { None };
         let uv = match detect::find_uv(&dirs.uv_exe(), &manifest.uv.min_adopt) {
             Some(c) if c.source == "managed" => ComponentState::Managed { detail: format!("uv {}", c.version) },
             Some(c) => ComponentState::Adopted { detail: format!("uv {} at {}", c.version, c.exe.display()) },

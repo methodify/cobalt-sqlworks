@@ -20,7 +20,7 @@ fn main() {
     let env = args[2].clone();
     let roster = args.get(3).cloned().unwrap_or_else(|| if env == cobalt_runtime::SAIL_ENV { "fabric-2.0".into() } else { env.clone() });
     let manifest = Manifest::embedded();
-    println!("local-spark-mcp pin {} · rosters: {}", manifest.local_spark_mcp.version, manifest.rosters().iter().map(|(n, r)| format!("{n} ({})", r.packages.len())).collect::<Vec<_>>().join(", "));
+    println!("local-spark-mcp pin {} · rosters: {}", manifest.local_spark_mcp.version, manifest.engine_rosters(if env == cobalt_runtime::SAIL_ENV { cobalt_runtime::Engine::Sail } else { cobalt_runtime::Engine::PySpark }).iter().map(|(n, r)| format!("{n} ({})", r.packages.len())).collect::<Vec<_>>().join(", "));
     let show = |label: &str| {
         let st = if env == cobalt_runtime::SAIL_ENV { RuntimeStatus::inspect_sail(&dirs, &manifest, &roster) } else { RuntimeStatus::inspect(&dirs, &manifest, &env, None, true) };
         println!("{label}: env={:?} package={:?}", st.env, st.package_version);

@@ -33,4 +33,15 @@ healthcheck --json  fabric_packages             installed 56, mismatched {}, var
                                                  complete true
 ```
 
-Nothing to ask.
+**One finding from the first full run on LakeSail, for the record.** The roster's
+`protobuf==5.29.6` (Fabric 2.0's version) went into the LakeSail environment under
+`pyspark-client==4.1.3`, whose generated code is built against protobuf 6.33, and the Connect
+client stopped loading ("Detected incompatible Protobuf Gencode/Runtime versions … gencode
+6.33.0 runtime 5.29.6"). uv did not object because pyspark-client declares no protobuf floor
+and a resolver does not re-check what it was not asked about. Cobalt now keeps a per-engine
+reserved list (`protobuf` on LakeSail, left out of the roster and named in the tooltip),
+carries the floor in the engine's own pins, and re-asserts those pins after every roster
+install. On your engine the roster is yours to validate and it held: a Spark 4.1.1 session
+started here with all 56 in. Nothing to ask; if a future Fabric runtime ever pins a package
+that your own pyspark needs newer, the same shape (`python_packages_fallbacks`, or a
+`python_packages_reserved` naming what the engine owns) would carry it.

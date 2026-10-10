@@ -13,8 +13,12 @@
     "packages": [
       "ipython>=8.18",
       "pandas>=2.0,<3",
-      "pyarrow>=15"
-    ]
+      "pyarrow>=15",
+      "protobuf>=6.33,<7"
+    ],
+    "reserved": {
+      "protobuf": "the PySpark Connect client's generated code is built against protobuf 6.33; a roster's older pin (Fabric 2.0 ships 5.29.6) stops the client loading"
+    }
   },
   "uv": {
     "version": "0.12.23",

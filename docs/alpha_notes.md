@@ -484,7 +484,9 @@ the profile's roster into its environment, on LakeSail the picker offers *None* 
 *fabric-1.3*. Opt-in, a few hundred MB; the status line counts the packages at Fabric's version
 and names any at another version or that would not install here (on Windows, fabric-2.0's
 `scipy==1.18.0` has no wheel for Python 3.11, so the manifest's platform fallback `scipy>=1.15,<1.18`
-goes in and the status line says "platform fallback"). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+goes in and the status line says "platform fallback"; on LakeSail protobuf is not taken from the
+roster because the PySpark Connect client needs its own newer line, so that engine shows 55 of
+the 56). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
