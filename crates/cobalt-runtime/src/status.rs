@@ -106,20 +106,25 @@ pub struct RosterStatus {
     pub missing: Vec<String>,
     /// Present at another version: `name have (Fabric want)`.
     pub mismatched: Vec<String>,
+    /// Present at a version the manifest's platform fallback allows for this Python (counted as
+    /// installed): `name have (Fabric want; reason)`.
+    pub variants: Vec<String>,
     /// Packages the last install could not put in (no wheel for this platform, a conflict…).
     pub failed: Vec<String>,
 }
 
 impl RosterStatus {
-    /// Everything is there at Fabric's version.
+    /// Everything is there at Fabric's version or at its platform fallback.
     pub fn complete(&self) -> bool {
         self.missing.is_empty() && self.mismatched.is_empty()
     }
 
     /// Read the environment: which of the roster's pins are in, at which version.
     pub fn read(env_dir: &Path, roster: &crate::manifest::Roster, failed: &[String]) -> Self {
+        let python = crate::install::env_python_version(env_dir);
         let mut missing = Vec::new();
         let mut mismatched = Vec::new();
+        let mut variants = Vec::new();
         let mut installed = 0;
         for spec in &roster.packages {
             let name = crate::libraries::python_dist_name(spec);
@@ -127,10 +132,16 @@ impl RosterStatus {
             match detect::installed_package_version(env_dir, &name) {
                 None => missing.push(name),
                 Some(have) if have == want || want.is_empty() => installed += 1,
-                Some(have) => mismatched.push(format!("{name} {have} (Fabric {want})")),
+                Some(have) => match roster.fallback_for(&name, python) {
+                    Some(fb) if crate::manifest::spec_satisfied(&have, &fb.requirement) => {
+                        installed += 1;
+                        variants.push(format!("{name} {have} (Fabric {want}; {})", fb.reason));
+                    }
+                    _ => mismatched.push(format!("{name} {have} (Fabric {want})")),
+                },
             }
         }
-        Self { profile: roster.profile.clone(), installed, total: roster.packages.len(), missing, mismatched, failed: failed.to_vec() }
+        Self { profile: roster.profile.clone(), installed, total: roster.packages.len(), missing, mismatched, variants, failed: failed.to_vec() }
     }
 }
 

@@ -725,6 +725,9 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     format!("Fabric packages ({}): {} of {} at Fabric's version, {} missing — install to add the rest", r.profile, r.installed, r.total, r.missing.len())
                 };
                 ui.label(RichText::new(text).size(12.0).color(if ok { theme.success } else { theme.warning }));
+                if !r.variants.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(format!("  platform fallback: {}", r.variants.join(", "))).size(11.0).color(theme.text_muted)).wrap());
+                }
                 if !r.mismatched.is_empty() {
                     ui.add(egui::Label::new(RichText::new(format!("  other version: {}", r.mismatched.join(", "))).size(11.0).color(theme.text_muted)).wrap());
                 }

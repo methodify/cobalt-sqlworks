@@ -526,17 +526,26 @@ fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> 
 /// wheel for this platform (or a conflict) are skipped and named, never fatal. Returns the
 /// requirements that did not install. The same procedure as local-spark-mcp's own
 /// `fabric_packages install`, run by Cobalt so both engines' environments get it with the live log.
-fn step_roster(cx: &Context, uv: &Path, env_python: &Path, roster: &crate::manifest::Roster) -> Result<Vec<String>> {
+fn step_roster(cx: &Context, uv: &Path, env_dir: &Path, env_python: &Path, roster: &crate::manifest::Roster) -> Result<Vec<String>> {
     (cx.progress)(Progress::Step { step: Step::Libraries, label: format!("Installing the {} package roster ({} packages, Fabric Runtime {}'s versions)", roster.profile, roster.packages.len(), roster.fabric_runtime) });
     let env = uv_env(cx.dirs);
     let py = env_python.to_string_lossy().to_string();
+    // the manifest's per-platform fallbacks apply to the environment's Python
+    let python = env_python_version(env_dir);
+    let specs = roster.requirements_for(python);
+    for (spec, pin) in specs.iter().zip(&roster.packages) {
+        if spec != pin {
+            let name = crate::libraries::python_dist_name(pin);
+            cx.log(format!("{name}: {spec} instead of {pin} on Python {} ({})", python.map(|(a, b)| format!("{a}.{b}")).unwrap_or_default(), roster.fallbacks.get(&name).map(|f| f.reason.as_str()).unwrap_or("platform fallback")));
+        }
+    }
     let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py.clone()];
-    args.extend(roster.packages.iter().cloned());
+    args.extend(specs.iter().cloned());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut failed: Vec<String> = Vec::new();
     if let Err(e) = run_tool(cx, uv, &argv, &env) {
         cx.log(format!("roster as a whole did not resolve ({e}); installing package by package"));
-        for spec in &roster.packages {
+        for spec in &specs {
             if cx.cancel.load(Ordering::Relaxed) {
                 return Err(RuntimeError::Cancelled);
             }
@@ -552,6 +561,12 @@ fn step_roster(cx: &Context, uv: &Path, env_python: &Path, roster: &crate::manif
     Ok(failed)
 }
 
+/// The (major, minor) of an environment's Python, from its `pyvenv.cfg`.
+pub(crate) fn env_python_version(env_dir: &Path) -> Option<(u32, u32)> {
+    let v = crate::manifest::version_tuple(&detect::venv_python_version(env_dir)?);
+    (v.len() >= 2).then(|| (v[0], v[1]))
+}
+
 /// The roster chosen for the LakeSail environment (`none` clears the record).
 fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Installed) -> Result<()> {
     let Some(roster) = cx.manifest.roster(roster_name) else {
@@ -559,7 +574,7 @@ fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Inst
         rec.sail_roster_failed.clear();
         return Ok(());
     };
-    let failed = step_roster(cx, uv, &cx.dirs.sail_env_python(), &roster)?;
+    let failed = step_roster(cx, uv, &cx.dirs.sail_env_dir(), &cx.dirs.sail_env_python(), &roster)?;
     rec.sail_roster = Some(roster_name.to_string());
     rec.sail_roster_failed = failed;
     Ok(())
@@ -578,7 +593,8 @@ pub fn install_roster(cx: &Context, env: &str, roster_name: &str) -> Result<Stri
     if !py.is_file() {
         return Err(RuntimeError::Manifest(format!("the {env} environment is not installed — install the runtime first")));
     }
-    let failed = step_roster(cx, &uv, &py, &roster)?;
+    let env_dir = if sail { cx.dirs.sail_env_dir() } else { cx.dirs.env_dir(env) };
+    let failed = step_roster(cx, &uv, &env_dir, &py, &roster)?;
     let mut rec = Installed::load(cx.dirs);
     if sail {
         rec.sail_roster = Some(roster_name.to_string());
@@ -599,7 +615,7 @@ fn step_profile_packages(cx: &Context, uv: &Path, plan: &Plan, rec: &mut Install
         rec.profile_packages_failed.clear();
         return Ok(());
     };
-    let failed = step_roster(cx, uv, &cx.dirs.env_python(&plan.profile), &roster)?;
+    let failed = step_roster(cx, uv, &cx.dirs.env_dir(&plan.profile), &cx.dirs.env_python(&plan.profile), &roster)?;
     rec.profile_packages = Some(plan.profile.clone());
     rec.profile_packages_failed = failed;
     Ok(())

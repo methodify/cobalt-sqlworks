@@ -121,7 +121,96 @@ pub struct Roster {
     /// URL of the environment file the versions were taken from.
     pub source: String,
     pub note: String,
+    /// Fabric's pins, `name==version`.
     pub packages: Vec<String>,
+    /// Per-platform replacements for pins that cannot install everywhere (name → fallback).
+    pub fallbacks: BTreeMap<String, Fallback>,
+}
+
+/// A platform fallback for one roster pin: when `marker` holds for the environment's Python,
+/// `requirement` is installed instead of Fabric's exact version (`python_packages_fallbacks`).
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Fallback {
+    /// `python_version <op> 'X.Y'` — the only shape local-spark-mcp uses.
+    pub marker: String,
+    pub requirement: String,
+    pub reason: String,
+}
+
+impl Roster {
+    /// What to install for an environment running `python` (major, minor): Fabric's pin, or
+    /// the fallback requirement where its marker applies.
+    pub fn requirements_for(&self, python: Option<(u32, u32)>) -> Vec<String> {
+        self.packages
+            .iter()
+            .map(|spec| {
+                let name = crate::libraries::python_dist_name(spec);
+                match self.fallbacks.get(&name) {
+                    Some(fb) if marker_applies(&fb.marker, python) => fb.requirement.clone(),
+                    _ => spec.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// The fallback that applies to `name` on `python`, if any.
+    pub fn fallback_for(&self, name: &str, python: Option<(u32, u32)>) -> Option<&Fallback> {
+        self.fallbacks.get(name).filter(|fb| marker_applies(&fb.marker, python))
+    }
+}
+
+/// Evaluate `python_version <op> 'X.Y'` for a Python (major, minor); false when the marker has
+/// another shape or the Python is unknown.
+pub fn marker_applies(marker: &str, python: Option<(u32, u32)>) -> bool {
+    let Some((major, minor)) = python else { return false };
+    let rest = marker.trim().strip_prefix("python_version").map(str::trim);
+    let Some(rest) = rest else { return false };
+    let found = ["<=", ">=", "==", "!=", "<", ">"].iter().find_map(|op| rest.strip_prefix(op).map(|v| (*op, v.trim().trim_matches(|c| c == '\'' || c == '"'))));
+    let Some((op, ver)) = found else { return false };
+    let want = version_tuple(ver);
+    if want.len() < 2 {
+        return false;
+    }
+    let have = vec![major, minor];
+    let want = want[..2].to_vec();
+    match op {
+        "<" => have < want,
+        "<=" => have <= want,
+        ">" => have > want,
+        ">=" => have >= want,
+        "==" => have == want,
+        "!=" => have != want,
+        _ => false,
+    }
+}
+
+/// Does an installed version satisfy a pip specifier set such as `scipy>=1.15,<1.18`?
+/// Numeric comparison on the first three components; unknown operators fail closed.
+pub fn spec_satisfied(have: &str, spec: &str) -> bool {
+    let have_t = version_tuple(have);
+    let body = spec.trim();
+    let start = body.find(['<', '>', '=', '!', '~']).unwrap_or(body.len());
+    let clauses = body[start..].split(',').map(str::trim).filter(|c| !c.is_empty());
+    let mut any = false;
+    for c in clauses {
+        any = true;
+        let (op, ver) = ["<=", ">=", "==", "!=", "~=", "<", ">"].iter().find_map(|op| c.strip_prefix(op).map(|v| (*op, v.trim()))).unwrap_or(("", c));
+        let want = version_tuple(ver);
+        let ok = match op {
+            "<" => have_t < want,
+            "<=" => have_t <= want,
+            ">" => have_t > want,
+            ">=" | "~=" => have_t >= want,
+            "==" => have_t == want,
+            "!=" => have_t != want,
+            _ => false,
+        };
+        if !ok {
+            return false;
+        }
+    }
+    any
 }
 
 /// Where a profile's package roster was taken from (`python_packages_source`).
@@ -180,6 +269,9 @@ pub struct Profile {
     pub python_packages: BTreeMap<String, String>,
     #[serde(default)]
     pub python_packages_source: Option<PackageSource>,
+    /// Pins that cannot install on every Python, with the requirement to use instead.
+    #[serde(default)]
+    pub python_packages_fallbacks: BTreeMap<String, Fallback>,
 }
 
 impl Profile {
@@ -202,6 +294,7 @@ impl Profile {
                 if commit.is_empty() { String::new() } else { format!(", commit {commit}, {}", src.date) }
             ),
             packages: self.python_packages.iter().map(|(n, v)| format!("{n}=={v}")).collect(),
+            fallbacks: self.python_packages_fallbacks.clone(),
         })
     }
     /// The Python version to install for this platform.
@@ -431,6 +524,31 @@ mod tests {
             assert!(!r.packages.iter().any(|p| p.starts_with("pyspark==") || p.starts_with("delta-spark==") || p.starts_with("notebookutils")));
         }
         assert!(m.python_packages_excluded.contains_key("pyspark"));
+        // 0.8.1: the per-platform fallback is data; a 3.11 environment gets the alternative
+        let fb = r.fallbacks.get("scipy").expect("scipy fallback on fabric-2.0");
+        assert_eq!(fb.marker, "python_version < '3.12'");
+        let on_311 = r.requirements_for(Some((3, 11)));
+        assert!(on_311.contains(&fb.requirement) && !on_311.contains(&"scipy==1.18.0".to_string()));
+        let on_313 = r.requirements_for(Some((3, 13)));
+        assert!(on_313.contains(&"scipy==1.18.0".to_string()));
+        assert_eq!(on_311.len(), r.packages.len());
+        assert!(r.fallback_for("scipy", Some((3, 11))).is_some() && r.fallback_for("scipy", Some((3, 12))).is_none() && r.fallback_for("scipy", None).is_none());
+    }
+
+    #[test]
+    fn markers_and_specs() {
+        assert!(marker_applies("python_version < '3.12'", Some((3, 11))));
+        assert!(!marker_applies("python_version < '3.12'", Some((3, 12))));
+        assert!(marker_applies("python_version >= \"3.12\"", Some((3, 13))));
+        assert!(marker_applies("python_version == '3.11'", Some((3, 11))));
+        assert!(!marker_applies("python_version < '3.12'", None));
+        assert!(!marker_applies("sys_platform == 'win32'", Some((3, 11))));
+        assert!(spec_satisfied("1.17.1", "scipy>=1.15,<1.18"));
+        assert!(!spec_satisfied("1.18.0", "scipy>=1.15,<1.18"));
+        assert!(!spec_satisfied("1.14.0", "scipy>=1.15,<1.18"));
+        assert!(spec_satisfied("2.3.3", "pandas==2.3.3"));
+        assert!(!spec_satisfied("2.3.3", "pandas"));
+        assert!(spec_satisfied("1.2.3", ">=1.2"));
     }
 
     #[test]

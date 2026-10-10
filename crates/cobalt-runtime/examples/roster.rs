@@ -25,7 +25,7 @@ fn main() {
         let st = if env == cobalt_runtime::SAIL_ENV { RuntimeStatus::inspect_sail(&dirs, &manifest, &roster) } else { RuntimeStatus::inspect(&dirs, &manifest, &env, None, true) };
         println!("{label}: env={:?} package={:?}", st.env, st.package_version);
         match st.roster {
-            Some(r) => println!("  roster {}: {} of {} at Fabric's version · missing {:?} · other version {:?} · failed {:?} · complete {}", r.profile, r.installed, r.total, r.missing, r.mismatched, r.failed, r.complete()),
+            Some(r) => println!("  roster {}: {} of {} at Fabric's version · missing {:?} · other version {:?} · platform fallback {:?} · failed {:?} · complete {}", r.profile, r.installed, r.total, r.missing, r.mismatched, r.variants, r.failed, r.complete()),
             None => println!("  no roster status"),
         }
     };

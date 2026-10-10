@@ -13,7 +13,10 @@
   environment (Install, Reinstall / update and Install Python packages all honour it); on LakeSail
   the roster picker offers both profiles' rosters. The status line counts the packages at
   Fabric's version and names the ones at another version and the ones that would not install
-  here. The pin moves to local-spark-mcp 0.8.0 (additive, worker protocol 2).
+  here. Where a Fabric pin has no wheel for the environment's Python (fabric-2.0's scipy on
+  Python 3.11), the manifest's platform fallback is installed instead and the status says
+  "platform fallback" rather than counting it as drift. The pin moves to local-spark-mcp 0.8.1
+  (additive, worker protocol 2).
 
 ## 0.9.3 — 2026-10-09
 

@@ -18,7 +18,7 @@ pub mod manifest;
 pub mod status;
 pub mod worker;
 
-pub use manifest::{Engine, JdkVendor, LsmManifest, Manifest, PackageSource, Platform, Profile, Roster, SailPins};
+pub use manifest::{Engine, Fallback, JdkVendor, LsmManifest, Manifest, PackageSource, Platform, Profile, Roster, SailPins};
 
 /// Cobalt's LakeSail worker (`python -m cobalt_sail_worker`), written into the Sail
 /// environment at install time.
