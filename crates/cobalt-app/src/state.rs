@@ -907,6 +907,9 @@ pub struct LakehousePane {
     pub selected: Option<(String, String, String)>,
     pub tables: Option<Result<Vec<cobalt_fabric::OneLakeTable>, String>>,
     pub tables_loading: bool,
+    /// Where the listing came from: "table API" (Fabric's, one call per schema) or "OneLake
+    /// listing" (the DFS crawl, when the API is not available for the lakehouse).
+    pub tables_source: &'static str,
     /// Listed folders by relative path (`""` = `Files/`).
     pub files: std::collections::HashMap<String, Result<Vec<FileEntry>, String>>,
     pub files_loading: std::collections::HashSet<String>,

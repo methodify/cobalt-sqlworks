@@ -15,6 +15,14 @@
   in write-through `df.write.saveAsTable("dbo.t")` on a lakehouse table becomes a Delta write at
   the table's path followed by a catalog refresh, and `writeTo(...).create()` says to use
   `saveAsTable` or SQL. `notebookutils.notebook.exit(value)` ends the cell cleanly.
+- **Lakehouse listings through Fabric's table API on both engines.** The Lakehouse pane and the
+  Spark SQL completion catalog now list a lakehouse's tables through Fabric's own table API (one
+  call per schema, however many tables; a table's columns in one call) instead of crawling
+  `Tables/` over OneLake's file listing and reading every table's Delta log. The crawl stays as
+  the fallback when the API is not available for a lakehouse; the session log says which reader
+  answered and how long it took. The LakeSail catalog uses the same client. A request to the
+  local-spark-mcp team asks the JVM worker to take this listing from Cobalt
+  (`docs/requests/local-spark-mcp-0.8.2-request.md`).
 
 ## 0.9.4 — 2026-10-10
 

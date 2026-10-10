@@ -231,16 +231,19 @@ path plus a catalog refresh (Sail's catalog-managed create needs a Unity table i
 - **Slice C — later.** Sandbox on Sail (delta-rs shallow clone); native OneLake catalog mode once
   the type-name bug is fixed; Flight SQL straight from Rust for Spark SQL tabs (no Python in the
   path); session presets that bundle engine + write mode + libraries.
-- **Backlog (founder, 2026-10-09): the Fabric table API for the JVM engine too.** The
-  catalog endpoint built for Sail reads Fabric's table API (one call per schema, one per table,
-  with types). The JVM worker's `OneLakeCatalog` still discovers tables by crawling OneLake's
-  DFS, and Cobalt's completion catalog reads each table's Delta log. A shared, cached
-  Cobalt-side reader over the table API could feed all three: the JVM worker (an upstream ask
-  to local-spark-mcp: accept a host-supplied listing instead of `listOneLakeTables`), the
-  Lakehouse pane, and completion. Not worth it: pointing Spark at the Unity endpoint through the
-  Unity connector, which would give up the sandbox clones that are the JVM engine's point; the
-  per-table clone (1.5–2 s, already parallel on preload) is that engine's floor regardless of
-  the catalog.
+- **The Fabric table API for the JVM engine too (founder, 2026-10-09; Cobalt's side built
+  2026-10-10).** `cobalt_fabric::TableApiClient` (`table_api.rs`) is the one reader over Fabric's
+  table API: schemas, table names per schema, a table's columns, and `list_tables` in the DFS
+  reader's shape (`schema: None` for a plain lakehouse, told by one GET on the first table's
+  `storage_location`). The Lakehouse pane and the Spark SQL completion catalog use it first and
+  fall back to the DFS crawl + Delta-log read when the API answers an error for a lakehouse; the
+  session log says which reader answered and how long it took. The LakeSail catalog endpoint's
+  `Upstream` calls the same client. Still open: the JVM worker's own `listOneLakeTables` crawl,
+  asked of local-spark-mcp as a host-supplied listing
+  (`docs/requests/local-spark-mcp-0.8.2-request.md`). Not worth it: pointing Spark at the Unity
+  endpoint through the Unity connector, which would give up the sandbox clones that are the JVM
+  engine's point; the per-table clone (1.5–2 s, already parallel on preload) is that engine's
+  floor regardless of the catalog.
 
 ## 6. Decisions for the founder (recommendations in bold)
 

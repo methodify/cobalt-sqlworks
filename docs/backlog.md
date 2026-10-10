@@ -17,6 +17,7 @@ docs under `docs/design/` carry the larger arcs; this list is for defects and sm
 
 ## Improvements
 
-- **The Fabric table API for the JVM engine's listings** — see `docs/design/lakesail_runtime.md`
-  §5 (backlog entry): a shared Cobalt-side reader over Fabric's table API feeding the JVM worker's
-  listing (upstream ask), the Lakehouse pane and completion; no catalog plugin swap.
+- **The Fabric table API for the JVM engine's listings** — done on Cobalt's side 2026-10-10
+  (`cobalt_fabric::TableApiClient`; the pane and completion read it with the DFS crawl as the
+  fallback; see `docs/design/lakesail_runtime.md` §5). Open: the JVM worker's own listing, asked
+  of local-spark-mcp in `docs/requests/local-spark-mcp-0.8.2-request.md`.

@@ -8,7 +8,9 @@
 pub mod client;
 pub mod model;
 pub mod onelake;
+pub mod table_api;
 
 pub use client::{FabricClient, FabricError};
 pub use model::*;
 pub use onelake::{DirEntry, OneLakeClient, OneLakeTable};
+pub use table_api::{TableApiClient, TableColumn, TableDetail};

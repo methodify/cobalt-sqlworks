@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const PREFIX: &str = "/api/2.1/unity-catalog";
-const TABLE_API: &str = "https://onelake.table.fabric.microsoft.com/delta";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LakehouseRef {
@@ -67,11 +66,10 @@ impl CatalogServer {
         let upstream_calls = Arc::new(AtomicU64::new(0));
         let last_error = Arc::new(Mutex::new(None));
         let (reg2, stop2, req2, up2, err2) = (registry.clone(), stop.clone(), requests.clone(), upstream_calls.clone(), last_error.clone());
-        let client = reqwest::Client::builder().user_agent(format!("cobalt-sqlworks/{}", env!("CARGO_PKG_VERSION"))).timeout(Duration::from_secs(45)).build().map_err(|e| std::io::Error::other(e.to_string()))?;
         std::thread::Builder::new()
             .name("sail-catalog".into())
             .spawn(move || {
-                let up = Upstream { client, resolver, slot, tenant, handle, calls: up2, last_error: err2 };
+                let up = Upstream { resolver, slot, tenant, handle, calls: up2, last_error: err2 };
                 while !stop2.load(Ordering::Relaxed) {
                     let mut req = match server.recv_timeout(Duration::from_millis(300)) {
                         Ok(Some(r)) => r,
@@ -122,7 +120,6 @@ impl Drop for CatalogServer {
 }
 
 struct Upstream {
-    client: reqwest::Client,
     resolver: Arc<CredentialResolver>,
     slot: ProfileId,
     tenant: Option<String>,
@@ -143,27 +140,15 @@ impl Upstream {
         self.handle.block_on(crate::delta_schema::table_fields(&client, &lh.workspace_id, &dir))
     }
 
-    /// GET on Fabric's table API for a lakehouse; `Ok(None)` = 404 there.
+    /// GET on Fabric's table API for a lakehouse (the shared client); `Ok(None)` = 404 there.
     fn get(&self, lh: &LakehouseRef, path: &str, query: &[(&str, &str)]) -> Result<Option<Value>, String> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         let token = self.handle.block_on(crate::onelake_tokens::fetch(&self.resolver, self.slot, self.tenant.as_deref()))?;
-        let url = format!("{TABLE_API}/{}/{}{PREFIX}{path}", lh.workspace_id, lh.id);
-        let r = self.handle.block_on(async {
-            let resp = self.client.get(&url).query(query).bearer_auth(&token).send().await.map_err(|e| e.to_string())?;
-            let status = resp.status();
-            let text = resp.text().await.map_err(|e| e.to_string())?;
-            Ok::<_, String>((status, text))
-        });
-        match r {
-            Ok((status, text)) if status.is_success() => serde_json::from_str::<Value>(&text).map(Some).map_err(|e| format!("Fabric's table API answered something that is not JSON: {e}")),
-            Ok((status, _)) if status.as_u16() == 404 => Ok(None),
-            Ok((status, text)) => {
-                let msg = format!("Fabric's table API answered {status} for {path}: {}", text.chars().take(300).collect::<String>());
-                *self.last_error.lock() = Some(msg.clone());
-                Err(msg)
-            }
+        let api = cobalt_fabric::TableApiClient::new(token);
+        match self.handle.block_on(api.get_raw(&lh.workspace_id, &lh.id, path, query)) {
+            Ok(v) => Ok(v),
             Err(e) => {
-                let msg = format!("Fabric's table API: {e}");
+                let msg = format!("Fabric's table API ({path}): {}", crate::fabric::fabric_error_text(&e));
                 *self.last_error.lock() = Some(msg.clone());
                 Err(msg)
             }
