@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 — 2026-10-09
 
 - Settings › Spark runtime: switching the Engine row re-reads the components of that engine at once (without saving), so the readout never shows the other engine's install state.
 - Settings › Libraries installs Python packages into every installed engine environment (Local Spark and LakeSail), so a wheel added for one engine is importable on the other; the status column reads the selected engine's environment. Before, LakeSail sessions never saw the packages.
