@@ -88,7 +88,7 @@ pub fn fmt_num(v: f64) -> String {
 }
 
 /// A cell-text predicate from [`find_matcher`].
-pub type FindMatcher = Box<dyn Fn(&str) -> bool>;
+pub type FindMatcher = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// The matcher behind the results find bar: plain substring, or a regex (also used for whole-word
 /// matching, by wrapping the escaped text in word boundaries).
@@ -103,6 +103,14 @@ pub fn find_matcher(text: &str, case_sensitive: bool, use_regex: bool, whole_wor
     } else if case_sensitive {
         let needle = text.to_string();
         Ok(Box::new(move |s: &str| s.contains(&needle)))
+    } else if text.is_ascii() {
+        // no allocation per cell: compare bytes ignoring ASCII case (a non-ASCII cell still
+        // matches on its ASCII parts, which is what a plain substring search means here)
+        let needle = text.to_ascii_lowercase().into_bytes();
+        Ok(Box::new(move |s: &str| {
+            let b = s.as_bytes();
+            needle.is_empty() || (b.len() >= needle.len() && b.windows(needle.len()).any(|w| w.eq_ignore_ascii_case(&needle)))
+        }))
     } else {
         let needle = text.to_lowercase();
         Ok(Box::new(move |s: &str| s.to_lowercase().contains(&needle)))

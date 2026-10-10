@@ -721,7 +721,8 @@ impl AgentApp for CobaltApp {
                         ActionResult::ok()
                     }
                     "find_state" => {
-                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.grid.find.as_ref()).map(|f| json!({"text": f.text, "matches": f.matches, "current": f.current, "error": f.error}));
+                        // matches: the first 1,000 (row, col); count: all of them so far; complete: every cell was looked at
+                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.grid.find.as_ref()).map(|f| json!({"text": f.text, "matches": f.matches.iter().take(1000).collect::<Vec<_>>(), "count": f.matches.len(), "current": f.current, "error": f.error, "complete": f.complete(), "scanned_rows": f.scanned_rows, "total_rows": f.total_rows}));
                         ActionResult::with(&json!({"find": v}))
                     }
                     _ => ActionResult::BadArgs("action must be totals, profile, find or find_state".into()),

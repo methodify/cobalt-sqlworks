@@ -837,7 +837,10 @@ pub struct FilterPopup {
 #[derive(Default)]
 pub struct GridFind {
     pub text: String,
+    /// Matches found so far, in scan order (row, then column).
     pub matches: Vec<(usize, usize)>,
+    /// The same matches for the grid's per-cell lookup (shared with the frame that paints).
+    pub match_set: Arc<std::collections::HashSet<(usize, usize)>>,
     pub current: usize,
     pub generation: u64,
     pub case_sensitive: bool,
@@ -845,6 +848,38 @@ pub struct GridFind {
     pub whole_word: bool,
     /// A regex that did not compile.
     pub error: Option<String>,
+    /// The scan over the whole result set runs on a thread and reports in blocks; None once
+    /// every cell was looked at (or there is nothing to scan).
+    pub scan: Option<FindScan>,
+    pub scanned_rows: usize,
+    pub total_rows: usize,
+    /// Set by code that changes the text or options outside the bar (the agent): scan again.
+    pub dirty: bool,
+}
+
+impl GridFind {
+    /// Every cell of the current view has been looked at.
+    pub fn complete(&self) -> bool {
+        self.scan.is_none()
+    }
+}
+
+/// A running find scan: blocks of matches arrive on `rx`; dropping it stops the thread.
+pub struct FindScan {
+    pub rx: crossbeam_channel::Receiver<FindMsg>,
+    pub cancel: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for FindScan {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+pub enum FindMsg {
+    /// Matches of one block of rows, and how many rows have been scanned so far.
+    Block { matches: Vec<(usize, usize)>, scanned_rows: usize },
+    Done,
 }
 
 /// The aggregate shown in the grid's totals row.

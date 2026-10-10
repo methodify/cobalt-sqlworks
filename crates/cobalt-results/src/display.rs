@@ -227,6 +227,15 @@ impl DisplayCache {
         e.push(item);
         v
     }
+    /// The whole formatted column of a chunk, when cached.
+    pub fn get_column(&self, chunk: usize, col: usize, gen: u64) -> Option<Arc<Vec<Arc<str>>>> {
+        let mut e = self.entries.lock();
+        let pos = e.iter().position(|(c, k, g, _)| *c == chunk && *k == col && *g == gen)?;
+        let item = e.remove(pos);
+        let v = item.3.clone();
+        e.push(item);
+        Some(v)
+    }
     pub fn put(&self, chunk: usize, col: usize, gen: u64, values: Arc<Vec<Arc<str>>>) {
         let mut e = self.entries.lock();
         e.retain(|(c, k, _, _)| !(*c == chunk && *k == col));

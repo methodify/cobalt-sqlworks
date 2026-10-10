@@ -55,7 +55,7 @@ struct Delegate<'a> {
     double_click: Option<(usize, usize)>,
     secondary: Option<Pos2>,
     /// Find-bar matches (highlighted) and the current one.
-    find_set: HashSet<(usize, usize)>,
+    find_set: std::sync::Arc<HashSet<(usize, usize)>>,
     find_current: Option<(usize, usize)>,
     /// Totals row values (one per data column) and its label.
     totals: Option<(String, Vec<String>)>,
@@ -393,8 +393,8 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     }
     let sticky = if gutter { 1 + args.grid.frozen_cols } else { args.grid.frozen_cols };
     let (find_set, find_current) = match &args.grid.find {
-        Some(f) if !f.matches.is_empty() => (f.matches.iter().copied().collect::<HashSet<_>>(), f.matches.get(f.current).copied()),
-        _ => (HashSet::new(), None),
+        Some(f) if !f.matches.is_empty() => (f.match_set.clone(), f.matches.get(f.current).copied()),
+        _ => (Default::default(), None),
     };
     let totals = args.grid.totals.as_ref().map(|t| (t.kind.label().to_string(), t.values.clone()));
     let has_totals = totals.is_some();

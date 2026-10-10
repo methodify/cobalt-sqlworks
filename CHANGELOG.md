@@ -31,6 +31,11 @@
   install` lines in a cell are no longer sent to the session: the cell reports the packages
   and *Add to runtime* puts them in the runtime's Python packages and starts the install into
   every engine environment.
+- **Find in results searches the whole result set.** The scan used to stop silently after
+  200,000 cells (a 29-column, 1.3-million-row result was searched to row ~7,000). It now runs on
+  a thread over every visible cell, matches appear as they are found with the first one selected
+  at once, and the status reads "n of m · scanning k%" until the scan is done and "No matches"
+  only then. Changing the text, an option or the sort / filter restarts it.
 
 ## 0.9.4 — 2026-10-10
 

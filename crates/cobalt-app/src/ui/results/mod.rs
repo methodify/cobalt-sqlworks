@@ -456,7 +456,41 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
     actions
 }
 
-/// Find-in-results bar. Matches are recomputed when the text or the view changes (capped at 200k cells).
+/// Scan every visible cell of the result set for the matcher on a thread, reporting matches in
+/// blocks of rows (the first block lands within milliseconds, so the first hit is instant while
+/// a million-row set keeps scanning). The receiver's drop cancels the thread.
+fn spawn_find_scan(rs: std::sync::Arc<cobalt_results::ResultSet>, fmt: CellFormatter, is_match: profile::FindMatcher, egui: egui::Context) -> crate::state::FindScan {
+    use crate::state::FindMsg;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (tx, rx) = crossbeam_channel::unbounded::<FindMsg>();
+    let cancel = std::sync::Arc::new(AtomicBool::new(false));
+    let c2 = cancel.clone();
+    std::thread::Builder::new()
+        .name("results-find".into())
+        .spawn(move || {
+            let cols = rs.column_count().max(1);
+            // about 50,000 cells per block: a few ms of work, one message
+            let block = (50_000 / cols).clamp(64, 5_000);
+            let mut stopped = false;
+            rs.find_cells(&fmt, &*is_match, block, &c2, |found, scanned_rows| {
+                if tx.send(FindMsg::Block { matches: found, scanned_rows }).is_err() {
+                    stopped = true;
+                    return false;
+                }
+                egui.request_repaint();
+                true
+            });
+            if !stopped && !c2.load(Ordering::Relaxed) {
+                let _ = tx.send(FindMsg::Done);
+                egui.request_repaint();
+            }
+        })
+        .ok();
+    crate::state::FindScan { rx, cancel }
+}
+
+/// Find-in-results bar. The scan over the whole result set runs on a thread and reports in
+/// blocks; the status says how far it got until it has looked at every cell.
 fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, fmt: &CellFormatter) {
     let rs = view.rs.clone();
     let Some(find) = view.grid.find.as_mut() else { return };
@@ -490,38 +524,50 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
             recompute |= toggle(ui, &mut find.whole_word, "ab", "Whole word", "find whole word");
             recompute |= toggle(ui, &mut find.use_regex, ".*", "Regular expression", "find regex");
             let gen = rs.generation();
-            if recompute || find.generation != gen {
+            if recompute || find.dirty || find.generation != gen {
                 find.generation = gen;
+                find.dirty = false;
+                find.scan = None; // drops the receiver: a running scan stops
                 find.matches.clear();
+                find.match_set = Default::default();
                 find.current = 0;
                 find.error = None;
+                find.scanned_rows = 0;
+                find.total_rows = rs.visible_count();
                 if !find.text.is_empty() {
                     match profile::find_matcher(&find.text, find.case_sensitive, find.use_regex, find.whole_word) {
-                        Ok(is_match) => {
-                            let rows = rs.visible_count();
-                            let cols = rs.column_count();
-                            let mut budget = 200_000usize;
-                            'outer: for row in 0..rows {
-                                for col in 0..cols {
-                                    if budget == 0 {
-                                        break 'outer;
-                                    }
-                                    budget -= 1;
-                                    if is_match(&rs.cell_text(row, col, fmt)) {
-                                        find.matches.push((row, col));
-                                    }
-                                }
-                            }
-                        }
+                        Ok(is_match) => find.scan = Some(spawn_find_scan(rs.clone(), fmt.clone(), is_match, ui.ctx().clone())),
                         Err(e) => find.error = Some(e),
                     }
                 }
-                if !find.matches.is_empty() {
-                    let (r0, c0) = find.matches[0];
-                    view.grid.anchor = Some((r0, c0));
-                    view.grid.selection = Selection::Cells { r0, c0, r1: r0, c1: c0 };
-                    view.grid.scroll_to = Some((r0, c0));
+            }
+            // blocks from the scan: the first match selects and scrolls, the rest accumulate
+            let mut done = false;
+            if let Some(scan) = &find.scan {
+                while let Ok(m) = scan.rx.try_recv() {
+                    match m {
+                        crate::state::FindMsg::Block { matches, scanned_rows } => {
+                            find.scanned_rows = scanned_rows;
+                            if matches.is_empty() {
+                                continue;
+                            }
+                            let first = find.matches.is_empty();
+                            std::sync::Arc::make_mut(&mut find.match_set).extend(matches.iter().copied());
+                            find.matches.extend(matches);
+                            if first {
+                                let (r0, c0) = find.matches[0];
+                                view.grid.anchor = Some((r0, c0));
+                                view.grid.selection = Selection::Cells { r0, c0, r1: r0, c1: c0 };
+                                view.grid.scroll_to = Some((r0, c0));
+                            }
+                        }
+                        crate::state::FindMsg::Done => done = true,
+                    }
                 }
+            }
+            if done {
+                find.scan = None;
+                find.scanned_rows = find.total_rows;
             }
             if ui.small_button(icons::CARET_UP).on_hover_text("Previous (Shift+Enter)").clicked() {
                 step = -1;
@@ -529,14 +575,20 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
             if ui.small_button(icons::CARET_DOWN).on_hover_text("Next (Enter)").clicked() {
                 step = 1;
             }
+            let complete = find.complete();
+            let progress = if complete || find.total_rows == 0 { String::new() } else { format!(" · scanning {}%", (find.scanned_rows * 100 / find.total_rows).min(99)) };
             let (label, color) = match (&find.error, find.text.is_empty(), find.matches.is_empty()) {
                 (Some(e), _, _) => (e.clone(), theme.error),
                 (None, true, _) => (String::new(), theme.text_muted),
-                (None, false, true) => ("No matches".into(), theme.text_muted),
-                (None, false, false) => (format!("{} of {}", find.current + 1, find.matches.len()), theme.text_muted),
+                (None, false, true) if complete => ("No matches".into(), theme.text_muted),
+                (None, false, true) => (format!("No match yet{progress}"), theme.text_muted),
+                (None, false, false) => (format!("{} of {}{progress}", find.current + 1, find.matches.len()), theme.text_muted),
             };
             let l = ui.label(RichText::new(label).size(12.0).color(color));
             l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "find status"));
+            if !complete {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button(icons::X).clicked() {
                     close = true;

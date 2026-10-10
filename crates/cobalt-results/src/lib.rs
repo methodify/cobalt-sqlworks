@@ -317,6 +317,75 @@ impl ResultSet {
         text
     }
 
+    /// The formatted texts of one column of one chunk (cached per formatter generation).
+    pub fn column_texts(&self, chunk: usize, col: usize, fmt: &CellFormatter) -> Option<Arc<Vec<Arc<str>>>> {
+        if let Some(v) = self.display.get_column(chunk, col, fmt.generation()) {
+            return Some(v);
+        }
+        let batch = self.chunk(chunk)?;
+        let formatted = fmt.format_column(batch.column(col), &self.columns[col]);
+        self.display.put(chunk, col, fmt.generation(), formatted.clone());
+        Some(formatted)
+    }
+
+    /// The current view's row order (None = every row in fetch order).
+    pub fn view_index(&self) -> Option<Arc<Vec<u32>>> {
+        self.inner.read().view_index.clone()
+    }
+
+    /// Global row id of the first row of each chunk, then the total.
+    pub fn row_offsets(&self) -> Vec<usize> {
+        self.inner.read().row_offsets.clone()
+    }
+
+    /// Every visible cell whose text satisfies `is_match`, in view order, reported in blocks of
+    /// `block_rows` rows as `(matches of the block, rows scanned so far)`; the scan stops when
+    /// `report` returns false or `cancel` is set. Columns are formatted once per chunk (the
+    /// display cache), not once per cell, so a million rows scan in seconds on a thread.
+    pub fn find_cells(&self, fmt: &CellFormatter, is_match: &(dyn Fn(&str) -> bool + Sync), block_rows: usize, cancel: &std::sync::atomic::AtomicBool, mut report: impl FnMut(Vec<(usize, usize)>, usize) -> bool) {
+        use std::collections::HashMap;
+        let offsets = self.row_offsets();
+        let view = self.view_index();
+        let rows = self.visible_count();
+        let cols = self.column_count();
+        let block_rows = block_rows.max(1);
+        // formatted columns of the chunks touched lately: sequential in fetch order, scattered
+        // for a sorted or filtered view (bounded, the display cache keeps the rest)
+        let mut cache: HashMap<usize, Vec<Option<Arc<Vec<Arc<str>>>>>> = HashMap::new();
+        let mut start = 0;
+        while start < rows {
+            if cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let end = (start + block_rows).min(rows);
+            let mut found = Vec::new();
+            for vr in start..end {
+                let global = match &view {
+                    Some(v) => match v.get(vr) {
+                        Some(g) => *g as usize,
+                        None => continue,
+                    },
+                    None => vr,
+                };
+                let Some((ci, r)) = Self::locate(&offsets, global) else { continue };
+                if cache.len() > 32 && !cache.contains_key(&ci) {
+                    cache.clear();
+                }
+                let entry = cache.entry(ci).or_insert_with(|| vec![None; cols]);
+                for (col, slot) in entry.iter_mut().enumerate() {
+                    let texts = slot.get_or_insert_with(|| self.column_texts(ci, col, fmt).unwrap_or_default());
+                    if texts.get(r).map(|t| is_match(t)).unwrap_or(false) {
+                        found.push((vr, col));
+                    }
+                }
+            }
+            if !report(found, end) {
+                return;
+            }
+            start = end;
+        }
+    }
+
     /// Typed value for a visible cell (viewer, copy-as-JSON, summary).
     pub fn cell_value(&self, visible_row: usize, col: usize) -> CellValue {
         let Some(global) = self.global_row(visible_row) else { return CellValue::Null };
@@ -604,6 +673,46 @@ mod tests {
         assert_eq!(&*rs.cell_text(0, 0, &fmt), "1");
         let b = rs.view_to_single_batch().unwrap();
         assert_eq!(b.num_rows(), 8);
+    }
+
+    #[test]
+    fn find_cells_scans_every_visible_cell_in_view_order() {
+        let rs = sample();
+        let fmt = CellFormatter::default();
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        // "1" appears in the id column (1, 10, 11) and the name column (n1, n10, n11); row 6's name is NULL
+        let mut got: Vec<(usize, usize)> = Vec::new();
+        let mut reports = 0;
+        rs.find_cells(&fmt, &|s: &str| s.contains('1'), 5, &cancel, |found, scanned| {
+            reports += 1;
+            assert!(scanned == 5 || scanned == 10 || scanned == 12);
+            got.extend(found);
+            true
+        });
+        assert_eq!(reports, 3);
+        assert_eq!(got, vec![(1, 0), (1, 1), (10, 0), (10, 1), (11, 0), (11, 1)]);
+        // through a sorted view the (visible row, col) pairs follow the view
+        rs.apply_view(ViewSpec { filters: vec![], sort: vec![SortKey { column: 0, descending: true }] }).unwrap();
+        let mut got: Vec<(usize, usize)> = Vec::new();
+        rs.find_cells(&fmt, &|s: &str| s == "11" || s == "n11", 100, &cancel, |found, _| {
+            got.extend(found);
+            true
+        });
+        assert_eq!(got, vec![(0, 0), (0, 1)]);
+        // a report that answers false stops the scan; so does the cancel flag
+        let mut calls = 0;
+        rs.find_cells(&fmt, &|_: &str| true, 2, &cancel, |_, _| {
+            calls += 1;
+            false
+        });
+        assert_eq!(calls, 1);
+        cancel.store(true, Ordering::Relaxed);
+        let mut calls = 0;
+        rs.find_cells(&fmt, &|_: &str| true, 2, &cancel, |_, _| {
+            calls += 1;
+            true
+        });
+        assert_eq!(calls, 0);
     }
 
     #[test]
