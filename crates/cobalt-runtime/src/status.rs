@@ -32,6 +32,9 @@ pub struct Installed {
     pub sail_pyspark: Option<String>,
     pub sail_warmed: bool,
     pub sail_spark_version: Option<String>,
+    /// The Fabric package roster installed into the LakeSail environment, and what failed.
+    pub sail_roster: Option<String>,
+    pub sail_roster_failed: Vec<String>,
 }
 
 impl Installed {
@@ -87,6 +90,18 @@ pub struct RuntimeStatus {
     /// `python -m local_spark_mcp.healthcheck --json` from the environment (None when it is not
     /// installed or the check could not run).
     pub health: Option<Health>,
+    /// LakeSail: the Fabric package roster asked for — (profile, installed, total, missing names).
+    pub roster: Option<RosterStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RosterStatus {
+    pub profile: String,
+    pub installed: usize,
+    pub total: usize,
+    pub missing: Vec<String>,
+    /// Packages the last install could not put in (no wheel for this platform, a conflict…).
+    pub failed: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -143,8 +158,9 @@ impl RuntimeStatus {
         self.uv.is_ready() && self.python.is_ready() && self.env.is_ready() && (self.engine.is_sail() || self.jdk.is_ready())
     }
 
-    /// The LakeSail engine's status: uv, Python, the Sail environment; no JDK.
-    pub fn inspect_sail(dirs: &RuntimeDirs, manifest: &Manifest) -> Self {
+    /// The LakeSail engine's status: uv, Python, the Sail environment; no JDK. `roster` is the
+    /// Fabric package roster the settings ask for (`none` = none).
+    pub fn inspect_sail(dirs: &RuntimeDirs, manifest: &Manifest, roster: &str) -> Self {
         let platform = Platform::current();
         let record = Installed::load(dirs);
         let pins = &manifest.sail;
@@ -179,6 +195,11 @@ impl RuntimeStatus {
             _ => ComponentState::Missing { reason: format!("pysail {} + pyspark-client {} will be installed (about 250 MB)", pins.version, pins.pyspark_client) },
         };
         let health = if env.is_ready() { sail_healthcheck(dirs) } else { None };
+        let roster = manifest.sail.fabric_packages.get(roster).map(|r| {
+            let st = crate::libraries::python_status(&env_dir, &r.packages);
+            let missing: Vec<String> = st.iter().filter(|(_, v)| v.is_none()).map(|(s, _)| crate::libraries::python_dist_name(s)).collect();
+            RosterStatus { profile: roster.to_string(), installed: r.packages.len() - missing.len(), total: r.packages.len(), missing, failed: record.sail_roster_failed.clone() }
+        });
         Self {
             engine: Engine::Sail,
             profile: "sail".into(),
@@ -194,6 +215,7 @@ impl RuntimeStatus {
             package_version: record.sail_version.clone(),
             last_error: record.last_error.clone(),
             health,
+            roster,
         }
     }
 
@@ -279,6 +301,7 @@ impl RuntimeStatus {
             package_version: record.package_version.clone(),
             last_error: record.last_error.clone(),
             health,
+            roster: None,
         }
     }
 

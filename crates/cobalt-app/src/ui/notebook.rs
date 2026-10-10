@@ -289,13 +289,16 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             set = Some(None);
                             ui.close();
                         }
-                        for (id, name) in &workspaces {
-                            if ui.selectable_label(cur_ws.as_deref() == Some(id.as_str()), name).clicked() {
-                                set = Some(Some(NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: nb_fabric.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()), preload: nb_fabric.as_ref().map(|b| b.preload).unwrap_or(false) }));
-                                load_ws = Some(id.clone());
-                                ui.close();
+                        // a tenant can have dozens of workspaces: the list scrolls instead of running off the screen
+                        egui::ScrollArea::vertical().id_salt("lakehouse-chip-workspaces").max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
+                            for (id, name) in &workspaces {
+                                if ui.selectable_label(cur_ws.as_deref() == Some(id.as_str()), name).clicked() {
+                                    set = Some(Some(NotebookFabric { workspace_id: id.clone(), lakehouse_id: None, write_mode: nb_fabric.as_ref().map(|b| b.write_mode.clone()).unwrap_or_else(|| "sandbox".into()), preload: nb_fabric.as_ref().map(|b| b.preload).unwrap_or(false) }));
+                                    load_ws = Some(id.clone());
+                                    ui.close();
+                                }
                             }
-                        }
+                        });
                         if workspaces.is_empty() && fabric_signed_in {
                             ui.label(RichText::new("Loading workspaces…").size(11.0).color(theme.text_faint));
                         }

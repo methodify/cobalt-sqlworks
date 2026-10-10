@@ -11,6 +11,7 @@ mod copy;
 mod fabric;
 mod gpu;
 mod kernel;
+mod delta_schema;
 mod onelake_tokens;
 mod sail_catalog;
 mod notebook;

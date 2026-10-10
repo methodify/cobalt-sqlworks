@@ -132,6 +132,17 @@ struct Upstream {
 }
 
 impl Upstream {
+    /// The table's Spark schema from its Delta log (the first commits carry `metaData`, a later
+    /// one replaces it after an ALTER), as the `fields` of the schema JSON. None when the log
+    /// cannot be read; the API's coarse types stay then.
+    fn delta_schema(&self, lh: &LakehouseRef, rel: &str) -> Option<Vec<Value>> {
+        let token = self.handle.block_on(crate::onelake_tokens::fetch(&self.resolver, self.slot, self.tenant.as_deref())).ok()?;
+        let client = cobalt_fabric::OneLakeClient::new(token);
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        let dir = format!("{}/Tables/{}", lh.id, rel.trim_matches('/'));
+        self.handle.block_on(crate::delta_schema::table_fields(&client, &lh.workspace_id, &dir))
+    }
+
     /// GET on Fabric's table API for a lakehouse; `Ok(None)` = 404 there.
     fn get(&self, lh: &LakehouseRef, path: &str, query: &[(&str, &str)]) -> Result<Option<Value>, String> {
         self.calls.fetch_add(1, Ordering::Relaxed);
@@ -440,9 +451,68 @@ fn table_info(registry: &Arc<Mutex<Registry>>, up: &Upstream, lh: &LakehouseRef,
         return Ok(Some(i));
     }
     let Some(v) = up.get(lh, &format!("/tables/{}.{schema}.{table}", lh.id), &[])? else { return Ok(None) };
-    let info = normalize_table(&v, lh, schema);
+    let mut info = normalize_table(&v, lh, schema);
+    // Fabric's table API says only "struct" / "array" / "map" for nested columns; the Delta log
+    // carries the exact Spark schema, which Sail needs as `type_json`
+    let rel = info.get("storage_location").and_then(Value::as_str).and_then(|l| l.find("/Tables/").map(|i| l[i + "/Tables/".len()..].to_string())).unwrap_or_else(|| format!("{schema}/{table}"));
+    if let Some(fields) = up.delta_schema(lh, &rel) {
+        apply_delta_schema(&mut info, &fields);
+    }
     registry.lock().cache.entry(lh.id.clone()).or_default().infos.insert(key, info.clone());
     Ok(Some(info))
+}
+
+/// Replace the API's column types with the Delta log's Spark fields (matched by name): the
+/// Unity type name, `type_text` and a `type_json` with the whole nested type.
+fn apply_delta_schema(info: &mut Value, fields: &[Value]) {
+    let Some(cols) = info.get_mut("columns").and_then(Value::as_array_mut) else { return };
+    for c in cols.iter_mut() {
+        let Some(name) = c.get("name").and_then(Value::as_str) else { continue };
+        if let Some(f) = fields.iter().find(|f| f.get("name").and_then(Value::as_str) == Some(name)) {
+            let ty = f.get("type").cloned().unwrap_or(Value::Null);
+            let (unity, text) = unity_type_of(&ty);
+            c["type_name"] = Value::String(unity);
+            c["type_text"] = Value::String(text);
+            c["type_json"] = Value::String(f.to_string());
+            if let Some((p, s)) = decimal_parts(&ty) {
+                c["type_precision"] = json!(p);
+                c["type_scale"] = json!(s);
+            }
+            if let Some(n) = f.get("nullable").and_then(Value::as_bool) {
+                c["nullable"] = Value::Bool(n);
+            }
+        }
+    }
+}
+
+fn decimal_parts(ty: &Value) -> Option<(u64, u64)> {
+    let s = ty.as_str()?.strip_prefix("decimal(")?.trim_end_matches(')');
+    let mut it = s.split(',').map(|x| x.trim().parse::<u64>().ok());
+    Some((it.next()??, it.next()??))
+}
+
+/// (Unity type name, Spark DDL text) of a Spark JSON type: a string (`"string"`,
+/// `"decimal(18,2)"`) or an object (`{"type": "struct" | "array" | "map", …}`).
+pub fn unity_type_of(ty: &Value) -> (String, String) {
+    match ty {
+        Value::String(s) => {
+            let c = normalize_column(&json!({"name": "", "type_name": s}), false);
+            (c["type_name"].as_str().unwrap_or("").to_string(), s.clone())
+        }
+        Value::Object(_) => {
+            let kind = ty.get("type").and_then(Value::as_str).unwrap_or("struct");
+            let text = match kind {
+                "array" => format!("array<{}>", unity_type_of(ty.get("elementType").unwrap_or(&Value::Null)).1),
+                "map" => format!("map<{},{}>", unity_type_of(ty.get("keyType").unwrap_or(&Value::Null)).1, unity_type_of(ty.get("valueType").unwrap_or(&Value::Null)).1),
+                _ => {
+                    let inner: Vec<String> = ty.get("fields").and_then(Value::as_array).map(|a| a.iter().map(|f| format!("{}:{}", f.get("name").and_then(Value::as_str).unwrap_or(""), unity_type_of(f.get("type").unwrap_or(&Value::Null)).1)).collect()).unwrap_or_default();
+                    format!("struct<{}>", inner.join(","))
+                }
+            };
+            (kind.to_ascii_uppercase(), text)
+        }
+        _ => ("STRING".into(), "string".into()),
+    }
 }
 
 #[cfg(test)]

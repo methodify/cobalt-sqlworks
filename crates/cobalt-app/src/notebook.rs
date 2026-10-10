@@ -1569,8 +1569,26 @@ pub(crate) fn ipc_columns_batches(bytes: &[u8]) -> Result<(Vec<ColumnInfo>, Vec<
 
 /// Append a worker batch to a result set whose schema came from the SQL types: columns are cast
 /// to the set's Arrow types when they differ. Returns the batch as appended (for an export sink).
+/// A column as the result set's schema wants it. Arrow's `cast` covers the scalar changes
+/// (Spark's timestamps and decimals); a nested column (struct, list, map) has no cast to text,
+/// so each value is rendered the way Arrow prints it (`{costCenter: 100, division: Retail}`).
+pub(crate) fn cast_for_grid(c: &ArrayRef, target: &arrow::datatypes::DataType) -> Result<ArrayRef, String> {
+    use arrow::datatypes::DataType as D;
+    if c.data_type() == target {
+        return Ok(c.clone());
+    }
+    let nested = matches!(c.data_type(), D::Struct(_) | D::List(_) | D::LargeList(_) | D::FixedSizeList(..) | D::Map(..) | D::ListView(_) | D::LargeListView(_) | D::Union(..));
+    if nested && matches!(target, D::Utf8 | D::LargeUtf8) {
+        let fmt = arrow::util::display::ArrayFormatter::try_new(c.as_ref(), &arrow::util::display::FormatOptions::default().with_null("")).map_err(|e| e.to_string())?;
+        let values: Vec<Option<String>> = (0..c.len()).map(|i| if c.is_null(i) { None } else { Some(fmt.value(i).to_string()) }).collect();
+        let arr: ArrayRef = if matches!(target, D::Utf8) { Arc::new(arrow::array::StringArray::from(values)) } else { Arc::new(arrow::array::LargeStringArray::from(values)) };
+        return Ok(arr);
+    }
+    arrow::compute::cast(c, target).map_err(|e| e.to_string())
+}
+
 pub(crate) fn append_cast(rs: &ResultSet, b: RecordBatch) -> Result<RecordBatch, String> {
-    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| if c.data_type() == f.data_type() { Ok(c.clone()) } else { arrow::compute::cast(c, f.data_type()).map_err(|e| e.to_string()) }).collect::<Result<_, _>>()?;
+    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| cast_for_grid(c, f.data_type())).collect::<Result<_, _>>()?;
     let b = RecordBatch::try_new(rs.schema.clone(), cols).map_err(|e| e.to_string())?;
     rs.append(b.clone()).map_err(|e| e.to_string())?;
     Ok(b)
@@ -1579,7 +1597,7 @@ pub(crate) fn append_cast(rs: &ResultSet, b: RecordBatch) -> Result<RecordBatch,
 /// Like `append_cast`, but the result set keeps only its first `preview` rows (Run to File:
 /// the rows go to the file; the grid shows a sample). The cast batch comes back whole.
 pub(crate) fn append_preview(rs: &ResultSet, b: RecordBatch, preview: usize) -> Result<RecordBatch, String> {
-    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| if c.data_type() == f.data_type() { Ok(c.clone()) } else { arrow::compute::cast(c, f.data_type()).map_err(|e| e.to_string()) }).collect::<Result<_, _>>()?;
+    let cols: Vec<ArrayRef> = b.columns().iter().zip(rs.schema.fields()).map(|(c, f)| cast_for_grid(c, f.data_type())).collect::<Result<_, _>>()?;
     let b = RecordBatch::try_new(rs.schema.clone(), cols).map_err(|e| e.to_string())?;
     let have = rs.row_count();
     if have < preview {

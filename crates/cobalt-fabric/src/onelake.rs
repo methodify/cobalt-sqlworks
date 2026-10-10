@@ -117,6 +117,22 @@ impl OneLakeClient {
         Ok(out)
     }
 
+    /// The bytes of one file (a Delta checkpoint parquet, for its schema); whole file, so files of
+    /// a few tens of MB at most.
+    pub async fn read_bytes(&self, workspace_id: &str, path: &str) -> Result<Vec<u8>> {
+        let url = format!("{}/{workspace_id}/{}", self.base, path.split('/').map(urlencode).collect::<Vec<_>>().join("/"));
+        let resp = self.http.get(&url).bearer_auth(&self.token).header("x-ms-version", API_VERSION).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+            let code = v.pointer("/error/code").and_then(|c| c.as_str()).unwrap_or("").to_string();
+            let message = v.pointer("/error/message").and_then(|c| c.as_str()).unwrap_or(&body).lines().next().unwrap_or("").to_string();
+            return Err(FabricError::Api { status: status.as_u16(), code, message });
+        }
+        Ok(resp.bytes().await?.to_vec())
+    }
+
     /// The text of one file (`<lakehouse-id>/Tables/<t>/_delta_log/….json`); small files only.
     pub async fn read_text(&self, workspace_id: &str, path: &str) -> Result<String> {
         let url = format!("{}/{workspace_id}/{}", self.base, path.split('/').map(urlencode).collect::<Vec<_>>().join("/"));

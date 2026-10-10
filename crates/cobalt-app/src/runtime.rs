@@ -125,6 +125,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
     }
     let dirs = dirs(settings, paths);
     let profile = settings.spark.profile.clone();
+    let sail_profile = settings.spark.sail_profile.clone();
     let engine = engine(settings);
     // another engine's status must not stand in while this one is inspected
     if ui.status.as_ref().map(|s| s.engine != engine).unwrap_or(false) {
@@ -139,7 +140,7 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
         .name("runtime-status".into())
         .spawn(move || {
             let m = Manifest::embedded();
-            let st = if engine.is_sail() { RuntimeStatus::inspect_sail(&dirs, &m) } else { RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref()) };
+            let st = if engine.is_sail() { RuntimeStatus::inspect_sail(&dirs, &m, &sail_profile) } else { RuntimeStatus::inspect(&dirs, &m, &profile, jdk.as_deref()) };
             let _ = tx.send(st);
             ctx.request_repaint();
         })
@@ -153,6 +154,7 @@ fn spawn_job(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths, egui: &e
     let dirs = dirs(settings, paths);
     let plan = Plan {
         engine: engine(settings),
+        sail_profile: settings.spark.sail_profile.clone(),
         profile: settings.spark.profile.clone(),
         jdk_vendor: jdk_vendor(settings),
         adopt_jdk: settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from),

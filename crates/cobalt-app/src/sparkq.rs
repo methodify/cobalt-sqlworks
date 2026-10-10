@@ -703,26 +703,23 @@ pub fn refresh_catalog(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakeh
 
 /// The columns of a Delta table from one `_delta_log/N.json` commit file: the last
 /// `metaData.schemaString` in it, as `ColumnInfo`s with Spark types mapped to SQL types.
+#[cfg(test)]
 pub fn delta_log_columns(text: &str) -> Option<Vec<cobalt_core::ColumnInfo>> {
-    let mut found: Option<Vec<cobalt_core::ColumnInfo>> = None;
-    for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let Some(schema) = v.get("metaData").and_then(|m| m.get("schemaString")).and_then(Value::as_str) else { continue };
-        let Ok(sch) = serde_json::from_str::<Value>(schema) else { continue };
-        let fields = sch.get("fields").and_then(Value::as_array).cloned().unwrap_or_default();
-        let cols = fields
-            .iter()
-            .enumerate()
-            .filter_map(|(i, f)| {
-                let name = f.get("name").and_then(Value::as_str)?.to_string();
-                let ty = spark_type_to_sql(f.get("type").unwrap_or(&Value::Null));
-                let nullable = f.get("nullable").and_then(Value::as_bool).unwrap_or(true);
-                Some(cobalt_core::ColumnInfo::new(name, ty, nullable, i))
-            })
-            .collect();
-        found = Some(cols);
-    }
-    found
+    crate::delta_schema::fields_from_commit(text).map(|f| columns_from_fields(&f))
+}
+
+/// The grid / completer columns of a Spark schema's `fields`.
+pub fn columns_from_fields(fields: &[Value]) -> Vec<cobalt_core::ColumnInfo> {
+    fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| {
+            let name = f.get("name").and_then(Value::as_str)?.to_string();
+            let ty = spark_type_to_sql(f.get("type").unwrap_or(&Value::Null));
+            let nullable = f.get("nullable").and_then(Value::as_bool).unwrap_or(true);
+            Some(cobalt_core::ColumnInfo::new(name, ty, nullable, i))
+        })
+        .collect()
 }
 
 /// A Delta/Spark type (`"string"`, `"decimal(18,2)"`, `{"type": "array", …}`) as the SQL type

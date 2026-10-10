@@ -48,6 +48,8 @@ egui_agent = { workspace = true, optional = true }
 egui_agent_macros = { workspace = true, optional = true }
 
 arrow.workspace = true
+parquet.workspace = true
+bytes = "1"
 tokio.workspace = true
 crossbeam-channel.workspace = true
 reqwest.workspace = true

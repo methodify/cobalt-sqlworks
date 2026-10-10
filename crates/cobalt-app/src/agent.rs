@@ -1296,6 +1296,7 @@ impl AgentApp for CobaltApp {
                     "pending": r.status_pending,
                     "status": r.status.as_ref().map(|s| json!({
                         "engine": s.engine.key(), "package_version": s.package_version,
+                        "roster": s.roster.as_ref().map(|r| json!({"profile": r.profile, "installed": r.installed, "total": r.total, "missing": r.missing, "failed": r.failed})),
                         "ready": s.is_ready(), "warm": s.warm, "spark_version": s.spark_version,
                         "uv": comp(&s.uv), "python": comp(&s.python), "env": comp(&s.env), "jdk": comp(&s.jdk),
                         "jdk_candidates": s.jdk_candidates.iter().map(|c| c.label()).collect::<Vec<_>>(),

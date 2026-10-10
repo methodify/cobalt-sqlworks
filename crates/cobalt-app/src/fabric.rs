@@ -695,20 +695,9 @@ pub fn load_spark_catalog(state: &mut AppState, cx: &Ctx, workspace_id: &str, la
                 }
                 let id = i as i32 + 1;
                 cat.objects.push(cobalt_core::ObjectRef { database: name.clone(), schema, name: t.name.clone(), kind: cobalt_core::ObjectKind::Table, object_id: Some(id) });
-                // the first commit carries the schema the table was created with; a newer
-                // metaData in the next few commits (ALTER TABLE) replaces it
-                let mut cols = Vec::new();
-                for n in 0..4u32 {
-                    let path = format!("{lh}/Tables/{}/_delta_log/{n:020}.json", t.rel_path());
-                    match client.read_text(&ws, &path).await {
-                        Ok(text) => {
-                            if let Some(c) = crate::sparkq::delta_log_columns(&text) {
-                                cols = c;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
+                // the newest metaData in the log, or the checkpoint's when the early commits are
+                // gone (log cleanup): the same reader the LakeSail catalog uses
+                let cols = crate::delta_schema::table_fields(&client, &ws, &format!("{lh}/Tables/{}", t.rel_path())).await.map(|f| crate::sparkq::columns_from_fields(&f)).unwrap_or_default();
                 if !cols.is_empty() {
                     cat.columns.insert(id, cols);
                 }

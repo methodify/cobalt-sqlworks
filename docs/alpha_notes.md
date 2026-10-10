@@ -472,7 +472,13 @@ publicholidays`, `dbo.t`, `test.dbo.t`, `test_no_schema.dbo.t`, `SHOW TABLES` (i
 catalog is Fabric's own table listing, served to Sail by Cobalt on loopback, cached per
 session; the first touch of a table costs one metadata call, ~0.5 s), Est. plan (Sail's
 DataFusion plan under the usual section headers), Parse, Run to File, Cancel. The agent's
-`kernel` JSON has a `catalog` block (requests served, upstream calls, last error). A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
+`kernel` JSON has a `catalog` block (requests served, upstream calls, last error). Tables with
+struct / array / map columns read on both engines (nested values show as text in the grid; the
+LakeSail catalog takes the exact schema from the table's Delta log). Settings › Spark runtime ›
+**Fabric packages** (LakeSail): *fabric-2.0* installs the Python packages Fabric Runtime 2.0
+ships (34 of them, Fabric's versions, from Microsoft's published environment file; pyspark,
+notebookutils, synapseml and semantic-link are not on PyPI for us) into the LakeSail
+environment; the status line counts them and names any that would not install here. A notebook on the Spark kernel: `df = spark.sql(...)`, `display(df)`, a bare
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 

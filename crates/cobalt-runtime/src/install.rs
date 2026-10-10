@@ -51,6 +51,8 @@ pub enum Progress {
 pub struct Plan {
     /// Which engine's runtime: the JVM profile below, or the LakeSail environment.
     pub engine: Engine,
+    /// LakeSail: the Fabric package roster to install (`none` for none).
+    pub sail_profile: String,
     pub profile: String,
     pub jdk_vendor: JdkVendor,
     /// Adopt this JDK instead of downloading one.
@@ -517,6 +519,42 @@ fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> 
     Ok(env_dir)
 }
 
+/// The Fabric package roster into the LakeSail environment: all at once when the resolver
+/// agrees, otherwise one package at a time so the ones with no wheel for this platform (or a
+/// conflict) are skipped and named, never fatal.
+fn step_sail_packages(cx: &Context, uv: &Path, roster_name: &str, rec: &mut Installed) -> Result<()> {
+    let Some(roster) = cx.manifest.sail.fabric_packages.get(roster_name) else {
+        rec.sail_roster = None;
+        rec.sail_roster_failed.clear();
+        return Ok(());
+    };
+    (cx.progress)(Progress::Step { step: Step::Libraries, label: format!("Installing the {roster_name} package roster ({} packages, Fabric's versions)", roster.packages.len()) });
+    let env = uv_env(cx.dirs);
+    let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
+    let mut args: Vec<String> = vec!["pip".into(), "install".into(), "--python".into(), py.clone()];
+    args.extend(roster.packages.iter().cloned());
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut failed: Vec<String> = Vec::new();
+    if let Err(e) = run_tool(cx, uv, &argv, &env) {
+        cx.log(format!("roster as a whole did not resolve ({e}); installing package by package"));
+        for spec in &roster.packages {
+            if cx.cancel.load(Ordering::Relaxed) {
+                return Err(RuntimeError::Cancelled);
+            }
+            let one = ["pip", "install", "--python", py.as_str(), spec.as_str()];
+            if let Err(e) = run_tool(cx, uv, &one, &env) {
+                cx.log(format!("  skipped {spec}: {}", e.to_string().lines().last().unwrap_or("").chars().take(200).collect::<String>()));
+                failed.push(spec.clone());
+            }
+        }
+    }
+    let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
+    cx.log(format!("roster {roster_name}: {} of {} packages installed", roster.packages.len() - failed.len(), roster.packages.len()));
+    rec.sail_roster = Some(roster_name.to_string());
+    rec.sail_roster_failed = failed;
+    Ok(())
+}
+
 /// Start the Sail worker once and run `SELECT 1`: proves the wheel loads on this machine.
 fn step_sail_warm(cx: &Context, rec: &mut Installed) -> Result<String> {
     (cx.progress)(Progress::Step { step: Step::Warm, label: "Starting a LakeSail session".into() });
@@ -568,6 +606,10 @@ fn provision_sail(cx: &Context, plan: &Plan) -> Result<Installed> {
         } else {
             // the worker module follows the Cobalt build, not the environment
             std::fs::write(cx.dirs.sail_worker_file(), crate::SAIL_WORKER)?;
+        }
+        if plan.steps.contains(&Step::Env) || plan.steps.contains(&Step::Libraries) {
+            step_sail_packages(cx, &uv, &plan.sail_profile, &mut rec)?;
+            rec.save(cx.dirs)?;
         }
         if plan.steps.contains(&Step::Warm) {
             step_sail_warm(cx, &mut rec)?;

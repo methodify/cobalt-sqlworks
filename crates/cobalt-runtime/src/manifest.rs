@@ -75,11 +75,22 @@ pub struct SailPins {
     pub python_windows: String,
     /// Other packages of the environment (IPython for cells, pandas/pyarrow for results).
     pub packages: Vec<String>,
+    /// Optional package rosters mirroring a Fabric runtime's Python environment, by profile name.
+    pub fabric_packages: BTreeMap<String, Roster>,
+}
+
+/// A Fabric runtime's Python packages, as far as they install on this platform from PyPI.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Default)]
+#[serde(default)]
+pub struct Roster {
+    pub source: String,
+    pub note: String,
+    pub packages: Vec<String>,
 }
 
 impl Default for SailPins {
     fn default() -> Self {
-        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()] }
+        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into()], fabric_packages: BTreeMap::new() }
     }
 }
 

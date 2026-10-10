@@ -593,6 +593,22 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
     });
     if sail {
         ui.label(RichText::new(manifest.sail.describe()).size(11.0).color(theme.text_muted));
+        ui.horizontal(|ui| {
+            ui.label("Fabric packages");
+            let r = ui.selectable_label(draft.spark.sail_profile == "none", "None");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "sail profile none"));
+            if r.on_hover_text("Only what LakeSail itself needs (pysail, the PySpark Connect client, IPython, pandas, pyarrow) plus your Libraries.").clicked() {
+                draft.spark.sail_profile = "none".into();
+            }
+            for (name, roster) in &manifest.sail.fabric_packages {
+                let r = ui.selectable_label(draft.spark.sail_profile == *name, format!("{name} ({} packages)", roster.packages.len()));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sail profile {name}")));
+                if r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update LakeSail\"; packages without a wheel for this machine are skipped and listed.", roster.note, roster.source)).clicked() {
+                    draft.spark.sail_profile = name.clone();
+                }
+            }
+            ui.label(RichText::new("Java, Spark and Delta are Sail's own; this only adds the runtime's Python packages.").size(11.0).color(theme.text_muted));
+        });
     }
     if !sail {
     ui.horizontal(|ui| {
@@ -683,12 +699,22 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 let msg = if ready && st.warm && st.engine.is_sail() { format!("Ready — Sail {} verified (PySpark Connect client {})", st.package_version.clone().unwrap_or_default(), st.spark_version.clone().unwrap_or_default()) } else if ready && st.warm { format!("Ready — Spark {} verified", st.spark_version.clone().unwrap_or_default()) } else if ready { "Installed; run the smoke test to verify".to_string() } else { "Not installed".to_string() };
                 ui.label(RichText::new(msg).strong().color(if ready { theme.success } else { theme.text_muted }));
                 ui.label(RichText::new(format!("· {} on disk", cobalt_runtime::fmt_bytes(st.disk_bytes))).size(11.0).color(theme.text_faint));
-                if st.engine != cobalt_runtime::Engine::parse(&draft.spark.engine) || (!sail && st.profile != draft.spark.profile) {
+                if st.engine != cobalt_runtime::Engine::parse(&draft.spark.engine) || (!sail && st.profile != draft.spark.profile) || (sail && st.roster.as_ref().map(|r| r.profile.clone()).unwrap_or_else(|| "none".into()) != draft.spark.sail_profile) {
                     ui.label(RichText::new(format!("(status is for {}; save to re-check)", if st.engine.is_sail() { "LakeSail".to_string() } else { st.profile.clone() })).size(11.0).color(theme.warning));
                 }
             });
             if let Some(e) = &st.last_error {
                 ui.label(RichText::new(format!("Last run failed: {e}")).size(12.0).color(theme.error));
+            }
+            if let Some(r) = &st.roster {
+                let ok = r.missing.is_empty();
+                let text = if ok { format!("Fabric packages ({}): all {} installed", r.profile, r.total) } else { format!("Fabric packages ({}): {} of {} installed — install to add the rest", r.profile, r.installed, r.total) };
+                ui.label(RichText::new(text).size(12.0).color(if ok { theme.success } else { theme.warning }));
+                if !r.failed.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(format!("  not installable here: {}", r.failed.join(", "))).size(11.0).color(theme.text_muted)).wrap());
+                }
+            } else if st.engine.is_sail() && draft.spark.sail_profile != "none" {
+                ui.label(RichText::new(format!("Fabric packages ({}): not installed yet — Install adds them", draft.spark.sail_profile)).size(12.0).color(theme.warning));
             }
             if let Some(h) = &st.health {
                 let text = if h.ok { format!("Healthcheck OK{}", h.protocol_version.map(|v| format!(" · worker protocol v{v}")).unwrap_or_default()) } else { format!("Healthcheck: {} problem{}", h.problems.len(), if h.problems.len() == 1 { "" } else { "s" }) };
@@ -715,6 +741,10 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                     format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }),
                     format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }),
                     format!("LakeSail: pysail {} + pyspark-client {} {}", manifest.sail.version, manifest.sail.pyspark_client, if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
+                    match manifest.sail.fabric_packages.get(&draft.spark.sail_profile) {
+                        Some(r) => format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", draft.spark.sail_profile, r.packages.len()),
+                        None => "Fabric packages: none".to_string(),
+                    },
                     "then one Sail session to verify the wheel (a few seconds)".to_string(),
                 ];
                 (if ready && st.engine.is_sail() { "Reinstall / update LakeSail".to_string() } else { "Install LakeSail for me".to_string() }, lines.join("\n"))

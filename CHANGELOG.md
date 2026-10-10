@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **LakeSail: Fabric packages.** Settings › Spark runtime › Fabric packages (LakeSail only):
+  *None* or *fabric-2.0*, a roster of the Python packages Fabric Runtime 2.0 ships, at Fabric's
+  versions, taken from Microsoft's published environment file; Install adds them to the
+  LakeSail environment, skipping and naming any without a wheel for this machine. Java, Spark
+  and Delta stay Sail's own. The status line says how many of the roster are in.
+- **Nested columns (struct, array, map).** A table with such columns failed on both engines
+  ("Casting from Struct … to LargeUtf8 not supported" on Local Spark, "Struct type missing
+  'fields' array" on LakeSail). The grid now renders nested values as text the way Arrow
+  prints them, and the LakeSail catalog takes a table's exact Spark schema from its Delta log
+  (Fabric's table API only says "struct"), so nested types reach Sail whole.
+- The workspace list in the lakehouse button scrolls (a tenant with dozens of workspaces ran
+  off the screen).
+
 ## 0.9.2 — 2026-10-09
 
 - Settings › Spark runtime: switching the Engine row re-reads the components of that engine at once (without saving), so the readout never shows the other engine's install state.

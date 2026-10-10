@@ -151,6 +151,21 @@ whole session costs five upstream calls. Plain lakehouses are `<lakehouse>.dbo.<
 (Fabric's own mapping); legacy top-level tables of a schema-enabled lakehouse appear as schemas
 in Fabric's listing and stay path-only.
 
+**Nested types and the Fabric package roster (2026-10-09).** Fabric's table API reports a
+struct / array / map column as just `struct` / `array` / `map`; Sail's Unity client needs the
+full type as `type_json` ("Struct type missing 'fields' array" otherwise). The endpoint now
+reads the table's Delta log (`_delta_log/0000…N.json` `metaData.schemaString`, the same
+heuristic as the completion catalog) on first touch and rewrites every column's type from it,
+so nested, decimal and timestamp types reach Sail exactly. On the Cobalt side, nested Arrow
+columns are rendered to text with Arrow's own formatter instead of `cast` (which has no
+struct → text), which fixed the same table on the JVM engine. The Sail environment can also
+carry a **Fabric package roster** (`manifest.json` `sail.fabric_packages["fabric-2.0"]`, the
+Python packages of Fabric Runtime 2.0 at Fabric's versions as listed in Microsoft's
+`synapse-spark-runtime` repository, minus Fabric-only and GPU/Linux-only wheels; setting
+`spark.sail_profile`); the install tries the roster as one resolution and falls back to one
+package at a time, naming what would not install. local-spark-mcp has no package manifest to
+draw from (its profiles pin only pyspark and delta-spark); an upstream ask could add one.
+
 **Tokens.** `onelake_tokens::TokenServer` accepts the secret in `x-ms-partner-token` as well as
 `X-Token-Secret` (object_store's Fabric provider sends the former) and ignores the
 `resource=` query (it only ever asks for storage). Nothing else changes: the token is the
