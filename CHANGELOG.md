@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.4 — unreleased
+## 0.9.4 — 2026-10-10
 
 - **One Fabric package roster for both engines, from local-spark-mcp 0.8.0.** The
   local-spark-mcp team answered Cobalt's advisory with 0.8.0: every runtime profile now carries
