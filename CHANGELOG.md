@@ -14,6 +14,8 @@
   (Fabric's table API only says "struct"), so nested types reach Sail whole.
 - The workspace list in the lakehouse button scrolls (a tenant with dozens of workspaces ran
   off the screen).
+- An advisory for the local-spark-mcp team on carrying Fabric's Python packages in the JVM
+  engine's profiles too: `docs/requests/local-spark-mcp-fabric-packages.md`.
 
 ## 0.9.2 — 2026-10-09
 
