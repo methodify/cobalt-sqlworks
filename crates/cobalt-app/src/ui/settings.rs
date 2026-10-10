@@ -14,6 +14,8 @@ pub enum SettingsAction {
     Close,
     /// Save the draft, then act on the Spark runtime (the window stays open).
     Runtime(RuntimeAction, Settings),
+    /// Inspect the runtime the draft describes (its engine, profile, folder) without saving.
+    RuntimeStatusFor(Settings),
 }
 
 /// One page of the settings window.
@@ -584,6 +586,8 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
             if r.on_hover_text(hint).clicked() {
                 draft.spark.engine = e.key().to_string();
+                // the component readout follows the engine being looked at, not the saved one
+                *action = Some(SettingsAction::RuntimeStatusFor(draft.clone()));
             }
         }
     });

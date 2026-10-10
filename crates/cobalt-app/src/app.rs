@@ -567,6 +567,10 @@ impl eframe::App for CobaltApp {
                     }
                     self.state.settings_draft = Some(draft);
                 }
+                Some(crate::ui::settings::SettingsAction::RuntimeStatusFor(s)) => {
+                    crate::runtime::refresh_status(&mut self.state.runtime, &s, &self.paths, &ctx);
+                    self.state.settings_draft = Some(draft);
+                }
                 None => self.state.settings_draft = Some(draft),
             }
         }

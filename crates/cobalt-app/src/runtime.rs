@@ -126,6 +126,10 @@ pub fn refresh_status(ui: &mut RuntimeUi, settings: &Settings, paths: &AppPaths,
     let dirs = dirs(settings, paths);
     let profile = settings.spark.profile.clone();
     let engine = engine(settings);
+    // another engine's status must not stand in while this one is inspected
+    if ui.status.as_ref().map(|s| s.engine != engine).unwrap_or(false) {
+        ui.status = None;
+    }
     let jdk = settings.spark.java_home.clone().filter(|s| !s.trim().is_empty()).map(PathBuf::from);
     let (tx, rx) = crossbeam_channel::bounded(1);
     let ctx = egui.clone();
