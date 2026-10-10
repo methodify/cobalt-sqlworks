@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.3 — 2026-10-09
 
 - **LakeSail: Fabric packages.** Settings › Spark runtime › Fabric packages (LakeSail only):
   *None* or *fabric-2.0*, a roster of the Python packages Fabric Runtime 2.0 ships, at Fabric's
