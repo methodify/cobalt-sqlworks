@@ -697,6 +697,43 @@ pub struct ResultSetView {
     pub is_plan: bool,
     /// Column profile (nulls, distinct, min/max, top values, distribution), computed on demand.
     pub profile: Option<crate::ui::results::profile::ColumnProfiles>,
+    /// The chart shown instead of the grid (the Chart toggle); follows the view.
+    pub chart: Option<ChartView>,
+}
+
+/// A result set's chart: the spec the strip edits and the data built from the current view.
+pub struct ChartView {
+    pub spec: cobalt_core::ChartSpec,
+    pub data: Option<Arc<cobalt_results::chart::ChartData>>,
+    /// The spec the data was built for (rebuilt when it or the view generation changes).
+    pub built_for: Option<(cobalt_core::ChartSpec, u64)>,
+    /// Milliseconds the last build took.
+    pub build_ms: u64,
+    /// The plot's rect on screen in the last frame (for the image capture).
+    pub rect: Option<egui::Rect>,
+}
+
+impl ChartView {
+    pub fn new(spec: cobalt_core::ChartSpec) -> Self {
+        Self { spec, data: None, built_for: None, build_ms: 0, rect: None }
+    }
+}
+
+/// A chart image capture in flight: the next frame is read back and the rect cropped.
+#[derive(Clone, Debug)]
+pub struct PendingCapture {
+    pub tab: TabId,
+    pub set: usize,
+    pub rect: egui::Rect,
+    pub purpose: CapturePurpose,
+    /// The screenshot was requested; the frame after this one carries it.
+    pub requested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CapturePurpose {
+    Clipboard,
+    SaveFile,
 }
 
 #[derive(Clone, Debug)]
@@ -1041,6 +1078,8 @@ pub struct AppState {
     /// A notebook asked for its `%pip` packages to be installed: start the Libraries job once
     /// the settings patch that added them is applied.
     pub install_libraries_requested: bool,
+    /// A chart image capture waiting for the next frame's screenshot.
+    pub pending_capture: Option<PendingCapture>,
     pub settings_draft: Option<Settings>,
     /// Scroll the settings window to this section when it opens.
     pub settings_scroll_to: Option<&'static str>,
@@ -1299,6 +1338,7 @@ impl AppState {
             export_progress: None,
             settings_patch: Vec::new(),
             install_libraries_requested: false,
+            pending_capture: None,
             settings_draft: None,
             settings_scroll_to: None,
             runtime: Default::default(),
@@ -1480,7 +1520,7 @@ impl AppState {
             Event::ResultSetStarted { tab, run, rs } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     let is_plan = cobalt_driver::is_showplan_result(&rs.columns);
-                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan, profile: None });
+                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan, profile: None, chart: None });
                 }
             }
             Event::ResultSetDone { tab, run, index, rows } => {

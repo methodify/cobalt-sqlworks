@@ -46,6 +46,7 @@ egui = "0.36"
 eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wgpu", "glow", "persistence", "accesskit", "wayland", "x11"] }
 egui_extras = { version = "0.36", features = ["svg", "image"] }
 egui_table = "0.10"
+egui_plot = "0.37"
 egui_dock = "0.21"
 egui-notify = "0.23"
 egui-phosphor = "0.14"

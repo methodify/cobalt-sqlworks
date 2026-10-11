@@ -1,6 +1,9 @@
 # Charts: on a result set, in a notebook cell, on a dashboard tile
 
-*Design, 2026-10-11. Status: proposal for the founder; slices A–C below. Product design §4.5
+*Design, 2026-10-11. Status: approved by the founder the same day with one change (no row
+budget: the chart takes whatever the result set holds, decision 3 withdrawn); slice A built
+2026-10-11 (`cobalt_core::ChartSpec`, `cobalt_results::chart`, `ui/results/chart.rs`).
+Slices B–C below. Product design §4.5
 ("Charts (V2): quick bar/line/pie/scatter from the selection") and §5.6 (lightweight
 dashboards); roadmap "Charts in cells (egui_plot)". The founder's usage signal (D002): charts
 rarely, dashboards never — so the shape is a quick chart over what is already on screen, not a

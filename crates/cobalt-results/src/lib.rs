@@ -9,6 +9,7 @@
 #![allow(clippy::type_complexity)]
 
 pub mod budget;
+pub mod chart;
 pub mod display;
 pub mod filter;
 pub mod spill;

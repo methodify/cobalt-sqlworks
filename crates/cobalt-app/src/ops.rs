@@ -1792,6 +1792,17 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
             }
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
+        ResultsAction::CaptureChart { set, save } => {
+            let tab = state.tabs[idx].id;
+            let rect = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.chart.as_ref()).and_then(|c| c.rect);
+            match rect {
+                Some(rect) => {
+                    state.pending_capture = Some(crate::state::PendingCapture { tab, set, rect, purpose: if save { crate::state::CapturePurpose::SaveFile } else { crate::state::CapturePurpose::Clipboard }, requested: false });
+                    cx.egui.request_repaint();
+                }
+                None => cx.toast(ToastKind::Warning, "The chart has not been drawn yet."),
+            }
+        }
     }
 }
 
@@ -2070,7 +2081,7 @@ pub fn pop_out_result(state: &mut AppState, idx: usize, set: usize) {
     nt.text = String::new();
     let mut run = RunView::new(RunId(0));
     run.state = RunViewState::Done;
-    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
     nt.run = Some(run);
     nt.results_fraction = 0.95;
     nt.mark_saved();

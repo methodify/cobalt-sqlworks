@@ -1487,7 +1487,7 @@ pub fn poll_kernel(state: &mut AppState, cx: &Ctx) {
         // the reply carries the complete stdout: the streamed lines are replaced
         run.messages.clear();
         for rs in o.result_sets {
-            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
         }
         run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
         run.messages.extend(o.messages);
@@ -1601,14 +1601,14 @@ pub fn load_outputs(cell: &Cell, _index: usize) -> (Option<RunView>, Vec<Output>
                 if let Some(bytes) = data.arrow() {
                     match result_set_from_ipc(&bytes, set_index) {
                         Ok(rs) => {
-                            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+                            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
                             continue;
                         }
                         Err(e) => run.messages.push(msg(format!("Could not read the saved result set: {e}"), true)),
                     }
                 } else if let Some(dr) = data.json(DATARESOURCE_MIME) {
                     if let Some(rs) = result_set_from_dataresource(dr, set_index) {
-                        run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None });
+                        run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
                         continue;
                     }
                 }

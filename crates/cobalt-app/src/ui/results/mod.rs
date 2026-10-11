@@ -1,6 +1,7 @@
 //! The results area under an editor: Results / Messages / Plan tabs, stacked result sets,
 //! the fetch-more bar, the cell viewer, and the per-grid context menu.
 
+pub mod chart;
 pub mod grid;
 pub mod profile;
 pub mod viewer;
@@ -34,6 +35,8 @@ pub enum ResultsAction {
     SetTotals { set: usize, kind: Option<crate::state::TotalKind> },
     /// Column profile window for the set.
     Profile { set: usize },
+    /// Read the chart's pixels on the next frame: clipboard (`save: false`) or a PNG file.
+    CaptureChart { set: usize, save: bool },
     /// Write the set (or selection) to a temporary .xlsx and open it with the system's app.
     OpenInExcel { set: usize, selection_only: bool },
     /// Load the set (or selection) into a table on a connected tab's database.
@@ -128,6 +131,21 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     if let Some(&set) = data_sets.first() {
                         let set = run.result_sets.iter().position(|s| !s.is_plan && s.grid.focused).unwrap_or(set);
                         let is_max = run.maximized.is_some();
+                        let charted = run.result_sets[set].chart.is_some();
+                        let r = icon_button(ui, if charted { icons::TABLE } else { icons::CHART_LINE }, if charted { "Back to the grid" } else { "Chart this result set (bar, line, area, scatter, pie; follows the grid's sort and filter)" }, true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "chart toggle"));
+                        if r.clicked() {
+                            let view = &mut run.result_sets[set];
+                            if charted {
+                                view.chart = None;
+                            } else {
+                                let selected: Vec<usize> = match view.grid.selection {
+                                    Selection::Cols { c0, c1 } | Selection::Cells { c0, c1, .. } => (c0.min(c1)..=c0.max(c1)).collect(),
+                                    _ => Vec::new(),
+                                };
+                                view.chart = Some(crate::state::ChartView::new(cobalt_results::chart::default_spec(&view.rs, &selected)));
+                            }
+                        }
                         let r = icon_button(ui, if is_max { icons::ARROWS_IN } else { icons::ARROWS_OUT }, if is_max { "Restore the editor" } else { "Maximize this result set (hides the editor)" }, true);
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if is_max { "restore results" } else { "maximize results" }));
                         if r.clicked() {
@@ -234,20 +252,31 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), grid_h), egui::Sense::hover());
                         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("rs-child", run.id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
                         child.set_clip_rect(rect.intersect(ui.clip_rect()));
-                        let grid_actions = grid::show(
-                            &mut child,
-                            grid::GridArgs {
-                                rs: &view.rs,
-                                grid: &mut view.grid,
-                                theme,
-                                fmt: args.fmt,
-                                font_size: args.settings.appearance.grid_font_size,
-                                id_salt: egui::Id::new(("grid", tab.id, run.id, set)),
-                                show_row_numbers: args.settings.results.show_row_numbers,
-                                max_col_width: args.settings.results.max_column_width,
-                                sample_rows: args.settings.results.auto_size_sample_rows,
-                            },
-                        );
+                        let grid_actions = if view.chart.is_some() {
+                            // the chart in place of the grid; the grid's state (selection, view) stays
+                            for a in chart::show(&mut child, view, theme, args.fmt, set) {
+                                match a {
+                                    chart::ChartAction::Capture { save } => actions.push(ResultsAction::CaptureChart { set, save }),
+                                    chart::ChartAction::Close => view.chart = None,
+                                }
+                            }
+                            Vec::new()
+                        } else {
+                            grid::show(
+                                &mut child,
+                                grid::GridArgs {
+                                    rs: &view.rs,
+                                    grid: &mut view.grid,
+                                    theme,
+                                    fmt: args.fmt,
+                                    font_size: args.settings.appearance.grid_font_size,
+                                    id_salt: egui::Id::new(("grid", tab.id, run.id, set)),
+                                    show_row_numbers: args.settings.results.show_row_numbers,
+                                    max_col_width: args.settings.results.max_column_width,
+                                    sample_rows: args.settings.results.auto_size_sample_rows,
+                                },
+                            )
+                        };
                         for ga in grid_actions {
                             match ga {
                                 GridAction::ApplyView(spec) => actions.push(ResultsAction::ApplyView { set, spec }),

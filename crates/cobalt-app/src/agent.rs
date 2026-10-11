@@ -15,7 +15,7 @@
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
 //! - `results_to_table {table, schema?, existing?, set?, target?: tab index, selection_only?}` → Save results as table through the target tab's connection
-//! - `grid {action: totals|profile|find|find_state, kind?, set?, text?, regex?, case?, word?}`; `files_root {path}`; `plan_view {text?, metric?}`
+//! - `grid {action: totals|profile|find|find_state|chart|chart_state, kind?, set?, text?, regex?, case?, word?, x?, y?, agg?, top_n?, stacked?, horizontal?, off?}`; `files_root {path}`; `plan_view {text?, metric?}`
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
@@ -226,6 +226,25 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "token_error": k.token_error(),
         "catalog": k.sail_catalog.as_ref().map(|c| json!({"url": c.url, "requests": c.requests.load(std::sync::atomic::Ordering::Relaxed), "upstream_calls": c.upstream_calls.load(std::sync::atomic::Ordering::Relaxed), "last_error": c.last_error.lock().clone(), "lakehouses": c.lakehouses().iter().map(|l| l.name.clone()).collect::<Vec<_>>()})),
     })
+}
+
+/// A result set's chart for the agent: the spec and a summary of the data (first 50 points).
+fn chart_state_json(v: &crate::state::ResultSetView) -> Value {
+    match &v.chart {
+        None => json!({"on": false}),
+        Some(c) => {
+            let data = c.data.as_ref().map(|d| {
+                json!({
+                    "points": d.points(), "total_rows": d.total_rows, "distinct_x": d.distinct_x, "has_other": d.has_other, "error": d.error,
+                    "x_kind": format!("{:?}", d.x_kind).to_lowercase(), "x_name": d.x_name,
+                    "x": (0..d.points().min(50)).map(|i| d.x_label(i)).collect::<Vec<_>>(),
+                    "series": d.series.iter().map(|s| json!({"name": s.name, "values": s.values.iter().take(50).map(|v| if v.is_nan() { Value::Null } else { json!(v) }).collect::<Vec<_>>(), "len": s.values.len()})).collect::<Vec<_>>(),
+                    "build_ms": c.build_ms,
+                })
+            });
+            json!({"on": true, "spec": serde_json::to_value(&c.spec).unwrap_or(Value::Null), "data": data, "rect": c.rect.map(|r| [r.min.x, r.min.y, r.max.x, r.max.y])})
+        }
+    }
 }
 
 fn arg_str(args: Option<&Value>, key: &str) -> Option<String> {
@@ -719,6 +738,64 @@ impl AgentApp for CobaltApp {
                         f.generation = u64::MAX; // force a recompute on the next frame
                         egui.request_repaint();
                         ActionResult::ok()
+                    }
+                    "chart" => {
+                        // {set?, kind?, x?, y?: [..], agg?, top_n?, stacked?, horizontal?, off?}: chart the set (the grid's chart toggle), then its state
+                        let fmt = self.state.formatter.clone();
+                        let Some(v) = self.state.tabs.get_mut(i).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) else { return ActionResult::BadArgs("no such result set".into()) };
+                        if flag("off") == Some(true) {
+                            v.chart = None;
+                            return ActionResult::ok();
+                        }
+                        let rs = v.rs.clone();
+                        let c = v.chart.get_or_insert_with(|| crate::state::ChartView::new(cobalt_results::chart::default_spec(&rs, &[])));
+                        if let Some(k) = arg_str(args, "kind") {
+                            match cobalt_core::ChartKind::parse(&k) {
+                                Some(k) => c.spec.kind = k,
+                                None => return ActionResult::BadArgs(format!("unknown chart kind {k:?} (bar, line, area, scatter, pie)")),
+                            }
+                        }
+                        if let Some(x) = args.and_then(|a| a.get("x")) {
+                            c.spec.x = match x {
+                                Value::Null => None,
+                                Value::String(s) if s.is_empty() || s == "row" || s == "row number" => None,
+                                Value::String(s) => Some(s.clone()),
+                                other => Some(other.to_string()),
+                            };
+                        }
+                        if let Some(y) = args.and_then(|a| a.get("y")) {
+                            c.spec.y = match y {
+                                Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+                                Value::String(s) => vec![s.clone()],
+                                Value::Null => Vec::new(),
+                                _ => c.spec.y.clone(),
+                            };
+                        }
+                        if let Some(a) = arg_str(args, "agg") {
+                            match cobalt_core::Agg::parse(&a) {
+                                Some(a) => c.spec.agg = a,
+                                None => return ActionResult::BadArgs(format!("unknown aggregation {a:?} (none, sum, count, avg, min, max, count_distinct)")),
+                            }
+                        }
+                        if let Some(t) = args.and_then(|a| a.get("top_n")) {
+                            c.spec.top_n = t.as_u64().map(|n| n as usize);
+                        }
+                        if let Some(b) = flag("stacked") {
+                            c.spec.stacked = b;
+                        }
+                        if let Some(b) = flag("horizontal") {
+                            c.spec.horizontal = b;
+                        }
+                        if c.spec.y.is_empty() && c.spec.agg != cobalt_core::Agg::Count {
+                            c.spec.agg = cobalt_core::Agg::Count;
+                        }
+                        crate::ui::results::chart::ensure_data(v, &fmt);
+                        egui.request_repaint();
+                        ActionResult::with(&chart_state_json(v))
+                    }
+                    "chart_state" => {
+                        let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).map(chart_state_json);
+                        ActionResult::with(&json!({"chart": v}))
                     }
                     "find_state" => {
                         // matches: the first 1,000 (row, col); count: all of them so far; complete: every cell was looked at

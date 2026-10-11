@@ -450,6 +450,39 @@ impl CobaltApp {
 
 impl eframe::App for CobaltApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // the frame a chart capture asked for: crop the plot's rect and hand it on
+        if self.state.pending_capture.as_ref().map(|p| p.requested).unwrap_or(false) {
+            if let Some(image) = raw_input.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            }) {
+                if let Some(pc) = self.state.pending_capture.take() {
+                    let region = image.region(&pc.rect, Some(ctx.pixels_per_point()));
+                    let [w, h] = region.size;
+                    match pc.purpose {
+                        crate::state::CapturePurpose::Clipboard => {
+                            ctx.copy_image(region);
+                            self.toasts.info(format!("Chart copied as an image ({w}×{h})"));
+                        }
+                        crate::state::CapturePurpose::SaveFile => {
+                            let title = self.state.tabs.iter().find(|t| t.id == pc.tab).map(|t| t.title.clone()).unwrap_or_else(|| "chart".into());
+                            let name = format!("{}-chart{}.png", title.trim_end_matches(".sql"), if pc.set > 0 { format!("-{}", pc.set + 1) } else { String::new() });
+                            if let Some(path) = rfd::FileDialog::new().add_filter("PNG image", &["png"]).set_file_name(name).save_file() {
+                                let raw: Vec<u8> = region.pixels.iter().flat_map(|c| [c.r(), c.g(), c.b(), 255u8]).collect();
+                                match image::RgbaImage::from_raw(w as u32, h as u32, raw).ok_or_else(|| "bad image size".to_string()).and_then(|img| img.save(&path).map_err(|e| e.to_string())) {
+                                    Ok(()) => {
+                                        self.toasts.info(format!("Chart saved to {}", path.display()));
+                                    }
+                                    Err(e) => {
+                                        self.toasts.error(format!("Could not save the chart: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some(step) = self.state.injected_pointer.pop_front() {
             // widgets read Shift/Ctrl from the frame's modifier state, which egui derives from
             // ModifiersChanged events rather than from the button event itself
@@ -588,6 +621,14 @@ impl eframe::App for CobaltApp {
             }
         }
         self.handle_settings_patches(&ctx);
+        // a chart image capture: ask for the frame once; raw_input_hook gets the pixels next frame
+        if let Some(pc) = self.state.pending_capture.as_mut() {
+            if !pc.requested {
+                pc.requested = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                ctx.request_repaint();
+            }
+        }
         self.toasts.show(&ctx);
 
         // keep animating while anything is live

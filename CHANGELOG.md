@@ -31,6 +31,16 @@
   install` lines in a cell are no longer sent to the session: the cell reports the packages
   and *Add to runtime* puts them in the runtime's Python packages and starts the install into
   every engine environment.
+- **Charts on a result set.** The Chart button next to Maximize (query tabs and Spark SQL tabs)
+  turns a result set into a bar, line, area, scatter or pie chart in place of the grid. A strip
+  picks the X column (or row number), one or more numeric Y columns (or a count of rows), the
+  aggregation when X repeats (sum, count, average, min, max, count distinct, or none for every
+  row), top-N with an "other" bucket for categories, stacked and horizontal. The chart follows
+  the grid's sort and filter and a re-run; the selection seeds X and Y; hovering shows the
+  values, the legend toggles series, drag zooms and double-click resets; clicking a bar or
+  point selects its rows in the grid. Copy image puts the chart on the clipboard, Save PNG…
+  writes it to a file. No row budget: a 1.3-million-row result charts in about 0.2 s. The agent
+  drives it with `grid {action: chart, …}` and reads `chart_state`.
 - **Find in results searches the whole result set.** The scan used to stop silently after
   200,000 cells (a 29-column, 1.3-million-row result was searched to row ~7,000). It now runs on
   a thread over every visible cell, matches appear as they are found with the first one selected

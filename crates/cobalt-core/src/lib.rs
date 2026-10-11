@@ -4,6 +4,7 @@
 //! depends on this one; this one depends on nothing of ours.
 
 pub mod catalog;
+pub mod chart;
 pub mod engine;
 pub mod ids;
 pub mod message;
@@ -13,6 +14,7 @@ pub mod settings;
 pub mod sqltype;
 
 pub use catalog::*;
+pub use chart::*;
 pub use engine::*;
 pub use ids::*;
 pub use message::*;

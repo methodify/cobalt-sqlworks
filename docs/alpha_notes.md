@@ -495,6 +495,20 @@ them (saveAsTable on a new lakehouse table lands as a Delta write at the table's
 `df`, `%%sql`, Stop. The agent: `settings {set: {"spark.engine": "sail"}}`, `runtime
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
+**Charts (0.9.5, slice A of `docs/design/charts.md`).** On any result set, the Chart button
+(next to Maximize) replaces the grid with a chart; the strip above it picks the kind (Bar, Line,
+Area, Scatter, Pie), X, Y (several numeric columns = several series; none = count of rows), the
+aggregation, Top N (+ other), Stacked, Horizontal. Try `SELECT type_desc, object_id, create_date
+FROM sys.all_objects`: count by `type_desc` as a bar, then Pie with Top 6; Line with X =
+`create_date` and max `object_id`; Scatter `object_id` over `schema_id` with aggregation none.
+Hover for values, click a bar to select its rows (the grid shows them when you switch back),
+drag to zoom, double-click to reset. Copy image → paste into Teams; Save PNG… → a file. The chart
+follows the grid's sort/filter and a re-run; there is no row budget (1.3 M rows aggregate in
+~0.2 s; a 1.3 M-point scatter draws, slowly). The agent: `grid {action: chart, kind, x, y: [..],
+agg, top_n, stacked, horizontal}` / `{action: chart_state}` / `{action: chart, off: true}`;
+labels `chart toggle`, `chart kind <k>`, `chart x`, `chart y <col>`, `chart agg`, `chart top`,
+`chart copy image`, `chart save png`, `chart close`, `chart status`.
+
 **Parameters and `%pip` (0.9.5).** A Python cell's run menu (the caret next to its play button)
 has *Parameters cell*: the cell gets Fabric's `parameters` tag and a badge, and the toolbar's
 *Run with parameters…* lists its `name = value` lines for editing; Run appends the changed
