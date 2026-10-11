@@ -62,6 +62,7 @@ interval, a later slice.
 | kind | X | Y | notes |
 |---|---|---|---|
 | bar (vertical, horizontal) | category or number | one or more numeric series | grouped side by side, or stacked |
+| histogram (added on the founder's ask, 2026-10-11) | number or date/time, binned | count of rows per bin, or a sum / other aggregate of a numeric column | bins from the data (Freedman–Diaconis, Sturges when the IQR is 0; 5–200) or a typed count; touching bars; a bin's range in the hover; the profiler's 12-bin sketch can point here later |
 | line | number, date/time, or category in row order | one or more numeric series | gaps for NULL |
 | area | as line | as line | stacked by default |
 | scatter | number or date/time | one numeric series | a third numeric column sizes the points (optional) |

@@ -20,6 +20,8 @@ pub enum XKind {
     Number,
     /// Milliseconds since the epoch (dates, times of day as ms into the day, timestamps).
     Time,
+    /// Histogram bins of a numeric or time column, in order; `x_labels` carry the ranges.
+    Bin,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -46,6 +48,9 @@ pub struct ChartData {
     pub distinct_x: usize,
     /// Whether the last point is the "other" bucket of a top-N fold.
     pub has_other: bool,
+    /// Histogram: the bin edges (points + 1 of them) and whether the count came from the data.
+    pub bin_edges: Vec<f64>,
+    pub bins_auto: bool,
     pub generation: u64,
     /// Why no chart could be built, in words.
     pub error: Option<String>,
@@ -53,7 +58,7 @@ pub struct ChartData {
 
 impl ChartData {
     pub fn empty(generation: u64, error: impl Into<String>) -> Self {
-        Self { x_kind: XKind::RowNumber, x_name: String::new(), x_values: Vec::new(), x_labels: Vec::new(), series: Vec::new(), rows: Vec::new(), total_rows: 0, distinct_x: 0, has_other: false, generation, error: Some(error.into()) }
+        Self { x_kind: XKind::RowNumber, x_name: String::new(), x_values: Vec::new(), x_labels: Vec::new(), series: Vec::new(), rows: Vec::new(), total_rows: 0, distinct_x: 0, has_other: false, bin_edges: Vec::new(), bins_auto: false, generation, error: Some(error.into()) }
     }
     pub fn points(&self) -> usize {
         self.x_labels.len().max(self.x_values.len())
@@ -162,7 +167,7 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
             None => return ChartData::empty(generation, format!("no column named {n}")),
         }
     }
-    if y_idx.is_empty() && spec.agg != Agg::Count {
+    if y_idx.is_empty() && spec.agg != Agg::Count && spec.kind != ChartKind::Histogram {
         return ChartData::empty(generation, "pick at least one numeric column for Y (or count rows)");
     }
     let x_kind = match x_idx {
@@ -171,7 +176,39 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
         Some(i) if is_time(&cols[i].sql_type) => XKind::Time,
         Some(_) => XKind::Category,
     };
-    let agg = if spec.kind == ChartKind::Pie && spec.agg == Agg::None { Agg::Sum } else { spec.agg };
+    // a histogram bins a numeric or time X: the edges come from a first pass over X
+    let histogram = spec.kind == ChartKind::Histogram;
+    let mut bin_edges: Vec<f64> = Vec::new();
+    let mut bins_auto = false;
+    let x_time = x_kind == XKind::Time;
+    if histogram {
+        let Some(xi) = x_idx.filter(|_| matches!(x_kind, XKind::Number | XKind::Time)) else {
+            return ChartData::empty(generation, "a histogram needs a numeric or date column for X");
+        };
+        let mut xs: Vec<f64> = Vec::new();
+        for batch in rs.view_batches(65_536) {
+            let Ok(batch) = batch else { continue };
+            let col = if x_time { as_time_ms(batch.column(xi)) } else { as_f64(batch.column(xi)) };
+            if let Some(col) = col {
+                xs.extend(col.iter().flatten().filter(|v| v.is_finite()));
+            }
+        }
+        if xs.is_empty() {
+            return ChartData::empty(generation, "no values to bin");
+        }
+        let (bins, auto) = match spec.bins {
+            Some(b) => (b.clamp(1, 10_000), false),
+            None => (auto_bins(&mut xs), true),
+        };
+        bins_auto = auto;
+        let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
+        let hi = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let (lo, hi) = if hi > lo { (lo, hi) } else { (lo - 0.5, lo + 0.5) };
+        let width = (hi - lo) / bins as f64;
+        bin_edges = (0..=bins).map(|i| lo + width * i as f64).collect();
+    }
+    let x_kind = if histogram { XKind::Bin } else { x_kind };
+    let agg = if (spec.kind == ChartKind::Pie || histogram) && spec.agg == Agg::None { if y_idx.is_empty() { Agg::Count } else { Agg::Sum } } else { spec.agg };
     let n_series = if y_idx.is_empty() { 1 } else { y_idx.len() };
     let series_names: Vec<String> = if y_idx.is_empty() { vec!["count".to_string()] } else { y_idx.iter().map(|i| cols[*i].name.clone()).collect() };
     // accumulators per X: index into the point vectors
@@ -202,6 +239,29 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
             }
         }
     };
+    if histogram {
+        // every bin is a point, empty ones included, in edge order
+        let nb = bin_edges.len().saturating_sub(1);
+        if nb > 0 {
+            ensure_point(nb - 1, &mut sums, &mut counts, &mut mins, &mut maxs, &mut distinct, &mut rows);
+        }
+        for i in 0..nb {
+            let (a, b) = (bin_edges[i], bin_edges[i + 1]);
+            x_order.push(if x_time { format!("{} – {}", fmt_time(a), fmt_time(b)) } else { format!("{} – {}", fmt_num(a), fmt_num(b)) });
+        }
+    }
+    let bin_of = |v: f64| -> Option<usize> {
+        let nb = bin_edges.len().saturating_sub(1);
+        if nb == 0 || !v.is_finite() {
+            return None;
+        }
+        let lo = bin_edges[0];
+        let hi = bin_edges[nb];
+        if v < lo || v > hi {
+            return None;
+        }
+        Some((((v - lo) / (hi - lo)) * nb as f64).floor().min(nb as f64 - 1.0) as usize)
+    };
     for batch in rs.view_batches(65_536) {
         let Ok(batch) = batch else { continue };
         let n = batch.num_rows();
@@ -209,6 +269,7 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
         let x_num_col: Option<Float64Array> = match (x_kind, x_idx) {
             (XKind::Number, Some(i)) => as_f64(batch.column(i)),
             (XKind::Time, Some(i)) => as_time_ms(batch.column(i)),
+            (XKind::Bin, Some(i)) => if x_time { as_time_ms(batch.column(i)) } else { as_f64(batch.column(i)) },
             _ => None,
         };
         let x_text_col: Option<Arc<Vec<Arc<str>>>> = match (x_kind, x_idx) {
@@ -221,6 +282,13 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
             visible_row += 1;
             // the point this row belongs to
             let p = match x_kind {
+                XKind::Bin => {
+                    let v = x_num_col.as_ref().map(|c| if c.is_null(r) { f64::NAN } else { c.value(r) }).unwrap_or(f64::NAN);
+                    match bin_of(v) {
+                        Some(p) => p,
+                        None => continue,
+                    }
+                }
                 XKind::Category => {
                     let label = x_text_col.as_ref().and_then(|c| c.get(r).map(|s| s.to_string())).unwrap_or_default();
                     match cat_index.get(&label) {
@@ -373,7 +441,33 @@ pub fn chart_data(rs: &ResultSet, spec: &ChartSpec, fmt: &CellFormatter) -> Char
         Some(i) => cols[i].name.clone(),
         None => "row".to_string(),
     };
-    ChartData { x_kind, x_name, x_values, x_labels, series, rows, total_rows, distinct_x, has_other, generation, error: None }
+    ChartData { x_kind, x_name, x_values, x_labels, series, rows, total_rows, distinct_x, has_other, bin_edges, bins_auto, generation, error: None }
+}
+
+/// Bin count from the data: Freedman–Diaconis (2·IQR·n^-1/3) when the IQR is positive, else
+/// Sturges (log2 n + 1); between 5 and 200. Reorders `xs`.
+pub fn auto_bins(xs: &mut [f64]) -> usize {
+    let n = xs.len();
+    if n < 2 {
+        return 1;
+    }
+    let q = |xs: &mut [f64], f: f64| -> f64 {
+        let k = ((n - 1) as f64 * f).round() as usize;
+        let (_, v, _) = xs.select_nth_unstable_by(k, |a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        *v
+    };
+    let q1 = q(xs, 0.25);
+    let q3 = q(xs, 0.75);
+    let lo = xs.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let iqr = q3 - q1;
+    let bins = if iqr > 0.0 && hi > lo {
+        let width = 2.0 * iqr / (n as f64).cbrt();
+        ((hi - lo) / width).ceil() as usize
+    } else {
+        ((n as f64).log2() + 1.0).ceil() as usize
+    };
+    bins.clamp(5, 200)
 }
 
 pub fn fmt_num(v: f64) -> String {
@@ -512,6 +606,38 @@ mod tests {
         assert!(chart_data(&rs, &spec, &fmt).error.unwrap().contains("nope"));
         let spec = ChartSpec { kind: ChartKind::Bar, x: Some("region".into()), y: vec!["region".into()], ..Default::default() };
         assert!(chart_data(&rs, &spec, &fmt).error.unwrap().contains("not a numeric"));
+    }
+
+    #[test]
+    fn histogram_bins_every_value_with_ranges() {
+        let rs = sample();
+        let fmt = CellFormatter::default();
+        // amounts 5, 7, 10, 20, 30, 40, 99 → 4 bins of 23.5 from 5 to 99
+        let spec = ChartSpec { kind: ChartKind::Histogram, x: Some("amount".into()), y: vec![], bins: Some(4), ..Default::default() };
+        let d = chart_data(&rs, &spec, &fmt);
+        assert!(d.error.is_none(), "{:?}", d.error);
+        assert_eq!(d.x_kind, XKind::Bin);
+        assert_eq!(d.bin_edges.len(), 5);
+        assert_eq!(d.x_labels[0], "5 – 28.5");
+        assert_eq!(d.series[0].name, "count");
+        assert_eq!(d.series[0].values, vec![4.0, 2.0, 0.0, 1.0]);
+        assert_eq!(d.series[0].values.iter().sum::<f64>(), 7.0);
+        assert_eq!(d.rows[3], vec![3]);
+        assert!(!d.bins_auto);
+        // a sum per bin, and the automatic bin count
+        let spec = ChartSpec { kind: ChartKind::Histogram, x: Some("amount".into()), y: vec!["qty".into()], bins: Some(2), ..Default::default() };
+        let d = chart_data(&rs, &spec, &fmt);
+        assert_eq!(d.series[0].values, vec![1.0 + 2.0 + 3.0 + 5.0 + 6.0 + 7.0, 4.0]);
+        let spec = ChartSpec { kind: ChartKind::Histogram, x: Some("amount".into()), ..Default::default() };
+        let d = chart_data(&rs, &spec, &fmt);
+        assert!(d.bins_auto && d.points() >= 5);
+        assert_eq!(d.series[0].values.iter().sum::<f64>(), 7.0);
+        // not for text
+        let spec = ChartSpec { kind: ChartKind::Histogram, x: Some("region".into()), ..Default::default() };
+        assert!(chart_data(&rs, &spec, &fmt).error.unwrap().contains("numeric or date"));
+        let mut xs: Vec<f64> = (0..1000).map(|i| i as f64).collect();
+        let b = auto_bins(&mut xs);
+        assert!((5..=200).contains(&b), "{b}");
     }
 
     #[test]

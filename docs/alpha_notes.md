@@ -496,9 +496,12 @@ them (saveAsTable on a new lakehouse table lands as a Delta write at the table's
 {action: install}`, `kernel` JSON carries `engine` / `engine_version`.
 
 **Charts (0.9.5, slice A of `docs/design/charts.md`).** On any result set, the Chart button
-(next to Maximize) replaces the grid with a chart; the strip above it picks the kind (Bar, Line,
-Area, Scatter, Pie), X, Y (several numeric columns = several series; none = count of rows), the
-aggregation, Top N (+ other), Stacked, Horizontal. Try `SELECT type_desc, object_id, create_date
+(next to Maximize) replaces the grid with a chart; the strip above it picks the kind (Bar,
+Histogram, Line, Area, Scatter, Pie), X, Y (several numeric columns = several series; none =
+count of rows), the aggregation, Top N (+ other), Stacked, Horizontal. Histogram: pick the
+numeric or date column to bin; *Auto bins* sizes the bins from the data (Freedman–Diaconis, 5 to
+200), untick it to type a count; hover a bin for its range and count; click one to jump to its
+first row in the grid. Try `SELECT type_desc, object_id, create_date
 FROM sys.all_objects`: count by `type_desc` as a bar, then Pie with Top 6; Line with X =
 `create_date` and max `object_id`; Scatter `object_id` over `schema_id` with aggregation none.
 Hover for values, click a bar to select its rows (the grid shows them when you switch back),

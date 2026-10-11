@@ -12,10 +12,12 @@ pub enum ChartKind {
     Area,
     Scatter,
     Pie,
+    /// Counts (or a sum) per bin of a numeric or date X.
+    Histogram,
 }
 
 impl ChartKind {
-    pub const ALL: [ChartKind; 5] = [ChartKind::Bar, ChartKind::Line, ChartKind::Area, ChartKind::Scatter, ChartKind::Pie];
+    pub const ALL: [ChartKind; 6] = [ChartKind::Bar, ChartKind::Histogram, ChartKind::Line, ChartKind::Area, ChartKind::Scatter, ChartKind::Pie];
     pub fn label(self) -> &'static str {
         match self {
             ChartKind::Bar => "Bar",
@@ -23,6 +25,7 @@ impl ChartKind {
             ChartKind::Area => "Area",
             ChartKind::Scatter => "Scatter",
             ChartKind::Pie => "Pie",
+            ChartKind::Histogram => "Histogram",
         }
     }
     pub fn key(self) -> &'static str {
@@ -32,6 +35,7 @@ impl ChartKind {
             ChartKind::Area => "area",
             ChartKind::Scatter => "scatter",
             ChartKind::Pie => "pie",
+            ChartKind::Histogram => "histogram",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
@@ -96,6 +100,8 @@ pub struct ChartSpec {
     pub top_n: Option<usize>,
     pub stacked: bool,
     pub horizontal: bool,
+    /// Histogram: the number of bins; None = from the data (Freedman–Diaconis, else Sturges).
+    pub bins: Option<usize>,
 }
 
 impl ChartSpec {

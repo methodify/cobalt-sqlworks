@@ -32,7 +32,10 @@
   and *Add to runtime* puts them in the runtime's Python packages and starts the install into
   every engine environment.
 - **Charts on a result set.** The Chart button next to Maximize (query tabs and Spark SQL tabs)
-  turns a result set into a bar, line, area, scatter or pie chart in place of the grid. A strip
+  turns a result set into a bar, histogram, line, area, scatter or pie chart in place of the
+  grid. A histogram bins a numeric or date column (bin count from the data, or your own) and
+  counts rows per bin, or sums another column, so a population's shape shows before any GROUP
+  BY: 1.3 million rows bin in about 30 ms. A strip
   picks the X column (or row number), one or more numeric Y columns (or a count of rows), the
   aggregation when X repeats (sum, count, average, min, max, count distinct, or none for every
   row), top-N with an "other" bucket for categories, stacked and horizontal. The chart follows

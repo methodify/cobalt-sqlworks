@@ -15,7 +15,7 @@
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
 //! - `results_to_table {table, schema?, existing?, set?, target?: tab index, selection_only?}` → Save results as table through the target tab's connection
-//! - `grid {action: totals|profile|find|find_state|chart|chart_state, kind?, set?, text?, regex?, case?, word?, x?, y?, agg?, top_n?, stacked?, horizontal?, off?}`; `files_root {path}`; `plan_view {text?, metric?}`
+//! - `grid {action: totals|profile|find|find_state|chart|chart_state, kind?, set?, text?, regex?, case?, word?, x?, y?, agg?, top_n?, bins?, stacked?, horizontal?, off?}`; `files_root {path}`; `plan_view {text?, metric?}`
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
@@ -752,7 +752,7 @@ impl AgentApp for CobaltApp {
                         if let Some(k) = arg_str(args, "kind") {
                             match cobalt_core::ChartKind::parse(&k) {
                                 Some(k) => c.spec.kind = k,
-                                None => return ActionResult::BadArgs(format!("unknown chart kind {k:?} (bar, line, area, scatter, pie)")),
+                                None => return ActionResult::BadArgs(format!("unknown chart kind {k:?} (bar, histogram, line, area, scatter, pie)")),
                             }
                         }
                         if let Some(x) = args.and_then(|a| a.get("x")) {
@@ -779,6 +779,9 @@ impl AgentApp for CobaltApp {
                         }
                         if let Some(t) = args.and_then(|a| a.get("top_n")) {
                             c.spec.top_n = t.as_u64().map(|n| n as usize);
+                        }
+                        if let Some(t) = args.and_then(|a| a.get("bins")) {
+                            c.spec.bins = t.as_u64().map(|n| n as usize);
                         }
                         if let Some(b) = flag("stacked") {
                             c.spec.stacked = b;

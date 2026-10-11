@@ -79,10 +79,13 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
                     if k == ChartKind::Pie && c.spec.agg == Agg::None {
                         c.spec.agg = Agg::Sum;
                     }
+                    if k == ChartKind::Histogram && c.spec.agg == Agg::None {
+                        c.spec.agg = if c.spec.y.is_empty() { Agg::Count } else { Agg::Sum };
+                    }
                 }
             }
             ui.separator();
-            ui.label(RichText::new("X").size(12.0).color(theme.text_muted));
+            ui.label(RichText::new(if c.spec.kind == ChartKind::Histogram { "Bin" } else { "X" }).size(12.0).color(theme.text_muted));
             let x_label = c.spec.x.clone().unwrap_or_else(|| "row number".to_string());
             let r = egui::ComboBox::from_id_salt(("chart-x", set)).width(150.0).selected_text(RichText::new(x_label).size(12.0)).show_ui(ui, |ui| {
                 if ui.selectable_label(c.spec.x.is_none(), "row number").clicked() {
@@ -146,6 +149,21 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
                 });
                 r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, a11y("agg")));
             }
+            if c.spec.kind == ChartKind::Histogram {
+                let mut auto = c.spec.bins.is_none();
+                let r = ui.checkbox(&mut auto, RichText::new("Auto bins").size(12.0)).on_hover_text("Bin count from the data (Freedman–Diaconis, else Sturges), 5 to 200.");
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y("auto bins")));
+                if r.changed() {
+                    c.spec.bins = if auto { None } else { Some(c.data.as_ref().map(|d| d.points()).filter(|n| *n > 0).unwrap_or(20)) };
+                }
+                if let Some(b) = c.spec.bins.as_mut() {
+                    let r = ui.add(egui::DragValue::new(b).range(1..=10_000).speed(1.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, a11y("bins")));
+                    ui.label(RichText::new("bins").size(11.0).color(theme.text_faint));
+                } else if let Some(d) = &c.data {
+                    ui.label(RichText::new(format!("{} bins", d.points())).size(11.0).color(theme.text_faint));
+                }
+            }
             let is_category = c.data.as_ref().map(|d| d.x_kind == XKind::Category).unwrap_or(false);
             if is_category {
                 let mut on = c.spec.top_n.is_some();
@@ -196,6 +214,9 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
                             if d.has_other {
                                 s.push_str(&format!(" · top {} of {} + other", d.points() - 1, d.distinct_x));
                             }
+                            if d.x_kind == XKind::Bin {
+                                s.push_str(&format!(" · {} bins{}", d.points(), if d.bins_auto { " (auto)" } else { "" }));
+                            }
                             if c.build_ms >= 100 {
                                 s.push_str(&format!(" · built in {:.1} s", c.build_ms as f64 / 1000.0));
                             }
@@ -245,12 +266,14 @@ const AXIS_LABEL_CHARS: usize = 22;
 
 fn x_axis_label(data: &ChartData, v: f64) -> String {
     match data.x_kind {
-        XKind::Category => {
+        XKind::Category | XKind::Bin => {
             let i = v.round();
             if (v - i).abs() > 0.01 || i < 0.0 {
                 return String::new();
             }
             let l = data.x_labels.get(i as usize).cloned().unwrap_or_default();
+            // a bin's axis label is its lower edge; the hover carries the whole range
+            let l = if data.x_kind == XKind::Bin { l.split(" – ").next().unwrap_or("").to_string() } else { l };
             if l.chars().count() > AXIS_LABEL_CHARS {
                 format!("{}…", l.chars().take(AXIS_LABEL_CHARS - 1).collect::<String>())
             } else {
@@ -266,7 +289,8 @@ fn x_axis_label(data: &ChartData, v: f64) -> String {
 /// Bars, lines, areas and scatters through egui_plot. Returns the point index a click landed on.
 fn plot(ui: &mut Ui, c: &mut ChartView, data: &Arc<ChartData>, spec: &ChartSpec, set: usize, theme: &Theme) -> Option<usize> {
     let n = data.points();
-    let category = data.x_kind == XKind::Category;
+    let binned = data.x_kind == XKind::Bin;
+    let category = data.x_kind == XKind::Category || binned;
     let horizontal = spec.kind == ChartKind::Bar && spec.horizontal;
     let x_of = |i: usize| -> f64 { if category { i as f64 } else { data.x_values[i] } };
     let d1 = data.clone();
@@ -319,9 +343,9 @@ fn plot(ui: &mut Ui, c: &mut ChartView, data: &Arc<ChartData>, spec: &ChartSpec,
     let mut clicked: Option<usize> = None;
     let response = plot.show(ui, |plot_ui| {
         match spec.kind {
-            ChartKind::Bar => {
+            ChartKind::Bar | ChartKind::Histogram => {
                 let n_series = data.series.len().max(1);
-                let width = if category || data.x_kind == XKind::RowNumber { 0.8 } else { bar_width(&data.x_values) };
+                let width = if binned { 1.0 } else if category || data.x_kind == XKind::RowNumber { 0.8 } else { bar_width(&data.x_values) };
                 let mut charts: Vec<BarChart> = Vec::new();
                 for (s, series) in data.series.iter().enumerate() {
                     let (w, offset) = if spec.stacked { (width, 0.0) } else { (width / n_series as f64, (s as f64 - (n_series as f64 - 1.0) / 2.0) * width / n_series as f64) };
