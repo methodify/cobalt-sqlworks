@@ -742,6 +742,20 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             if icon_button(ui, icons::ARROW_SQUARE_OUT, "Open result set in its own tab", true).clicked() {
                                                 actions.push(NbAction::Results(i, ResultsAction::PopOut { set }));
                                             }
+                                            let charted = view.chart.is_some();
+                                            let r = icon_button(ui, if charted { icons::TABLE } else { icons::CHART_LINE }, if charted { "Back to the grid" } else { "Chart this result (saved with the cell; Keep in notebook adds a picture)" }, true);
+                                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} chart toggle", i + 1)));
+                                            if r.clicked() {
+                                                if charted {
+                                                    view.chart = None;
+                                                } else {
+                                                    let selected: Vec<usize> = match view.grid.selection {
+                                                        Selection::Cols { c0, c1 } | Selection::Cells { c0, c1, .. } => (c0.min(c1)..=c0.max(c1)).collect(),
+                                                        _ => Vec::new(),
+                                                    };
+                                                    view.chart = Some(crate::state::ChartView::new(cobalt_results::chart::default_spec(&view.rs, &selected)));
+                                                }
+                                            }
                                             if icon_button(ui, icons::TABLE, "Save as table…", true).clicked() {
                                                 actions.push(NbAction::Results(i, ResultsAction::SaveAsTable { set, selection_only: false }));
                                             }
@@ -762,12 +776,29 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             }
                                         });
                                     });
+                                    // a chart saved with the cell comes back on open and after a re-run
+                                    let saved_spec = nb.nb.cells[i].chart_spec(set).cloned();
+                                    if view.chart.is_none() {
+                                        if let Some(spec) = saved_spec.as_ref().and_then(|v| serde_json::from_value::<cobalt_core::ChartSpec>(v.clone()).ok()) {
+                                            view.chart = Some(crate::state::ChartView::new(spec));
+                                        }
+                                    }
                                     let shown_rows = visible.clamp(1, grid_rows);
-                                    let h = HEADER_H + shown_rows as f32 * ROW_H + 14.0;
+                                    let h = if view.chart.is_some() { (HEADER_H + grid_rows as f32 * ROW_H + 14.0).max(300.0) } else { HEADER_H + shown_rows as f32 * ROW_H + 14.0 };
                                     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
                                     let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("nb-rs-child", run_id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
                                     child.set_clip_rect(rect.intersect(ui.clip_rect()));
-                                    let ga = grid::show(
+                                    let ga = if view.chart.is_some() {
+                                        for a in crate::ui::results::chart::show(&mut child, view, theme, &fmt, set, true) {
+                                            match a {
+                                                crate::ui::results::chart::ChartAction::Capture { save } => actions.push(NbAction::Results(i, ResultsAction::CaptureChart { set, purpose: if save { crate::state::CapturePurpose::SaveFile } else { crate::state::CapturePurpose::Clipboard } })),
+                                                crate::ui::results::chart::ChartAction::Keep => actions.push(NbAction::Results(i, ResultsAction::CaptureChart { set, purpose: crate::state::CapturePurpose::Cell { cell_id: cell_id.clone() } })),
+                                                crate::ui::results::chart::ChartAction::Close => view.chart = None,
+                                            }
+                                        }
+                                        Vec::new()
+                                    } else {
+                                        grid::show(
                                         &mut child,
                                         GridArgs {
                                             rs: &view.rs,
@@ -780,7 +811,14 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             max_col_width: settings.results.max_column_width,
                                             sample_rows: settings.results.auto_size_sample_rows,
                                         },
-                                    );
+                                    )
+                                    };
+                                    // the chart's settings live in the cell's metadata (saved with the notebook)
+                                    let current_spec = view.chart.as_ref().and_then(|c| serde_json::to_value(&c.spec).ok());
+                                    if current_spec != saved_spec {
+                                        nb.nb.cells[i].set_chart_spec(set, current_spec);
+                                        nb.dirty = true;
+                                    }
                                     for a in ga {
                                         match a {
                                             GridAction::ApplyView(spec) => actions.push(NbAction::Results(i, ResultsAction::ApplyView { set, spec })),
@@ -1084,6 +1122,15 @@ fn render_extra_output(ui: &mut Ui, theme: &Theme, o: &Output) {
         }
         Output::Stream { name, text } => {
             ui.add(egui::Label::new(RichText::new(text.trim_end()).size(12.0).color(if name == "stderr" { theme.error } else { theme.text_muted }).monospace()).wrap());
+        }
+        Output::ExecuteResult { data, .. } | Output::DisplayData { data, .. } if data.binary(cobalt_notebook::PNG_MIME).is_some() => {
+            // a picture (a kept chart, matplotlib from Fabric): drawn through egui's image loaders
+            let bytes = data.binary(cobalt_notebook::PNG_MIME).unwrap_or_default();
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&bytes, &mut h);
+            let uri = format!("bytes://cobalt-cell-{:x}.png", std::hash::Hasher::finish(&h));
+            let max_w = ui.available_width().min(1200.0);
+            ui.add(egui::Image::from_bytes(uri, bytes).max_width(max_w).fit_to_original_size(1.0));
         }
         _ => {
             let t = o.preview_text();

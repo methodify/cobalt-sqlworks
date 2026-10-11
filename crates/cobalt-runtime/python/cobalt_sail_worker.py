@@ -349,8 +349,34 @@ class _FilesMixin:
         ws = next((lh.workspace_id for lh in self.lakehouses.values()), "")
         self.files = FilesMirror(root=root, workspace_id=ws, lakehouses=self.lakehouses, write_mode=self.write_mode, credential_factory=self.credential)
         if self.files_mode == "lazy":
+            from local_spark_mcp import lazy_files
             from local_spark_mcp.lazy_files import LazyFilesHooks
 
+            # `open(p, "w").write(x)` without a close: the wrapper must push when it is collected,
+            # and a method taken from it must keep it alive until the call returns (a bound
+            # method of the inner file would let the wrapper die before `write` runs)
+            push_on_close = getattr(lazy_files, "_PushOnClose", None)
+            if push_on_close is not None and not getattr(push_on_close, "_cobalt_patched", False):
+                orig_getattr = push_on_close.__getattr__
+
+                def _getattr(self, name, _orig=orig_getattr):
+                    value = _orig(self, name)
+                    if callable(value):
+                        def call(*args, _value=value, _keep=self, **kwargs):
+                            return _value(*args, **kwargs)
+
+                        return call
+                    return value
+
+                def _del(self):
+                    try:
+                        self.close()
+                    except Exception:
+                        pass
+
+                push_on_close.__getattr__ = _getattr
+                push_on_close.__del__ = _del
+                push_on_close._cobalt_patched = True
             self._lazy_hooks = LazyFilesHooks(self)
             self._lazy_hooks.install()
         if self.default_lakehouse:

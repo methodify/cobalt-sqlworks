@@ -1596,8 +1596,20 @@ pub fn load_outputs(cell: &Cell, _index: usize) -> (Option<RunView>, Vec<Output>
                 run.messages.push(msg(text, true));
                 run.state = RunViewState::Failed;
             }
-            Output::ExecuteResult { data, .. } | Output::DisplayData { data, .. } => {
+            Output::ExecuteResult { data, metadata, .. } | Output::DisplayData { data, metadata } => {
                 let set_index = run.result_sets.len();
+                // a kept chart's picture: back onto the result set it belongs to, as a live chart
+                if let Some(png) = data.binary(cobalt_notebook::PNG_MIME) {
+                    if let Some(spec) = metadata.get("cobalt").and_then(|c| c.get("chart")).and_then(|s| serde_json::from_value::<cobalt_core::ChartSpec>(s.clone()).ok()) {
+                        let set = metadata.get("cobalt").and_then(|c| c.get("set")).and_then(serde_json::Value::as_u64).map(|s| s as usize).unwrap_or(set_index.saturating_sub(1));
+                        if let Some(v) = run.result_sets.get_mut(set) {
+                            let mut cv = crate::state::ChartView::new(spec);
+                            cv.png = Some(Arc::new(png));
+                            v.chart = Some(cv);
+                            continue;
+                        }
+                    }
+                }
                 if let Some(bytes) = data.arrow() {
                     match result_set_from_ipc(&bytes, set_index) {
                         Ok(rs) => {
@@ -1753,10 +1765,21 @@ pub fn outputs_from_run(run: &RunView, count: Option<u64>, max_rows: u64, fmt: &
     }
     flush_err(&mut err_lines, &mut out);
     flush(&mut stdout, &mut out);
-    for v in run.result_sets.iter().filter(|s| !s.is_plan) {
+    for (k, v) in run.result_sets.iter().enumerate().filter(|(_, s)| !s.is_plan) {
         match table_output(&v.rs, count, max_rows, fmt) {
             Ok(o) => out.push(o),
             Err(e) => out.push(Output::stderr(format!("(result set not saved: {e})"))),
+        }
+        // a kept chart: the picture other tools show, with the spec so Cobalt re-attaches it
+        if let Some(c) = v.chart.as_ref() {
+            if let Some(png) = c.png.as_ref() {
+                let mut data = cobalt_notebook::MimeBundle::default();
+                data.set_binary(cobalt_notebook::PNG_MIME, png);
+                data.set_text(cobalt_notebook::PLAIN_MIME, format!("{} chart of result {}", c.spec.kind.label().to_lowercase(), k + 1));
+                let mut metadata = serde_json::Map::new();
+                metadata.insert("cobalt".into(), serde_json::json!({"chart": serde_json::to_value(&c.spec).unwrap_or(serde_json::Value::Null), "set": k}));
+                out.push(Output::DisplayData { data, metadata });
+            }
         }
     }
     out

@@ -711,11 +711,13 @@ pub struct ChartView {
     pub build_ms: u64,
     /// The plot's rect on screen in the last frame (for the image capture).
     pub rect: Option<egui::Rect>,
+    /// A notebook cell's chart kept as a picture for the saved outputs (Keep in notebook).
+    pub png: Option<Arc<Vec<u8>>>,
 }
 
 impl ChartView {
     pub fn new(spec: cobalt_core::ChartSpec) -> Self {
-        Self { spec, data: None, built_for: None, build_ms: 0, rect: None }
+        Self { spec, data: None, built_for: None, build_ms: 0, rect: None, png: None }
     }
 }
 
@@ -734,6 +736,8 @@ pub struct PendingCapture {
 pub enum CapturePurpose {
     Clipboard,
     SaveFile,
+    /// Into the notebook cell's chart as the picture saved with the outputs.
+    Cell { cell_id: String },
 }
 
 #[derive(Clone, Debug)]

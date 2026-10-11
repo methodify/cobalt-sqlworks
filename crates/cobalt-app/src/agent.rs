@@ -69,6 +69,8 @@ impl CobaltApp {
                         "queued": nb.is_queued(&c.id),
                         "parameters": cell.is_parameters(),
                         "pip_packages": c.pip_packages,
+                        "charts": c.run.as_ref().map(|r| r.result_sets.iter().enumerate().filter_map(|(k, v)| v.chart.as_ref().map(|ch| json!({"set": k, "kind": ch.spec.kind.key(), "x": ch.spec.x, "y": ch.spec.y, "kept": ch.png.is_some()}))).collect::<Vec<_>>()),
+                        "saved_charts": cell.chart_specs().len(),
                         "run": c.run.as_ref().map(|r| json!({
                             "state": format!("{:?}", r.state).to_lowercase(),
                             "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()})).collect::<Vec<_>>(),
@@ -226,6 +228,63 @@ fn kernel_json(k: &crate::kernel::KernelUi) -> Value {
         "token_error": k.token_error(),
         "catalog": k.sail_catalog.as_ref().map(|c| json!({"url": c.url, "requests": c.requests.load(std::sync::atomic::Ordering::Relaxed), "upstream_calls": c.upstream_calls.load(std::sync::atomic::Ordering::Relaxed), "last_error": c.last_error.lock().clone(), "lakehouses": c.lakehouses().iter().map(|l| l.name.clone()).collect::<Vec<_>>()})),
     })
+}
+
+/// Apply the agent's chart arguments to a result set (`off` removes the chart) and answer with
+/// its state. Shared by `grid {action: chart}` and `notebook {action: chart}`.
+fn apply_chart_args(v: &mut crate::state::ResultSetView, args: Option<&Value>, fmt: &cobalt_results::CellFormatter) -> Result<Value, String> {
+    let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|b| b.as_bool());
+    if flag("off") == Some(true) {
+        v.chart = None;
+        return Ok(json!({"on": false}));
+    }
+    let rs = v.rs.clone();
+    let c = v.chart.get_or_insert_with(|| crate::state::ChartView::new(cobalt_results::chart::default_spec(&rs, &[])));
+    if let Some(k) = arg_str(args, "kind") {
+        match cobalt_core::ChartKind::parse(&k) {
+            Some(k) => c.spec.kind = k,
+            None => return Err(format!("unknown chart kind {k:?} (bar, histogram, line, area, scatter, pie)")),
+        }
+    }
+    if let Some(x) = args.and_then(|a| a.get("x")) {
+        c.spec.x = match x {
+            Value::Null => None,
+            Value::String(s) if s.is_empty() || s == "row" || s == "row number" => None,
+            Value::String(s) => Some(s.clone()),
+            other => Some(other.to_string()),
+        };
+    }
+    if let Some(y) = args.and_then(|a| a.get("y")) {
+        c.spec.y = match y {
+            Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
+            Value::String(s) => vec![s.clone()],
+            Value::Null => Vec::new(),
+            _ => c.spec.y.clone(),
+        };
+    }
+    if let Some(a) = arg_str(args, "agg") {
+        match cobalt_core::Agg::parse(&a) {
+            Some(a) => c.spec.agg = a,
+            None => return Err(format!("unknown aggregation {a:?} (none, sum, count, avg, min, max, count_distinct)")),
+        }
+    }
+    if let Some(t) = args.and_then(|a| a.get("top_n")) {
+        c.spec.top_n = t.as_u64().map(|n| n as usize);
+    }
+    if let Some(t) = args.and_then(|a| a.get("bins")) {
+        c.spec.bins = t.as_u64().map(|n| n as usize);
+    }
+    if let Some(b) = flag("stacked") {
+        c.spec.stacked = b;
+    }
+    if let Some(b) = flag("horizontal") {
+        c.spec.horizontal = b;
+    }
+    if c.spec.y.is_empty() && c.spec.agg != cobalt_core::Agg::Count {
+        c.spec.agg = cobalt_core::Agg::Count;
+    }
+    crate::ui::results::chart::ensure_data(v, fmt);
+    Ok(chart_state_json(v))
 }
 
 /// A result set's chart for the agent: the spec and a summary of the data (first 50 points).
@@ -740,61 +799,16 @@ impl AgentApp for CobaltApp {
                         ActionResult::ok()
                     }
                     "chart" => {
-                        // {set?, kind?, x?, y?: [..], agg?, top_n?, stacked?, horizontal?, off?}: chart the set (the grid's chart toggle), then its state
+                        // {set?, kind?, x?, y?: [..], agg?, top_n?, bins?, stacked?, horizontal?, off?}: chart the set (the grid's chart toggle), then its state
                         let fmt = self.state.formatter.clone();
                         let Some(v) = self.state.tabs.get_mut(i).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) else { return ActionResult::BadArgs("no such result set".into()) };
-                        if flag("off") == Some(true) {
-                            v.chart = None;
-                            return ActionResult::ok();
-                        }
-                        let rs = v.rs.clone();
-                        let c = v.chart.get_or_insert_with(|| crate::state::ChartView::new(cobalt_results::chart::default_spec(&rs, &[])));
-                        if let Some(k) = arg_str(args, "kind") {
-                            match cobalt_core::ChartKind::parse(&k) {
-                                Some(k) => c.spec.kind = k,
-                                None => return ActionResult::BadArgs(format!("unknown chart kind {k:?} (bar, histogram, line, area, scatter, pie)")),
+                        match apply_chart_args(v, args, &fmt) {
+                            Ok(state) => {
+                                egui.request_repaint();
+                                ActionResult::with(&state)
                             }
+                            Err(e) => ActionResult::BadArgs(e),
                         }
-                        if let Some(x) = args.and_then(|a| a.get("x")) {
-                            c.spec.x = match x {
-                                Value::Null => None,
-                                Value::String(s) if s.is_empty() || s == "row" || s == "row number" => None,
-                                Value::String(s) => Some(s.clone()),
-                                other => Some(other.to_string()),
-                            };
-                        }
-                        if let Some(y) = args.and_then(|a| a.get("y")) {
-                            c.spec.y = match y {
-                                Value::Array(a) => a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect(),
-                                Value::String(s) => vec![s.clone()],
-                                Value::Null => Vec::new(),
-                                _ => c.spec.y.clone(),
-                            };
-                        }
-                        if let Some(a) = arg_str(args, "agg") {
-                            match cobalt_core::Agg::parse(&a) {
-                                Some(a) => c.spec.agg = a,
-                                None => return ActionResult::BadArgs(format!("unknown aggregation {a:?} (none, sum, count, avg, min, max, count_distinct)")),
-                            }
-                        }
-                        if let Some(t) = args.and_then(|a| a.get("top_n")) {
-                            c.spec.top_n = t.as_u64().map(|n| n as usize);
-                        }
-                        if let Some(t) = args.and_then(|a| a.get("bins")) {
-                            c.spec.bins = t.as_u64().map(|n| n as usize);
-                        }
-                        if let Some(b) = flag("stacked") {
-                            c.spec.stacked = b;
-                        }
-                        if let Some(b) = flag("horizontal") {
-                            c.spec.horizontal = b;
-                        }
-                        if c.spec.y.is_empty() && c.spec.agg != cobalt_core::Agg::Count {
-                            c.spec.agg = cobalt_core::Agg::Count;
-                        }
-                        crate::ui::results::chart::ensure_data(v, &fmt);
-                        egui.request_repaint();
-                        ActionResult::with(&chart_state_json(v))
                     }
                     "chart_state" => {
                         let v = self.state.tabs.get(i).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).map(chart_state_json);
@@ -1134,6 +1148,24 @@ impl AgentApp for CobaltApp {
                         let i = idx.unwrap();
                         self.with_ctx(egui, |s, cx| crate::notebook::run_with_parameters(s, cx, i, params));
                         ActionResult::ok()
+                    }
+                    "chart" => {
+                        // {index (cell), set?, kind?, x?, y?, agg?, top_n?, bins?, stacked?, horizontal?, off?, keep?}: a cell result's chart; `keep` captures the picture into the outputs
+                        let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };
+                        let set = arg_usize(args, "set").unwrap_or(0);
+                        let fmt = self.state.formatter.clone();
+                        let i = idx.unwrap();
+                        let Some(v) = self.state.tabs[i].notebook.as_deref_mut().and_then(|nb| nb.cells.get_mut(ci)).and_then(|c| c.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) else { return ActionResult::BadArgs("no such cell result set".into()) };
+                        let state = match apply_chart_args(v, args, &fmt) {
+                            Ok(s) => s,
+                            Err(e) => return ActionResult::BadArgs(e),
+                        };
+                        if args.and_then(|a| a.get("keep")).and_then(|b| b.as_bool()) == Some(true) {
+                            let cell_id = self.state.tabs[i].notebook.as_deref().map(|nb| nb.cells[ci].id.clone()).unwrap_or_default();
+                            self.with_ctx(egui, |s, cx| crate::notebook::results_action(s, cx, i, ci, crate::ui::results::ResultsAction::CaptureChart { set, purpose: crate::state::CapturePurpose::Cell { cell_id } }));
+                        }
+                        egui.request_repaint();
+                        ActionResult::with(&state)
                     }
                     "add_pip_packages" => {
                         let Some(ci) = arg_usize(args, "index") else { return ActionResult::BadArgs("index is required".into()) };

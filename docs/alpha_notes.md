@@ -512,6 +512,14 @@ agg, top_n, stacked, horizontal}` / `{action: chart_state}` / `{action: chart, o
 labels `chart toggle`, `chart kind <k>`, `chart x`, `chart y <col>`, `chart agg`, `chart top`,
 `chart copy image`, `chart save png`, `chart close`, `chart status`.
 
+**Charts in cells (0.9.5, slice B).** The same chart button sits on a cell's result header (SQL
+and Spark kernels alike). The chart's settings are saved in the cell, so it is back when the
+notebook opens and after you re-run the cell; *Keep in notebook* in the strip captures it as a
+picture into the outputs, which is what Fabric, VS Code and GitHub show for that cell (Cobalt
+shows the live chart again). Pictures already in a notebook's outputs (matplotlib from Fabric)
+now render under the cell. The agent: `notebook {action: chart, index, set?, kind, x, y, …,
+keep?}`; `cells` carry `charts` and `saved_charts`.
+
 **Parameters and `%pip` (0.9.5).** A Python cell's run menu (the caret next to its play button)
 has *Parameters cell*: the cell gets Fabric's `parameters` tag and a badge, and the toolbar's
 *Run with parameters…* lists its `name = value` lines for editing; Run appends the changed

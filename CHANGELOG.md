@@ -44,6 +44,15 @@
   point selects its rows in the grid. Copy image puts the chart on the clipboard, Save PNG…
   writes it to a file. No row budget: a 1.3-million-row result charts in about 0.2 s. The agent
   drives it with `grid {action: chart, …}` and reads `chart_state`.
+- **Charts in notebook cells.** The same Chart button on a cell's result grid; the chart's
+  settings live in the cell (`metadata.cobalt.charts`) so it comes back on open and after a
+  re-run, and *Keep in notebook* saves it as a picture in the cell's outputs so the `.ipynb`
+  shows it in Fabric, VS Code and GitHub (Cobalt re-attaches it as a live chart). Cells now
+  draw `image/png` outputs they carry, so pictures from Fabric notebooks (matplotlib, plotly's
+  static export) show too.
+- **LakeSail Files: a one-line `open(...).write(...)` pushes to OneLake in write-through.**
+  The mirror wrapper was collected before the write ran; methods taken from it now keep it
+  alive and it pushes when collected.
 - **Find in results searches the whole result set.** The scan used to stop silently after
   200,000 cells (a 29-column, 1.3-million-row result was searched to row ~7,000). It now runs on
   a thread over every visible cell, matches appear as they are found with the first one selected

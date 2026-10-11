@@ -39,6 +39,8 @@ pub fn series_color(i: usize) -> Color32 {
 pub enum ChartAction {
     /// Read the plot's pixels on the next frame: to the clipboard, or to a PNG file.
     Capture { save: bool },
+    /// Notebook cells: read the pixels into the cell's outputs (saved with the notebook).
+    Keep,
     Close,
 }
 
@@ -56,8 +58,9 @@ pub fn ensure_data(view: &mut ResultSetView, fmt: &CellFormatter) {
     c.built_for = Some((c.spec.clone(), gen));
 }
 
-/// The strip and the chart. Returns what the caller must do (capture, close).
-pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellFormatter, set: usize) -> Vec<ChartAction> {
+/// The strip and the chart. Returns what the caller must do (capture, close). `in_notebook`
+/// adds "Keep in notebook" (the picture saved with the cell's outputs).
+pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellFormatter, set: usize, in_notebook: bool) -> Vec<ChartAction> {
     let mut actions = Vec::new();
     ensure_data(view, fmt);
     let rs = view.rs.clone();
@@ -205,6 +208,14 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("copy image")));
                 if r.clicked() {
                     actions.push(ChartAction::Capture { save: false });
+                }
+                if in_notebook {
+                    let kept = c.png.is_some();
+                    let r = ui.small_button(format!("{} {}", if kept { icons::CHECK } else { icons::PUSH_PIN }, if kept { "Kept" } else { "Keep in notebook" })).on_hover_text("Save the chart as a picture with the cell's outputs, so the .ipynb shows it in Fabric, VS Code and GitHub. The chart itself is saved as its settings and comes back live when the notebook opens.");
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("keep")));
+                    if r.clicked() {
+                        actions.push(ChartAction::Keep);
+                    }
                 }
                 if let Some(d) = &c.data {
                     let status = match &d.error {

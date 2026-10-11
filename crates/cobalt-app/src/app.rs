@@ -153,6 +153,8 @@ impl CobaltApp {
             crate::gpu::note_gl(&renderer, &version);
         }
         let egui_ctx = cc.egui_ctx.clone();
+        // pictures in notebook outputs (a kept chart, matplotlib from Fabric) draw through egui's image loaders
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || egui_ctx.request_repaint());
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
         let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
@@ -463,6 +465,28 @@ impl eframe::App for CobaltApp {
                         crate::state::CapturePurpose::Clipboard => {
                             ctx.copy_image(region);
                             self.toasts.info(format!("Chart copied as an image ({w}×{h})"));
+                        }
+                        crate::state::CapturePurpose::Cell { cell_id } => {
+                            let raw: Vec<u8> = region.pixels.iter().flat_map(|c| [c.r(), c.g(), c.b(), 255u8]).collect();
+                            let mut png: Vec<u8> = Vec::new();
+                            let encoded = image::RgbaImage::from_raw(w as u32, h as u32, raw).ok_or_else(|| "bad image size".to_string()).and_then(|img| img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).map_err(|e| e.to_string()));
+                            match encoded {
+                                Ok(()) => {
+                                    let stored = self.state.tabs.iter_mut().find(|t| t.id == pc.tab).and_then(|t| t.notebook.as_deref_mut()).and_then(|nb| {
+                                        let ci = nb.cell_index(&cell_id)?;
+                                        let c = nb.cells[ci].run.as_mut()?.result_sets.get_mut(pc.set)?.chart.as_mut()?;
+                                        c.png = Some(std::sync::Arc::new(png));
+                                        nb.dirty = true;
+                                        Some(())
+                                    });
+                                    if stored.is_some() {
+                                        self.toasts.info(format!("Chart kept in the notebook as a picture ({w}×{h}); Save writes it with the outputs"));
+                                    }
+                                }
+                                Err(e) => {
+                                    self.toasts.error(format!("Could not keep the chart: {e}"));
+                                }
+                            }
                         }
                         crate::state::CapturePurpose::SaveFile => {
                             let title = self.state.tabs.iter().find(|t| t.id == pc.tab).map(|t| t.title.clone()).unwrap_or_else(|| "chart".into());

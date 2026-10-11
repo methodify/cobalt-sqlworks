@@ -35,8 +35,8 @@ pub enum ResultsAction {
     SetTotals { set: usize, kind: Option<crate::state::TotalKind> },
     /// Column profile window for the set.
     Profile { set: usize },
-    /// Read the chart's pixels on the next frame: clipboard (`save: false`) or a PNG file.
-    CaptureChart { set: usize, save: bool },
+    /// Read the chart's pixels on the next frame: to the clipboard, a PNG file, or a cell's outputs.
+    CaptureChart { set: usize, purpose: crate::state::CapturePurpose },
     /// Write the set (or selection) to a temporary .xlsx and open it with the system's app.
     OpenInExcel { set: usize, selection_only: bool },
     /// Load the set (or selection) into a table on a connected tab's database.
@@ -254,9 +254,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         child.set_clip_rect(rect.intersect(ui.clip_rect()));
                         let grid_actions = if view.chart.is_some() {
                             // the chart in place of the grid; the grid's state (selection, view) stays
-                            for a in chart::show(&mut child, view, theme, args.fmt, set) {
+                            for a in chart::show(&mut child, view, theme, args.fmt, set, false) {
                                 match a {
-                                    chart::ChartAction::Capture { save } => actions.push(ResultsAction::CaptureChart { set, save }),
+                                    chart::ChartAction::Capture { save } => actions.push(ResultsAction::CaptureChart { set, purpose: if save { crate::state::CapturePurpose::SaveFile } else { crate::state::CapturePurpose::Clipboard } }),
+                                    chart::ChartAction::Keep => {}
                                     chart::ChartAction::Close => view.chart = None,
                                 }
                             }

@@ -1792,12 +1792,12 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
             }
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
-        ResultsAction::CaptureChart { set, save } => {
+        ResultsAction::CaptureChart { set, purpose } => {
             let tab = state.tabs[idx].id;
             let rect = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.chart.as_ref()).and_then(|c| c.rect);
             match rect {
                 Some(rect) => {
-                    state.pending_capture = Some(crate::state::PendingCapture { tab, set, rect, purpose: if save { crate::state::CapturePurpose::SaveFile } else { crate::state::CapturePurpose::Clipboard }, requested: false });
+                    state.pending_capture = Some(crate::state::PendingCapture { tab, set, rect, purpose, requested: false });
                     cx.egui.request_repaint();
                 }
                 None => cx.toast(ToastKind::Warning, "The chart has not been drawn yet."),

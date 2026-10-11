@@ -41,6 +41,16 @@ Accept the listing from the host and skip the crawl when it is given:
 Not asked: the columns. The worker reads the Delta log when it clones; the host's column list is
 for completion only.
 
+## A small one in `lazy_files` (found 2026-10-11 running the hooks on LakeSail)
+
+`_PushOnClose` pushes a mirror file to OneLake in `close()`, so the notebook idiom
+`open('/lakehouse/default/Files/x.txt', 'w').write('…')` (no explicit close, no `with`) writes
+the mirror and never pushes: the wrapper is dropped without `close()` being called. Two things
+cover it, both patched in on Cobalt's side meanwhile and verified live: a `__del__` that calls
+`close()` (swallowing errors), and a `__getattr__` that returns a closure holding the wrapper
+rather than the inner file's bound method — otherwise the wrapper dies between the attribute
+lookup and the call, and `write` raises "I/O operation on closed file".
+
 ## Why not the Unity connector
 
 Pointing Spark at Cobalt's loopback Unity endpoint through the Unity connector would give up the

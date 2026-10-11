@@ -101,8 +101,11 @@ impl TableApiClient {
     pub async fn list_tables(&self, workspace_id: &str, lakehouse_id: &str) -> Result<Vec<OneLakeTable>> {
         let mut out = Vec::new();
         let mut plain: Option<bool> = None;
-        for schema in self.list_schemas(workspace_id, lakehouse_id).await? {
-            let names = self.list_table_names(workspace_id, lakehouse_id, &schema).await?;
+        let schemas = self.list_schemas(workspace_id, lakehouse_id).await?;
+        // one listing per schema, all in flight at once (Fabric answers each in a second or so)
+        let listings = futures_util::future::join_all(schemas.iter().map(|s| self.list_table_names(workspace_id, lakehouse_id, s))).await;
+        for (schema, names) in schemas.into_iter().zip(listings) {
+            let names = names?;
             if names.is_empty() {
                 continue;
             }

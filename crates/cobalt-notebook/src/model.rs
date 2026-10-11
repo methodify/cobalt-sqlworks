@@ -519,6 +519,67 @@ impl Notebook {
     }
 }
 
+/// Cobalt's chart specs on a cell live in `metadata.cobalt.charts` keyed by the result set's
+/// index (`"0"`, `"1"`…), so the chart comes back on open and after a re-run.
+pub const CHART_PNG_PLAIN: &str = "chart";
+
+impl Cell {
+    /// The saved chart spec of a result set, as JSON (the app knows the type).
+    pub fn chart_spec(&self, set: usize) -> Option<&Value> {
+        self.metadata.get("cobalt")?.get("charts")?.get(set.to_string())
+    }
+    /// Every saved chart spec, by result set index.
+    pub fn chart_specs(&self) -> Vec<(usize, Value)> {
+        self.metadata.get("cobalt").and_then(|c| c.get("charts")).and_then(Value::as_object).map(|m| m.iter().filter_map(|(k, v)| k.parse::<usize>().ok().map(|i| (i, v.clone()))).collect()).unwrap_or_default()
+    }
+    /// Store (or, with None, remove) the chart spec of a result set.
+    pub fn set_chart_spec(&mut self, set: usize, spec: Option<Value>) {
+        let cobalt = self.metadata.entry("cobalt".to_string()).or_insert_with(|| Value::Object(Map::new()));
+        if !cobalt.is_object() {
+            *cobalt = Value::Object(Map::new());
+        }
+        let obj = cobalt.as_object_mut().expect("object");
+        let charts = obj.entry("charts".to_string()).or_insert_with(|| Value::Object(Map::new()));
+        if !charts.is_object() {
+            *charts = Value::Object(Map::new());
+        }
+        let cm = charts.as_object_mut().expect("object");
+        match spec {
+            Some(s) => {
+                cm.insert(set.to_string(), s);
+            }
+            None => {
+                cm.remove(&set.to_string());
+            }
+        }
+        if cm.is_empty() {
+            obj.remove("charts");
+        }
+        if obj.is_empty() {
+            self.metadata.remove("cobalt");
+        }
+    }
+}
+
+#[cfg(test)]
+mod chart_meta_tests {
+    use super::*;
+
+    #[test]
+    fn chart_specs_round_trip_in_metadata() {
+        let mut c = Cell::code("select 1");
+        assert!(c.chart_spec(0).is_none());
+        c.set_chart_spec(0, Some(serde_json::json!({"kind": "bar", "x": "a"})));
+        c.set_chart_spec(2, Some(serde_json::json!({"kind": "pie"})));
+        assert_eq!(c.chart_spec(0).unwrap()["kind"], "bar");
+        assert_eq!(c.chart_specs().len(), 2);
+        c.set_chart_spec(0, None);
+        assert_eq!(c.chart_specs(), vec![(2, serde_json::json!({"kind": "pie"}))]);
+        c.set_chart_spec(2, None);
+        assert!(!c.metadata.contains_key("cobalt"));
+    }
+}
+
 /// `name = value` lines of Python source (a parameters cell). Lines that are not a simple
 /// assignment (calls, blocks, comments, `a, b = …`, `x += 1`) are left out.
 pub fn parse_assignments(source: &str) -> Vec<(String, String)> {
