@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.5 — unreleased
+## 0.9.5 — 2026-10-11
 
 - **LakeSail: lakehouse Files for Python, `notebookutils`, and the DataFrame write guard
   (slice B).** On the LakeSail engine `/lakehouse/default/Files/...` now works for plain Python
