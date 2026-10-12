@@ -83,7 +83,7 @@ impl CobaltApp {
                     "index": i,
                     "id": t.id.to_string(),
                     "title": t.title,
-                    "kind": if t.is_notebook() { "notebook" } else if t.spark.is_some() { "spark" } else { "query" },
+                    "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else { "query" },
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
@@ -180,6 +180,8 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ConfirmClose { .. } => "confirm_close",
         ConfirmCloseMany { .. } => "confirm_close_many",
         RunWithParameters { .. } => "run_with_parameters",
+        TileEditor { .. } => "tile_editor",
+        PinTile { .. } => "pin_tile",
         ConfirmDeleteProfile { .. } => "confirm_delete_profile",
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
         ConfirmWrite { .. } => "confirm_write",
@@ -764,6 +766,110 @@ impl AgentApp for CobaltApp {
                     }
                 });
                 ActionResult::ok()
+            }
+            "dashboard" => {
+                // {action: new|open|save|state|add_tile|update_tile|remove_tile|refresh|pin|home, path?, tile?, title?, sql?, profile?, database?, kind?, interval_secs?, size?, set?, target?, chart?}
+                let Some(action) = arg_str(args, "action") else { return ActionResult::BadArgs("action is required".into()) };
+                let dash_idx = || self.state.active_tab.filter(|i| self.state.tabs.get(*i).map(|t| t.is_dashboard()).unwrap_or(false));
+                match action.as_str() {
+                    "new" => {
+                        let mut file = cobalt_core::DashboardFile::default();
+                        if let Some(t) = arg_str(args, "title") {
+                            file.title = t;
+                        }
+                        let i = self.with_ctx(egui, |s, cx| crate::dashboard::new_tab(s, cx, file, None, None));
+                        ActionResult::with(&json!({"tab": i}))
+                    }
+                    "open" => {
+                        let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                        let ok = self.with_ctx(egui, |s, cx| crate::dashboard::open_path(s, cx, std::path::PathBuf::from(path)));
+                        ActionResult::with(&json!({"opened": ok, "tab": self.state.active_tab}))
+                    }
+                    "home" => {
+                        let Some(key) = arg_str(args, "profile") else { return ActionResult::BadArgs("profile is required".into()) };
+                        let Some(p) = self.find_profile(&key) else { return ActionResult::BadArgs("profile not found".into()) };
+                        let id = p.id;
+                        self.with_ctx(egui, |s, cx| crate::dashboard::open_home(s, cx, id));
+                        ActionResult::with(&json!({"tab": self.state.active_tab}))
+                    }
+                    "pin" => {
+                        // the active query tab's result set `set` onto the dashboard `target` (tab index; omit = new)
+                        let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                        let set = arg_usize(args, "set").unwrap_or(0);
+                        let title = arg_str(args, "title").unwrap_or_else(|| self.state.tabs[i].title.clone());
+                        let target = arg_usize(args, "target");
+                        let interval = args.and_then(|a| a.get("interval_secs")).and_then(|v| v.as_u64()).unwrap_or(300);
+                        let kind = arg_str(args, "kind").and_then(|k| cobalt_core::TileKind::parse(&k)).unwrap_or_else(|| crate::dashboard::suggested_kind(&self.state, i, set));
+                        self.with_ctx(egui, |s, cx| crate::dashboard::pin(s, cx, i, set, title, target, interval, kind));
+                        ActionResult::with(&json!({"tab": self.state.active_tab}))
+                    }
+                    _ => {
+                        let Some(i) = dash_idx() else { return ActionResult::BadArgs("the active tab is not a dashboard".into()) };
+                        match action.as_str() {
+                            "save" => {
+                                if let Some(p) = arg_str(args, "path") {
+                                    self.state.tabs[i].file_path = Some(std::path::PathBuf::from(p));
+                                }
+                                self.with_ctx(egui, |s, cx| crate::dashboard::save(s, cx, i, false));
+                                ActionResult::with(&json!({"file_path": self.state.tabs[i].file_path, "dirty": self.state.tabs[i].is_dirty()}))
+                            }
+                            "add_tile" | "update_tile" => {
+                                let d = self.state.tabs[i].dashboard.as_deref().unwrap();
+                                let existing = arg_usize(args, "tile").and_then(|k| d.tiles.get(k).map(|t| t.spec.clone()));
+                                let mut spec = existing.clone().unwrap_or_default();
+                                if let Some(t) = arg_str(args, "title") { spec.title = t; }
+                                if let Some(s) = arg_str(args, "sql") { spec.sql = s; }
+                                if let Some(db) = arg_str(args, "database") { spec.database = Some(db); }
+                                if let Some(k) = arg_str(args, "kind") { spec.kind = cobalt_core::TileKind::parse(&k).unwrap_or(spec.kind); }
+                                if let Some(sz) = arg_str(args, "size") { spec.size = cobalt_core::TileSize::parse(&sz).unwrap_or(spec.size); }
+                                if let Some(v) = args.and_then(|a| a.get("interval_secs")).and_then(|v| v.as_u64()) { spec.interval_secs = v; }
+                                if let Some(c) = args.and_then(|a| a.get("chart")) { spec.chart = serde_json::from_value(c.clone()).ok(); }
+                                if let Some(key) = arg_str(args, "profile") {
+                                    let Some(p) = self.find_profile(&key) else { return ActionResult::BadArgs("profile not found".into()) };
+                                    spec.profile = crate::dashboard::profile_ref(&p);
+                                    if spec.database.is_none() { spec.database = p.database.clone(); }
+                                }
+                                if spec.sql.trim().is_empty() { return ActionResult::BadArgs("sql is required".into()); }
+                                match (action.as_str(), arg_usize(args, "tile")) {
+                                    ("update_tile", Some(k)) => { self.with_ctx(egui, |s, cx| crate::dashboard::update_tile(s, cx, i, k, spec)); ActionResult::with(&json!({"tile": k})) }
+                                    _ => { let k = self.with_ctx(egui, |s, cx| crate::dashboard::add_tile(s, cx, i, spec)); ActionResult::with(&json!({"tile": k})) }
+                                }
+                            }
+                            "remove_tile" => {
+                                let Some(k) = arg_usize(args, "tile") else { return ActionResult::BadArgs("tile is required".into()) };
+                                self.with_ctx(egui, |s, cx| crate::dashboard::remove_tile(s, cx, i, k));
+                                ActionResult::ok()
+                            }
+                            "refresh" => {
+                                match arg_usize(args, "tile") {
+                                    Some(k) => self.with_ctx(egui, |s, cx| crate::dashboard::refresh_tile(s, cx, i, k)),
+                                    None => self.with_ctx(egui, |s, cx| crate::dashboard::refresh_all(s, cx, i)),
+                                }
+                                ActionResult::ok()
+                            }
+                            "state" => {
+                                let t = &self.state.tabs[i];
+                                let d = t.dashboard.as_deref().unwrap();
+                                let tiles: Vec<Value> = d.tiles.iter().map(|tile| {
+                                    let run = tile.tab.run.as_ref();
+                                    let first = run.and_then(|r| r.result_sets.first());
+                                    json!({
+                                        "title": tile.spec.title, "kind": tile.spec.kind.key(), "size": tile.spec.size.key(), "interval_secs": tile.spec.interval_secs,
+                                        "profile": tile.spec.profile, "database": tile.spec.database, "sql": tile.spec.sql,
+                                        "connection": match &tile.tab.conn { crate::state::ConnState::Connected { database, .. } => json!({"connected": database}), crate::state::ConnState::Connecting => json!("connecting"), crate::state::ConnState::Failed { error, .. } => json!({"failed": error}), crate::state::ConnState::Disconnected => json!("disconnected") },
+                                        "run": run.map(|r| format!("{:?}", r.state).to_lowercase()), "rows": first.map(|v| v.rs.row_count()), "columns": first.map(|v| v.rs.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()),
+                                        "value": first.filter(|v| v.rs.visible_count() > 0).map(|v| v.rs.cell_text(0, 0, &self.state.formatter).to_string()),
+                                        "chart": first.and_then(|v| v.chart.as_ref()).map(|c| serde_json::to_value(&c.spec).unwrap_or(Value::Null)),
+                                        "age_secs": tile.age_secs(), "pending": tile.pending, "error": tile.error,
+                                        "messages": run.map(|r| r.messages.iter().filter(|m| m.is_error).map(|m| m.text.clone()).collect::<Vec<_>>()).unwrap_or_default(),
+                                    })
+                                }).collect();
+                                ActionResult::with(&json!({"title": d.file.title, "columns": d.file.columns, "file_path": t.file_path, "dirty": d.dirty, "home_for": d.home_for.map(|p| p.to_string()), "tiles": tiles}))
+                            }
+                            other => ActionResult::BadArgs(format!("unknown dashboard action {other:?}")),
+                        }
+                    }
+                }
             }
             "grid" => {
                 // {action: totals|profile|find, kind?: Sum|Avg|Min|Max|Count|Distinct|None, set?, text?, regex?, case?, word?}

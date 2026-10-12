@@ -37,6 +37,8 @@ pub enum ResultsAction {
     Profile { set: usize },
     /// Read the chart's pixels on the next frame: to the clipboard, a PNG file, or a cell's outputs.
     CaptureChart { set: usize, purpose: crate::state::CapturePurpose },
+    /// Pin the result set (its query, connection and chart) as a dashboard tile.
+    PinToDashboard { set: usize },
     /// Write the set (or selection) to a temporary .xlsx and open it with the system's app.
     OpenInExcel { set: usize, selection_only: bool },
     /// Load the set (or selection) into a table on a connected tab's database.
@@ -342,6 +344,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     }
                                     if ui.button("Save selection as…").clicked() {
                                         actions.push(ResultsAction::Export { set, selection_only: true });
+                                        close = true;
+                                    }
+                                    if ui.button(format!("{} Pin to dashboard…", icons::PUSH_PIN)).on_hover_text("A tile with this query, its connection and its chart, refreshed on an interval").clicked() {
+                                        actions.push(ResultsAction::PinToDashboard { set });
                                         close = true;
                                     }
                                     if ui.button("Find in results…").on_hover_text("Ctrl+F while the grid has focus; match case, whole word and regex toggles").clicked() {

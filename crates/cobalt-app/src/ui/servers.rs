@@ -13,6 +13,8 @@ pub enum TreeAction {
     NewConnection { group: Option<GroupId> },
     NewGroup,
     EditGroup(GroupId),
+    /// The server's dashboard (home page of tiles).
+    Dashboard(ProfileId),
     DeleteGroup(GroupId),
     EditProfile(ProfileId),
     DeleteProfile(ProfileId),
@@ -239,6 +241,10 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
     r.response.context_menu(|ui| {
         if ui.button(format!("{} New Query", icons::FILE_PLUS)).clicked() {
             actions.push(TreeAction::NewQuery { profile: p.id, database: None });
+            ui.close();
+        }
+        if ui.button(format!("{} Dashboard", icons::SQUARES_FOUR)).on_hover_text("This server's home page of tiles (a .cobalt-dash.json file remembered for the server).").clicked() {
+            actions.push(TreeAction::Dashboard(p.id));
             ui.close();
         }
         if connected {

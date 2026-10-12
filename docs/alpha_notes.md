@@ -512,6 +512,19 @@ agg, top_n, stacked, horizontal}` / `{action: chart_state}` / `{action: chart, o
 labels `chart toggle`, `chart kind <k>`, `chart x`, `chart y <col>`, `chart agg`, `chart top`,
 `chart copy image`, `chart save png`, `chart close`, `chart status`.
 
+**Dashboards (0.9.5, slice C of `docs/design/charts.md`).** File › New Dashboard, or right-click
+a server › Dashboard for its home page. Add tile… takes a title, a connection, a database, a
+query, how to show it (Number = the first cell, Chart, Grid = the first rows), the refresh
+interval and the size; tiles connect on their own and refresh on their clock, with the age in
+the header, Refresh now per tile and Refresh all on the toolbar. On a chart tile the sliders
+button opens the chart strip (kind, X, Y, aggregation, top-N, bins…) and the settings are the
+tile's. The quickest way in: run a query in a tab, chart it if you like, right-click the result
+› Pin to dashboard… Save writes `<name>.cobalt-dash.json` (shareable; a reader resolves the
+connections from their own library by profile id, then name, then server); a server's home page
+remembers its file and opens from the server menu from then on. The agent: `dashboard {action:
+new|open|home|pin|save|add_tile|update_tile|remove_tile|refresh|state, …}`; labels `dashboard
+add tile`, `dashboard refresh all`, `tile N refresh|configure|edit|remove|status|value`.
+
 **Charts in cells (0.9.5, slice B).** The same chart button sits on a cell's result header (SQL
 and Spark kernels alike). The chart's settings are saved in the cell, so it is back when the
 notebook opens and after you re-run the cell; *Keep in notebook* in the strip captures it as a

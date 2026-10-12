@@ -61,6 +61,11 @@ pub fn ensure_data(view: &mut ResultSetView, fmt: &CellFormatter) {
 /// The strip and the chart. Returns what the caller must do (capture, close). `in_notebook`
 /// adds "Keep in notebook" (the picture saved with the cell's outputs).
 pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellFormatter, set: usize, in_notebook: bool) -> Vec<ChartAction> {
+    show_with(ui, view, theme, fmt, set, in_notebook, true)
+}
+
+/// `show` with the strip optional (a dashboard tile draws the chart alone until configured).
+pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellFormatter, set: usize, in_notebook: bool, strip: bool) -> Vec<ChartAction> {
     let mut actions = Vec::new();
     ensure_data(view, fmt);
     let rs = view.rs.clone();
@@ -68,6 +73,7 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
     let Some(c) = view.chart.as_mut() else { return actions };
     let a11y = |what: &str| format!("chart {what}");
     // ---- the strip ----
+    if strip {
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
@@ -240,6 +246,7 @@ pub fn show(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &CellForm
             });
         });
     });
+    }
     // ---- the chart ----
     let Some(data) = c.data.clone() else { return actions };
     if let Some(e) = &data.error {

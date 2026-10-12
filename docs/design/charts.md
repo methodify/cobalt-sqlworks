@@ -5,8 +5,11 @@ budget: the chart takes whatever the result set holds, decision 3 withdrawn); sl
 2026-10-11 (`cobalt_core::ChartSpec`, `cobalt_results::chart`, `ui/results/chart.rs`), with
 a histogram kind added the same day; slice B built 2026-10-11 (cell header toggle, spec in
 `metadata.cobalt.charts["<set>"]`, Keep in notebook → `image/png` output carrying the spec,
-`image/png` outputs drawn through egui's image loaders). Slice C below, only on the founder's
-word. Product design §4.5
+`image/png` outputs drawn through egui's image loaders); slice C built 2026-10-11 on the
+founder's word (`cobalt_core::dashboard`, `dashboard.rs`, `ui/dashboard.rs`: a tile owns a
+hidden `EditorTab` with its own connection and run, so connect / run / events serve it
+unchanged; `.cobalt-dash.json`; a server's home page under `pref:dashboard:<profile>`).
+Product design §4.5
 ("Charts (V2): quick bar/line/pie/scatter from the selection") and §5.6 (lightweight
 dashboards); roadmap "Charts in cells (egui_plot)". The founder's usage signal (D002): charts
 rarely, dashboards never — so the shape is a quick chart over what is already on screen, not a

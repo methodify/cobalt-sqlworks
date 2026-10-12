@@ -44,6 +44,16 @@
   point selects its rows in the grid. Copy image puts the chart on the clipboard, Save PNG…
   writes it to a file. No row budget: a 1.3-million-row result charts in about 0.2 s. The agent
   drives it with `grid {action: chart, …}` and reads `chart_state`.
+- **Dashboards.** File › New Dashboard (or a server's context menu › Dashboard for its home
+  page) opens a page of tiles: each tile is a query on a connection shown as a number, a chart
+  or a small grid, refreshed on an interval (by hand, 30 s to 1 hour) or by Refresh now / all.
+  Add tile… writes a query; a result set in any query tab pins itself through its context menu
+  › Pin to dashboard…, bringing its query, connection and chart settings along. Tiles have
+  their own connections and edit in place (title, query, connection, database, interval, size;
+  a chart tile's settings through its sliders button). A dashboard is a `.cobalt-dash.json`
+  file you can share: connections are named by profile id, name and server, resolved from the
+  reader's library. The server's home page remembers its file. The agent drives it with
+  `dashboard {action: new|open|home|pin|save|add_tile|update_tile|remove_tile|refresh|state}`.
 - **Charts in notebook cells.** The same Chart button on a cell's result grid; the chart's
   settings live in the cell (`metadata.cobalt.charts`) so it comes back on open and after a
   re-run, and *Keep in notebook* saves it as a picture in the cell's outputs so the `.ipynb`

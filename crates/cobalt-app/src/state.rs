@@ -260,11 +260,45 @@ pub struct EditorTab {
     /// `Some` = a Spark SQL query tab: statements run on the local Spark session in the tab's
     /// own context instead of over a connection (`sparkq.rs`).
     pub spark: Option<SparkTab>,
+    /// A dashboard page: tiles with their own hidden tabs (connections) and runs.
+    pub dashboard: Option<Box<DashboardState>>,
 }
 
 /// A Spark SQL query tab's state: its lakehouse binding (like a notebook's), the display names
 /// (kept so a restored tab reads right before the Fabric lists load) and, during Run to File,
 /// the export sink the collected result sets go to.
+/// A dashboard tab: the page's settings and its tiles. Each tile owns a hidden `EditorTab`
+/// with its own connection and run, so connect, run and the session events serve it unchanged.
+pub struct DashboardState {
+    pub file: cobalt_core::DashboardFile,
+    pub tiles: Vec<Tile>,
+    pub dirty: bool,
+    /// The server whose home page this is (`pref:dashboard:<profile>` remembers the file).
+    pub home_for: Option<ProfileId>,
+}
+
+pub struct Tile {
+    pub spec: cobalt_core::TileSpec,
+    pub tab: EditorTab,
+    pub last_refresh: Option<Instant>,
+    /// A refresh is wanted as soon as the tile's connection is up.
+    pub pending: bool,
+    /// The chart strip is open on the tile.
+    pub configure: bool,
+    /// Why the tile cannot run (no matching connection profile…).
+    pub error: Option<String>,
+}
+
+impl Tile {
+    /// Seconds since the last refresh.
+    pub fn age_secs(&self) -> Option<u64> {
+        self.last_refresh.map(|t| t.elapsed().as_secs())
+    }
+    pub fn is_live(&self) -> bool {
+        self.tab.run.as_ref().map(|r| r.is_live()).unwrap_or(false)
+    }
+}
+
 pub struct SparkTab {
     pub binding: Option<NotebookFabric>,
     pub workspace_name: String,
@@ -490,6 +524,7 @@ impl EditorTab {
             notebook: None,
             fabric_item: None,
             spark: None,
+            dashboard: None,
         }
     }
 
@@ -522,10 +557,16 @@ impl EditorTab {
     }
 
     pub fn is_dirty(&self) -> bool {
+        if let Some(d) = self.dashboard.as_deref() {
+            return d.dirty;
+        }
         match &self.notebook {
             Some(nb) => nb.dirty,
             None => hash_text(&self.text) != self.saved_text_hash,
         }
+    }
+    pub fn is_dashboard(&self) -> bool {
+        self.dashboard.is_some()
     }
     pub fn mark_saved(&mut self) {
         self.saved_text_hash = hash_text(&self.text);
@@ -1169,6 +1210,10 @@ pub enum Dialog {
     ConfirmCloseMany { tab_ids: Vec<TabId>, dirty: Vec<String> },
     /// Run a notebook with the parameters cell's assignments overridden (`params` = name, value).
     RunWithParameters { tab_index: usize, params: Vec<(String, String)> },
+    /// Add or edit a dashboard tile (`tile` = index when editing).
+    TileEditor { tab_index: usize, tile: Option<usize>, draft: cobalt_core::TileSpec, profile: Option<ProfileId> },
+    /// Pin a result set of a query tab onto a dashboard (`target` = an open dashboard's tab index, None = a new one).
+    PinTile { tab_index: usize, set: usize, title: String, target: Option<usize>, interval_secs: u64, kind: cobalt_core::TileKind },
     ConfirmDeleteProfile { profile: ProfileId },
     ConfirmDeleteGroup { group: GroupId },
     ConfirmWrite { tab_index: usize, statement_preview: String, script: String, opts: ExecOptions, start_line: u32 },
@@ -1365,9 +1410,15 @@ impl AppState {
     pub fn tab_index(&self, id: TabId) -> Option<usize> {
         self.tabs.iter().position(|t| t.id == id)
     }
+    /// A tab by id: an editor tab, or a dashboard tile's own hidden tab (tiles connect and run
+    /// through the same session paths, keyed by their tab id).
     pub fn tab_mut(&mut self, id: TabId) -> Option<&mut EditorTab> {
-        self.tabs.iter_mut().find(|t| t.id == id)
+        if let Some(i) = self.tabs.iter().position(|t| t.id == id) {
+            return self.tabs.get_mut(i);
+        }
+        self.tabs.iter_mut().find_map(|t| t.dashboard.as_deref_mut().and_then(|d| d.tiles.iter_mut().map(|x| &mut x.tab).find(|x| x.id == id)))
     }
+
 
     /// The Import dialog, when it targets tab `id` (import events carry the tab they ran on).
     pub fn import_dialog_for(&mut self, id: TabId) -> Option<&mut ImportDialog> {

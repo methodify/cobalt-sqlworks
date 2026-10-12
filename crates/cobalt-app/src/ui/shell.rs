@@ -96,6 +96,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::NewQuery);
                 item(ui, &mut cmds, Command::NewNotebook);
                 item(ui, &mut cmds, Command::NewSparkQuery);
+                item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
                 ui.separator();
@@ -199,6 +200,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 });
                 ui.separator();
                 item(ui, &mut cmds, Command::NewSparkQuery);
+                item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::ShowLakehouse);
                 ui.separator();
                 if !running {
@@ -1009,6 +1011,10 @@ fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
 fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     let idx = f.state.active_tab.unwrap();
+    if f.state.tabs[idx].is_dashboard() {
+        crate::ui::dashboard::show(ui, f, idx);
+        return;
+    }
     if f.state.tabs[idx].is_notebook() {
         crate::ui::notebook::show(ui, f, idx);
         return;
@@ -1711,6 +1717,9 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             if ask && state.fabric.slot.is_some() {
                 state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: None };
             }
+        }
+        Command::NewDashboard => {
+            crate::dashboard::new_tab(state, cx, cobalt_core::DashboardFile::default(), None, None);
         }
         Command::NewNotebook => {
             let lang = if cx.settings.notebooks.default_language.eq_ignore_ascii_case("pyspark") { cobalt_notebook::CellLanguage::Python } else { cobalt_notebook::CellLanguage::Sql };

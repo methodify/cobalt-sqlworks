@@ -314,6 +314,185 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 }
             }
         }
+        Dialog::TileEditor { tab_index, tile, draft, profile } => {
+            let mut draft = draft;
+            let mut profile = profile;
+            let mut choice = 0;
+            let profiles: Vec<(cobalt_core::ProfileId, String, Option<String>)> = f.state.library.profiles.iter().map(|p| (p.id, p.display_name(), p.database.clone())).collect();
+            let (_, close) = modal(ctx, theme, "tile-editor", 620.0, |ui| {
+                ui.heading(if tile.is_some() { "Edit tile" } else { "New tile" });
+                egui::Grid::new("tile-editor-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label("Title");
+                    let r = ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(440.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile title"));
+                    ui.end_row();
+                    ui.label("Connection");
+                    let current = profile.and_then(|id| profiles.iter().find(|(pid, _, _)| *pid == id)).map(|(_, n, _)| n.clone()).unwrap_or_else(|| if draft.profile.name.is_empty() { "choose…".into() } else { format!("{} (not in the library)", draft.profile.name) });
+                    let cb = egui::ComboBox::from_id_salt("tile-profile").width(440.0).selected_text(current).show_ui(ui, |ui| {
+                        for (pid, name, db) in &profiles {
+                            if ui.selectable_label(profile == Some(*pid), name).clicked() {
+                                profile = Some(*pid);
+                                if draft.database.is_none() {
+                                    draft.database = db.clone();
+                                }
+                            }
+                        }
+                    });
+                    cb.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "tile connection"));
+                    ui.end_row();
+                    ui.label("Database");
+                    let mut db = draft.database.clone().unwrap_or_default();
+                    let r = ui.add(egui::TextEdit::singleline(&mut db).hint_text("the connection's default").desired_width(440.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile database"));
+                    if r.changed() {
+                        draft.database = if db.trim().is_empty() { None } else { Some(db) };
+                    }
+                    ui.end_row();
+                    ui.label("Query");
+                    let r = ui.add(egui::TextEdit::multiline(&mut draft.sql).desired_width(440.0).desired_rows(6).font(egui::TextStyle::Monospace).hint_text("SELECT … (a number tile shows the first cell; a chart or grid the first result set)"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile query"));
+                    ui.end_row();
+                    ui.label("Show as");
+                    ui.horizontal(|ui| {
+                        for k in cobalt_core::TileKind::ALL {
+                            let r = ui.add(egui::Button::selectable(draft.kind == k, k.label()).small());
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile kind {}", k.key())));
+                            if r.clicked() {
+                                draft.kind = k;
+                            }
+                        }
+                        if draft.kind == cobalt_core::TileKind::Chart {
+                            ui.label(RichText::new("the chart's settings are on the tile (the sliders button)").size(11.0).color(theme.text_faint));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Refresh");
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("tile-interval").width(120.0).selected_text(cobalt_core::interval_label(draft.interval_secs)).show_ui(ui, |ui| {
+                            for (secs, label) in cobalt_core::INTERVALS {
+                                if ui.selectable_label(draft.interval_secs == secs, label).clicked() {
+                                    draft.interval_secs = secs;
+                                }
+                            }
+                        }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "tile interval"));
+                        ui.label(RichText::new("Size").size(12.0).color(theme.text_muted));
+                        for s in cobalt_core::TileSize::ALL {
+                            let r = ui.add(egui::Button::selectable(draft.size == s, s.label()).small());
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile size {}", s.key())));
+                            if r.clicked() {
+                                draft.size = s;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                });
+                ui.add_space(10.0);
+                let ok = profile.is_some() && !draft.sql.trim().is_empty();
+                ui.horizontal(|ui| {
+                    if mnemonic_button(ui, theme, if tile.is_some() { "&Save" } else { "&Add" }, ButtonStyle::Primary, ok, Some(Key::Enter)) {
+                        choice = 1;
+                    }
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                        choice = 2;
+                    }
+                    if !ok {
+                        ui.label(RichText::new("pick a connection and write a query").size(11.0).color(theme.text_faint));
+                    }
+                });
+            });
+            match choice {
+                1 => {
+                    if let Some(p) = profile.and_then(|id| f.state.library.profile(id).cloned()) {
+                        draft.profile = crate::dashboard::profile_ref(&p);
+                    }
+                    if draft.title.trim().is_empty() {
+                        draft.title = "Tile".into();
+                    }
+                    match tile {
+                        Some(k) => crate::dashboard::update_tile(f.state, f.cx, tab_index, k, draft),
+                        None => {
+                            crate::dashboard::add_tile(f.state, f.cx, tab_index, draft);
+                        }
+                    }
+                }
+                2 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::TileEditor { tab_index, tile, draft, profile };
+                    }
+                }
+            }
+        }
+        Dialog::PinTile { tab_index, set, title, target, interval_secs, kind } => {
+            let mut title = title;
+            let mut target = target;
+            let mut interval_secs = interval_secs;
+            let mut kind = kind;
+            let mut choice = 0;
+            let dashboards: Vec<(usize, String)> = f.state.tabs.iter().enumerate().filter(|(_, t)| t.is_dashboard()).map(|(i, t)| (i, t.dashboard.as_deref().map(|d| d.file.title.clone()).unwrap_or_else(|| t.title.clone()))).collect();
+            let (_, close) = modal(ctx, theme, "pin-tile", 460.0, |ui| {
+                ui.heading("Pin to dashboard");
+                ui.label(RichText::new("The tab's query runs on its connection as a tile, refreshed on the interval; the chart settings come along.").size(12.0).color(theme.text_muted));
+                ui.add_space(6.0);
+                egui::Grid::new("pin-tile-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                    ui.label("Title");
+                    let r = ui.add(egui::TextEdit::singleline(&mut title).desired_width(300.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "pin title"));
+                    ui.end_row();
+                    ui.label("Dashboard");
+                    let current = target.and_then(|i| dashboards.iter().find(|(j, _)| *j == i)).map(|(_, n)| n.clone()).unwrap_or_else(|| "a new dashboard".into());
+                    egui::ComboBox::from_id_salt("pin-target").width(300.0).selected_text(current).show_ui(ui, |ui| {
+                        if ui.selectable_label(target.is_none(), "a new dashboard").clicked() {
+                            target = None;
+                        }
+                        for (i, name) in &dashboards {
+                            if ui.selectable_label(target == Some(*i), name).clicked() {
+                                target = Some(*i);
+                            }
+                        }
+                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "pin target"));
+                    ui.end_row();
+                    ui.label("Show as");
+                    ui.horizontal(|ui| {
+                        for k in cobalt_core::TileKind::ALL {
+                            let r = ui.add(egui::Button::selectable(kind == k, k.label()).small());
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("pin kind {}", k.key())));
+                            if r.clicked() {
+                                kind = k;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Refresh");
+                    egui::ComboBox::from_id_salt("pin-interval").width(120.0).selected_text(cobalt_core::interval_label(interval_secs)).show_ui(ui, |ui| {
+                        for (secs, label) in cobalt_core::INTERVALS {
+                            if ui.selectable_label(interval_secs == secs, label).clicked() {
+                                interval_secs = secs;
+                            }
+                        }
+                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "pin interval"));
+                    ui.end_row();
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if mnemonic_button(ui, theme, "&Pin", ButtonStyle::Primary, true, Some(Key::Enter)) {
+                        choice = 1;
+                    }
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                        choice = 2;
+                    }
+                });
+            });
+            match choice {
+                1 => crate::dashboard::pin(f.state, f.cx, tab_index, set, title, target, interval_secs, kind),
+                2 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::PinTile { tab_index, set, title, target, interval_secs, kind };
+                    }
+                }
+            }
+        }
         Dialog::ConfirmDeleteProfile { profile } => {
             let name = f.state.library.profile(profile).map(|p| p.display_name()).unwrap_or_default();
             let (choice, close) = modal(ctx, theme, "del-profile", 380.0, |ui| {

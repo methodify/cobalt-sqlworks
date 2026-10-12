@@ -300,6 +300,7 @@ impl CobaltApp {
             // Spark runtime jobs (Settings → Spark runtime) and the Spark kernel
             crate::runtime::poll(&mut self.state.runtime, &self.settings, &self.paths, ctx);
             crate::notebook::poll_kernel(&mut self.state, &cx);
+            crate::dashboard::tick(&mut self.state, &cx);
             // session events
             let events = self.session.drain();
             let mut followups = Vec::new();

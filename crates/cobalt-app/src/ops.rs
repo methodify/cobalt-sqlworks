@@ -107,6 +107,9 @@ pub fn apply_launch(state: &mut AppState, cx: &Ctx, launch: LaunchArgs) {
     for path in &launch.files {
         match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
             Some("sqlplan") => open_plan_file(state, cx, path.clone()),
+            _ if cobalt_core::DashboardFile::is_dashboard_path(path) => {
+                crate::dashboard::open_path(state, cx, path.clone());
+            }
             Some("ipynb") => {
                 crate::notebook::open_path(state, cx, path.clone());
             }
@@ -799,6 +802,7 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
                 }
             }
         }
+        TreeAction::Dashboard(profile) => crate::dashboard::open_home(state, cx, profile),
         TreeAction::NewQuery { profile, database } => {
             new_query_tab(state, cx, Some(profile), database, None, false);
         }
@@ -902,10 +906,11 @@ pub fn new_query_tab(state: &mut AppState, cx: &Ctx, profile: Option<ProfileId>,
 
 pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let Some(t) = state.tabs.get(idx) else { return };
-    if t.is_dirty() && !force && (t.is_notebook() || !t.text.trim().is_empty()) {
+    if t.is_dirty() && !force && (t.is_notebook() || t.is_dashboard() || !t.text.trim().is_empty()) {
         state.dialog = Dialog::ConfirmClose { tab_index: idx };
         return;
     }
+    crate::dashboard::close(state, cx, idx);
     let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
     crate::kernel::drop_context(&mut state.kernel, t.id);
@@ -1073,6 +1078,10 @@ pub fn open_file(state: &mut AppState, cx: &Ctx, path: Option<PathBuf>) {
             None => return,
         },
     };
+    if cobalt_core::DashboardFile::is_dashboard_path(&path) {
+        crate::dashboard::open_path(state, cx, path);
+        return;
+    }
     if path.extension().map(|e| e.eq_ignore_ascii_case("sqlplan")).unwrap_or(false) {
         open_plan_file(state, cx, path);
         return;
@@ -1126,6 +1135,9 @@ pub fn save_file(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
     let Some(t) = state.tabs.get(idx) else { return };
     if t.is_notebook() {
         return crate::notebook::save(state, cx, idx, save_as);
+    }
+    if t.is_dashboard() {
+        return crate::dashboard::save(state, cx, idx, save_as);
     }
     let path = match (&t.file_path, save_as) {
         (Some(p), false) => p.clone(),
@@ -1792,6 +1804,7 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
             }
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
+        ResultsAction::PinToDashboard { set } => crate::dashboard::open_pin_dialog(state, cx, idx, set),
         ResultsAction::CaptureChart { set, purpose } => {
             let tab = state.tabs[idx].id;
             let rect = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.chart.as_ref()).and_then(|c| c.rect);

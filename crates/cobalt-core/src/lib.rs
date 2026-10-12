@@ -5,6 +5,7 @@
 
 pub mod catalog;
 pub mod chart;
+pub mod dashboard;
 pub mod engine;
 pub mod ids;
 pub mod message;
@@ -15,6 +16,7 @@ pub mod sqltype;
 
 pub use catalog::*;
 pub use chart::*;
+pub use dashboard::*;
 pub use engine::*;
 pub use ids::*;
 pub use message::*;

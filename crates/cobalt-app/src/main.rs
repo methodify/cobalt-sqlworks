@@ -19,6 +19,7 @@ mod ops;
 mod runtime;
 mod session;
 mod sparkq;
+mod dashboard;
 mod state;
 mod update;
 mod ui;
