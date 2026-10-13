@@ -26,7 +26,21 @@ pub struct TabularRun {
 
 /// A Power BI token for the slot, silently (the panel's sign-in already consented).
 pub async fn powerbi_token(auth: &TabularAuth) -> Result<String, String> {
-    match auth.resolver.resource_token_silent(auth.slot, cobalt_auth::provider::POWERBI_RESOURCE, auth.tenant.as_deref()).await {
+    let resource = cobalt_auth::provider::POWERBI_RESOURCE;
+    let mut ts = match auth.resolver.resource_token_silent(auth.slot, resource, auth.tenant.as_deref()).await {
+        Ok(Some(ts)) => ts,
+        Ok(None) => return Err("Sign in on the Fabric panel first: semantic model queries use that account.".into()),
+        Err(e) => return Err(format!("Could not get a Power BI token: {e}")),
+    };
+    if !cobalt_auth::provider::missing_powerbi_scopes(&ts.access.scope).is_empty() {
+        // a consent granted since the token was cached (tenant admin consent) shows up only on a
+        // fresh refresh: try once before refusing
+        auth.resolver.forget_resource(auth.slot, resource);
+        if let Ok(Some(fresh)) = auth.resolver.resource_token_silent(auth.slot, resource, auth.tenant.as_deref()).await {
+            ts = fresh;
+        }
+    }
+    match Ok::<_, String>(Some(ts)) {
         Ok(Some(ts)) => {
             // the Power BI API answers a token without the dataset permission with a bare 401,
             // so say what is missing before sending anything

@@ -97,7 +97,7 @@ impl TabularDataType {
         match s.trim().to_ascii_lowercase().as_str() {
             "string" | "text" => Self::String,
             "int64" | "integer" | "whole number" | "int" => Self::Int64,
-            "double" | "decimal number" | "float" => Self::Double,
+            "double" | "decimal number" | "float" | "number" => Self::Double,
             "decimal" | "currency" | "fixed decimal number" => Self::Decimal,
             "datetime" | "date" | "date/time" | "time" => Self::DateTime,
             "boolean" | "true/false" | "bool" => Self::Boolean,

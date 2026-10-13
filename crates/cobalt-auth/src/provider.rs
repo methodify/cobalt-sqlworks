@@ -226,6 +226,13 @@ impl CredentialResolver {
     }
 
     /// Whether a refresh token is stored for the profile (i.e. a silent sign-in is likely).
+    /// Drop the cached access token for one resource, so the next silent request goes through the
+    /// refresh token again (after a consent granted elsewhere, e.g. by a tenant admin, the cached
+    /// token still lacks the new permission until it expires).
+    pub fn forget_resource(&self, profile_id: ProfileId, resource: &str) {
+        self.cache.lock().unwrap().remove(&(profile_id, resource.to_string()));
+    }
+
     pub fn is_remembered(&self, profile_id: &ProfileId) -> bool {
         matches!(
             self.secrets.get(&Self::refresh_token_ref(profile_id)),
