@@ -1,6 +1,11 @@
 # Semantic models: querying Power BI / Fabric semantic models and Analysis Services from Cobalt
 
-*Design, 2026-10-13. Status: draft for alignment with the founder. Scope from the founder: consume
+*Design, 2026-10-13. Status: approved by the founder the same day on every decision in §6; slice A
+built 2026-10-13 (`cobalt_core::tabular`, the `cobalt-tabular` crate with the Arrow query API
+transport, `cobalt_sql::dax`, `session/tabular.rs`, `tabularq.rs`, `ui/model_tree.rs`) and
+verified in the app up to the service, which answers a bare 401 until the app registration carries
+`Dataset.Read.All`; a Direct Lake test model "Cobalt test model" exists in the Fabric test
+workspace for the live check. Scope from the founder: consume
 semantic models (query them, get results into the results UX), a visual query builder for people
 who don't write DAX, dashboards fed by models, a pure-Rust transport (no .NET sidecar), Analysis
 Services endpoints where the same protocol allows. Not in scope: authoring or modifying models.

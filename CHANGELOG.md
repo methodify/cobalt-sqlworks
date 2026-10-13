@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.6 — unreleased
+
+- **Semantic models: DAX query tabs and the model explorer (slice A).** Power BI / Fabric
+  semantic models now appear in the Fabric panel under their workspace. Double-click opens a
+  DAX query tab: DAX syntax, completion from the model (tables as `'Table'`, columns after
+  `'Table'[`, measures after `[`, the model's own function list, snippets), several
+  `EVALUATE`s giving several result sets, Ctrl+Enter running the EVALUATE under the caret with
+  the DEFINE block, the usual grid, charts, totals, find, exports, Run to File and history, a row
+  cap with "Run again without the cap", Stop. Queries run through Microsoft's Arrow query API
+  (`executeDaxQueries`: Arrow IPC straight into the results store, lossless types) as the
+  Fabric panel's account, so a model on a Fabric or Premium capacity with Build permission is
+  all it takes; Pro workspaces are refused with the reason. Click a model row for the model
+  explorer: tables with columns (type, key, hidden), measures (format, expression on hover when
+  the service shows it), hierarchies, relationships (cardinality, direction, active); hidden
+  objects on request; double-click inserts `'Table'[Column]` / `[Measure]` into the active DAX
+  tab; context menus with quick queries (Top 100 rows, Count rows, Distinct values, Column
+  summary, Evaluate measure, Evaluate by a column, Define measure, Define all measures, the
+  INFO.VIEW metadata). "Copy connection string" gives the `powerbi://` data source for Excel,
+  SSMS, DAX Studio or Tabular Editor. New crate `cobalt-tabular` (the transport; an XMLA
+  transport follows in slice C); the Power BI token audience joins the sign-in (the app
+  registration needs the delegated `Dataset.Read.All` permission). Agent: `dax_query`,
+  `model`, tab kind `dax`, `fabric_state` lists `semantic_models`. Design:
+  `docs/design/semantic_models.md`.
+
 ## 0.9.5 — 2026-10-11
 
 - **LakeSail: lakehouse Files for Python, `notebookutils`, and the DataFrame write guard

@@ -13,6 +13,7 @@ pub mod profile;
 pub mod secret;
 pub mod settings;
 pub mod sqltype;
+pub mod tabular;
 
 pub use catalog::*;
 pub use chart::*;

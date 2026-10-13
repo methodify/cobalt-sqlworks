@@ -189,9 +189,10 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
 
     match tab.results_tab {
         ResultsTab::Results => {
-            if run.capped && tab.spark.is_some() {
+            if run.capped && (tab.spark.is_some() || tab.tabular.is_some()) {
+                let cap = if tab.tabular.is_some() { args.settings.execution.row_cap } else { args.settings.notebooks.spark_row_limit };
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{} Capped at {} rows per statement", icons::INFO, crate::state::fmt_count(args.settings.notebooks.spark_row_limit))).size(12.0).color(theme.text_muted));
+                    ui.label(RichText::new(format!("{} Capped at {} rows per statement", icons::INFO, crate::state::fmt_count(cap))).size(12.0).color(theme.text_muted));
                     if ui.add_enabled(!run.is_live(), egui::Button::new("Run again without the cap").small()).on_hover_text("Streams every row of the result; large results take memory in the grid.").clicked() {
                         actions.push(ResultsAction::RerunUncapped);
                     }

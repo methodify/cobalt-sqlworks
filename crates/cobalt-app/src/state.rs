@@ -262,6 +262,34 @@ pub struct EditorTab {
     pub spark: Option<SparkTab>,
     /// A dashboard page: tiles with their own hidden tabs (connections) and runs.
     pub dashboard: Option<Box<DashboardState>>,
+    /// `Some` = a DAX query tab on a semantic model: runs go through the Arrow query API
+    /// (`tabularq.rs`, `session/tabular.rs`) instead of a connection.
+    pub tabular: Option<TabularTab>,
+    /// The model's catalog for DAX completion (a copy of `AppState::model_catalogs[key]`).
+    pub model_catalog: Option<Arc<cobalt_core::tabular::ModelCatalog>>,
+    /// The model's DAX function list for completion (`INFO.FUNCTIONS()`).
+    pub dax_functions: Option<Arc<Vec<cobalt_sql::dax::DaxFunctionDoc>>>,
+}
+
+/// A DAX query tab's state: the model it queries and the options of its runs.
+pub struct TabularTab {
+    pub target: cobalt_core::tabular::TabularTarget,
+    /// The row limit the last run was sent with (the capped banner compares against it).
+    pub last_limit: Option<u64>,
+    /// The next run lifts the row cap ("Run again without the cap").
+    pub uncapped_next: bool,
+    /// View as: impersonation for RLS testing (workspace admins).
+    pub effective_username: Option<String>,
+    pub roles: Vec<String>,
+}
+
+impl TabularTab {
+    pub fn new(target: cobalt_core::tabular::TabularTarget) -> Self {
+        Self { target, last_limit: None, uncapped_next: false, effective_username: None, roles: Vec::new() }
+    }
+    pub fn model_key(&self) -> String {
+        self.target.key()
+    }
 }
 
 /// A Spark SQL query tab's state: its lakehouse binding (like a notebook's), the display names
@@ -525,6 +553,9 @@ impl EditorTab {
             fabric_item: None,
             spark: None,
             dashboard: None,
+            tabular: None,
+            model_catalog: None,
+            dax_functions: None,
         }
     }
 
@@ -535,7 +566,14 @@ impl EditorTab {
     /// The editor a command should act on: the selected notebook cell, or the query editor.
     pub fn active_host(&mut self) -> crate::ui::editor::EditorHost<'_> {
         let tab_id = self.id;
-        let EditorTab { notebook, catalog, databases, text, editor, .. } = self;
+        let EditorTab { notebook, catalog, databases, text, editor, spark, tabular, model_catalog, dax_functions, .. } = self;
+        let tab_syntax = if spark.is_some() {
+            crate::ui::editor::Syntax::SparkSql
+        } else if tabular.is_some() {
+            crate::ui::editor::Syntax::Dax
+        } else {
+            crate::ui::editor::Syntax::Sql
+        };
         match notebook.as_deref_mut() {
             Some(nb) if !nb.cells.is_empty() => {
                 let i = nb.selected.min(nb.cells.len() - 1);
@@ -545,9 +583,9 @@ impl EditorTab {
                     (cobalt_notebook::CellKind::Code, cobalt_notebook::CellLanguage::Python) => crate::ui::editor::Syntax::Python,
                     _ => crate::ui::editor::Syntax::Plain,
                 };
-                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax }
+                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax , model: None, dax_functions: &[] }
             }
-            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: crate::ui::editor::Syntax::Sql },
+            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: tab_syntax, model: model_catalog.as_deref(), dax_functions: dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]) },
         }
     }
 
@@ -564,6 +602,9 @@ impl EditorTab {
             Some(nb) => nb.dirty,
             None => hash_text(&self.text) != self.saved_text_hash,
         }
+    }
+    pub fn is_tabular(&self) -> bool {
+        self.tabular.is_some()
     }
     pub fn is_dashboard(&self) -> bool {
         self.dashboard.is_some()
@@ -586,6 +627,8 @@ impl EditorTab {
             t = format!("{} {t}", egui_phosphor::regular::NOTEBOOK);
         } else if self.spark.is_some() {
             t = format!("{} {t}", egui_phosphor::regular::FIRE);
+        } else if self.tabular.is_some() {
+            t = format!("{} {t}", egui_phosphor::regular::CUBE);
         }
         if self.profile.as_ref().map(|p| p.read_only_guard).unwrap_or(false) {
             t = format!("{} {t}", egui_phosphor::regular::LOCK_SIMPLE);
@@ -1111,6 +1154,16 @@ pub struct AppState {
     /// Completion catalogs of lakehouses (tables, schemas, columns from the Delta logs), by
     /// lakehouse id; Spark SQL tabs bound to the lakehouse share the Arc.
     pub spark_catalogs: std::collections::HashMap<String, Arc<DatabaseCatalog>>,
+    /// Semantic model catalogs by target key (`TabularTarget::key`), shared by the model
+    /// explorer and the DAX tabs' completion.
+    pub model_catalogs: std::collections::HashMap<String, Loadable<Arc<cobalt_core::tabular::ModelCatalog>>>,
+    /// The DAX functions a model reports (`INFO.FUNCTIONS()`), by target key, in the
+    /// completer's shape.
+    pub dax_functions: std::collections::HashMap<String, Arc<Vec<cobalt_sql::dax::DaxFunctionDoc>>>,
+    /// Open nodes of the model explorer trees (`<key>/t/<table>` …).
+    pub model_tree_expanded: std::collections::HashSet<String>,
+    /// Model explorer: show hidden tables, columns and measures.
+    pub model_show_hidden: bool,
     pub spark_catalog_loading: std::collections::HashSet<String>,
     /// Open the Spark tab's lakehouse menu on the next frame (Connect / Change connection on a Spark tab).
     pub open_spark_chip: Option<TabId>,
@@ -1381,6 +1434,10 @@ impl AppState {
             recently_closed_count: 0,
             spark_root_expanded: true,
             spark_catalogs: Default::default(),
+            model_catalogs: Default::default(),
+            dax_functions: Default::default(),
+            model_tree_expanded: Default::default(),
+            model_show_hidden: false,
             spark_catalog_loading: Default::default(),
             open_spark_chip: None,
             spark_start_tab: None,
@@ -1643,6 +1700,11 @@ impl AppState {
                 }
             }
             Event::RunDone { tab, run, cancelled, failed, elapsed, total_rows } => {
+                if let Some(t) = self.tab_mut(tab) {
+                    if t.tabular.is_some() && t.run.as_ref().map(|r| r.id == run).unwrap_or(false) {
+                        crate::tabularq::note_capped(t);
+                    }
+                }
                 if let Some(r) = self.run_mut(tab, run) {
                     r.elapsed = elapsed;
                     r.total_rows = total_rows;

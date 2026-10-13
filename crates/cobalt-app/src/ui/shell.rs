@@ -1025,7 +1025,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         t.text.is_empty() && t.profile.is_none() && t.run.is_none() && !t.custom_title && t.file_path.is_none() && !t.conn.is_connected()
     };
     if pristine && f.cx.settings.appearance.show_welcome {
-        if f.state.tabs[idx].spark.is_some() {
+        if f.state.tabs[idx].spark.is_some() || f.state.tabs[idx].tabular.is_some() {
             editor_toolbar(ui, f, idx);
         }
         let avail = ui.available_rect_before_wrap();
@@ -1385,7 +1385,10 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 spark_toolbar(ui, f, idx, &mut cmds);
             }
             let tab = &f.state.tabs[idx];
-            if tab.spark.is_some() {
+            if let Some(tt) = &tab.tabular {
+                ui.label(RichText::new(icons::CUBE).color(theme.accent));
+                ui.label(RichText::new(tt.target.model()).strong()).on_hover_text(format!("Semantic model {} in {}\nQueries run through the Power BI Arrow query API as the Fabric panel's account.", tt.target.model(), tt.target.host_label()));
+            } else if tab.spark.is_some() {
                 // no connection, database list or plans on a Spark tab
             } else {
             match &tab.conn {
@@ -1474,7 +1477,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 cmds.push(Command::ParseQuery);
             }
             }
-            if tool_button(ui, icons::TEXT_INDENT, "Format", "Format document (Shift+Alt+F)", true).clicked() {
+            if f.state.tabs[idx].tabular.is_none() && tool_button(ui, icons::TEXT_INDENT, "Format", "Format document (Shift+Alt+F)", true).clicked() {
                 cmds.push(Command::FormatDocument);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1509,7 +1512,24 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
             let tab = f.state.active();
             if let Some(t) = tab {
-                if let Some(sp) = &t.spark {
+                if let Some(tt) = &t.tabular {
+                    ui.label(RichText::new(icons::CUBE).color(theme.accent).size(11.0));
+                    ui.label(format!("{} · {}", tt.target.model(), tt.target.host_label()));
+                    let cat = f.state.model_catalogs.get(&tt.model_key());
+                    let text = match cat {
+                        Some(crate::state::Loadable::Loaded(c)) => format!("{} tables · {} measures", c.tables.len(), c.measure_count()),
+                        Some(crate::state::Loadable::Loading) => "loading the model…".to_string(),
+                        Some(crate::state::Loadable::Failed(e)) => {
+                            let first: String = e.lines().next().unwrap_or("").chars().take(60).collect();
+                            format!("model not loaded: {first}…")
+                        }
+                        _ => "semantic model".to_string(),
+                    };
+                    let r = ui.label(RichText::new(text).color(theme.text_muted));
+                    if let Some(crate::state::Loadable::Failed(e)) = cat {
+                        r.on_hover_text(e);
+                    }
+                } else if let Some(sp) = &t.spark {
                     let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
                     ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
                     match (&sp.lakehouse_name, sp.workspace_name.is_empty()) {
@@ -1601,7 +1621,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
@@ -1952,7 +1972,7 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         }
         Command::FormatDocument => {
             let opts = cobalt_sql::format::FormatOptions { uppercase_keywords: cx.settings.editor.format_uppercase_keywords, indent: cx.settings.editor.format_indent as usize, lines_between_queries: cx.settings.editor.format_blank_lines as usize };
-            if let Some(t) = state.active_mut() {
+            if let Some(t) = state.active_mut().filter(|t| t.tabular.is_none()) {
                 let mut h = t.active_host();
                 let formatted = cobalt_sql::format::format(h.text, &opts);
                 editor::set_text_keep_line(&mut h, formatted);

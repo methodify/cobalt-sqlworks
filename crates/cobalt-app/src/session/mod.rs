@@ -14,6 +14,7 @@
 
 pub mod actor;
 pub mod protocol;
+pub mod tabular;
 
 pub use protocol::*;
 
@@ -128,6 +129,8 @@ impl SessionManager {
 async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
     let mut tabs: HashMap<TabId, mpsc::UnboundedSender<actor::TabMsg>> = HashMap::new();
     let mut meta: HashMap<ProfileId, mpsc::UnboundedSender<actor::MetaMsg>> = HashMap::new();
+    // semantic model runs in flight: the cancel flag of each tab's current run
+    let mut tabular: HashMap<TabId, tokio::sync::watch::Sender<bool>> = HashMap::new();
 
     while let Some(cmd) = rx.recv().await {
         match cmd {
@@ -149,7 +152,20 @@ async fn dispatcher(mut rx: mpsc::UnboundedReceiver<Command>, shared: Shared) {
                 }
             }
             Command::Run { tab, run, script, opts, start_line, sink } => route_tab(&tabs, &shared, tab, actor::TabMsg::Run { run, script, opts, start_line, sink }),
-            Command::Cancel { tab } => route_tab(&tabs, &shared, tab, actor::TabMsg::Cancel),
+            Command::Cancel { tab } => match tabular.get(&tab) {
+                Some(flag) if !flag.is_closed() => {
+                    let _ = flag.send(true);
+                }
+                _ => route_tab(&tabs, &shared, tab, actor::TabMsg::Cancel),
+            },
+            Command::RunTabular { tab, run, target, auth, text, opts, sink } => {
+                if let Some(old) = tabular.remove(&tab) {
+                    let _ = old.send(true);
+                }
+                let (ctx, crx) = tokio::sync::watch::channel(false);
+                tabular.insert(tab, ctx);
+                tokio::spawn(tabular::run_tabular(tabular::TabularRun { tab, run, target, auth, text, opts, sink }, crx, shared.clone()));
+            }
             Command::Import { tab, table, create_sql, columns, rx, cancel } => route_tab(&tabs, &shared, tab, actor::TabMsg::Import { table, create_sql, columns, rx, cancel }),
             Command::FetchMore { tab, rows } => route_tab(&tabs, &shared, tab, actor::TabMsg::FetchMore { rows }),
             Command::ChangeDatabase { tab, database } => route_tab(&tabs, &shared, tab, actor::TabMsg::ChangeDatabase { database }),

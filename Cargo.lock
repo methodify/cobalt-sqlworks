@@ -1283,6 +1283,7 @@ dependencies = [
  "cobalt-runtime",
  "cobalt-sql",
  "cobalt-store",
+ "cobalt-tabular",
  "crossbeam-channel",
  "directories",
  "eframe",
@@ -1537,6 +1538,21 @@ dependencies = [
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "cobalt-tabular"
+version = "0.9.5"
+dependencies = [
+ "arrow",
+ "arrow-ipc",
+ "bytes",
+ "cobalt-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

@@ -248,6 +248,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                                 notebook_row(ui, theme, nb, opening, &mut actions);
                             }
                         }
+                        // semantic models (DAX query tabs; the model explorer under the row)
+                        if let Some(Loadable::Loaded(models)) = state.fabric.semantic_models.get(&w.id) {
+                            for m in models.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)) {
+                                semantic_model_row(ui, state, theme, m, &mut actions);
+                            }
+                        }
                     }
                 }
             }
@@ -263,6 +269,48 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
         }
     });
     actions
+}
+
+fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_fabric::FabricItem, actions: &mut Vec<FabricAction>) {
+    let expanded = state.fabric.expanded_models.contains(&m.id);
+    let target = state.fabric.model_target(m);
+    let sub = match state.model_catalogs.get(&target.key()) {
+        Some(Loadable::Loaded(c)) => format!("semantic model · {} tables · {} measures", c.tables.len(), c.measure_count()),
+        Some(Loadable::Loading) => "semantic model · loading…".to_string(),
+        _ => "semantic model".to_string(),
+    };
+    let r = tree_row(ui, theme, 1, expanded, icons::CUBE, &m.display_name, &sub, &format!("fabric semantic model {}", m.display_name));
+    if r.clicked() {
+        actions.push(FabricAction::ToggleModel { item_id: m.id.clone() });
+    }
+    if r.double_clicked() {
+        actions.push(FabricAction::DaxQuery { item_id: m.id.clone() });
+    }
+    r.context_menu(|ui| {
+        if ui.button(format!("{} New DAX query", icons::CUBE)).clicked() {
+            actions.push(FabricAction::DaxQuery { item_id: m.id.clone() });
+            ui.close();
+        }
+        if ui.button(if expanded { "Hide model" } else { "Explore model" }).on_hover_text("Tables, columns, measures and relationships under this row").clicked() {
+            actions.push(FabricAction::ToggleModel { item_id: m.id.clone() });
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Copy connection string").on_hover_text("The powerbi:// data source for Excel, SSMS, DAX Studio or Tabular Editor").clicked() {
+            ui.ctx().copy_text(target.connection_string());
+            ui.close();
+        }
+        if ui.button(format!("{} Open in Fabric portal", icons::ARROW_SQUARE_OUT)).clicked() {
+            let _ = open::that(m.portal_url());
+            ui.close();
+        }
+    });
+    r.on_hover_text("Click: the model explorer. Double-click: a DAX query tab (runs through the Power BI Arrow query API as the signed-in account)");
+    if expanded {
+        let mut model_actions = Vec::new();
+        super::model_tree::show(ui, theme, &target, state.model_catalogs.get(&target.key()), &state.model_tree_expanded, state.model_show_hidden, 2, &mut model_actions);
+        actions.extend(model_actions.into_iter().map(FabricAction::Model));
+    }
 }
 
 fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, opening: bool, actions: &mut Vec<FabricAction>) {
@@ -299,7 +347,7 @@ fn section(ui: &mut Ui, theme: &Theme, label: &str) {
     });
 }
 
-fn tree_row(ui: &mut Ui, theme: &Theme, depth: usize, expanded: bool, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
+pub(crate) fn tree_row(ui: &mut Ui, theme: &Theme, depth: usize, expanded: bool, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.to_string()));
     if resp.hovered() {

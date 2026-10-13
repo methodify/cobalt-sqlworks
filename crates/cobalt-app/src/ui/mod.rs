@@ -5,6 +5,7 @@ pub mod editor;
 pub mod fabric;
 pub mod files;
 pub mod lakehouse;
+pub mod model_tree;
 pub mod history;
 pub mod notebook;
 pub mod palette;

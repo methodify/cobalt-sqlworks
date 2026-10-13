@@ -48,6 +48,8 @@ pub enum CompletionKind {
     Snippet,
     /// Database name.
     Database,
+    /// A semantic model's measure (DAX): `insert` is `[Measure]`.
+    Measure,
 }
 
 impl CompletionKind {
@@ -68,6 +70,7 @@ impl CompletionKind {
             CompletionKind::Variable => "Variable",
             CompletionKind::Snippet => "Snippet",
             CompletionKind::Database => "Database",
+            CompletionKind::Measure => "Measure",
         }
     }
 
@@ -77,6 +80,7 @@ impl CompletionKind {
             CompletionKind::Alias => 95,
             CompletionKind::Variable => 92,
             CompletionKind::Table | CompletionKind::View | CompletionKind::Procedure | CompletionKind::Database => 90,
+            CompletionKind::Measure => 88,
             CompletionKind::TableFunction => 86,
             CompletionKind::ScalarFunction => 84,
             CompletionKind::Schema => 80,
@@ -1049,10 +1053,11 @@ fn qualified_insert(o: &ObjectRef, dialect: Dialect) -> String {
 }
 
 /// Quote `name` for `dialect` only when it needs quoting: `[name]` in T-SQL, `` `name` `` in
-/// Spark SQL.
+/// Spark SQL, `'name'` (a table) in DAX.
 pub fn quote_for(name: &str, dialect: Dialect) -> String {
     match dialect {
         Dialect::TSql => quote_ident(name),
+        Dialect::Dax => cobalt_core::tabular::dax_table_ref(name),
         Dialect::Spark => {
             let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             if simple {

@@ -40,6 +40,8 @@ pub enum Syntax {
     Sql,
     /// Spark SQL: backtick identifiers, `"` strings, Spark keywords and functions.
     SparkSql,
+    /// DAX on a semantic model: `'Table'[Column]`, `[Measure]`, `"strings"`, `EVALUATE`.
+    Dax,
     Python,
     /// Markdown and anything else: no highlighting.
     Plain,
@@ -51,7 +53,11 @@ impl Syntax {
         matches!(self, Syntax::Sql | Syntax::SparkSql)
     }
     pub fn dialect(self) -> cobalt_sql::Dialect {
-        if self == Syntax::SparkSql { cobalt_sql::Dialect::Spark } else { cobalt_sql::Dialect::TSql }
+        match self {
+            Syntax::SparkSql => cobalt_sql::Dialect::Spark,
+            Syntax::Dax => cobalt_sql::Dialect::Dax,
+            _ => cobalt_sql::Dialect::TSql,
+        }
     }
 }
 
@@ -60,6 +66,7 @@ pub fn layout_job_for(syntax: Syntax, text: &str, colors: &TokenColors, font: Fo
     match syntax {
         Syntax::Sql => layout_job(text, colors, font, wrap_width),
         Syntax::SparkSql => layout_job_dialect(text, cobalt_sql::Dialect::Spark, colors, font, wrap_width),
+        Syntax::Dax => layout_job_dialect(text, cobalt_sql::Dialect::Dax, colors, font, wrap_width),
         Syntax::Python => python_layout_job(text, colors, font, wrap_width),
         Syntax::Plain => {
             let mut job = LayoutJob::default();
@@ -328,6 +335,9 @@ pub struct EditorHost<'a> {
     pub catalog: Option<&'a cobalt_core::DatabaseCatalog>,
     pub databases: &'a Loadable<Vec<DatabaseInfo>>,
     pub syntax: Syntax,
+    /// DAX tabs: the semantic model's catalog and function list for completion.
+    pub model: Option<&'a cobalt_core::tabular::ModelCatalog>,
+    pub dax_functions: &'a [cobalt_sql::dax::DaxFunctionDoc],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -340,8 +350,14 @@ pub enum EditorLayout {
 
 impl EditorTab {
     pub fn host(&mut self) -> EditorHost<'_> {
-        let syntax = if self.spark.is_some() { Syntax::SparkSql } else { Syntax::Sql };
-        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax }
+        let syntax = if self.spark.is_some() {
+            Syntax::SparkSql
+        } else if self.tabular.is_some() {
+            Syntax::Dax
+        } else {
+            Syntax::Sql
+        };
+        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax, model: self.model_catalog.as_deref(), dax_functions: self.dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]) }
     }
 }
 
@@ -558,8 +574,13 @@ pub fn show_host(ui: &mut Ui, h: &mut EditorHost<'_>, timings: Vec<(u32, String,
 pub fn open_completion(h: &mut EditorHost<'_>, cursor_byte: usize, anchor: Pos2, force: bool) {
     let dbs: Vec<String> = h.databases.get().map(|d| d.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
     let user = USER_SNIPPETS.read().map(|v| v.clone()).unwrap_or_default();
-    let req = cobalt_sql::completion::CompletionRequest { text: h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user, dialect: h.syntax.dialect() };
-    let c = cobalt_sql::completion::complete(&req);
+    let c = if h.syntax == Syntax::Dax {
+        let req = cobalt_sql::dax::DaxCompletionRequest { text: h.text, cursor: cursor_byte, model: h.model, functions: h.dax_functions, max_items: 60 };
+        cobalt_sql::dax::complete_dax(&req)
+    } else {
+        let req = cobalt_sql::completion::CompletionRequest { text: h.text, cursor: cursor_byte, catalog: h.catalog, databases: &dbs, max_items: 60, user_snippets: &user, dialect: h.syntax.dialect() };
+        cobalt_sql::completion::complete(&req)
+    };
     let prefix_len = c.replace_end.saturating_sub(c.replace_start);
     if c.items.is_empty() || (!force && prefix_len == 0) {
         h.editor.completion = None;
@@ -585,6 +606,7 @@ fn completion_icon(kind: cobalt_sql::completion::CompletionKind) -> &'static str
         K::View => i::EYE,
         K::Procedure => i::GEAR_SIX,
         K::Column => i::COLUMNS,
+        K::Measure => i::SIGMA,
         K::Alias => i::TAG,
         K::Variable => i::AT,
         K::Snippet => i::SCISSORS,

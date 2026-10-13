@@ -241,7 +241,18 @@ pub enum Dialect {
     TSql,
     /// Spark SQL on the local session: `` `name` ``, `"text"` strings, Spark keywords and functions.
     Spark,
+    /// DAX against a semantic model: `'Table'` quoted table names ([`TokenKind::QuotedIdentifier`]),
+    /// `[Column or Measure]` ([`TokenKind::BracketedIdentifier`]), `"text"` strings, `//` as well
+    /// as `--` line comments, `INFO.VIEW.TABLES` dotted function names kept as one token, and any
+    /// identifier followed by `(` lexed as a [`TokenKind::Function`].
+    Dax,
 }
+
+/// DAX keywords (uppercase): the query statements and the operators spelled as words.
+pub static DAX_KEYWORDS: &[&str] = &[
+    "EVALUATE", "DEFINE", "MEASURE", "VAR", "RETURN", "ORDER", "BY", "START", "AT", "ASC", "DESC",
+    "TABLE", "COLUMN", "FUNCTION", "TRUE", "FALSE", "BLANK", "NOT", "AND", "OR", "IN",
+];
 
 /// Spark SQL keywords that T-SQL does not have (uppercase).
 pub static SPARK_KEYWORDS: &[&str] = &[
@@ -279,6 +290,8 @@ pub static SPARK_FUNCTIONS: &[&str] = &[
 ];
 
 static KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().copied().collect());
+static DAX_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| DAX_KEYWORDS.iter().copied().collect());
+static DAX_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| crate::dax_functions::DAX_FUNCTIONS.iter().copied().collect());
 static SPARK_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SPARK_KEYWORDS.iter()).copied().collect());
 static SPARK_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().chain(SPARK_FUNCTIONS.iter()).copied().collect());
 static FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().copied().collect());
@@ -294,8 +307,15 @@ pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
     let set = match dialect {
         Dialect::TSql => &*KEYWORD_SET,
         Dialect::Spark => &*SPARK_KEYWORD_SET,
+        Dialect::Dax => &*DAX_KEYWORD_SET,
     };
     set.contains(word.to_ascii_uppercase().as_str())
+}
+
+/// True if `word` is a built-in DAX function name (case-insensitive; dotted names such as
+/// `INFO.VIEW.TABLES` included).
+pub fn is_dax_function(word: &str) -> bool {
+    DAX_FUNCTION_SET.contains(word.to_ascii_uppercase().as_str())
 }
 
 /// True if `word` is a built-in function name (case-insensitive).
@@ -327,6 +347,15 @@ pub fn tokenize_dialect(src: &str, dialect: Dialect) -> Vec<Token> {
 /// the next line.
 pub fn tokenize_line(line: &str, state: LineState) -> (Vec<Token>, LineState) {
     Lexer::new(line, state).run()
+}
+
+/// [`tokenize_line`] in `dialect`. With [`LineState::INITIAL`] and the whole text this is
+/// [`tokenize_dialect`] plus the final state, which says whether the text ends inside an
+/// unterminated string, quoted name or block comment.
+pub fn tokenize_line_dialect(line: &str, state: LineState, dialect: Dialect) -> (Vec<Token>, LineState) {
+    let mut lx = Lexer::new(line, state);
+    lx.dialect = dialect;
+    lx.run()
 }
 
 fn is_ident_start(c: char) -> bool {
@@ -382,8 +411,9 @@ impl<'a> Lexer<'a> {
         } else if let Some(q) = self.state.in_string {
             let start = self.pos;
             let kind = match q {
+                '\'' if self.dialect == Dialect::Dax => TokenKind::QuotedIdentifier,
                 '\'' => TokenKind::String,
-                '"' if self.dialect == Dialect::Spark => TokenKind::String,
+                '"' if self.dialect != Dialect::TSql => TokenKind::String,
                 '"' | '`' => TokenKind::QuotedIdentifier,
                 _ => TokenKind::BracketedIdentifier,
             };
@@ -432,12 +462,21 @@ impl<'a> Lexer<'a> {
                 self.consume_block_comment(1);
                 self.push(TokenKind::BlockComment, start);
             }
+            b'/' if self.dialect == Dialect::Dax && self.peek(1) == Some(b'/') => {
+                while let Some(c) = self.peek(0) {
+                    if c == b'\n' || c == b'\r' {
+                        break;
+                    }
+                    self.pos += 1;
+                }
+                self.push(TokenKind::LineComment, start);
+            }
             b'\'' => {
                 self.pos += 1;
                 self.consume_delimited('\'');
-                self.push(TokenKind::String, start);
+                self.push(if self.dialect == Dialect::Dax { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
-            b'N' | b'n' if self.peek(1) == Some(b'\'') => {
+            b'N' | b'n' if self.dialect != Dialect::Dax && self.peek(1) == Some(b'\'') => {
                 self.pos += 2;
                 self.consume_delimited('\'');
                 self.push(TokenKind::String, start);
@@ -445,7 +484,7 @@ impl<'a> Lexer<'a> {
             b'"' => {
                 self.pos += 1;
                 self.consume_delimited('"');
-                self.push(if self.dialect == Dialect::Spark { TokenKind::String } else { TokenKind::QuotedIdentifier }, start);
+                self.push(if self.dialect == Dialect::TSql { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
             b'`' if self.dialect == Dialect::Spark => {
                 self.pos += 1;
@@ -510,6 +549,10 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 self.push(TokenKind::Punct, start);
             }
+            b'{' | b'}' | b':' if self.dialect == Dialect::Dax => {
+                self.pos += 1;
+                self.push(TokenKind::Punct, start);
+            }
             b'<' | b'>' | b'!' | b'=' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'^' | b'~' | b':' => {
                 self.consume_operator();
                 if self.pos == start {
@@ -523,6 +566,9 @@ impl<'a> Lexer<'a> {
                 let c = self.cur_char().unwrap_or('\0');
                 if is_ident_start(c) {
                     self.consume_ident_chars();
+                    if self.dialect == Dialect::Dax {
+                        self.consume_dotted_segments();
+                    }
                     let word = &self.src[start..self.pos];
                     let kind = self.classify_word(word);
                     self.push(kind, start);
@@ -536,9 +582,24 @@ impl<'a> Lexer<'a> {
 
     fn classify_word(&self, word: &str) -> TokenKind {
         let upper = word.to_ascii_uppercase();
+        if self.dialect == Dialect::Dax {
+            // DAX has no types and every `name(` is a call (built-in or a model's own function),
+            // except the statement keywords: `EVALUATE (…)` and `RETURN (…)` stay keywords.
+            let paren = self.next_nonspace_is_paren();
+            if DAX_KEYWORD_SET.contains(upper.as_str())
+                && !(paren && matches!(upper.as_str(), "TRUE" | "FALSE" | "BLANK" | "NOT" | "AND" | "OR"))
+            {
+                return TokenKind::Keyword;
+            }
+            if paren {
+                return TokenKind::Function;
+            }
+            return TokenKind::Identifier;
+        }
         let (functions, keywords) = match self.dialect {
             Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
             Dialect::Spark => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
+            Dialect::Dax => unreachable!(),
         };
         if functions.contains(upper.as_str()) && self.next_nonspace_is_paren() {
             return TokenKind::Function;
@@ -562,6 +623,19 @@ impl<'a> Lexer<'a> {
             }
         }
         false
+    }
+
+    /// DAX: `INFO.VIEW.TABLES`, `IF.EAGER`, `STDEV.P` are one name. Extend the identifier over
+    /// every `.segment` that follows it.
+    fn consume_dotted_segments(&mut self) {
+        while self.peek(0) == Some(b'.') {
+            let Some(c) = self.src[self.pos + 1..].chars().next() else { break };
+            if !is_ident_start(c) {
+                break;
+            }
+            self.pos += 1;
+            self.consume_ident_chars();
+        }
     }
 
     fn consume_ident_chars(&mut self) {
@@ -613,6 +687,10 @@ impl<'a> Lexer<'a> {
             b"!<", b"!>",
         ];
         if let (Some(a), Some(b)) = (self.peek(0), self.peek(1)) {
+            if self.dialect == Dialect::Dax && matches!((a, b), (b'&', b'&') | (b'|', b'|') | (b'=', b'=')) {
+                self.pos += 2;
+                return;
+            }
             if TWO.iter().any(|op| op[0] == a && op[1] == b) {
                 self.pos += 2;
                 return;

@@ -1,0 +1,21 @@
+[package]
+name = "cobalt-tabular"
+description = "Semantic model / Analysis Services client: DAX over the Power BI Arrow query API, model catalog from INFO.VIEW"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+arrow.workspace = true
+arrow-ipc = { workspace = true, features = ["lz4"] }
+bytes = "1"
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

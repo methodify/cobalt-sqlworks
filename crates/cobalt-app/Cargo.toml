@@ -31,6 +31,7 @@ cobalt-export-delta.workspace = true
 cobalt-import.workspace = true
 cobalt-plan.workspace = true
 cobalt-fabric.workspace = true
+cobalt-tabular.workspace = true
 cobalt-notebook.workspace = true
 cobalt-runtime.workspace = true
 egui_commonmark = { version = "0.25", default-features = false, features = ["pulldown_cmark"] }

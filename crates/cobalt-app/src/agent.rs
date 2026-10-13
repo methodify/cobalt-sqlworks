@@ -6,6 +6,8 @@
 //! - `connect {profile: <name or id>, database?}` → opens a new tab connected to that profile
 //! - `open_query {text, connect?: <profile name>}` → new tab with text
 //! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
+//! - `dax_query {workspace, model, text?, run?}` → a DAX query tab on a semantic model (the Fabric panel's sign-in; `fabric_state` lists models once a workspace is expanded)
+//! - `model {action: tree|refresh|functions, workspace, model}` → the model's catalog (tables, columns, measures, relationships) as JSON
 //! - `set_query {text}` (active tab), `run {mode?: all|current|selection|estimated_plan}`, `cancel`
 //! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
@@ -83,7 +85,8 @@ impl CobaltApp {
                     "index": i,
                     "id": t.id.to_string(),
                     "title": t.title,
-                    "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else { "query" },
+                    "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else if t.is_tabular() { "dax" } else { "query" },
+                    "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
@@ -311,6 +314,10 @@ fn chart_state_json(v: &crate::state::ResultSetView) -> Value {
 fn arg_str(args: Option<&Value>, key: &str) -> Option<String> {
     args.and_then(|a| a.get(key)).and_then(|v| v.as_str()).map(str::to_string)
 }
+fn arg_bool(args: Option<&Value>, key: &str) -> Option<bool> {
+    args.and_then(|a| a.get(key)).and_then(|v| v.as_bool())
+}
+
 fn arg_usize(args: Option<&Value>, key: &str) -> Option<usize> {
     args.and_then(|a| a.get(key)).and_then(|v| v.as_u64()).map(|v| v as usize)
 }
@@ -406,6 +413,46 @@ impl AgentApp for CobaltApp {
                 };
                 let idx = self.with_ctx(egui, |s, cx| crate::sparkq::new_tab(s, cx, binding, None, text));
                 ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}))
+            }
+            "dax_query" | "model" => {
+                let Some(ws_arg) = arg_str(args, "workspace") else { return ActionResult::BadArgs("workspace is required".into()) };
+                let Some(ws_id) = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone())) else {
+                    return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into());
+                };
+                let Some(m_arg) = arg_str(args, "model") else { return ActionResult::BadArgs("model is required".into()) };
+                let item = self.state.fabric.semantic_models.get(&ws_id).and_then(|l| l.get()).and_then(|v| v.iter().find(|i| i.id == m_arg || i.display_name.eq_ignore_ascii_case(&m_arg)).cloned());
+                let Some(item) = item else { return ActionResult::BadArgs("unknown semantic model (expand the workspace first)".into()) };
+                let target = self.state.fabric.model_target(&item);
+                if action.name() == "dax_query" {
+                    let text = arg_str(args, "text");
+                    let run = arg_bool(args, "run").unwrap_or(false);
+                    let idx = self.with_ctx(egui, |s, cx| {
+                        let i = crate::tabularq::new_tab(s, cx, target, text);
+                        if run {
+                            ops::run(s, cx, i, crate::state::RunMode::All);
+                        }
+                        i
+                    });
+                    return ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}));
+                }
+                match arg_str(args, "action").as_deref().unwrap_or("tree") {
+                    "refresh" => {
+                        self.with_ctx(egui, |s, cx| crate::tabularq::load_catalog(s, cx, &target, true));
+                        ActionResult::ok()
+                    }
+                    "functions" => {
+                        let f = self.state.dax_functions.get(&target.key()).map(|f| f.iter().map(|x| json!({"name": x.name, "parameters": x.parameters})).collect::<Vec<_>>()).unwrap_or_default();
+                        ActionResult::with(&json!({"count": f.len(), "functions": f}))
+                    }
+                    _ => {
+                        self.with_ctx(egui, |s, cx| crate::tabularq::ensure_catalog(s, cx, &target));
+                        match self.state.model_catalogs.get(&target.key()) {
+                            Some(crate::state::Loadable::Loaded(c)) => ActionResult::with(&json!({"status": "loaded", "key": target.key(), "catalog": c.as_ref()})),
+                            Some(crate::state::Loadable::Failed(e)) => ActionResult::with(&json!({"status": "failed", "error": e})),
+                            _ => ActionResult::with(&json!({"status": "loading"})),
+                        }
+                    }
+                }
             }
             "open_query" => {
                 let text = arg_str(args, "text").unwrap_or_default();
@@ -1023,6 +1070,7 @@ impl AgentApp for CobaltApp {
             "fabric_state" => {
                 let f = &self.state.fabric;
                 let ws: Vec<Value> = f.workspaces.get().map(|w| w.iter().map(|w| json!({"id": w.id, "name": w.display_name, "kind": format!("{:?}", w.kind), "expanded": f.expanded.contains(&w.id),
+                    "semantic_models": f.semantic_models.get(&w.id).and_then(|l| l.get()).map(|v| v.iter().map(|i| json!({"id": i.id, "name": i.display_name})).collect::<Vec<_>>()),
                     "items": f.items.get(&w.id).and_then(|l| l.get()).map(|v| v.iter().map(|i| json!({"id": i.id, "name": i.display_name, "kind": format!("{:?}", i.kind), "pinned": f.is_pinned(&i.id),
                         "target": f.details.get(&i.id).and_then(|d| d.get()).map(|t| json!({"server": t.server, "database": t.database, "provisioning": t.provisioning}))})).collect::<Vec<_>>())})).collect()).unwrap_or_default();
                 ActionResult::with(&json!({

@@ -24,6 +24,21 @@ pub enum SinkMsg {
     RunEnd,
 }
 
+/// How a tabular run mints its Power BI token: the resolver and the Entra profile whose refresh
+/// token serves it (the Fabric panel's slot).
+#[derive(Clone)]
+pub struct TabularAuth {
+    pub resolver: Arc<cobalt_auth::CredentialResolver>,
+    pub slot: ProfileId,
+    pub tenant: Option<String>,
+}
+
+impl std::fmt::Debug for TabularAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TabularAuth").field("slot", &self.slot).field("tenant", &self.tenant).finish()
+    }
+}
+
 /// UI → session runtime.
 #[derive(Debug)]
 pub enum Command {
@@ -45,6 +60,10 @@ pub enum Command {
     /// idle-reconnect path can be exercised without waiting for a gateway to drop the session.
     #[cfg(feature = "agent")]
     SimulateLost { tab: TabId },
+    /// A DAX query against a semantic model (`session/tabular.rs`): one HTTPS request per run,
+    /// the token minted inside the task from `auth`, results as the usual run events.
+    /// `Cancel { tab }` stops it.
+    RunTabular { tab: TabId, run: RunId, target: cobalt_core::tabular::TabularTarget, auth: TabularAuth, text: String, opts: cobalt_tabular::DaxOptions, sink: Option<RunSink> },
     /// Object explorer / completion reads on the per-profile metadata connection.
     Metadata { req: RequestId, profile: ConnectionProfile, creds: ResolvedCredentials, kind: MetadataRequest },
     CloseMetadata { profile: ProfileId },

@@ -49,6 +49,18 @@ pub struct CredentialResolver {
 pub const SQL_RESOURCE: &str = "https://database.windows.net/";
 pub const FABRIC_API_RESOURCE: &str = "https://api.fabric.microsoft.com";
 pub const ONELAKE_RESOURCE: &str = "https://storage.azure.com/";
+/// The Power BI service: semantic model queries (the Arrow query API and the XMLA endpoint).
+/// The same Entra resource app as Fabric, a different audience; one refresh token serves both.
+pub const POWERBI_RESOURCE: &str = "https://analysis.windows.net/powerbi/api";
+
+/// Delegated Power BI permissions the semantic model features rely on.
+pub const POWERBI_REQUIRED_SCOPES: &[(&str, &str)] = &[("Dataset.Read.All", "query semantic models")];
+
+/// Required Power BI scopes missing from a token's granted scope string.
+pub fn missing_powerbi_scopes(granted: &str) -> Vec<&'static str> {
+    let have: Vec<&str> = granted.split_whitespace().map(|s| s.rsplit('/').next().unwrap_or(s)).collect();
+    POWERBI_REQUIRED_SCOPES.iter().filter(|(name, _)| !have.iter().any(|h| h.eq_ignore_ascii_case(name))).map(|(name, _)| *name).collect()
+}
 
 /// Delegated Fabric API permissions the app relies on, with what each one is for. A token that
 /// lacks one (an older sign-in, before the registration gained it) needs a consent round.

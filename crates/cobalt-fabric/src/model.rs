@@ -184,12 +184,17 @@ impl FabricItem {
     pub fn is_notebook(&self) -> bool {
         self.item_type == "Notebook"
     }
+    /// A Power BI semantic model (the Fabric item type `SemanticModel`).
+    pub fn is_semantic_model(&self) -> bool {
+        self.item_type == "SemanticModel"
+    }
     /// The portal page for this item.
     pub fn portal_url(&self) -> String {
         let seg = match self.item_type.as_str() {
             "Notebook" => "synapsenotebooks",
             "Lakehouse" => "lakehouses",
             "Warehouse" => "datawarehouses",
+            "SemanticModel" => "datasets",
             _ => "items",
         };
         format!("https://app.fabric.microsoft.com/groups/{}/{seg}/{}", self.workspace_id, self.id)

@@ -634,3 +634,42 @@ are editable per column; existing-table mode reads the table's columns and locks
 Known limits: one file per import, no column reordering or transforms, geography/hierarchyid/sql_variant
 targets are not supported, and CSV row counts in the progress bar are estimates.
 Agent: `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}`, `import_state`.
+
+## Semantic models: DAX query tabs and the model explorer (0.9.6)
+
+Power BI / Fabric semantic models show up in the Fabric panel under their workspace, with a
+cube icon. Click the row for the **model explorer** (Tables with their columns, measures and
+hierarchies; Relationships with cardinality, direction and active state; calculation groups
+when the model has them; hidden objects on request through the Tables context menu).
+Double-click a model (or right-click › New DAX query) for a tab named `DAX_1 · <model>`. The
+tab is a query tab: DAX highlighting, completion from the model (`'` offers tables, `'Table'[`
+that table's columns, `[` measures then columns, otherwise functions, keywords, tables,
+measures and snippets like `topn`, `summarize`, `define`), F5 runs the text, Ctrl+Enter runs
+the `EVALUATE` under the caret together with the `DEFINE` block, several `EVALUATE`s give
+several result sets, and the grid, charts, totals, find, Copy, Export, Run to File, history and
+Pin to dashboard work as on any other tab. The row cap (Settings › Execution) applies per
+`EVALUATE`; a capped set offers "Run again without the cap". Stop ends the run locally (the
+service finishes the query on its own; the command timeout is sent along as the query timeout).
+The model rows' context menus run quick queries into the tab: Top 100 rows, Count rows,
+Distinct values, a column summary (rows, distinct, blanks, min, max), Evaluate measure,
+Evaluate by a column, Define measure (the expression pasted into a DEFINE block to edit),
+Define all measures, and the INFO.VIEW metadata as result sets. Double-click a column or
+measure to insert `'Table'[Column]` / `[Measure]` at the caret. Hover a measure for its
+format string and expression (the service hides expressions from Build-only users; the tree
+says so).
+
+Queries run through Microsoft's **Arrow query API** (`executeDaxQueries`) as the account the
+Fabric panel is signed in with. Prerequisites: the model on a Fabric or Premium capacity (Pro
+workspaces have no query endpoint; the run says so), **Build** permission on the model, the
+tenant settings "Dataset Execute Queries REST API" and "Allow XMLA endpoints and Analyze in
+Excel" (both on by default), and the delegated Power BI permission **`Dataset.Read.All`** on
+Cobalt's app registration — a sign-in without it is refused before anything is sent, with the
+reason; after the permission is added, **Grant permissions** on the Fabric panel picks it up.
+The API answers at most 120 requests per minute per user, which matters only for dashboards
+with many model tiles on short intervals. "Copy connection string" on a model row gives the
+`powerbi://` data source for Excel, SSMS, DAX Studio or Tabular Editor. Azure Analysis Services,
+SSAS and MDX / DMV queries come with the XMLA transport (slice C of the design).
+
+Agent: `fabric_state` lists `semantic_models` per expanded workspace; `dax_query {workspace,
+model, text?, run?}` opens a tab; `model {workspace, model, action: tree|refresh|functions}`
+returns the catalog; `state` tabs carry `kind: "dax"` and a `tabular` block.

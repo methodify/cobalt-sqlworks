@@ -624,7 +624,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 (CellKind::Code, CellLanguage::Python) => editor::Syntax::Python,
                                 _ => editor::Syntax::Plain,
                             };
-                            let mut host = EditorHost { id: host_id, text: &mut nb.nb.cells[i].source, editor: &mut cs.editor, catalog: if cell_kind == CellKind::Code { catalog } else { None }, databases, syntax };
+                            let mut host = EditorHost { id: host_id, text: &mut nb.nb.cells[i].source, editor: &mut cs.editor, catalog: if cell_kind == CellKind::Code { catalog } else { None }, databases, syntax , model: None, dax_functions: &[] };
                             let out = egui::Frame::new()
                                 .fill(theme.bg_editor)
                                 .stroke(egui::Stroke::new(1.0, theme.border))

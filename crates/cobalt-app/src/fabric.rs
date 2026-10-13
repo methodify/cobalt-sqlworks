@@ -38,6 +38,10 @@ pub struct FabricState {
     pub items: HashMap<String, Loadable<Vec<SqlItem>>>,
     /// Notebook items per workspace (loaded with the SQL items).
     pub notebooks: HashMap<String, Loadable<Vec<cobalt_fabric::FabricItem>>>,
+    /// Semantic model items per workspace (loaded with the SQL items).
+    pub semantic_models: HashMap<String, Loadable<Vec<cobalt_fabric::FabricItem>>>,
+    /// Semantic model items whose model explorer is open under their row.
+    pub expanded_models: HashSet<String>,
     pub details: HashMap<String, Loadable<SqlTarget>>,
     pub expanded: HashSet<String>,
     pub pins: Vec<FabricPin>,
@@ -122,6 +126,11 @@ pub enum FabricEvent {
     Detail { item_id: String, result: Result<SqlTarget, String> },
     Capacities(Vec<Capacity>),
     Notebooks { workspace_id: String, result: Result<Vec<cobalt_fabric::FabricItem>, String> },
+    SemanticModels { workspace_id: String, result: Result<Vec<cobalt_fabric::FabricItem>, String> },
+    /// A semantic model's catalog (tables, columns, measures, relationships) by target key.
+    ModelCatalog { key: String, result: Result<std::sync::Arc<cobalt_core::tabular::ModelCatalog>, String> },
+    /// The DAX functions a model reports (`INFO.FUNCTIONS()`).
+    DaxFunctions { key: String, result: Result<Vec<cobalt_tabular::DaxFunction>, String> },
     /// A notebook item's definition arrived (open it, or open a copy).
     NotebookDefinition { item: cobalt_fabric::FabricItem, copy: bool, result: Result<cobalt_fabric::ItemDefinition, String> },
     NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
@@ -161,6 +170,12 @@ pub enum FabricAction {
     OpenNotebook { item_id: String, copy: bool },
     /// Run the browser flow with `prompt=consent` so new app permissions can be approved.
     GrantPermissions,
+    /// A DAX query tab on a semantic model.
+    DaxQuery { item_id: String },
+    /// Toggle the model explorer under a semantic model's row.
+    ToggleModel { item_id: String },
+    /// An action from a model explorer row.
+    Model(crate::ui::model_tree::ModelAction),
 }
 
 pub(crate) fn fabric_error_text(e: &FabricError) -> String {
@@ -316,6 +331,44 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             crate::sparkq::new_tab(state, cx, Some(binding), Some((ws_name, Some(item.display_name.clone()))), None);
         }
         FabricAction::Tree(a) => ops::tree_action(state, cx, a),
+        FabricAction::DaxQuery { item_id } => {
+            let Some(item) = state.fabric.semantic_model(&item_id).cloned() else { return };
+            let target = state.fabric.model_target(&item);
+            crate::tabularq::new_tab(state, cx, target, None);
+        }
+        FabricAction::ToggleModel { item_id } => {
+            if state.fabric.expanded_models.remove(&item_id) {
+                return;
+            }
+            state.fabric.expanded_models.insert(item_id.clone());
+            let Some(item) = state.fabric.semantic_model(&item_id).cloned() else { return };
+            let target = state.fabric.model_target(&item);
+            state.model_tree_expanded.insert(format!("{}/tables", target.key()));
+            crate::tabularq::ensure_catalog(state, cx, &target);
+        }
+        FabricAction::Model(a) => model_action(state, cx, a),
+    }
+}
+
+/// A model explorer row's request.
+pub fn model_action(state: &mut AppState, cx: &Ctx, a: crate::ui::model_tree::ModelAction) {
+    use crate::ui::model_tree::ModelAction as M;
+    match a {
+        M::Query { target, text, run } => {
+            crate::tabularq::open_query(state, cx, target, text, run);
+        }
+        M::Insert { target, text } => crate::tabularq::insert_or_open(state, cx, target, &text),
+        M::Copy(s) => {
+            cx.egui.copy_text(s);
+            cx.toast(ToastKind::Success, "Copied.");
+        }
+        M::Refresh { target } => crate::tabularq::load_catalog(state, cx, &target, true),
+        M::ToggleHidden => state.model_show_hidden = !state.model_show_hidden,
+        M::ToggleNode(id) => {
+            if !state.model_tree_expanded.remove(&id) {
+                state.model_tree_expanded.insert(id);
+            }
+        }
     }
 }
 
@@ -578,28 +631,31 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
     let tenant = tenant_hint(cx);
     let ws = workspace_id.to_string();
     state.fabric.notebooks.insert(workspace_id.to_string(), Loadable::Loading);
+    state.fabric.semantic_models.insert(workspace_id.to_string(), Loadable::Loading);
     cx.session.spawn(async move {
-        let (result, notebooks) = match token(&resolver, slot, tenant.as_deref()).await {
+        let (result, notebooks, models) = match token(&resolver, slot, tenant.as_deref()).await {
             Ok((tok, _)) => {
                 let client = FabricClient::new(tok);
-                // one listing serves both: SQL items and notebooks
+                // one listing serves all three: SQL items, notebooks and semantic models
                 match client.list_items(&ws, None).await {
                     Ok(all) => {
                         let nbs: Vec<cobalt_fabric::FabricItem> = all.iter().filter(|i| i.is_notebook()).cloned().collect();
+                        let models: Vec<cobalt_fabric::FabricItem> = all.iter().filter(|i| i.is_semantic_model()).cloned().collect();
                         let sql = client.list_sql_items(&ws).await.map_err(|e| fabric_error_text(&e));
-                        (sql, Ok(nbs))
+                        (sql, Ok(nbs), Ok(models))
                     }
                     Err(e) => {
                         let t = fabric_error_text(&e);
-                        (Err(t.clone()), Err(t))
+                        (Err(t.clone()), Err(t.clone()), Err(t))
                     }
                 }
             }
-            Err(None) => (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into())),
-            Err(Some(e)) => (Err(e.clone()), Err(e)),
+            Err(None) => (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into())),
+            Err(Some(e)) => (Err(e.clone()), Err(e.clone()), Err(e)),
         };
         let _ = tx.send(FabricEvent::Items { workspace_id: ws.clone(), result });
-        let _ = tx.send(FabricEvent::Notebooks { workspace_id: ws, result: notebooks });
+        let _ = tx.send(FabricEvent::Notebooks { workspace_id: ws.clone(), result: notebooks });
+        let _ = tx.send(FabricEvent::SemanticModels { workspace_id: ws, result: models });
         egui.request_repaint();
     });
 }
@@ -607,6 +663,14 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
 impl FabricState {
     pub fn notebook(&self, item_id: &str) -> Option<&cobalt_fabric::FabricItem> {
         self.notebooks.values().filter_map(|l| l.get()).flatten().find(|i| i.id == item_id)
+    }
+    pub fn semantic_model(&self, item_id: &str) -> Option<&cobalt_fabric::FabricItem> {
+        self.semantic_models.values().filter_map(|l| l.get()).flatten().find(|i| i.id == item_id)
+    }
+    /// The query target of a semantic model item.
+    pub fn model_target(&self, item: &cobalt_fabric::FabricItem) -> cobalt_core::tabular::TabularTarget {
+        let ws_name = self.workspace(&item.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default();
+        cobalt_core::tabular::TabularTarget::PowerBi { workspace_id: item.workspace_id.clone(), workspace_name: ws_name, dataset_id: item.id.clone(), model_name: item.display_name.clone() }
     }
     /// `(name, id)` of the lakehouses in a workspace, when loaded.
     pub fn lakehouses(&self, workspace_id: &str) -> Option<Vec<(String, String)>> {
@@ -981,6 +1045,33 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Ok(v) => Loadable::Loaded(v),
                 Err(e) => Loadable::Failed(e),
             });
+        }
+        FabricEvent::SemanticModels { workspace_id, result } => {
+            state.fabric.semantic_models.insert(workspace_id, match result {
+                Ok(v) => Loadable::Loaded(v),
+                Err(e) => Loadable::Failed(e),
+            });
+        }
+        FabricEvent::ModelCatalog { key, result } => {
+            if let Ok(c) = &result {
+                for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false)) {
+                    t.model_catalog = Some(c.clone());
+                }
+            }
+            state.model_catalogs.insert(key, match result {
+                Ok(c) => Loadable::Loaded(c),
+                Err(e) => Loadable::Failed(e),
+            });
+        }
+        FabricEvent::DaxFunctions { key, result } => {
+            if let Ok(f) = result {
+                let docs: Vec<cobalt_sql::dax::DaxFunctionDoc> = f.into_iter().map(|x| cobalt_sql::dax::DaxFunctionDoc { name: x.name, description: x.description, parameters: x.parameters }).collect();
+                let docs = std::sync::Arc::new(docs);
+                for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false)) {
+                    t.dax_functions = Some(docs.clone());
+                }
+                state.dax_functions.insert(key, docs);
+            }
         }
         FabricEvent::NotebookDefinition { item, copy, result } => {
             state.fabric.opening.remove(&item.id);
