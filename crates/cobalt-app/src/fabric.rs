@@ -216,6 +216,7 @@ pub fn on_panel_shown(state: &mut AppState, cx: &Ctx) {
             load_workspaces(state, cx);
         }
         load_items_for_pins(state, cx);
+        crate::tabularq::ensure_all(state, cx);
     } else {
         // no account yet: try any Entra profile silently before asking the user
         state.fabric.status = Some(FabricStatus::SignedOut);
@@ -973,6 +974,8 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             crate::notebook::pump_all_spark(state, cx);
             let _ = cx.store.set_kv(KV_ACCOUNT_SLOT, &slot.to_string());
             load_workspaces(state, cx);
+            // DAX tabs restored before the sign-in get their model catalogs now
+            crate::tabularq::ensure_all(state, cx);
         }
         FabricEvent::SignInFailed(e) => {
             if matches!(state.dialog, Dialog::AuthWaiting { .. }) {

@@ -348,6 +348,16 @@ fn section(ui: &mut Ui, theme: &Theme, label: &str) {
 }
 
 pub(crate) fn tree_row(ui: &mut Ui, theme: &Theme, depth: usize, expanded: bool, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
+    tree_row_opt(ui, theme, depth, Some(expanded), icon, label, subtitle, a11y)
+}
+
+/// A row that cannot expand: no caret, same layout.
+pub(crate) fn tree_leaf(ui: &mut Ui, theme: &Theme, depth: usize, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
+    tree_row_opt(ui, theme, depth, None, icon, label, subtitle, a11y)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.to_string()));
     if resp.hovered() {
@@ -356,7 +366,9 @@ pub(crate) fn tree_row(ui: &mut Ui, theme: &Theme, depth: usize, expanded: bool,
     let x = rect.left() + 8.0 + depth as f32 * 16.0;
     let cy = rect.center().y;
     let font = egui::FontId::proportional(13.0);
-    ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, if expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }, egui::FontId::proportional(11.0), theme.text_muted);
+    if let Some(expanded) = expanded {
+        ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, if expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }, egui::FontId::proportional(11.0), theme.text_muted);
+    }
     ui.painter().text(egui::pos2(x + 16.0, cy), egui::Align2::LEFT_CENTER, icon, font.clone(), theme.accent);
     let g = ui.painter().layout_no_wrap(label.to_string(), font, theme.text);
     let w = g.size().x;

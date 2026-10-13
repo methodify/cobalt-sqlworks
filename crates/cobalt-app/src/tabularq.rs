@@ -90,10 +90,8 @@ pub fn load_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget, forc
     if !force && state.model_catalogs.get(&key).map(|l| !l.needs_load()).unwrap_or(false) {
         return;
     }
-    let Some(auth) = auth(state, cx) else {
-        state.model_catalogs.insert(key, Loadable::Failed("Sign in on the Fabric panel first.".into()));
-        return;
-    };
+    // no sign-in yet: stay NotLoaded, the panel's sign-in loads it (`ensure_all`)
+    let Some(auth) = auth(state, cx) else { return };
     state.model_catalogs.insert(key.clone(), Loadable::Loading);
     let want_functions = !state.dax_functions.contains_key(&key);
     let tx = cx.fabric_tx.clone();
@@ -118,6 +116,18 @@ pub fn load_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget, forc
         let _ = tx.send(FabricEvent::ModelCatalog { key, result });
         egui.request_repaint();
     });
+}
+
+/// Catalogs for every open DAX tab's model (after the Fabric sign-in arrives).
+pub fn ensure_all(state: &mut AppState, cx: &Ctx) {
+    let mut targets: Vec<TabularTarget> = state.tabs.iter().filter_map(|t| t.tabular.as_ref().map(|tt| tt.target.clone())).collect();
+    targets.dedup_by_key(|t| t.key());
+    for t in targets {
+        // a load that failed before the sign-in (or with a stale token) gets another go
+        let failed = matches!(state.model_catalogs.get(&t.key()), Some(Loadable::Failed(_)));
+        load_catalog(state, cx, &t, failed);
+        ensure_catalog(state, cx, &t);
+    }
 }
 
 pub fn ensure_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget) {

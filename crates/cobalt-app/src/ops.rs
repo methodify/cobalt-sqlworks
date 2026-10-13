@@ -1079,6 +1079,9 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
     if !state.tabs.is_empty() {
         state.active_tab = Some(0);
     }
+    for target in restored_models {
+        crate::tabularq::ensure_catalog(state, cx, &target);
+    }
 }
 
 pub fn open_file(state: &mut AppState, cx: &Ctx, path: Option<PathBuf>) {

@@ -2,7 +2,7 @@
 //! relationships as a tree, drawn under the model's row in the Fabric panel. Rows insert DAX
 //! into the active DAX tab or run quick queries. Design: `docs/design/semantic_models.md` §3.1.
 
-use super::fabric::tree_row;
+use super::fabric::{tree_leaf, tree_row};
 use super::theme::Theme;
 use crate::state::Loadable;
 use cobalt_core::tabular::{dax_column_ref, dax_measure_ref, dax_table_ref, Column, Measure, ModelCatalog, Table, TabularTarget};
@@ -89,7 +89,7 @@ fn tree(ui: &mut Ui, theme: &Theme, target: &TabularTarget, cat: &ModelCatalog, 
             let card = format!("{}:{}", short_card(&rel.from_cardinality), short_card(&rel.to_cardinality));
             let sub = if rel.active { card } else { format!("{card} · inactive") };
             let icon = if rel.active { ph::LINK } else { ph::LINK_BREAK };
-            let r = tree_row(ui, theme, depth + 1, false, icon, &label, &sub, &format!("relationship {label}"));
+            let r = tree_leaf(ui, theme, depth + 1, icon, &label, &sub, &format!("relationship {label}"));
             r.on_hover_text(format!("{} ({}) → {} ({})\ncross filter: {}\n{}", rel.from_table, rel.from_cardinality, rel.to_table, rel.to_cardinality, rel.cross_filter, if rel.active { "active" } else { "inactive (USERELATIONSHIP activates it in a query)" }))
                 .context_menu(|ui| {
                     if ui.button("Insert USERELATIONSHIP(…)").clicked() {
@@ -111,7 +111,7 @@ fn tree(ui: &mut Ui, theme: &Theme, target: &TabularTarget, cat: &ModelCatalog, 
         }
         if open {
             for g in &cat.calculation_groups {
-                let r = tree_row(ui, theme, depth + 1, false, ph::CALCULATOR, &g.table, &format!("{} items", g.items.len()), &format!("calculation group {}", g.table));
+                let r = tree_leaf(ui, theme, depth + 1, ph::CALCULATOR, &g.table, &format!("{} items", g.items.len()), &format!("calculation group {}", g.table));
                 r.on_hover_text(g.items.join("\n"));
             }
         }
@@ -221,7 +221,7 @@ fn table_node(ui: &mut Ui, theme: &Theme, target: &TabularTarget, cat: &ModelCat
         }
         if open {
             for l in &h.levels {
-                let r = tree_row(ui, theme, depth + 2, false, ph::DOT_OUTLINE, &l.name, &l.column, &format!("level {}", l.name));
+                let r = tree_leaf(ui, theme, depth + 2, ph::DOT_OUTLINE, &l.name, &l.column, &format!("level {}", l.name));
                 r.context_menu(|ui| {
                     if ui.button(format!("Insert {}", dax_column_ref(&t.name, &l.column))).clicked() {
                         actions.push(ModelAction::Insert { target: target.clone(), text: dax_column_ref(&t.name, &l.column) });
@@ -278,7 +278,7 @@ fn column_row(ui: &mut Ui, theme: &Theme, target: &TabularTarget, t: &Table, c: 
     if c.hidden {
         sub.push_str(" · hidden");
     }
-    let r = tree_row(ui, theme, depth, false, icon, &c.name, &sub, &format!("column {}[{}]", t.name, c.name));
+    let r = tree_leaf(ui, theme, depth, icon, &c.name, &sub, &format!("column {}[{}]", t.name, c.name));
     if r.double_clicked() {
         actions.push(ModelAction::Insert { target: target.clone(), text: dax_column_ref(&t.name, &c.name) });
     }
@@ -341,7 +341,7 @@ fn measure_row(ui: &mut Ui, theme: &Theme, target: &TabularTarget, t: &Table, m:
     if m.hidden {
         sub.push_str(" · hidden");
     }
-    let r = tree_row(ui, theme, depth, false, ph::SIGMA, &m.name, &sub, &format!("measure {}", m.name));
+    let r = tree_leaf(ui, theme, depth, ph::SIGMA, &m.name, &sub, &format!("measure {}", m.name));
     if r.double_clicked() {
         actions.push(ModelAction::Insert { target: target.clone(), text: dax_measure_ref(&m.name) });
     }
