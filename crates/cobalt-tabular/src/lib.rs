@@ -1,11 +1,13 @@
 //! Semantic models and Analysis Services for Cobalt: run DAX, read the model's catalog.
 //!
-//! Slice A (this crate today) is the Power BI **Arrow query API** transport
-//! (`executeDaxQueries`): a bearer token in, a stream of result sets out, each batch already
-//! cast to the schema `cobalt_results::ResultSet` derives from its `ColumnInfo`s. The model
-//! tree (`cobalt_core::ModelCatalog`) comes from the `INFO.VIEW.*` DAX functions over the same
-//! transport. Slice C adds XMLA over HTTPS (`xmla`). No egui here; the only async runtime
-//! type in the public API is `async fn`.
+//! Two transports behind one facade (`transport::Transport`): the Power BI **Arrow query API**
+//! (`rest`, `executeDaxQueries`: a bearer token in, a stream of result sets out, each batch
+//! already cast to the schema `cobalt_results::ResultSet` derives from its `ColumnInfo`s) and
+//! **XMLA over HTTPS** (`xmla`: plain SOAP for Azure Analysis Services, `msmdpump.dll` and, once
+//! the routing capture exists, Power BI; DAX, MDX and the `$SYSTEM` DMVs; sessions with a real
+//! `Cancel`). Both yield the same `DaxItem` sequence. The model tree (`cobalt_core::ModelCatalog`)
+//! comes from the `INFO.VIEW.*` DAX functions, or from the TMSCHEMA DMVs over XMLA. No egui here;
+//! the only async runtime type in the public API is `async fn`.
 //!
 //! Design: `docs/design/semantic_models.md`.
 
@@ -13,12 +15,15 @@ pub mod catalog;
 pub mod decode;
 pub mod explore;
 pub mod rest;
+pub mod transport;
 pub mod xmla;
 
 pub use catalog::{load_catalog, load_functions, probe, DaxFunction};
 pub use decode::{DaxItem, DaxResult, DaxTable};
 pub use explore::{describe as describe_explore, to_dax, DaxQuery};
 pub use rest::{DaxOptions, DaxStream, PowerBiClient, POWERBI_RESOURCE};
+pub use transport::{credential_resource, Transport};
+pub use xmla::{is_mdx_or_dmv, Credential, XmlaClient, AZURE_AS_RESOURCE};
 
 use cobalt_core::tabular::TabularTarget;
 
@@ -34,19 +39,20 @@ pub enum TabularError {
     #[error("Power BI asked us to slow down; retry in {retry_after}s")]
     Throttled { retry_after: u64 },
     /// Any other non-2xx answer, with the service's error code and message.
-    #[error("Power BI returned {status}{}{}", fmt_code(.code), fmt_detail(.message))]
+    #[error("the service returned {status}{}{}", fmt_code(.code), fmt_detail(.message))]
     Api { status: u16, code: String, message: String },
-    /// The query ran and the engine answered with an error rowset (HTTP 200).
+    /// The query ran and the engine answered with an error rowset (HTTP 200) or a SOAP fault.
     #[error("{message}{}", fmt_paren(.code))]
     Query { code: Option<String>, message: String },
     /// The connection failed or dropped.
     #[error("network error: {0}")]
     Http(#[from] reqwest::Error),
-    /// The response body was not the Arrow stream we expected.
+    /// The response body was not the Arrow stream or the XML we expected.
     #[error("unexpected response: {0}")]
     Decode(String),
-    /// The target kind is not reachable over this transport (an Azure AS or HTTP target on the
-    /// Arrow query API, until the XMLA slice lands).
+    /// The request is not possible on this transport (an Azure AS or HTTP target on the Arrow
+    /// query API, MDX on the Arrow query API, a Power BI endpoint that could not be resolved,
+    /// a binary XML answer).
     #[error("{0}")]
     Unsupported(String),
 }
@@ -130,7 +136,7 @@ mod tests {
     fn hints_and_display() {
         let e = TabularError::Api { status: 400, code: "InvalidRequest".into(), message: "XMLA endpoint feature is disabled. Turn on the tenant setting 'Allow XMLA endpoints and Analyze in Excel with on-premises semantic models' to enable this feature.".into() };
         assert_eq!(e.hint(), Some(HINT_TENANT_SETTINGS));
-        assert!(e.to_string().starts_with("Power BI returned 400 InvalidRequest: XMLA endpoint"));
+        assert!(e.to_string().starts_with("the service returned 400 InvalidRequest: XMLA endpoint"));
         let e = TabularError::Api { status: 400, code: String::new(), message: "This operation is only supported for datasets on a Premium capacity".into() };
         assert_eq!(e.hint(), Some(HINT_CAPACITY));
         assert_eq!(TabularError::Unauthorized(401, String::new()).hint(), Some(HINT_SIGN_IN));

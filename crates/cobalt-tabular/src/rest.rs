@@ -104,7 +104,7 @@ impl PowerBiClient {
         match target {
             TabularTarget::PowerBi { workspace_id, dataset_id, .. } if workspace_id.trim().is_empty() => Ok(format!("{}/datasets/{dataset_id}/executeDaxQueries", self.base)),
             TabularTarget::PowerBi { workspace_id, dataset_id, .. } => Ok(format!("{}/groups/{workspace_id}/datasets/{dataset_id}/executeDaxQueries", self.base)),
-            other => Err(TabularError::Unsupported(format!("{} is reached over XMLA, which Cobalt does not speak yet", crate::describe_target(other)))),
+            other => Err(TabularError::Unsupported(format!("{} is reached over XMLA, not the Arrow query API", crate::describe_target(other)))),
         }
     }
 
@@ -194,6 +194,8 @@ fn error_parts(v: &serde_json::Value) -> Option<(String, String)> {
 enum Source {
     Http(reqwest::Response),
     Chunks(std::vec::IntoIter<Bytes>),
+    /// Items already decoded (the XMLA transport parses a whole SOAP body at once).
+    Items(std::vec::IntoIter<DaxItem>),
 }
 
 impl Source {
@@ -201,11 +203,13 @@ impl Source {
         match self {
             Source::Http(resp) => Ok(resp.chunk().await?),
             Source::Chunks(it) => Ok(it.next()),
+            Source::Items(_) => Ok(None),
         }
     }
 }
 
-/// The result sets of one run, pulled item by item as the body streams in.
+/// The result sets of one run, pulled item by item as the body streams in (or, for a
+/// transport that decodes its whole response first, from a list of items).
 pub struct DaxStream {
     source: Source,
     decoder: Decoder,
@@ -218,8 +222,16 @@ impl DaxStream {
         Self { source: Source::Chunks(chunks.into_iter().collect::<Vec<_>>().into_iter()), decoder: Decoder::new(), done: false }
     }
 
+    /// A stream over items decoded elsewhere (the XMLA rowset parser).
+    pub fn from_items(items: Vec<DaxItem>) -> Self {
+        Self { source: Source::Items(items.into_iter()), decoder: Decoder::new(), done: true }
+    }
+
     /// The next item, `None` when the body is over.
     pub async fn next(&mut self) -> Result<Option<DaxItem>, TabularError> {
+        if let Source::Items(it) = &mut self.source {
+            return Ok(it.next());
+        }
         loop {
             if let Some(item) = self.decoder.pop() {
                 return Ok(Some(item));

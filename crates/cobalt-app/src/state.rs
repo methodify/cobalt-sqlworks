@@ -312,6 +312,26 @@ impl ExploreState {
     }
 }
 
+/// The Servers tree's Analysis Services root: saved endpoints, their catalogs (models), and
+/// what is open.
+#[derive(Default)]
+pub struct TabularRoot {
+    pub profiles: Vec<cobalt_core::tabular::TabularProfile>,
+    pub loaded: bool,
+    pub expanded: bool,
+    pub expanded_profiles: std::collections::HashSet<uuid::Uuid>,
+    /// Models (catalogs) per profile.
+    pub catalogs: std::collections::HashMap<uuid::Uuid, Loadable<Vec<String>>>,
+    /// Model rows whose explorer is open (`(profile, model)`).
+    pub expanded_models: std::collections::HashSet<(uuid::Uuid, String)>,
+}
+
+impl TabularRoot {
+    pub fn profile(&self, id: uuid::Uuid) -> Option<&cobalt_core::tabular::TabularProfile> {
+        self.profiles.iter().find(|p| p.id == id)
+    }
+}
+
 /// The filter popup's draft.
 #[derive(Clone, Debug)]
 pub struct FilterEditor {
@@ -329,6 +349,12 @@ pub struct FilterEditor {
 /// A DAX query tab's state: the model it queries and the options of its runs.
 pub struct TabularTab {
     pub target: cobalt_core::tabular::TabularTarget,
+    /// The saved Analysis Services profile the target came from (basic credentials, display).
+    pub profile: Option<uuid::Uuid>,
+    /// Power BI targets: use the XMLA transport instead of the Arrow query API (MDX, DMVs).
+    pub force_xmla: bool,
+    /// The transport the last run used ("Arrow query API" / "XMLA"), for the status bar.
+    pub transport: Option<&'static str>,
     /// The row limit the last run was sent with (the capped banner compares against it).
     pub last_limit: Option<u64>,
     /// The next run lifts the row cap ("Run again without the cap").
@@ -340,7 +366,11 @@ pub struct TabularTab {
 
 impl TabularTab {
     pub fn new(target: cobalt_core::tabular::TabularTarget) -> Self {
-        Self { target, last_limit: None, uncapped_next: false, effective_username: None, roles: Vec::new() }
+        Self { target, profile: None, force_xmla: false, transport: None, last_limit: None, uncapped_next: false, effective_username: None, roles: Vec::new() }
+    }
+    /// XMLA is the only transport for Azure AS and HTTP targets; Power BI uses it on request.
+    pub fn uses_xmla(&self) -> bool {
+        self.force_xmla || !matches!(self.target, cobalt_core::tabular::TabularTarget::PowerBi { .. })
     }
     pub fn model_key(&self) -> String {
         self.target.key()
@@ -1228,6 +1258,8 @@ pub struct AppState {
     pub model_tree_expanded: std::collections::HashSet<String>,
     /// Model explorer: show hidden tables, columns and measures.
     pub model_show_hidden: bool,
+    /// Saved Analysis Services endpoints (the Servers tree's "Analysis Services" root).
+    pub tabular: TabularRoot,
     pub spark_catalog_loading: std::collections::HashSet<String>,
     /// Open the Spark tab's lakehouse menu on the next frame (Connect / Change connection on a Spark tab).
     pub open_spark_chip: Option<TabId>,
@@ -1316,6 +1348,8 @@ pub struct HistoryRow {
 pub enum Dialog {
     #[default]
     None,
+    /// Add or edit a saved Analysis Services endpoint (`TabularRoot`).
+    TabularProfile { draft: Box<cobalt_core::tabular::TabularProfile>, password: String, editing: bool, test: Option<Loadable<String>> },
     /// Save a notebook back to its Fabric item (overwrites the item's definition).
     ConfirmFabricSave { tab_index: usize },
     Connection(Box<ConnectionDialog>),
@@ -1502,6 +1536,7 @@ impl AppState {
             dax_functions: Default::default(),
             model_tree_expanded: Default::default(),
             model_show_hidden: false,
+            tabular: Default::default(),
             spark_catalog_loading: Default::default(),
             open_spark_chip: None,
             spark_start_tab: None,

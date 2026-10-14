@@ -1546,13 +1546,19 @@ version = "0.9.5"
 dependencies = [
  "arrow",
  "arrow-ipc",
+ "base64 0.22.1",
  "bytes",
  "cobalt-core",
+ "quick-xml 0.42.0",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+ "tiny_http",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

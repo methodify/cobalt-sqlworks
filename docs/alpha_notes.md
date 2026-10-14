@@ -708,3 +708,36 @@ Limits worth knowing: the matrix keeps the first 10,000 row keys and 500 column 
 value picker loads the first 500 distinct values; a non-additive measure in a matrix shows
 the model's own subtotal (not a local sum), which is why subtotals come from the query. The
 spec is engine-agnostic, so the same builder can later produce SQL for a warehouse table.
+
+## Analysis Services over XMLA (0.9.6)
+
+The Servers tree has an **Analysis Services** root for the engines that speak XMLA but are not
+Fabric semantic models: right-click it (or the "Add an endpoint…" row) for the dialog. Three
+kinds: **Azure Analysis Services** (region + server name, signed in as the Fabric panel's
+account; the cluster is resolved on connect), **HTTP (msmdpump)** (the URL of SQL Server
+Analysis Services' IIS endpoint, basic or anonymous authentication; the password goes to the
+keyring), and **Power BI workspace** over XMLA (workspace name and id; experimental, see
+below). **Test** connects and lists the models before you save. Expand an endpoint for its
+models, click a model for the model explorer (tables, columns, measures, hierarchies,
+relationships, read from the `TMSCHEMA` DMVs or INFO.VIEW), double-click for a query tab. The
+tab says "DAX / MDX": a DAX query, an MDX `SELECT … ON COLUMNS … FROM [cube]`, or a DMV
+(`SELECT * FROM $SYSTEM.DISCOVER_SESSIONS`) all run, every result lands in the grid (MDX comes
+back flattened, with the members' unique names as column headers). Explore and dashboard
+tiles work on these models like on Fabric ones.
+
+How it talks: plain SOAP over HTTPS as MS-SSAS specifies, from Rust, no .NET. Cobalt asks for
+text XML (the first request negotiates with the server, binary XML and compression are never
+advertised), opens a session (`BeginSession`), sends `Execute` / `Discover` with the session
+id, and `Cancel` on Stop. A session the service moved or expired is reopened once. The
+rowset's inline schema becomes the grid's columns; `_x0020_`-style escaped names are decoded.
+
+Power BI over XMLA: a Fabric semantic model's tab has an **XMLA** button on its toolbar (next
+to the model chip) that routes the tab through the XMLA endpoint instead of the Arrow query
+API; MDX and the `$SYSTEM` DMVs need it. Cobalt resolves the workspace to its dedicated
+cluster and the model to the dataset id the service calls the database (both confirmed live),
+and the cluster's front door accepts the capacity as the server, but it still answers "An
+internal error occurred" to our request: one request header the official client sends is
+missing, and a protocol capture will name it. Until then the XMLA button on a Fabric model
+tab reports that message; the Arrow query API path is unaffected. Not supported: SQL Server Analysis Services over its native TCP
+port (that is not HTTP; use the IIS HTTP endpoint), and Windows integrated authentication on
+the HTTP endpoint (basic over HTTPS or anonymous for now).

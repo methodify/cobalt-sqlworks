@@ -816,6 +816,34 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             };
             crate::sparkq::new_tab(state, cx, binding, names, None);
         }
+        TreeAction::TabularAdd => crate::tabular_root::edit_dialog(state, None),
+        TreeAction::TabularEdit(id) => crate::tabular_root::edit_dialog(state, Some(id)),
+        TreeAction::TabularRemove(id) => crate::tabular_root::remove_profile(state, cx, id),
+        TreeAction::TabularToggleRoot => state.tabular.expanded = !state.tabular.expanded,
+        TreeAction::TabularToggle(id) => {
+            if !state.tabular.expanded_profiles.remove(&id) {
+                state.tabular.expanded_profiles.insert(id);
+                crate::tabular_root::load_catalogs(state, cx, id, false);
+            }
+        }
+        TreeAction::TabularRefresh(id) => crate::tabular_root::load_catalogs(state, cx, id, true),
+        TreeAction::TabularToggleModel(id, model) => {
+            let key = (id, model.clone());
+            if !state.tabular.expanded_models.remove(&key) {
+                state.tabular.expanded_models.insert(key);
+                if let Some(target) = state.tabular.profile(id).map(|p| p.target_for(&model)) {
+                    state.model_tree_expanded.insert(format!("{}/tables", target.key()));
+                    crate::tabularq::ensure_catalog(state, cx, &target);
+                }
+            }
+        }
+        TreeAction::TabularQuery(id, model) => {
+            crate::tabular_root::query_tab(state, cx, id, &model);
+        }
+        TreeAction::TabularExplore(id, model) => {
+            crate::tabular_root::explore_tab(state, cx, id, &model);
+        }
+        TreeAction::Model(a) => crate::fabric::model_action(state, cx, a),
         TreeAction::SparkChoose => state.dialog = Dialog::SparkLakehouse { tab_index: None, workspace: None },
         TreeAction::SparkSession(start) => {
             // the active Spark tab or notebook lends its binding; otherwise a plain session

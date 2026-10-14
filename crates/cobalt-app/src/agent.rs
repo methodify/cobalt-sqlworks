@@ -8,7 +8,8 @@
 //! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
 //! - `dax_query {workspace, model, text?, run?}` → a DAX query tab on a semantic model (the Fabric panel's sign-in; `fabric_state` lists models once a workspace is expanded)
 //! - `model {action: tree|refresh|functions, workspace, model}` → the model's catalog (tables, columns, measures, relationships) as JSON
-//! - `explore {action: new|state|add|remove|agg|sort|top_n|subtotals|filter|remove_filter|run|dax|save|open|matrix, workspace?, model?, field?: "Table[Column]"|"[Measure]", well?: rows|columns|values|filters, agg?, index?, desc?, n?, on?, op?, values?, lo?, hi?, text?, path?}` → the Explore pivot builder (the active Explore tab unless `new`/`open`)
+//! - `explore {action: new|state|add|remove|agg|sort|top_n|subtotals|filter|remove_filter|run|dax|save|open|matrix, workspace?, model?, profile?, field?: "Table[Column]"|"[Measure]", well?: rows|columns|values|filters, agg?, index?, desc?, n?, on?, op?, values?, lo?, hi?, text?, path?}` → the Explore pivot builder (the active Explore tab unless `new`/`open`)
+//! - `tabular_profile {action: add|list|remove|catalogs|test, id?, name?, kind?: asazure|http|powerbi, region?, server?, url?, workspace?, workspace_id?, model?, auth?: entra|basic|anonymous, user?, password?}` → the Servers tree's Analysis Services endpoints (XMLA); `dax_query {profile, model}` and `explore {action: new, profile, model}` open tabs on them
 //! - `set_query {text}` (active tab), `run {mode?: all|current|selection|estimated_plan}`, `cancel`
 //! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
@@ -100,7 +101,7 @@ impl CobaltApp {
                             "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
                         "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
                     })),
-                    "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
+                    "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "uses_xmla": tt.uses_xmla(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
@@ -198,6 +199,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ConfirmCloseMany { .. } => "confirm_close_many",
         RunWithParameters { .. } => "run_with_parameters",
         TileEditor { .. } => "tile_editor",
+        TabularProfile { .. } => "tabular_profile",
         PinTile { .. } => "pin_tile",
         ConfirmDeleteProfile { .. } => "confirm_delete_profile",
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
@@ -328,6 +330,13 @@ fn chart_state_json(v: &crate::state::ResultSetView) -> Value {
 fn arg_str(args: Option<&Value>, key: &str) -> Option<String> {
     args.and_then(|a| a.get(key)).and_then(|v| v.as_str()).map(str::to_string)
 }
+impl CobaltApp {
+    /// A saved Analysis Services profile by id or name.
+    fn find_tabular_profile(&self, key: &str) -> Option<uuid::Uuid> {
+        self.state.tabular.profiles.iter().find(|p| p.id.to_string() == key || p.name.eq_ignore_ascii_case(key)).map(|p| p.id)
+    }
+}
+
 fn arg_bool(args: Option<&Value>, key: &str) -> Option<bool> {
     args.and_then(|a| a.get(key)).and_then(|v| v.as_bool())
 }
@@ -440,6 +449,14 @@ impl AgentApp for CobaltApp {
                     Some(FieldRef::Column { table: t.trim_matches('\'').to_string(), column: c.trim_end_matches(']').to_string() })
                 };
                 if action == "new" {
+                    if let Some(pid) = arg_str(args, "profile").and_then(|p| self.find_tabular_profile(&p)) {
+                        let Some(model) = arg_str(args, "model") else { return ActionResult::BadArgs("model is required".into()) };
+                        let idx = self.with_ctx(egui, |s, cx| crate::tabular_root::explore_tab(s, cx, pid, &model));
+                        return match idx {
+                            Some(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title})),
+                            None => ActionResult::BadArgs("unknown profile".into()),
+                        };
+                    }
                     let Some(ws_arg) = arg_str(args, "workspace") else { return ActionResult::BadArgs("workspace is required".into()) };
                     let Some(ws_id) = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone())) else {
                         return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into());
@@ -548,6 +565,43 @@ impl AgentApp for CobaltApp {
                 ActionResult::with(&json!({"tab": idx, "title": t.title, "summary": e.map(|e| crate::exploreq::describe(&e.spec)), "dax": e.and_then(|e| e.dax.as_ref().map(|q| q.text.clone())), "dax_error": e.and_then(|e| e.dax_error.clone()), "run": t.run.as_ref().map(|r| format!("{:?}", r.state).to_lowercase()), "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string())}))
             }
             "dax_query" | "model" => {
+                if let Some(pid) = arg_str(args, "profile").and_then(|p| self.find_tabular_profile(&p)) {
+                    let Some(model) = arg_str(args, "model") else { return ActionResult::BadArgs("model is required".into()) };
+                    if action.name() == "dax_query" {
+                        let text = arg_str(args, "text");
+                        let run = arg_bool(args, "run").unwrap_or(false);
+                        let idx = self.with_ctx(egui, |s, cx| {
+                            let i = crate::tabular_root::query_tab(s, cx, pid, &model);
+                            if let (Some(i), Some(t)) = (i, text) {
+                                s.tabs[i].text = t;
+                                s.tabs[i].mark_saved();
+                            }
+                            if let (Some(i), true) = (i, run) {
+                                ops::run(s, cx, i, crate::state::RunMode::All);
+                            }
+                            i
+                        });
+                        return match idx {
+                            Some(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title})),
+                            None => ActionResult::BadArgs("unknown profile".into()),
+                        };
+                    }
+                    let Some(target) = self.state.tabular.profile(pid).map(|p| p.target_for(&model)) else { return ActionResult::BadArgs("unknown profile".into()) };
+                    match arg_str(args, "action").as_deref().unwrap_or("tree") {
+                        "refresh" => {
+                            self.with_ctx(egui, |s, cx| crate::tabularq::load_catalog(s, cx, &target, true));
+                            return ActionResult::ok();
+                        }
+                        _ => {
+                            self.with_ctx(egui, |s, cx| crate::tabularq::ensure_catalog(s, cx, &target));
+                            return match self.state.model_catalogs.get(&target.key()) {
+                                Some(crate::state::Loadable::Loaded(c)) => ActionResult::with(&json!({"status": "loaded", "key": target.key(), "catalog": c.as_ref()})),
+                                Some(crate::state::Loadable::Failed(e)) => ActionResult::with(&json!({"status": "failed", "error": e})),
+                                _ => ActionResult::with(&json!({"status": "loading"})),
+                            };
+                        }
+                    }
+                }
                 let Some(ws_arg) = arg_str(args, "workspace") else { return ActionResult::BadArgs("workspace is required".into()) };
                 let Some(ws_id) = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone())) else {
                     return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into());
@@ -585,6 +639,61 @@ impl AgentApp for CobaltApp {
                             _ => ActionResult::with(&json!({"status": "loading"})),
                         }
                     }
+                }
+            }
+            "tabular_profile" => {
+                use cobalt_core::tabular::{TabularAuthKind, TabularProfile, TabularTarget};
+                let action = arg_str(args, "action").unwrap_or_else(|| "list".into());
+                match action.as_str() {
+                    "list" => {
+                        self.with_ctx(egui, crate::tabular_root::ensure_loaded);
+                        let list: Vec<Value> = self.state.tabular.profiles.iter().map(|p| json!({"id": p.id.to_string(), "name": p.name, "kind": p.kind_label(), "target": p.target, "auth": p.auth, "catalogs": self.state.tabular.catalogs.get(&p.id).map(|l| match l { crate::state::Loadable::Loaded(c) => json!(c), crate::state::Loadable::Loading => json!("loading"), crate::state::Loadable::Failed(e) => json!({"error": e}), _ => Value::Null })})).collect();
+                        ActionResult::with(&json!({"profiles": list}))
+                    }
+                    "add" => {
+                        let name = arg_str(args, "name").unwrap_or_else(|| "Analysis Services".into());
+                        let model = arg_str(args, "model").unwrap_or_default();
+                        let target = match arg_str(args, "kind").as_deref().unwrap_or("asazure") {
+                            "http" => TabularTarget::Http { url: arg_str(args, "url").unwrap_or_default(), model },
+                            "powerbi" => TabularTarget::PowerBi { workspace_id: arg_str(args, "workspace_id").unwrap_or_default(), workspace_name: arg_str(args, "workspace").unwrap_or_default(), dataset_id: String::new(), model_name: model },
+                            _ => TabularTarget::AzureAs { region: arg_str(args, "region").unwrap_or_else(|| "westus".into()), server: arg_str(args, "server").unwrap_or_default(), model },
+                        };
+                        let auth = match arg_str(args, "auth").as_deref().unwrap_or("entra") {
+                            "basic" => TabularAuthKind::Basic { user: arg_str(args, "user").unwrap_or_default() },
+                            "anonymous" => TabularAuthKind::Anonymous,
+                            _ => TabularAuthKind::Entra,
+                        };
+                        let profile = TabularProfile::new(name, target, auth);
+                        let id = profile.id;
+                        let pw = arg_str(args, "password");
+                        self.with_ctx(egui, |s, cx| crate::tabular_root::save_profile(s, cx, profile, pw));
+                        ActionResult::with(&json!({"id": id.to_string()}))
+                    }
+                    "remove" => {
+                        let Some(pid) = arg_str(args, "id").or_else(|| arg_str(args, "name")).and_then(|p| self.find_tabular_profile(&p)) else { return ActionResult::BadArgs("unknown profile".into()) };
+                        self.with_ctx(egui, |s, cx| crate::tabular_root::remove_profile(s, cx, pid));
+                        ActionResult::ok()
+                    }
+                    "catalogs" => {
+                        let Some(pid) = arg_str(args, "id").or_else(|| arg_str(args, "name")).and_then(|p| self.find_tabular_profile(&p)) else { return ActionResult::BadArgs("unknown profile".into()) };
+                        self.state.tabular.expanded = true;
+                        self.state.tabular.expanded_profiles.insert(pid);
+                        let force = arg_bool(args, "refresh").unwrap_or(false);
+                        self.with_ctx(egui, |s, cx| crate::tabular_root::load_catalogs(s, cx, pid, force));
+                        match self.state.tabular.catalogs.get(&pid) {
+                            Some(crate::state::Loadable::Loaded(c)) => ActionResult::with(&json!({"status": "loaded", "catalogs": c})),
+                            Some(crate::state::Loadable::Failed(e)) => ActionResult::with(&json!({"status": "failed", "error": e})),
+                            _ => ActionResult::with(&json!({"status": "loading"})),
+                        }
+                    }
+                    "test" => {
+                        let Some(pid) = arg_str(args, "id").or_else(|| arg_str(args, "name")).and_then(|p| self.find_tabular_profile(&p)) else { return ActionResult::BadArgs("unknown profile".into()) };
+                        let Some(profile) = self.state.tabular.profile(pid).cloned() else { return ActionResult::BadArgs("unknown profile".into()) };
+                        self.state.dialog = crate::state::Dialog::TabularProfile { draft: Box::new(profile.clone()), password: String::new(), editing: true, test: None };
+                        self.with_ctx(egui, |s, cx| crate::tabular_root::test_profile(s, cx, profile, None));
+                        ActionResult::with(&json!({"status": "testing", "note": "read the dialog's outcome with `state` (dialog) or `tabular_profile list`"}))
+                    }
+                    other => ActionResult::BadArgs(format!("unknown tabular_profile action {other}")),
                 }
             }
             "open_query" => {

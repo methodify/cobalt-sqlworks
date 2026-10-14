@@ -234,6 +234,7 @@ impl CobaltApp {
             let cx = make_ctx!(app, &cc.egui_ctx, &toasts);
             ops::load_library(&mut app.state, &cx);
             ops::restore_tabs(&mut app.state, &cx);
+            crate::tabular_root::ensure_loaded(&mut app.state, &cx);
             ops::maintenance(&mut app.state, &cx);
             app.flush_toasts(toasts.into_inner());
         }

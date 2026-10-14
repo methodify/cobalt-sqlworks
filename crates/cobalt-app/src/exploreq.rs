@@ -411,7 +411,16 @@ pub fn load_distinct(state: &mut AppState, cx: &Ctx, idx: usize, table: &str, co
     if ex.distinct.get(&k).map(|l| !l.needs_load()).unwrap_or(false) {
         return;
     }
-    let Some(auth) = tabularq::auth(state, cx) else { return };
+    let force = state.tabs[idx].tabular.as_ref().map(|t| t.force_xmla).unwrap_or(false);
+    let auth = match tabularq::auth(state, cx, &target, force) {
+        Ok(a) => a,
+        Err(e) => {
+            if let Some(ex) = state.tabs[idx].explore.as_deref_mut() {
+                ex.distinct.insert(k.clone(), Loadable::Failed(e));
+            }
+            return;
+        }
+    };
     if let Some(ex) = state.tabs[idx].explore.as_deref_mut() {
         ex.distinct.insert(k.clone(), Loadable::Loading);
     }
@@ -420,9 +429,8 @@ pub fn load_distinct(state: &mut AppState, cx: &Ctx, idx: usize, table: &str, co
     let dax = format!("EVALUATE\n    TOPN({DISTINCT_LIMIT}, DISTINCT({}))\nORDER BY {}", dax_column_ref(table, column), dax_column_ref(table, column));
     let (table, column) = k;
     cx.session.spawn(async move {
-        let result = match crate::session::tabular::powerbi_token(&auth).await {
-            Ok(tok) => {
-                let client = cobalt_tabular::PowerBiClient::new(tok);
+        let result = match crate::session::tabular::connect(&auth, &target).await {
+            Ok(client) => {
                 let opts = cobalt_tabular::DaxOptions { row_limit: Some(DISTINCT_LIMIT as u64 + 1), ..Default::default() };
                 match client.execute(&target, &dax, &opts).await {
                     Ok(stream) => match stream.collect().await {

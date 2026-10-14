@@ -10,6 +10,18 @@ use egui_phosphor::regular as icons;
 
 #[derive(Debug, Clone)]
 pub enum TreeAction {
+    /// Analysis Services root: add / edit / remove a saved endpoint, open its catalogs, a model.
+    TabularAdd,
+    TabularEdit(uuid::Uuid),
+    TabularRemove(uuid::Uuid),
+    TabularToggleRoot,
+    TabularToggle(uuid::Uuid),
+    TabularRefresh(uuid::Uuid),
+    TabularToggleModel(uuid::Uuid, String),
+    TabularQuery(uuid::Uuid, String),
+    TabularExplore(uuid::Uuid, String),
+    /// A model explorer row under an Analysis Services model.
+    Model(crate::ui::model_tree::ModelAction),
     NewConnection { group: Option<GroupId> },
     NewGroup,
     EditGroup(GroupId),
@@ -44,7 +56,15 @@ pub enum TreeAction {
     SparkSession(bool),
 }
 
-pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool) -> Vec<TreeAction> {
+/// What the Analysis Services root draws from.
+pub struct TabularRootView<'a> {
+    pub root: &'a crate::state::TabularRoot,
+    pub models: &'a std::collections::HashMap<String, Loadable<std::sync::Arc<cobalt_core::tabular::ModelCatalog>>>,
+    pub tree_expanded: &'a std::collections::HashSet<String>,
+    pub show_hidden: bool,
+}
+
+pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool, tabular: TabularRootView<'_>) -> Vec<TreeAction> {
     let mut actions = Vec::new();
     // toolbar
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
@@ -73,6 +93,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
         let groups = lib.groups.clone();
         let profiles = lib.profiles.clone();
         spark_root(ui, theme, spark, spark_expanded, spark_active, &filter, &mut actions);
+        tabular_root(ui, theme, &tabular, &filter, &mut actions);
         // ungrouped first, then groups
         let ungrouped: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.group.is_none() || !groups.iter().any(|g| Some(g.id) == p.group)).collect();
         for p in ungrouped {
@@ -163,6 +184,123 @@ Double-click for a Spark SQL query tab on this lakehouse.", e.lakehouse_name, e.
             actions.push(TreeAction::SparkQuery(None));
         }
         r.response.on_hover_text("Double-click for a Spark SQL tab with no lakehouse (temp views, paths, the session catalog).");
+    }
+    ui.add_space(4.0);
+}
+
+/// The Analysis Services root: saved XMLA endpoints (Azure AS, SSAS over HTTP, Power BI
+/// workspaces), each listing its models with the model explorer under them.
+fn tabular_root(ui: &mut Ui, theme: &Theme, v: &TabularRootView<'_>, filter: &str, actions: &mut Vec<TreeAction>) {
+    let root = v.root;
+    let open = root.expanded || !filter.is_empty();
+    let detail = format!("{}", root.profiles.len());
+    let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded: open, loading: false, icon: icons::CUBE, icon_color: None, label: "Analysis Services", detail: Some(&detail), selected: false, color_dot: None, kind: "server" });
+    if r.toggle || r.response.clicked() {
+        actions.push(TreeAction::TabularToggleRoot);
+    }
+    r.response.on_hover_text("Semantic models over XMLA: Azure Analysis Services, SQL Server Analysis Services through its HTTP endpoint (msmdpump), Power BI workspaces. Fabric semantic models are on the Fabric panel.").context_menu(|ui| {
+        if ui.button(format!("{} Add an endpoint…", icons::PLUS)).clicked() {
+            actions.push(TreeAction::TabularAdd);
+            ui.close();
+        }
+    });
+    if !open {
+        return;
+    }
+    for p in &root.profiles {
+        if !filter.is_empty() && !p.name.to_lowercase().contains(filter) {
+            continue;
+        }
+        let expanded = root.expanded_profiles.contains(&p.id);
+        let cats = root.catalogs.get(&p.id);
+        let loading = matches!(cats, Some(Loadable::Loading));
+        let detail = match cats {
+            Some(Loadable::Loaded(c)) => format!("{} · {} model{}", p.kind_label(), c.len(), if c.len() == 1 { "" } else { "s" }),
+            _ => p.kind_label().to_string(),
+        };
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: true, expanded, loading, icon: icons::CUBE, icon_color: Some(theme.accent), label: &p.name, detail: Some(&detail), selected: false, color_dot: None, kind: "tabular server" });
+        if r.toggle || r.response.clicked() {
+            actions.push(TreeAction::TabularToggle(p.id));
+        }
+        r.response.on_hover_text(p.target.connection_string()).context_menu(|ui| {
+            if ui.button(format!("{} Refresh", icons::ARROWS_CLOCKWISE)).clicked() {
+                actions.push(TreeAction::TabularRefresh(p.id));
+                ui.close();
+            }
+            if ui.button(format!("{} Edit…", icons::PENCIL_SIMPLE)).clicked() {
+                actions.push(TreeAction::TabularEdit(p.id));
+                ui.close();
+            }
+            if ui.button("Copy connection string").clicked() {
+                ui.ctx().copy_text(p.target.connection_string());
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(format!("{} Remove", icons::TRASH)).clicked() {
+                actions.push(TreeAction::TabularRemove(p.id));
+                ui.close();
+            }
+        });
+        if !expanded {
+            continue;
+        }
+        match cats {
+            Some(Loadable::Loaded(list)) => {
+                if list.is_empty() {
+                    let r = tree_row(ui, theme, TreeRow { depth: 2, expandable: false, expanded: false, loading: false, icon: icons::INFO, icon_color: None, label: "No models", detail: None, selected: false, color_dot: None, kind: "" });
+                    r.response.on_hover_text("The endpoint answered with no catalogs the account can see.");
+                }
+                for model in list {
+                    let key = (p.id, model.clone());
+                    let m_open = root.expanded_models.contains(&key);
+                    let target = p.target_for(model);
+                    let cat = v.models.get(&target.key());
+                    let detail = match cat {
+                        Some(Loadable::Loaded(c)) => format!("{} tables · {} measures", c.tables.len(), c.measure_count()),
+                        Some(Loadable::Loading) => "loading…".to_string(),
+                        _ => "model".to_string(),
+                    };
+                    let r = tree_row(ui, theme, TreeRow { depth: 2, expandable: true, expanded: m_open, loading: matches!(cat, Some(Loadable::Loading)), icon: icons::CUBE, icon_color: None, label: model, detail: Some(&detail), selected: false, color_dot: None, kind: "tabular model" });
+                    if r.toggle || r.response.clicked() {
+                        actions.push(TreeAction::TabularToggleModel(p.id, model.clone()));
+                    }
+                    if r.response.double_clicked() {
+                        actions.push(TreeAction::TabularQuery(p.id, model.clone()));
+                    }
+                    r.response.on_hover_text("Click: the model explorer. Double-click: a DAX / MDX query tab.").context_menu(|ui| {
+                        if ui.button(format!("{} New DAX query", icons::CUBE)).clicked() {
+                            actions.push(TreeAction::TabularQuery(p.id, model.clone()));
+                            ui.close();
+                        }
+                        if ui.button(format!("{} Explore", icons::TABLE)).clicked() {
+                            actions.push(TreeAction::TabularExplore(p.id, model.clone()));
+                            ui.close();
+                        }
+                    });
+                    if m_open {
+                        let mut acts = Vec::new();
+                        crate::ui::model_tree::show(ui, theme, &target, cat, v.tree_expanded, v.show_hidden, 3, &mut acts);
+                        actions.extend(acts.into_iter().map(TreeAction::Model));
+                    }
+                }
+            }
+            Some(Loadable::Failed(e)) => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.add_space(14.0 * 2.0 + 8.0);
+                    ui.label(RichText::new(format!("{} {}", icons::WARNING, e.lines().next().unwrap_or(""))).size(12.0).color(theme.warning)).on_hover_text(e);
+                    if ui.small_button("Retry").clicked() {
+                        actions.push(TreeAction::TabularRefresh(p.id));
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+    if root.profiles.is_empty() && filter.is_empty() {
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::PLUS, icon_color: None, label: "Add an endpoint…", detail: Some("Azure AS, SSAS over HTTP, Power BI"), selected: false, color_dot: None, kind: "" });
+        if r.response.clicked() {
+            actions.push(TreeAction::TabularAdd);
+        }
     }
     ui.add_space(4.0);
 }

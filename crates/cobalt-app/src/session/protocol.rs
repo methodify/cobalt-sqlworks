@@ -24,13 +24,17 @@ pub enum SinkMsg {
     RunEnd,
 }
 
-/// How a tabular run mints its Power BI token: the resolver and the Entra profile whose refresh
-/// token serves it (the Fabric panel's slot).
+/// How a tabular run signs in: the resolver and the Entra profile whose refresh token serves
+/// Power BI / Azure AS tokens (the Fabric panel's slot), or basic credentials for an HTTP
+/// endpoint; `force_xmla` picks the XMLA transport for a Power BI target.
 #[derive(Clone)]
 pub struct TabularAuth {
     pub resolver: Arc<cobalt_auth::CredentialResolver>,
-    pub slot: ProfileId,
+    pub slot: Option<ProfileId>,
     pub tenant: Option<String>,
+    pub basic: Option<(String, String)>,
+    pub anonymous: bool,
+    pub force_xmla: bool,
 }
 
 impl std::fmt::Debug for TabularAuth {

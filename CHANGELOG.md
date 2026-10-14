@@ -2,6 +2,24 @@
 
 ## 0.9.6 — unreleased
 
+- **Analysis Services over XMLA, in pure Rust (slice C).** The Servers tree gains an
+  **Analysis Services** root for saved XMLA endpoints: Azure Analysis Services (the Fabric
+  panel's Entra sign-in, cluster resolution), SQL Server Analysis Services through its HTTP
+  endpoint (`msmdpump.dll` on IIS, basic or anonymous authentication, the password in the
+  keyring), and Power BI workspaces over XMLA (experimental: the endpoint resolution is coded
+  from the client library's URL templates and awaits a protocol capture). Expand an endpoint
+  for its models (`DBSCHEMA_CATALOGS`), click a model for the model explorer (the `TMSCHEMA_*`
+  DMVs, or INFO.VIEW where the server supports it), double-click for a query tab: DAX, **MDX**
+  (`Format=Tabular`, so a cellset lands in the grid with MDX unique names as columns) and the
+  **`$SYSTEM` DMVs** all run through the same tab, with the same results area, Explore and
+  dashboard tiles as Fabric models. The transport is plain SOAP over HTTPS (MS-SSAS: text XML
+  negotiated with `X-Transport-Caps-Negotiation-Flags`, `BeginSession` / `Session` headers,
+  `Cancel` in the session, the rowset's inline XSD read into Arrow batches, `_xHHHH_` names
+  decoded), no .NET and no binary XML. A Power BI DAX tab has an **XMLA** toggle on its toolbar;
+  the status bar names the transport in use (Arrow query API or XMLA). Test from the endpoint
+  dialog connects and lists the models. Agent: `tabular_profile {action: add|list|remove|
+  catalogs|test}`, `dax_query {profile, model}`, `explore {action: new, profile, model}`.
+
 - **Explore: a pivot-table builder on semantic models (slice B).** Right-click a semantic
   model › Explore (or "Explore with this measure" on a measure) for a tab with the model's
   fields on the left and four wells: Rows, Columns, Values, Filters. Click a column to add it

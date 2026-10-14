@@ -312,8 +312,18 @@ it needs).
 - **Tenant settings** on the test tenant: *Dataset Execute Queries REST API* and *Allow XMLA
   endpoints and Analyze in Excel with on-premises semantic models* (both on by default).
 - **For slice C on Power BI**: one Fiddler or mitmproxy capture of SSMS or DAX Studio connecting to
-  a workspace (the `api.powerbi.com/powerbi/databases/v201606/...` resolution call and the first
-  `/webapi/xmla` POST with its headers). The work tenant is fine for the capture; nothing is written.
+  a workspace: specifically the first `POST https://<region>.pbidedicated.windows.net/webapi/xmla`
+  with all its request headers. Confirmed live on 2026-10-14 without a capture: `GET
+  api.powerbi.com/powerbi/databases/v201606/workspaces/<name>` answers the workspace record whose
+  `capacityUri` is `pbidedicated://<cluster host>/<capacity object id>`; `POST
+  …/workspaces/<id>/getDatabaseName {"datasetName": …}` answers `[{"databaseName": "<dataset
+  GUID>", "virtualServerName": "sobe_wowvirtualserver", "isAccessAllowedByPublicXmlaEndpoint":
+  true}]`; the cluster's `/webapi/xmla` front door recognises a server only when
+  `x-ms-xmlaserver` is the capacity object id (workspace names, ids and the virtual server name
+  answer NotFound) and then answers `200 {"message": "An internal error occurred."}` whatever
+  database header, catalog, session header or routing header is added. The capture should show
+  what the official client sends that we do not. The work tenant is fine for the capture;
+  nothing is written.
 - **For slice C on Azure AS / SSAS**: an endpoint to test against, if one exists outside the work
   environment; otherwise slice C ships unit-tested on recorded envelopes and Power BI only.
 - The stop-and-coordinate rule holds: no live Entra or Fabric calls against the work tenant

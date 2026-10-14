@@ -275,3 +275,51 @@ mod tests {
         assert_eq!(TabularDataType::parse("Decimal Number"), TabularDataType::Double);
     }
 }
+
+/// How a saved Analysis Services profile signs in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TabularAuthKind {
+    /// The Fabric panel's Entra sign-in (Azure Analysis Services, Power BI).
+    Entra,
+    /// HTTP basic (msmdpump behind IIS with basic authentication); the password lives in the keyring.
+    Basic { user: String },
+    Anonymous,
+}
+
+/// A saved Analysis Services endpoint in the Servers tree: Azure AS, SSAS over HTTP
+/// (msmdpump), or a Power BI workspace over XMLA. `target.model` may be empty: the tree lists
+/// the server's catalogs and each one is a model.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TabularProfile {
+    pub id: uuid::Uuid,
+    pub name: String,
+    pub target: TabularTarget,
+    pub auth: TabularAuthKind,
+}
+
+impl TabularProfile {
+    pub fn new(name: impl Into<String>, target: TabularTarget, auth: TabularAuthKind) -> Self {
+        Self { id: uuid::Uuid::new_v4(), name: name.into(), target, auth }
+    }
+    /// The target for one model of this server.
+    pub fn target_for(&self, model: &str) -> TabularTarget {
+        let mut t = self.target.clone();
+        match &mut t {
+            TabularTarget::PowerBi { model_name, .. } => *model_name = model.to_string(),
+            TabularTarget::AzureAs { model: m, .. } | TabularTarget::Http { model: m, .. } => *m = model.to_string(),
+        }
+        t
+    }
+    /// The keyring entry of a basic password.
+    pub fn secret_ref(&self) -> String {
+        format!("tabular:{}", self.id)
+    }
+    pub fn kind_label(&self) -> &'static str {
+        match self.target {
+            TabularTarget::PowerBi { .. } => "Power BI workspace (XMLA)",
+            TabularTarget::AzureAs { .. } => "Azure Analysis Services",
+            TabularTarget::Http { .. } => "Analysis Services (HTTP)",
+        }
+    }
+}

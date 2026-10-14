@@ -15,10 +15,18 @@ use std::sync::Arc;
 /// The binding stored in a tab snapshot's `database` column (`dax:` + JSON of the target).
 const SNAPSHOT_PREFIX: &str = "dax:";
 
-/// How the tab's run mints its token: the Fabric panel's sign-in.
-pub fn auth(state: &AppState, cx: &Ctx) -> Option<TabularAuth> {
-    let slot = state.fabric.slot?;
-    Some(TabularAuth { resolver: Arc::clone(cx.resolver), slot, tenant: cx.settings.connections.entra_default_tenant.clone() })
+/// How a run on `target` signs in (`tabular_root::auth_for`), or the reason it cannot.
+pub fn auth(state: &AppState, cx: &Ctx, target: &TabularTarget, force_xmla: bool) -> Result<TabularAuth, String> {
+    crate::tabular_root::auth_for(state, cx, target, force_xmla)
+}
+
+/// Whether a target runs over XMLA: always for Azure AS and HTTP, on request for Power BI (the
+/// flag of an open tab on the same model, else no).
+pub fn force_xmla_for(state: &AppState, target: &TabularTarget) -> bool {
+    if !matches!(target, TabularTarget::PowerBi { .. }) {
+        return true;
+    }
+    state.tabs.iter().filter_map(|t| t.tabular.as_ref()).any(|tt| tt.target == *target && tt.force_xmla)
 }
 
 /// A new DAX tab on `target`, with `text` when given; the model's catalog starts loading.
@@ -90,23 +98,30 @@ pub fn load_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget, forc
     if !force && state.model_catalogs.get(&key).map(|l| !l.needs_load()).unwrap_or(false) {
         return;
     }
-    // no sign-in yet: stay NotLoaded, the panel's sign-in loads it (`ensure_all`)
-    let Some(auth) = auth(state, cx) else { return };
+    let force_xmla = force_xmla_for(state, target);
+    let auth = match auth(state, cx, target, force_xmla) {
+        Ok(a) => a,
+        // no sign-in yet: stay NotLoaded, the panel's sign-in loads it (`ensure_all`)
+        Err(e) if e == crate::session::tabular::NEED_SIGN_IN => return,
+        Err(e) => {
+            state.model_catalogs.insert(key, Loadable::Failed(e));
+            return;
+        }
+    };
     state.model_catalogs.insert(key.clone(), Loadable::Loading);
     let want_functions = !state.dax_functions.contains_key(&key);
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();
     let target = target.clone();
     cx.session.spawn(async move {
-        let result = match crate::session::tabular::powerbi_token(&auth).await {
-            Ok(tok) => {
-                let client = cobalt_tabular::PowerBiClient::new(tok);
-                let cat = cobalt_tabular::load_catalog(&client, &target).await.map(Arc::new).map_err(|e| match e.hint() {
+        let result = match crate::session::tabular::connect(&auth, &target).await {
+            Ok(client) => {
+                let cat = client.load_catalog(&target).await.map(Arc::new).map_err(|e| match e.hint() {
                     Some(h) => format!("{e}\n{h}"),
                     None => e.to_string(),
                 });
                 if cat.is_ok() && want_functions {
-                    let f = cobalt_tabular::load_functions(&client, &target).await.map_err(|e| e.to_string());
+                    let f = client.load_functions(&target).await.map_err(|e| e.to_string());
                     let _ = tx.send(FabricEvent::DaxFunctions { key: key.clone(), result: f });
                 }
                 cat
@@ -181,9 +196,16 @@ fn script_for(t: &EditorTab, mode: RunMode) -> Option<String> {
 
 /// F5 and friends on a DAX tab.
 pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
-    let Some(auth) = auth(state, cx) else {
-        cx.toast(ToastKind::Warning, "Sign in on the Fabric panel first: semantic model queries use that account.");
-        return;
+    let (target, force) = match state.tabs.get(idx).and_then(|t| t.tabular.as_ref()) {
+        Some(tt) => (tt.target.clone(), tt.force_xmla),
+        None => return,
+    };
+    let auth = match auth(state, cx, &target, force) {
+        Ok(a) => a,
+        Err(e) => {
+            cx.toast(ToastKind::Warning, e);
+            return;
+        }
     };
     let t = &mut state.tabs[idx];
     if t.is_running() {
@@ -198,7 +220,7 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     t.pending_run = None;
     let Some(tt) = t.tabular.as_mut() else { return };
     let uncapped = std::mem::take(&mut tt.uncapped_next);
-    let target = tt.target.clone();
+    tt.transport = Some(if tt.uses_xmla() { "XMLA" } else { "Arrow query API" });
     let cap = cx.settings.execution.row_cap;
     let job = t.pending_export.take();
     let limit = if uncapped || job.is_some() || cap == 0 { None } else { Some(cap) };
@@ -326,16 +348,31 @@ pub fn q_info() -> String {
 // Snapshots (hot exit)
 // ---------------------------------------------------------------------------------------------
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Snapshot {
+    target: TabularTarget,
+    #[serde(default)]
+    profile: Option<uuid::Uuid>,
+    #[serde(default)]
+    force_xmla: bool,
+}
+
 pub fn snapshot_binding(t: &EditorTab) -> Option<String> {
     let tt = t.tabular.as_ref()?;
-    Some(format!("{SNAPSHOT_PREFIX}{}", serde_json::to_string(&tt.target).unwrap_or_default()))
+    Some(format!("{SNAPSHOT_PREFIX}{}", serde_json::to_string(&Snapshot { target: tt.target.clone(), profile: tt.profile, force_xmla: tt.force_xmla }).unwrap_or_default()))
 }
 
 /// A snapshot's `database` column back into a DAX tab state (None for other tabs).
 pub fn from_snapshot(database: &str) -> Option<TabularTab> {
     let json = database.strip_prefix(SNAPSHOT_PREFIX)?;
-    let target: TabularTarget = serde_json::from_str(json).ok()?;
-    Some(TabularTab::new(target))
+    let snap: Snapshot = match serde_json::from_str::<Snapshot>(json) {
+        Ok(s) => s,
+        Err(_) => Snapshot { target: serde_json::from_str(json).ok()?, profile: None, force_xmla: false },
+    };
+    let mut tt = TabularTab::new(snap.target);
+    tt.profile = snap.profile;
+    tt.force_xmla = snap.force_xmla;
+    Some(tt)
 }
 
 #[cfg(test)]

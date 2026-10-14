@@ -9,7 +9,7 @@ use super::{Event, RunSink, Shared, SinkMsg, TabularAuth};
 use cobalt_core::tabular::TabularTarget;
 use cobalt_core::*;
 use cobalt_results::{ResultSet, RunState};
-use cobalt_tabular::{DaxItem, DaxOptions, PowerBiClient};
+use cobalt_tabular::{Credential, DaxItem, DaxOptions, Transport};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::watch;
@@ -30,7 +30,8 @@ pub const NEED_SIGN_IN: &str = "Sign in on the Fabric panel: the stored sign-in 
 /// A Power BI token for the slot, silently (the panel's sign-in already consented).
 pub async fn powerbi_token(auth: &TabularAuth) -> Result<String, String> {
     let resource = cobalt_auth::provider::POWERBI_RESOURCE;
-    let mut ts = match auth.resolver.resource_token_silent(auth.slot, resource, auth.tenant.as_deref()).await {
+    let Some(slot) = auth.slot else { return Err(NEED_SIGN_IN.into()) };
+    let mut ts = match auth.resolver.resource_token_silent(slot, resource, auth.tenant.as_deref()).await {
         Ok(Some(ts)) => ts,
         Ok(None) => return Err(NEED_SIGN_IN.into()),
         Err(e) => return Err(format!("Could not get a Power BI token: {e}")),
@@ -38,8 +39,8 @@ pub async fn powerbi_token(auth: &TabularAuth) -> Result<String, String> {
     if !cobalt_auth::provider::missing_powerbi_scopes(&ts.access.scope).is_empty() {
         // a consent granted since the token was cached (tenant admin consent) shows up only on a
         // fresh refresh: try once before refusing
-        auth.resolver.forget_resource(auth.slot, resource);
-        if let Ok(Some(fresh)) = auth.resolver.resource_token_silent(auth.slot, resource, auth.tenant.as_deref()).await {
+        auth.resolver.forget_resource(slot, resource);
+        if let Ok(Some(fresh)) = auth.resolver.resource_token_silent(slot, resource, auth.tenant.as_deref()).await {
             ts = fresh;
         }
     }
@@ -61,6 +62,40 @@ pub async fn powerbi_token(auth: &TabularAuth) -> Result<String, String> {
     }
 }
 
+/// The credential a target needs: a Power BI or Azure AS bearer token from the slot, the
+/// profile's basic credentials, or nothing.
+pub async fn credential_for(auth: &TabularAuth, target: &TabularTarget) -> Result<Credential, String> {
+    if let Some((user, password)) = &auth.basic {
+        return Ok(Credential::Basic { user: user.clone(), password: password.clone() });
+    }
+    if auth.anonymous {
+        return Ok(Credential::Anonymous);
+    }
+    match cobalt_tabular::credential_resource(target, auth.force_xmla) {
+        None => Ok(Credential::Anonymous),
+        Some(cobalt_auth::provider::POWERBI_RESOURCE) => powerbi_token(auth).await.map(Credential::Bearer),
+        Some(resource) => {
+            let Some(slot) = auth.slot else { return Err(NEED_SIGN_IN.into()) };
+            match auth.resolver.resource_token_silent(slot, resource, auth.tenant.as_deref()).await {
+                Ok(Some(ts)) => Ok(Credential::Bearer(ts.access.token.expose().to_string())),
+                Ok(None) => Err(NEED_SIGN_IN.into()),
+                Err(e) => Err(format!("Could not get a token for {resource}: {e}")),
+            }
+        }
+    }
+}
+
+/// A connected transport for the target: the Arrow query API for Power BI (unless XMLA is
+/// forced), XMLA for Azure AS and HTTP endpoints.
+pub async fn connect(auth: &TabularAuth, target: &TabularTarget) -> Result<Transport, String> {
+    let cred = credential_for(auth, target).await?;
+    Transport::connect(target, cred, auth.force_xmla).await.map_err(|e| match e.hint() {
+        Some(h) => format!("{e}
+{h}"),
+        None => e.to_string(),
+    })
+}
+
 pub async fn run_tabular(r: TabularRun, mut cancel: watch::Receiver<bool>, shared: Shared) {
     let TabularRun { tab, run, target, auth, text, opts, sink } = r;
     let started = Instant::now();
@@ -75,11 +110,22 @@ pub async fn run_tabular(r: TabularRun, mut cancel: watch::Receiver<bool>, share
         }
         shared.emit(Event::RunDone { tab, run, cancelled: false, failed: true, elapsed: started.elapsed(), total_rows: 0 });
     };
-    let token = match powerbi_token(&auth).await {
-        Ok(t) => t,
-        Err(e) => return fail(e, &shared, &sink),
+    let client = tokio::select! {
+        biased;
+        _ = cancel.changed() => {
+            shared.emit(Event::BatchDone { tab, run, batch: 0, error: None, elapsed: started.elapsed() });
+            if let Some(s) = &sink {
+                let _ = s.tx.send(SinkMsg::Failed("cancelled".into()));
+            }
+            shared.emit(Event::RunDone { tab, run, cancelled: true, failed: false, elapsed: started.elapsed(), total_rows: 0 });
+            return;
+        }
+        c = connect(&auth, &target) => match c {
+            Ok(c) => c,
+            Err(e) => return fail(e, &shared, &sink),
+        },
     };
-    let client = PowerBiClient::new(token);
+    shared.emit(Event::Message { tab, run, message: ServerMessage::info(format!("transport: {}", client.name())), batch_start_line: 1 });
     let mut stream = tokio::select! {
         biased;
         _ = cancel.changed() => {
@@ -115,6 +161,8 @@ pub async fn run_tabular(r: TabularRun, mut cancel: watch::Receiver<bool>, share
             biased;
             _ = cancel.changed() => {
                 cancelled = true;
+                // XMLA: tell the server too (the HTTP stream is dropped below either way)
+                let _ = client.cancel().await;
                 break;
             }
             item = stream.next() => item,

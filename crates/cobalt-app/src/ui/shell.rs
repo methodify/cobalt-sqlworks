@@ -312,7 +312,8 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             let spark_root = crate::sparkq::root(f.state, f.cx);
             let spark_active = f.state.active().map(|t| t.spark.is_some()).unwrap_or(false);
             let mut spark_expanded = f.state.spark_root_expanded;
-            let actions = servers::show(ui, &mut f.state.library, theme, active_profile, &spark_root, &mut spark_expanded, spark_active);
+            let tabular = servers::TabularRootView { root: &f.state.tabular, models: &f.state.model_catalogs, tree_expanded: &f.state.model_tree_expanded, show_hidden: f.state.model_show_hidden };
+            let actions = servers::show(ui, &mut f.state.library, theme, active_profile, &spark_root, &mut spark_expanded, spark_active, tabular);
             f.state.spark_root_expanded = spark_expanded;
             for a in actions {
                 ops::tree_action(f.state, f.cx, a);
@@ -1367,6 +1368,7 @@ fn text_plan(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
 }
 
 fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
+    let mut xmla_toggle: Option<bool> = None;
     let theme = f.theme;
     let mut cmds: Vec<Command> = Vec::new();
     let mut change_db: Option<String> = None;
@@ -1391,7 +1393,16 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             let tab = &f.state.tabs[idx];
             if let Some(tt) = &tab.tabular {
                 ui.label(RichText::new(icons::CUBE).color(theme.accent));
-                ui.label(RichText::new(tt.target.model()).strong()).on_hover_text(format!("Semantic model {} in {}\nQueries run through the Power BI Arrow query API as the Fabric panel's account.", tt.target.model(), tt.target.host_label()));
+                ui.label(RichText::new(tt.target.model()).strong()).on_hover_text(format!("Semantic model {} in {}", tt.target.model(), tt.target.host_label()));
+                if matches!(tt.target, cobalt_core::tabular::TabularTarget::PowerBi { .. }) {
+                    let mut x = tt.force_xmla;
+                    let r = ui.add(egui::Button::selectable(x, "XMLA").small()).on_hover_text("Run through the Power BI XMLA endpoint instead of the Arrow query API (MDX and DMV queries need it; the endpoint resolution is still being confirmed)");
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab xmla toggle"));
+                    if r.clicked() {
+                        x = !x;
+                        xmla_toggle = Some(x);
+                    }
+                }
             } else if tab.spark.is_some() {
                 // no connection, database list or plans on a Spark tab
             } else {
@@ -1504,6 +1515,11 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     if let Some(db) = change_db {
         ops::change_database(f.state, f.cx, idx, db);
     }
+    if let Some(x) = xmla_toggle {
+        if let Some(tt) = f.state.tabs[idx].tabular.as_mut() {
+            tt.force_xmla = x;
+        }
+    }
     for c in cmds {
         dispatch(f, c);
     }
@@ -1533,6 +1549,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     if let Some(crate::state::Loadable::Failed(e)) = cat {
                         r.on_hover_text(e);
                     }
+                    ui.label(RichText::new(if tt.uses_xmla() { "XMLA" } else { "Arrow query API" }).color(theme.text_faint)).on_hover_text(if tt.uses_xmla() { "Queries go to the XMLA endpoint (DAX, MDX and DMVs)" } else { "Queries go through the Power BI Arrow query API (DAX and INFO functions); switch the tab to XMLA for MDX and DMVs" });
                 } else if let Some(sp) = &t.spark {
                     let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
                     ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
@@ -1625,7 +1642,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.uses_xmla()).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));

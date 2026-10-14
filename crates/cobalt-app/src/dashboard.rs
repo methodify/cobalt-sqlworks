@@ -268,12 +268,16 @@ fn run_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
         if let Some(tt) = tile.tab.tabular.as_mut() {
             tt.last_limit = if cap == 0 { None } else { Some(cap) };
         }
-        let Some(auth) = crate::tabularq::auth(state, cx) else {
-            if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
-                tile.error = Some("Sign in on the Fabric panel: this tile queries a semantic model".into());
-                tile.tab.run = None;
+        let force = tile.tab.tabular.as_ref().map(|t| t.force_xmla).unwrap_or(false);
+        let auth = match crate::tabularq::auth(state, cx, &target, force) {
+            Ok(a) => a,
+            Err(e) => {
+                if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
+                    tile.error = Some(e);
+                    tile.tab.run = None;
+                }
+                return;
             }
-            return;
         };
         let opts = cobalt_tabular::DaxOptions { timeout_secs: if timeout == 0 { None } else { Some(timeout) }, row_limit: if cap == 0 { None } else { Some(cap) }, ..Default::default() };
         cx.session.send(crate::session::Command::RunTabular { tab: tab_id, run: run_id, target, auth, text, opts, sink: None });

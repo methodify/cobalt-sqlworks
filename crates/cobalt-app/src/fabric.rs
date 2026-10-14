@@ -133,6 +133,10 @@ pub enum FabricEvent {
     DaxFunctions { key: String, result: Result<Vec<cobalt_tabular::DaxFunction>, String> },
     /// Explore: the distinct values of a column for the filter picker (by model key).
     ExploreDistinct { key: String, table: String, column: String, result: Result<Vec<String>, String> },
+    /// Analysis Services root: a profile's catalogs (models).
+    TabularCatalogs { profile: uuid::Uuid, result: Result<Vec<String>, String> },
+    /// The profile dialog's Test outcome.
+    TabularTest { profile: uuid::Uuid, result: Result<String, String> },
     /// A notebook item's definition arrived (open it, or open a copy).
     NotebookDefinition { item: cobalt_fabric::FabricItem, copy: bool, result: Result<cobalt_fabric::ItemDefinition, String> },
     NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
@@ -1082,6 +1086,22 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Ok(c) => Loadable::Loaded(c),
                 Err(e) => Loadable::Failed(e),
             });
+        }
+        FabricEvent::TabularCatalogs { profile, result } => {
+            state.tabular.catalogs.insert(profile, match result {
+                Ok(v) => Loadable::Loaded(v),
+                Err(e) => Loadable::Failed(e),
+            });
+        }
+        FabricEvent::TabularTest { profile, result } => {
+            if let Dialog::TabularProfile { draft, test, .. } = &mut state.dialog {
+                if draft.id == profile {
+                    *test = Some(match result {
+                        Ok(s) => Loadable::Loaded(s),
+                        Err(e) => Loadable::Failed(e),
+                    });
+                }
+            }
         }
         FabricEvent::ExploreDistinct { key, table, column, result } => {
             for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false)) {

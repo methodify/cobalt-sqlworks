@@ -27,6 +27,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
     match std::mem::take(&mut f.state.dialog) {
         Dialog::None => {}
         Dialog::Connection(d) => connection_dialog(ctx, f, d),
+        Dialog::TabularProfile { draft, password, editing, test } => tabular_profile_dialog(ctx, f, *draft, password, editing, test),
         Dialog::Password { profile, mut password, mut remember, purpose, error } => {
             let mut submit = false;
             let mut cancel = false;
@@ -1844,5 +1845,185 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
         // closed
     } else {
         f.state.dialog = Dialog::Export(d);
+    }
+}
+
+
+/// Add or edit a saved Analysis Services endpoint (Azure AS, SSAS over HTTP, Power BI over XMLA).
+fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_core::tabular::TabularProfile, password: String, editing: bool, test: Option<crate::state::Loadable<String>>) {
+    use cobalt_core::tabular::{TabularAuthKind, TabularTarget};
+    let theme = f.theme;
+    let mut draft = draft;
+    let mut password = password;
+    let mut choice = 0; // 1 save, 2 cancel, 3 test
+    let signed_in = f.state.fabric.account.as_ref().map(|a| a.username.clone());
+    let (_, close) = modal(ctx, theme, "tabular-profile", 560.0, |ui| {
+        ui.heading(if editing { "Edit Analysis Services endpoint" } else { "Add Analysis Services endpoint" });
+        ui.label(RichText::new("Queries go to the XMLA endpoint over HTTPS. Fabric semantic models are on the Fabric panel already; this is for Azure Analysis Services, SQL Server Analysis Services through its HTTP endpoint (msmdpump.dll on IIS), and Power BI workspaces over XMLA.").size(12.0).color(theme.text_muted));
+        ui.add_space(6.0);
+        egui::Grid::new("tabular-profile-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+            ui.label("Name");
+            let r = ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(380.0).hint_text("how it shows in the tree"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular name"));
+            ui.end_row();
+            ui.label("Kind");
+            ui.horizontal(|ui| {
+                let is_aas = matches!(draft.target, TabularTarget::AzureAs { .. });
+                let is_http = matches!(draft.target, TabularTarget::Http { .. });
+                let is_pbi = matches!(draft.target, TabularTarget::PowerBi { .. });
+                let r = ui.add(egui::Button::selectable(is_aas, "Azure Analysis Services").small());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind asazure"));
+                if r.clicked() && !is_aas {
+                    draft.target = TabularTarget::AzureAs { region: "westus".into(), server: String::new(), model: String::new() };
+                    draft.auth = TabularAuthKind::Entra;
+                }
+                let r = ui.add(egui::Button::selectable(is_http, "HTTP (msmdpump)").small());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind http"));
+                if r.clicked() && !is_http {
+                    draft.target = TabularTarget::Http { url: "https://".into(), model: String::new() };
+                    draft.auth = TabularAuthKind::Basic { user: String::new() };
+                }
+                let r = ui.add(egui::Button::selectable(is_pbi, "Power BI workspace").small());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind powerbi"));
+                if r.clicked() && !is_pbi {
+                    draft.target = TabularTarget::PowerBi { workspace_id: String::new(), workspace_name: String::new(), dataset_id: String::new(), model_name: String::new() };
+                    draft.auth = TabularAuthKind::Entra;
+                }
+            });
+            ui.end_row();
+            match &mut draft.target {
+                TabularTarget::AzureAs { region, server, model } => {
+                    ui.label("Region");
+                    let r = ui.add(egui::TextEdit::singleline(region).desired_width(160.0).hint_text("westus"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular region"));
+                    ui.end_row();
+                    ui.label("Server");
+                    let r = ui.add(egui::TextEdit::singleline(server).desired_width(380.0).hint_text("the server name after asazure://<region>.asazure.windows.net/"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular server"));
+                    ui.end_row();
+                    ui.label("Model");
+                    let r = ui.add(egui::TextEdit::singleline(model).desired_width(380.0).hint_text("optional: the tree lists the server's models"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    ui.end_row();
+                }
+                TabularTarget::Http { url, model } => {
+                    ui.label("URL");
+                    let r = ui.add(egui::TextEdit::singleline(url).desired_width(380.0).hint_text("https://host/olap/msmdpump.dll"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular url"));
+                    ui.end_row();
+                    ui.label("Model");
+                    let r = ui.add(egui::TextEdit::singleline(model).desired_width(380.0).hint_text("optional: the tree lists the server's databases"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    ui.end_row();
+                }
+                TabularTarget::PowerBi { workspace_id, workspace_name, model_name, .. } => {
+                    ui.label("Workspace");
+                    let r = ui.add(egui::TextEdit::singleline(workspace_name).desired_width(380.0).hint_text("the workspace name (powerbi://api.powerbi.com/v1.0/myorg/<name>)"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular workspace"));
+                    ui.end_row();
+                    ui.label("Workspace id");
+                    let r = ui.add(egui::TextEdit::singleline(workspace_id).desired_width(380.0).hint_text("the workspace GUID (from the portal URL)"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular workspace id"));
+                    ui.end_row();
+                    ui.label("Model");
+                    let r = ui.add(egui::TextEdit::singleline(model_name).desired_width(380.0).hint_text("optional"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    ui.end_row();
+                }
+            }
+            ui.label("Sign in");
+            ui.horizontal(|ui| {
+                let entra = matches!(draft.auth, TabularAuthKind::Entra);
+                let basic = matches!(draft.auth, TabularAuthKind::Basic { .. });
+                let anon = matches!(draft.auth, TabularAuthKind::Anonymous);
+                let r = ui.add(egui::Button::selectable(entra, "Microsoft Entra").small()).on_hover_text("The Fabric panel's sign-in (Azure AS and Power BI)");
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth entra"));
+                if r.clicked() {
+                    draft.auth = TabularAuthKind::Entra;
+                }
+                let r = ui.add(egui::Button::selectable(basic, "Basic").small()).on_hover_text("User name and password (IIS basic authentication over HTTPS)");
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth basic"));
+                if r.clicked() && !basic {
+                    draft.auth = TabularAuthKind::Basic { user: String::new() };
+                }
+                let r = ui.add(egui::Button::selectable(anon, "Anonymous").small());
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth anonymous"));
+                if r.clicked() {
+                    draft.auth = TabularAuthKind::Anonymous;
+                }
+            });
+            ui.end_row();
+            match &mut draft.auth {
+                TabularAuthKind::Entra => {
+                    ui.label("");
+                    ui.label(RichText::new(match &signed_in {
+                        Some(a) => format!("as {a} (the Fabric panel's account)"),
+                        None => "sign in on the Fabric panel first".to_string(),
+                    }).size(12.0).color(theme.text_muted));
+                    ui.end_row();
+                }
+                TabularAuthKind::Basic { user } => {
+                    ui.label("User");
+                    let r = ui.add(egui::TextEdit::singleline(user).desired_width(380.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular user"));
+                    ui.end_row();
+                    ui.label("Password");
+                    let r = ui.add(egui::TextEdit::singleline(&mut password).password(true).desired_width(380.0).hint_text(if editing { "unchanged unless typed" } else { "" }));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular password"));
+                    ui.end_row();
+                }
+                TabularAuthKind::Anonymous => {}
+            }
+        });
+        ui.add_space(6.0);
+        match &test {
+            Some(crate::state::Loadable::Loading) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(RichText::new("Connecting…").size(12.0).color(theme.text_muted));
+                });
+            }
+            Some(crate::state::Loadable::Loaded(s)) => {
+                ui.label(RichText::new(format!("{} {s}", egui_phosphor::regular::CHECK)).size(12.0).color(theme.success));
+            }
+            Some(crate::state::Loadable::Failed(e)) => {
+                ui.label(RichText::new(format!("{} {}", egui_phosphor::regular::WARNING, e.lines().next().unwrap_or(""))).size(12.0).color(theme.warning)).on_hover_text(e);
+            }
+            _ => {}
+        }
+        ui.add_space(8.0);
+        let complete = !draft.name.trim().is_empty() && match &draft.target {
+            TabularTarget::AzureAs { region, server, .. } => !region.trim().is_empty() && !server.trim().is_empty(),
+            TabularTarget::Http { url, .. } => url.trim().len() > 8,
+            TabularTarget::PowerBi { workspace_name, .. } => !workspace_name.trim().is_empty(),
+        };
+        ui.horizontal(|ui| {
+            if mnemonic_button(ui, theme, if editing { "&Save" } else { "&Add" }, ButtonStyle::Primary, complete, Some(Key::Enter)) {
+                choice = 1;
+            }
+            if mnemonic_button(ui, theme, "&Test", ButtonStyle::Normal, complete && !matches!(test, Some(crate::state::Loadable::Loading)), None) {
+                choice = 3;
+            }
+            if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                choice = 2;
+            }
+        });
+    });
+    match choice {
+        1 => {
+            let pw = if password.is_empty() { None } else { Some(password) };
+            crate::tabular_root::save_profile(f.state, f.cx, draft, pw);
+        }
+        2 => {}
+        3 => {
+            let pw = if password.is_empty() { None } else { Some(password.clone()) };
+            f.state.dialog = Dialog::TabularProfile { draft: Box::new(draft.clone()), password, editing, test: Some(crate::state::Loadable::Loading) };
+            crate::tabular_root::test_profile(f.state, f.cx, draft, pw);
+        }
+        _ => {
+            if !close {
+                f.state.dialog = Dialog::TabularProfile { draft: Box::new(draft), password, editing, test };
+            }
+        }
     }
 }
