@@ -85,6 +85,7 @@ pub const HINT_TENANT_SETTINGS: &str = "The Arrow query API needs the model on a
 pub const HINT_CAPACITY: &str = "The Arrow query API needs the model on a Fabric or Premium capacity (Fabric F SKUs including trial, Premium, Embedded); Pro workspaces are not reachable.";
 pub const HINT_BUILD: &str = "Build permission on the model is required (and Dataset.Read.All on the app registration).";
 pub const HINT_SIGN_IN: &str = "The Power BI service refused the token: sign in again, or the sign-in lacks the Dataset.Read.All permission (the app registration needs it; then Grant permissions on the Fabric panel).";
+pub const HINT_XMLA_TOKEN: &str = "Power BI refused to issue an XMLA token for the model: the account needs Build permission on the model, and the tenant setting 'Allow XMLA endpoints and Analyze in Excel with on-premises semantic models' must be on.";
 pub const HINT_THROTTLED: &str = "The Arrow query API allows 120 requests per minute per user (40 on Pro / PPU licences); wait and retry.";
 
 impl TabularError {
@@ -97,6 +98,9 @@ impl TabularError {
             TabularError::Throttled { .. } => return Some(HINT_THROTTLED),
             _ => return None,
         };
+        if text.contains("generateastoken") {
+            return Some(HINT_XMLA_TOKEN);
+        }
         if text.contains("xmla endpoint") || text.contains("execute queries") || text.contains("executequeries") || text.contains("tenant setting") {
             return Some(HINT_TENANT_SETTINGS);
         }
@@ -144,6 +148,7 @@ mod tests {
         assert_eq!(TabularError::Unauthorized(403, "PowerBINotAuthorizedException".into()).hint(), Some(HINT_BUILD));
         assert_eq!(TabularError::Query { code: Some("0xC1140001".into()), message: "Query (1, 10) The syntax is wrong.".into() }.to_string(), "Query (1, 10) The syntax is wrong. (0xC1140001)");
         assert_eq!(TabularError::Decode("x".into()).hint(), None);
+        assert_eq!(TabularError::Unauthorized(403, "generateastoken refused: PowerBINotAuthorizedException".into()).hint(), Some(HINT_XMLA_TOKEN));
         let t = TabularTarget::PowerBi { workspace_id: "w".into(), workspace_name: "Fabric test".into(), dataset_id: "d".into(), model_name: "Sales".into() };
         assert_eq!(describe_target(&t), "semantic model 'Sales' in workspace 'Fabric test'");
     }

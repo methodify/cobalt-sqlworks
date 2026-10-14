@@ -1,17 +1,51 @@
-//! Where the XMLA POSTs go for each target. `Http` is the URL as given. Azure Analysis
-//! Services resolves the server to its cluster (`/webapi/clusterResolve`), then posts to
-//! `https://{cluster}/webapi/xmla` with `x-ms-xmlaserver`. Power BI resolves the workspace to its
-//! `*.pbidedicated.windows.net` cluster through `api.powerbi.com` — a best effort, since the
-//! shapes are UNCONFIRMED until a capture exists (see `docs/design/semantic_models.md` §7) —
-//! then posts with the routing headers. Resolved clusters are cached per workspace / server
-//! for the process.
+//! Where the XMLA POSTs go for each target, and how they sign in. `Http` is the URL as given
+//! with the caller's credential. The two PaaS flavours follow the official client
+//! (`docs/research/adomd_powerbi_xmla.md`, confirmed live for Power BI on 2026-10-14):
+//!
+//! - **Power BI**: the workspace record from `api.powerbi.com` (`id`, `capacityUri`), the Entra
+//!   bearer exchanged for an **MWC token** at `metadata/v201606/generateastoken` (cached five
+//!   minutes per workspace / capacity / model), the capacity resolved to its cluster with an
+//!   unauthenticated `POST https://<rollout>/webapi/clusterResolve` (`clusterFQDN`,
+//!   `coreServerName`; cached an hour), then `https://<clusterFQDN>/webapi/xmla` with
+//!   `Authorization: MwcToken …` and `x-ms-xmlaserver: <coreServerName>`; `<Catalog>` is the
+//!   friendly model name.
+//! - **Azure Analysis Services**: the same `clusterResolve` on `<region>.asazure.windows.net`
+//!   with `premiumPublicXmlaEndpoint:false` and the instance name, then the bearer token.
+//!
+//! `api.powerbi.com` answers `307` to another host with `PreferClientRouting`, and reqwest drops
+//! `Authorization` across hosts, so those redirects are followed here by hand.
 
 use super::Credential;
 use crate::TabularError;
 use cobalt_core::tabular::TabularTarget;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// The hosts the Power BI path talks to; tests point them at a local server.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hosts {
+    /// `https://api.powerbi.com`
+    pub api_base: String,
+    /// The scheme for `clusterResolve` and the cluster (`https`).
+    pub cluster_scheme: String,
+}
+
+impl Default for Hosts {
+    fn default() -> Self {
+        Self { api_base: "https://api.powerbi.com".into(), cluster_scheme: "https".into() }
+    }
+}
+
+/// How requests to an endpoint are signed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Auth {
+    /// `Bearer` / `Basic` / nothing, as the caller gave it.
+    Credential(Credential),
+    /// `MwcToken <token>`, minted from the Entra bearer for this workspace / capacity / model
+    /// (and re-minted from the cache when it ages out).
+    Mwc { entra: String, workspace_id: String, capacity_id: String, model: String },
+}
 
 /// The XMLA URL and the headers every request to it carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,30 +54,68 @@ pub struct Endpoint {
     pub headers: Vec<(&'static str, String)>,
     /// The `Catalog` property (the model), when the target names one.
     pub catalog: String,
+    pub auth: Auth,
+    /// A PaaS endpoint (Power BI, Azure AS): the official client's header set, no `SOAPAction`,
+    /// an `Execute` with `BeginSession` to open the session.
+    pub paas: bool,
 }
 
 /// The Power BI resolution failed; the text the status bar shows.
 pub const POWERBI_UNRESOLVED: &str = "the Power BI XMLA endpoint could not be resolved; this path needs a protocol capture (see docs/design/semantic_models.md §7)";
 
-fn cache() -> &'static Mutex<HashMap<String, String>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+/// `User-Agent` on the api.powerbi.com and cluster calls (what the service sees from the
+/// official client).
+pub const AS_CLIENT_AGENT: &str = "ASClient/.NET-Core";
+
+const CLUSTER_TTL: Duration = Duration::from_secs(60 * 60);
+const TOKEN_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct Caches {
+    clusters: HashMap<String, (Instant, Cluster)>,
+    tokens: HashMap<String, (Instant, String)>,
 }
 
-fn cached(key: &str) -> Option<String> {
-    cache().lock().ok()?.get(key).cloned()
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Cluster {
+    fqdn: String,
+    server: String,
 }
 
-fn remember(key: &str, cluster: &str) {
-    if let Ok(mut c) = cache().lock() {
-        c.insert(key.to_string(), cluster.to_string());
+fn caches() -> &'static Mutex<Caches> {
+    static CACHE: OnceLock<Mutex<Caches>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(Caches { clusters: HashMap::new(), tokens: HashMap::new() }))
+}
+
+fn cached_cluster(key: &str) -> Option<Cluster> {
+    let c = caches().lock().ok()?;
+    c.clusters.get(key).filter(|(t, _)| t.elapsed() < CLUSTER_TTL).map(|(_, v)| v.clone())
+}
+
+fn remember_cluster(key: &str, cluster: &Cluster) {
+    if let Ok(mut c) = caches().lock() {
+        c.clusters.insert(key.to_string(), (Instant::now(), cluster.clone()));
     }
 }
 
-/// Forget a cached cluster (after a routing failure, so the next connect resolves again).
+/// Forget a cached cluster (after a 3xx from the endpoint, so the next connect resolves again).
 pub fn forget(target: &TabularTarget) {
-    if let Ok(mut c) = cache().lock() {
-        c.remove(&cache_key(target));
+    if let Ok(mut c) = caches().lock() {
+        c.clusters.remove(&cache_key(target));
+    }
+}
+
+/// Forget every cached cluster (a `3xx` from a cluster: the instance moved).
+pub fn forget_clusters() {
+    if let Ok(mut c) = caches().lock() {
+        c.clusters.clear();
+    }
+}
+
+/// Drop every cached cluster and token (tests; a sign-out).
+pub fn clear_caches() {
+    if let Ok(mut c) = caches().lock() {
+        c.clusters.clear();
+        c.tokens.clear();
     }
 }
 
@@ -55,63 +127,47 @@ fn cache_key(target: &TabularTarget) -> String {
     }
 }
 
-/// Resolve the target. `http` is the client the XMLA calls will use too.
-pub async fn resolve(http: &reqwest::Client, target: &TabularTarget, cred: &Credential) -> Result<Endpoint, TabularError> {
+/// Resolve the target. `http` is the client the XMLA calls will use too (no automatic redirects).
+pub async fn resolve(http: &reqwest::Client, target: &TabularTarget, cred: &Credential, hosts: &Hosts) -> Result<Endpoint, TabularError> {
     match target {
-        TabularTarget::Http { url, model } => Ok(Endpoint { url: url.trim().to_string(), headers: Vec::new(), catalog: model.clone() }),
+        TabularTarget::Http { url, model } => Ok(Endpoint { url: url.trim().to_string(), headers: Vec::new(), catalog: model.clone(), auth: Auth::Credential(cred.clone()), paas: false }),
         TabularTarget::AzureAs { region, server, model } => {
             let key = cache_key(target);
-            let cluster = match cached(&key) {
+            let cluster = match cached_cluster(&key) {
                 Some(c) => c,
                 None => {
-                    let c = resolve_asazure(http, region, server, cred).await;
-                    remember(&key, &c);
+                    let front = format!("{region}.asazure.windows.net");
+                    let c = cluster_resolve(http, hosts, &front, server, false).await.unwrap_or_else(|| Cluster { fqdn: front, server: server.clone() });
+                    remember_cluster(&key, &c);
                     c
                 }
             };
-            Ok(Endpoint { url: format!("https://{cluster}/webapi/xmla"), headers: vec![("x-ms-xmlaserver", server.clone())], catalog: model.clone() })
+            Ok(Endpoint { url: format!("{}://{}/webapi/xmla", hosts.cluster_scheme, cluster.fqdn), headers: vec![("x-ms-xmlaserver", cluster.server)], catalog: model.clone(), auth: Auth::Credential(cred.clone()), paas: true })
         }
-        TabularTarget::PowerBi { workspace_id, workspace_name, model_name, dataset_id } => {
-            // Confirmed live (2026-10-14): the workspace record's `capacityUri` is
-            // `pbidedicated://{cluster}/{capacity object id}`; the dedicated cluster's front door
-            // finds a "server" only by that capacity object id (workspace names and ids answer
-            // NotFound); `getDatabaseName` maps the model name to the dataset GUID the service
-            // calls the database. What the front door still needs beyond that is unconfirmed:
-            // with these headers it answers 200 + JSON "An internal error occurred." (see
-            // `docs/design/semantic_models.md` §7, the capture).
+        TabularTarget::PowerBi { workspace_id, workspace_name, model_name, .. } => {
+            let Credential::Bearer(entra) = cred else {
+                return Err(TabularError::Unsupported(format!("the Power BI XMLA endpoint needs an Entra bearer token, not {cred}")));
+            };
+            let ws = workspace_record(http, hosts, entra, workspace_id, workspace_name).await?;
             let key = cache_key(target);
-            let cluster = match cached(&key) {
+            let cluster = match cached_cluster(&key) {
                 Some(c) => c,
                 None => {
-                    let c = resolve_powerbi(http, workspace_id, workspace_name, cred).await?;
-                    remember(&key, &c);
+                    let c = cluster_resolve(http, hosts, &ws.rollout_host, &ws.capacity_id, true).await.unwrap_or_else(|| Cluster { fqdn: ws.rollout_host.clone(), server: ws.capacity_id.clone() });
+                    remember_cluster(&key, &c);
                     c
                 }
             };
-            let mut parts = cluster.splitn(3, '|');
-            let host = parts.next().unwrap_or_default().to_string();
-            let capacity = parts.next().unwrap_or_default().to_string();
-            let resolved_id = parts.next().unwrap_or_default().to_string();
-            let ws_id = if workspace_id.is_empty() { resolved_id.as_str() } else { workspace_id.as_str() };
-            let database = match database_name(http, ws_id, model_name, cred).await {
-                Some(d) => d,
-                None if !dataset_id.is_empty() => dataset_id.clone(),
-                None => model_name.clone(),
-            };
-            let mut headers = vec![("x-ms-xmlaserver", if capacity.is_empty() { format!("powerbi://api.powerbi.com/v1.0/myorg/{workspace_name}") } else { capacity }), ("x-ms-xmladatabase", database.clone())];
-            if !ws_id.is_empty() {
-                headers.push(("x-ms-xmlaworkspaceobjectid", ws_id.to_string()));
-            }
-            Ok(Endpoint { url: format!("https://{host}/webapi/xmla"), headers, catalog: database })
+            // mint the token now so a refusal (no Build, tenant setting off) surfaces at connect
+            mwc_token(http, hosts, entra, &ws.id, &ws.capacity_id, model_name).await?;
+            Ok(Endpoint {
+                url: format!("{}://{}/webapi/xmla", hosts.cluster_scheme, cluster.fqdn),
+                headers: vec![("x-ms-xmlaserver", cluster.server)],
+                catalog: model_name.clone(),
+                auth: Auth::Mwc { entra: entra.clone(), workspace_id: ws.id, capacity_id: ws.capacity_id, model: model_name.clone() },
+                paas: true,
+            })
         }
-    }
-}
-
-fn apply_cred(req: reqwest::RequestBuilder, cred: &Credential) -> reqwest::RequestBuilder {
-    match cred {
-        Credential::Bearer(t) => req.bearer_auth(t),
-        Credential::Basic { user, password } => req.basic_auth(user, Some(password)),
-        Credential::Anonymous => req,
     }
 }
 
@@ -119,58 +175,84 @@ fn head(s: &str) -> String {
     s.chars().take(300).collect::<String>().replace(['\n', '\r'], " ")
 }
 
-/// Azure AS: `POST https://{region}.asazure.windows.net/webapi/clusterResolve` with
-/// `{"serverName":"asazure://…"}` (UNCONFIRMED shape; parsed leniently). Any failure falls back
-/// to the regional front door itself, which routes by `x-ms-xmlaserver`.
-async fn resolve_asazure(http: &reqwest::Client, region: &str, server: &str, cred: &Credential) -> String {
-    let front = format!("{region}.asazure.windows.net");
-    let url = format!("https://{front}/webapi/clusterResolve");
-    let body = serde_json::json!({ "serverName": format!("asazure://{front}/{server}") });
-    let req = apply_cred(http.post(&url).json(&body).timeout(Duration::from_secs(30)), cred);
-    match req.send().await {
-        Ok(resp) => {
-            let status = resp.status().as_u16();
-            let text = resp.text().await.unwrap_or_default();
-            tracing::debug!(status, body = %head(&text), "asazure clusterResolve");
-            if (200..300).contains(&status) {
-                if let Some(host) = find_host(&text, ".asazure.windows.net") {
-                    return host;
-                }
-            }
-            front
+/// One JSON call to api.powerbi.com with the Entra bearer: `?PreferClientRouting=true`, the
+/// official agent, a `RequestId`, and up to three redirects followed with the bearer kept.
+async fn api_call(http: &reqwest::Client, method: reqwest::Method, url: &str, bearer: &str, body: Option<&serde_json::Value>) -> Result<(u16, String), TabularError> {
+    let mut url = if url.contains('?') { format!("{url}&PreferClientRouting=true") } else { format!("{url}?PreferClientRouting=true") };
+    for hop in 0..4 {
+        let mut req = http.request(method.clone(), &url).bearer_auth(bearer).header("User-Agent", AS_CLIENT_AGENT).header("RequestId", uuid::Uuid::new_v4().to_string()).header("Accept", "application/json").timeout(Duration::from_secs(30));
+        if let Some(b) = body {
+            req = req.json(b);
         }
-        Err(e) => {
-            tracing::debug!(error = %e, "asazure clusterResolve failed; using the regional front door");
-            front
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let location = resp.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok()).map(str::to_string);
+        let text = resp.text().await.unwrap_or_default();
+        tracing::debug!(%url, status, body = %head(&text), "powerbi api");
+        match (status, location) {
+            (301 | 302 | 303 | 307 | 308, Some(loc)) if hop < 3 => {
+                url = match reqwest::Url::parse(&url).ok().and_then(|base| base.join(&loc).ok()) {
+                    Some(u) => u.to_string(),
+                    None => loc,
+                };
+                continue;
+            }
+            _ => return Ok((status, text)),
         }
     }
+    Err(TabularError::Decode("api.powerbi.com redirected more than three times".into()))
 }
 
-/// Power BI: the workspace's cluster through `api.powerbi.com/powerbi/databases/v201606/…`
-/// (UNCONFIRMED; three guesses at the path, lenient parsing of the answer).
-async fn resolve_powerbi(http: &reqwest::Client, workspace_id: &str, workspace_name: &str, cred: &Credential) -> Result<String, TabularError> {
-    let base = "https://api.powerbi.com/powerbi/databases/v201606/workspaces";
-    let mut urls: Vec<String> = Vec::new();
-    if !workspace_id.trim().is_empty() {
-        urls.push(format!("{base}/{}", workspace_id.trim()));
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Workspace {
+    id: String,
+    name: String,
+    capacity_id: String,
+    /// `westus.pbidedicated.windows.net`, from `capacityUri`.
+    rollout_host: String,
+}
+
+fn workspace_from_json(ws: &serde_json::Value) -> Option<Workspace> {
+    let s = |k: &str| ws.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+    let id = s("id").or_else(|| s("objectId"))?;
+    let name = s("name").or_else(|| s("displayName")).unwrap_or_default();
+    let capacity_uri = s("capacityUri").unwrap_or_default();
+    let (rollout_host, uri_id) = match capacity_uri.split_once("://") {
+        Some((_, rest)) => {
+            let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+            (host.to_string(), path.trim_matches('/').split('/').next().unwrap_or("").to_string())
+        }
+        None => (String::new(), String::new()),
+    };
+    let capacity_id = s("capacityObjectId").or(if uri_id.is_empty() { None } else { Some(uri_id) })?;
+    if rollout_host.is_empty() {
+        return None;
     }
+    Some(Workspace { id, name, capacity_id, rollout_host })
+}
+
+/// The workspace record: by name first (confirmed live; the guid form answered 404), then by id,
+/// then the list matched on id or name (`type == "User"` is My workspace when the name is blank).
+async fn workspace_record(http: &reqwest::Client, hosts: &Hosts, entra: &str, workspace_id: &str, workspace_name: &str) -> Result<Workspace, TabularError> {
+    let base = format!("{}/powerbi/databases/v201606/workspaces", hosts.api_base.trim_end_matches('/'));
+    let mut urls: Vec<String> = Vec::new();
     if !workspace_name.trim().is_empty() {
         urls.push(format!("{base}/{}", url_encode(workspace_name.trim())));
     }
+    if !workspace_id.trim().is_empty() {
+        urls.push(format!("{base}/{}", workspace_id.trim()));
+    }
     urls.push(format!("{base}?includeMyWorkspace=true"));
     let mut last_auth: Option<TabularError> = None;
+    let mut off_capacity: Option<String> = None;
     for url in urls {
-        let req = apply_cred(http.get(&url).header("Accept", "application/json").timeout(Duration::from_secs(30)), cred);
-        let resp = match req.send().await {
+        let (status, text) = match api_call(http, reqwest::Method::GET, &url, entra, None).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::debug!(url = %url, error = %e, "powerbi workspace resolve failed");
+                tracing::debug!(%url, error = %e, "powerbi workspace lookup failed");
                 continue;
             }
         };
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        tracing::debug!(url = %url, status, body = %head(&text), "powerbi workspace resolve");
         if status == 401 || status == 403 {
             last_auth = Some(crate::rest::parse_http_error(status, &text));
             continue;
@@ -189,52 +271,101 @@ async fn resolve_powerbi(http: &reqwest::Client, workspace_id: &str, workspace_n
                 None => vec![&v],
             },
         };
+        let single = candidates.len() == 1 && !url.contains('?');
         let wanted = |ws: &serde_json::Value| -> bool {
-            if candidates.len() == 1 {
+            if single {
                 return true;
             }
-            let id_match = !workspace_id.is_empty() && json_strings(ws).any(|s| s.eq_ignore_ascii_case(workspace_id));
-            let name_match = !workspace_name.is_empty() && ["name", "displayName", "workspaceName"].iter().any(|k| ws.get(k).and_then(|x| x.as_str()).is_some_and(|n| n.eq_ignore_ascii_case(workspace_name)));
-            id_match || name_match
+            let field = |k: &str| ws.get(k).and_then(|x| x.as_str()).unwrap_or("");
+            let id_match = !workspace_id.is_empty() && (field("id").eq_ignore_ascii_case(workspace_id) || field("objectId").eq_ignore_ascii_case(workspace_id));
+            let name_match = !workspace_name.is_empty() && field("name").trim().eq_ignore_ascii_case(workspace_name.trim());
+            let my_workspace = workspace_name.is_empty() && workspace_id.is_empty() && field("type").eq_ignore_ascii_case("User");
+            id_match || name_match || my_workspace
         };
         for ws in candidates.iter().filter(|ws| wanted(ws)) {
-            // `capacityUri`: pbidedicated://{cluster}/{capacity object id}
-            if let Some(uri) = ws.get("capacityUri").and_then(|v| v.as_str()) {
-                if let Some(rest) = uri.strip_prefix("pbidedicated://") {
-                    let (host, cap) = rest.split_once('/').unwrap_or((rest, ""));
-                    let id = ws.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    if !host.is_empty() {
-                        return Ok(if cap.is_empty() { host.to_string() } else { format!("{host}|{cap}|{id}") });
-                    }
-                }
+            if let Some(w) = workspace_from_json(ws) {
+                return Ok(w);
             }
-            if let Some(host) = json_strings(ws).find_map(|s| host_in(s, ".pbidedicated.")) {
-                return Ok(host);
-            }
+            let sku = ws.get("capacitySku").and_then(|x| x.as_str()).unwrap_or("none");
+            off_capacity = Some(format!("workspace '{}' is not on a Premium or Fabric capacity (capacitySku {sku}); the XMLA endpoint needs one", ws.get("name").and_then(|x| x.as_str()).unwrap_or(workspace_name)));
         }
     }
     if let Some(e) = last_auth {
         return Err(e);
     }
+    if let Some(m) = off_capacity {
+        return Err(TabularError::Unsupported(m));
+    }
     Err(TabularError::Unsupported(POWERBI_UNRESOLVED.into()))
 }
 
-/// Power BI: the dataset GUID the dedicated cluster calls the database, from
-/// `POST api.powerbi.com/powerbi/databases/v201606/workspaces/{ws}/getDatabaseName`
-/// (`{"datasetName": …}` → `[{"databaseName": "<guid>", …}]`; confirmed live 2026-10-14).
-async fn database_name(http: &reqwest::Client, workspace_id: &str, model_name: &str, cred: &Credential) -> Option<String> {
-    if workspace_id.is_empty() || model_name.is_empty() {
+/// The MWC token for the cluster: `POST metadata/v201606/generateastoken` with the Entra bearer,
+/// cached five minutes per workspace / capacity / model. A refusal names `generateastoken` so
+/// the hint can say what it usually means (no Build on the model, or the XMLA tenant setting off).
+pub async fn mwc_token(http: &reqwest::Client, hosts: &Hosts, entra: &str, workspace_id: &str, capacity_id: &str, model: &str) -> Result<String, TabularError> {
+    let key = format!("{workspace_id}|{capacity_id}|{model}|{}", entra.len());
+    if let Ok(c) = caches().lock() {
+        if let Some((t, tok)) = c.tokens.get(&key) {
+            if t.elapsed() < TOKEN_TTL {
+                return Ok(tok.clone());
+            }
+        }
+    }
+    let url = format!("{}/metadata/v201606/generateastoken", hosts.api_base.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "applyAuxiliaryPermission": false,
+        "auxiliaryPermissionOwner": null,
+        "bypassBuildPermission": false,
+        "capacityObjectId": capacity_id,
+        "datasetName": model,
+        "intendedUsage": 0,
+        "sourceCapacityObjectId": null,
+        "workspaceObjectId": workspace_id,
+    });
+    let (status, text) = api_call(http, reqwest::Method::POST, &url, entra, Some(&body)).await?;
+    if !(200..300).contains(&status) {
+        return Err(match crate::rest::parse_http_error(status, &text) {
+            TabularError::Unauthorized(s, d) => TabularError::Unauthorized(s, format!("generateastoken refused: {d}")),
+            TabularError::Api { status, code, message } => TabularError::Api { status, code, message: format!("generateastoken refused: {message}") },
+            other => other,
+        });
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let token = ["Token", "token", "accessToken"].iter().find_map(|k| v.get(k).and_then(|t| t.as_str())).map(str::trim).filter(|t| !t.is_empty()).map(str::to_string);
+    let Some(token) = token else {
+        return Err(TabularError::Decode(format!("generateastoken answered without a Token: {}", head(&text))));
+    };
+    if let Ok(mut c) = caches().lock() {
+        c.tokens.insert(key, (Instant::now(), token.clone()));
+    }
+    Ok(token)
+}
+
+/// `POST <scheme>://<front>/webapi/clusterResolve` (no auth) → the cluster host and the server
+/// name for `x-ms-xmlaserver`. `None` on any failure (the caller falls back to the front door).
+async fn cluster_resolve(http: &reqwest::Client, hosts: &Hosts, front: &str, server: &str, premium_public_xmla: bool) -> Option<Cluster> {
+    let url = format!("{}://{front}/webapi/clusterResolve", hosts.cluster_scheme);
+    let body = serde_json::json!({ "databaseName": null, "premiumPublicXmlaEndpoint": premium_public_xmla, "serverName": server });
+    let req = http.post(&url).json(&body).header("User-Agent", AS_CLIENT_AGENT).header("x-ms-parent-activity-id", uuid::Uuid::new_v4().to_string()).timeout(Duration::from_secs(30));
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(%url, error = %e, "clusterResolve failed; using the front door");
+            return None;
+        }
+    };
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    tracing::debug!(%url, status, body = %head(&text), "clusterResolve");
+    if !(200..300).contains(&status) {
         return None;
     }
-    let url = format!("https://api.powerbi.com/powerbi/databases/v201606/workspaces/{workspace_id}/getDatabaseName");
-    let req = apply_cred(http.post(&url), cred).json(&serde_json::json!({"datasetName": model_name}));
-    let resp = req.send().await.ok()?;
-    let status = resp.status().as_u16();
-    let text = resp.text().await.ok()?;
-    tracing::debug!(url, status, body = %head(&text), "powerbi getDatabaseName");
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let first = v.as_array().and_then(|a| a.first()).unwrap_or(&v);
-    first.get("databaseName").and_then(|d| d.as_str()).map(str::to_string)
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    let s = |k: &str| v.get(k).and_then(|x| x.as_str()).map(str::trim).filter(|x| !x.is_empty()).map(str::to_string);
+    let marker = if premium_public_xmla { ".pbidedicated." } else { ".asazure." };
+    let fqdn = s("clusterFQDN").and_then(|f| host_in(&f, marker).or(Some(f))).or_else(|| find_host(&text, marker))?;
+    let server = s("coreServerName").unwrap_or_else(|| server.to_string());
+    Some(Cluster { fqdn, server })
 }
 
 /// Every string value in a JSON document, any depth.
@@ -253,7 +384,7 @@ fn host_in(s: &str, marker: &str) -> Option<String> {
     let before = &s[..idx];
     let start = before.rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.')).map(|p| p + 1).unwrap_or(0);
     let after = &s[idx..];
-    let end = idx + after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.')).unwrap_or(after.len());
+    let end = idx + after.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == ':')).unwrap_or(after.len());
     let host = s[start..end].trim_matches('.');
     if host.is_empty() {
         None
@@ -262,11 +393,11 @@ fn host_in(s: &str, marker: &str) -> Option<String> {
     }
 }
 
-/// The first host ending in `suffix` anywhere in a JSON (or plain) text.
-fn find_host(text: &str, suffix: &str) -> Option<String> {
+/// The first host containing `marker` anywhere in a JSON (or plain) text.
+fn find_host(text: &str, marker: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(text).unwrap_or(serde_json::Value::Null);
-    let from_json = json_strings(&v).find_map(|s| host_in(s, suffix).filter(|h| h.ends_with(suffix.trim_start_matches('.')) || h.contains(suffix)));
-    from_json.or_else(|| host_in(text, suffix))
+    let from_json = json_strings(&v).find_map(|s| host_in(s, marker));
+    from_json.or_else(|| host_in(text, marker))
 }
 
 fn url_encode(s: &str) -> String {
@@ -286,31 +417,48 @@ mod tests {
 
     #[test]
     fn hosts_in_json() {
-        assert_eq!(find_host(r#"{"clusterFQDN":"aspaaseastus2.asazure.windows.net"}"#, ".asazure.windows.net").as_deref(), Some("aspaaseastus2.asazure.windows.net"));
-        assert_eq!(find_host(r#"{"x":{"url":"https://aspaaseastus2.asazure.windows.net/webapi/xmla"}}"#, ".asazure.windows.net").as_deref(), Some("aspaaseastus2.asazure.windows.net"));
-        assert_eq!(find_host(r#"{"serverName":"asazure://eastus2.asazure.windows.net/srv"}"#, ".asazure.windows.net").as_deref(), Some("eastus2.asazure.windows.net"));
-        assert_eq!(find_host("<html>nope</html>", ".asazure.windows.net"), None);
-        let ws = serde_json::json!({"id": 1, "objectId": "abc", "capacity": {"xmlaEndpoint": "https://wabi-west-europe-redirect.pbidedicated.windows.net/xmla"}});
-        assert_eq!(json_strings(&ws).find_map(|s| host_in(s, ".pbidedicated.")).as_deref(), Some("wabi-west-europe-redirect.pbidedicated.windows.net"));
+        assert_eq!(find_host(r#"{"clusterFQDN":"aspaaseastus2.asazure.windows.net"}"#, ".asazure.").as_deref(), Some("aspaaseastus2.asazure.windows.net"));
+        assert_eq!(find_host(r#"{"x":{"url":"https://aspaaseastus2.asazure.windows.net/webapi/xmla"}}"#, ".asazure.").as_deref(), Some("aspaaseastus2.asazure.windows.net"));
+        assert_eq!(find_host("<html>nope</html>", ".asazure."), None);
         assert_eq!(host_in("abc.pbidedicated.windows.net", ".pbidedicated.").as_deref(), Some("abc.pbidedicated.windows.net"));
+        assert_eq!(host_in("https://pbipwus16-westus.pbidedicated.windows.net/webapi/xmla", ".pbidedicated.").as_deref(), Some("pbipwus16-westus.pbidedicated.windows.net"));
         assert_eq!(url_encode("Fabric test"), "Fabric%20test");
+    }
+
+    #[test]
+    fn workspace_records() {
+        let ws = serde_json::json!({"id": "eb24c8db-6189-4c38-94d3-390fabe47782", "name": "Fabric test", "capacitySku": "Premium", "capacityObjectId": "ba8d4c98-e720-4344-91d4-fb18bdc13a17", "capacityUri": "pbidedicated://westus.pbidedicated.windows.net/ba8d4c98-e720-4344-91d4-fb18bdc13a17", "isSharedOnPremium": false});
+        let w = workspace_from_json(&ws).unwrap();
+        assert_eq!(w.id, "eb24c8db-6189-4c38-94d3-390fabe47782");
+        assert_eq!(w.capacity_id, "ba8d4c98-e720-4344-91d4-fb18bdc13a17");
+        assert_eq!(w.rollout_host, "westus.pbidedicated.windows.net");
+        // the capacity id from the uri when capacityObjectId is absent
+        let ws = serde_json::json!({"id": "w", "name": "n", "capacitySku": "Premium", "capacityUri": "pbidedicated://westus.pbidedicated.windows.net/cap-1/"});
+        assert_eq!(workspace_from_json(&ws).unwrap().capacity_id, "cap-1");
+        // a Pro workspace has no capacity
+        let ws = serde_json::json!({"id": "w", "name": "n", "capacitySku": "Shared"});
+        assert!(workspace_from_json(&ws).is_none());
     }
 
     #[tokio::test]
     async fn http_target_is_as_given() {
         let http = reqwest::Client::new();
         let t = TabularTarget::Http { url: " http://localhost/olap/msmdpump.dll ".into(), model: "AdventureWorks".into() };
-        let e = resolve(&http, &t, &Credential::Anonymous).await.unwrap();
-        assert_eq!(e, Endpoint { url: "http://localhost/olap/msmdpump.dll".into(), headers: Vec::new(), catalog: "AdventureWorks".into() });
+        let e = resolve(&http, &t, &Credential::Anonymous, &Hosts::default()).await.unwrap();
+        assert_eq!(e, Endpoint { url: "http://localhost/olap/msmdpump.dll".into(), headers: Vec::new(), catalog: "AdventureWorks".into(), auth: Auth::Credential(Credential::Anonymous), paas: false });
+        // Power BI needs a bearer
+        let t = TabularTarget::PowerBi { workspace_id: "w".into(), workspace_name: "W".into(), dataset_id: "d".into(), model_name: "M".into() };
+        assert!(matches!(resolve(&http, &t, &Credential::Anonymous, &Hosts::default()).await, Err(TabularError::Unsupported(_))));
     }
 
     #[test]
-    fn keys() {
+    fn keys_and_caches() {
         let t = TabularTarget::AzureAs { region: "westeurope".into(), server: "srv".into(), model: "m".into() };
         assert_eq!(cache_key(&t), "asazure:westeurope/srv");
-        remember(&cache_key(&t), "cluster.asazure.windows.net");
-        assert_eq!(cached(&cache_key(&t)).as_deref(), Some("cluster.asazure.windows.net"));
+        let c = Cluster { fqdn: "cluster.asazure.windows.net".into(), server: "srv".into() };
+        remember_cluster(&cache_key(&t), &c);
+        assert_eq!(cached_cluster(&cache_key(&t)), Some(c));
         forget(&t);
-        assert_eq!(cached(&cache_key(&t)), None);
+        assert_eq!(cached_cluster(&cache_key(&t)), None);
     }
 }

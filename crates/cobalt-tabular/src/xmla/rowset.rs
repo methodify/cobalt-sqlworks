@@ -441,6 +441,8 @@ fn fold_errors(errors: &[(String, Option<String>)]) -> DaxItem {
 /// Parse one response body. `row_cap` keeps at most that many rows per result set (the
 /// server sends them all; the count reported is what was kept).
 pub fn parse(body: &str, row_cap: Option<u64>) -> Result<Parsed, TabularError> {
+    // Power BI's clusters end the body with a NUL byte after </soap:Envelope>
+    let body = body.trim_end_matches(|c: char| c == '\0' || c.is_whitespace());
     let mut reader = Reader::from_str(body);
     reader.config_mut().trim_text(false);
     let mut p = Parser { depth: 0, row_cap, header: None, session_id: None, fault: None, error: None, root: None, capture: Capture::None, text: String::new(), out: Parsed::default() };
@@ -830,6 +832,28 @@ mod tests {
         let f = parse(&body, None).unwrap().fault.unwrap();
         assert_eq!(f, Fault { code: Some("7".into()), message: "Session expired".into() });
         assert!(f.is_session_lost());
+    }
+
+    #[test]
+    fn paas_session_answer_with_trailing_nul_and_big_fault() {
+        // the BeginSession answer: Session header, empty root, a NUL after the envelope
+        let body = format!("{ENV_OPEN}<soap:Header><Session xmlns=\"urn:schemas-microsoft-com:xml-analysis\" SessionId=\"D4F84F15-7C2B-4A1E-9E0D-123456789ABC\"/></soap:Header><soap:Body><ExecuteResponse xmlns=\"urn:schemas-microsoft-com:xml-analysis\"><return><root xmlns=\"urn:schemas-microsoft-com:xml-analysis:empty\"/></return></ExecuteResponse></soap:Body></soap:Envelope>\u{0}\n");
+        let p = parse(&body, None).unwrap();
+        assert_eq!(p.session_id.as_deref(), Some("D4F84F15-7C2B-4A1E-9E0D-123456789ABC"));
+        assert_eq!(p.roots, 1);
+        assert!(p.items.is_empty() && p.fault.is_none());
+        // a fault the way the engine writes it: prefixed names, namespaces on every element, a
+        // Location block under Error, a huge Description, and the probe's query text inside
+        let long = "x".repeat(50_000);
+        let body = format!(
+            "{ENV_OPEN}<soap:Body><soap:Fault xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><faultcode>XMLAnalysisError.0xc10e0002</faultcode><faultstring>Query (3, 1) The syntax for &apos;EVALUAT&apos; is incorrect.</faultstring><detail><Error ErrorCode=\"3238920194\" Description=\"Query (3, 1) The syntax for 'EVALUAT' is incorrect. (DAX(// probe\nEVALUAT {{1}} {long}))\" Source=\"Microsoft Analysis Services\" HelpFile=\"\" xmlns=\"urn:schemas-microsoft-com:xml-analysis\"><Location xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine/2/2\"><Start><Line>3</Line><Column>1</Column></Start><End><Line>3</Line><Column>7</Column></End><LineOffset>0</LineOffset><TextLength>7</TextLength></Location></Error></detail></soap:Fault></soap:Body></soap:Envelope>\u{0}"
+        );
+        let p = parse(&body, None).unwrap();
+        let f = p.fault.unwrap();
+        assert_eq!(f.code.as_deref(), Some("3238920194"));
+        assert!(f.message.starts_with("Query (3, 1) The syntax for 'EVALUAT' is incorrect. (DAX(// probe\nEVALUAT {1} xxxx"), "{}", &f.message[..80]);
+        assert!(f.message.len() > 50_000);
+        assert!(!f.is_session_lost());
     }
 
     #[test]

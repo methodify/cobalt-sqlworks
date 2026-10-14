@@ -22,6 +22,12 @@ pub const ACTION_EXECUTE: &str = "\"urn:schemas-microsoft-com:xml-analysis:Execu
 /// The value of `SspropInitAppName`.
 pub const APP_NAME: &str = "Cobalt SQL Works";
 
+/// The engine `Version` header the official client sends to Power BI (constant sequence) and
+/// the `NamespaceCompatibility` header next to it.
+pub const NS_ENGINE_VERSION: &str = "http://schemas.microsoft.com/analysisservices/2003/engine/2";
+pub const NS_XMLA_2003: &str = "http://schemas.microsoft.com/analysisservices/2003/xmla";
+pub const VERSION_SEQUENCE: &str = "922";
+
 /// What goes in the SOAP header: start a session, continue one, or none at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionHeader<'a> {
@@ -49,17 +55,41 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-fn header_xml(session: SessionHeader<'_>) -> String {
-    match session {
-        SessionHeader::None => String::new(),
-        SessionHeader::Begin => format!("<soap:Header><BeginSession xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\"/></soap:Header>"),
-        SessionHeader::Existing(id) => format!("<soap:Header><Session xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\" SessionId=\"{}\"/></soap:Header>", escape(id)),
-        SessionHeader::End(id) => format!("<soap:Header><EndSession xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\" SessionId=\"{}\"/></soap:Header>", escape(id)),
+/// What the SOAP header carries: the session element and, on the Power BI (PaaS) path, the
+/// `Version` and `NamespaceCompatibility` elements the official client always sends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Headers<'a> {
+    pub session: SessionHeader<'a>,
+    pub paas: bool,
+}
+
+impl<'a> Headers<'a> {
+    pub fn plain(session: SessionHeader<'a>) -> Self {
+        Self { session, paas: false }
+    }
+
+    pub fn paas(session: SessionHeader<'a>) -> Self {
+        Self { session, paas: true }
     }
 }
 
-fn envelope(session: SessionHeader<'_>, body: &str) -> String {
-    format!("<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"{NS_SOAP}\">{}<soap:Body>{body}</soap:Body></soap:Envelope>", header_xml(session))
+fn header_xml(h: Headers<'_>) -> String {
+    let session = match h.session {
+        SessionHeader::None => String::new(),
+        SessionHeader::Begin => format!("<BeginSession xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\"/>"),
+        SessionHeader::Existing(id) => format!("<Session xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\" SessionId=\"{}\"/>", escape(id)),
+        SessionHeader::End(id) => format!("<EndSession xmlns=\"{NS_XMLA}\" soap:mustUnderstand=\"1\" SessionId=\"{}\"/>", escape(id)),
+    };
+    let extra = if h.paas { format!("<Version Sequence=\"{VERSION_SEQUENCE}\" xmlns=\"{NS_ENGINE_VERSION}\"/><NamespaceCompatibility xmlns=\"{NS_XMLA_2003}\" mustUnderstand=\"0\"/>") } else { String::new() };
+    if session.is_empty() && extra.is_empty() {
+        String::new()
+    } else {
+        format!("<soap:Header>{session}{extra}</soap:Header>")
+    }
+}
+
+fn envelope(h: Headers<'_>, body: &str) -> String {
+    format!("<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"{NS_SOAP}\">{}<soap:Body>{body}</soap:Body></soap:Envelope>", header_xml(h))
 }
 
 fn property_list(props: &[(&str, String)]) -> String {
@@ -73,7 +103,7 @@ fn property_list(props: &[(&str, String)]) -> String {
 /// A `Discover` request: `request_type` (`DISCOVER_PROPERTIES`, `DBSCHEMA_CATALOGS`, …),
 /// restrictions and properties as name / value pairs. `Format=Tabular` and `Content=SchemaData`
 /// are appended unless the caller set them.
-pub fn discover(request_type: &str, restrictions: &[(&str, String)], properties: &[(&str, String)], session: SessionHeader<'_>) -> String {
+pub fn discover(request_type: &str, restrictions: &[(&str, String)], properties: &[(&str, String)], h: Headers<'_>) -> String {
     let mut props: Vec<(&str, String)> = properties.to_vec();
     if !props.iter().any(|(k, _)| *k == "Format") {
         props.push(("Format", "Tabular".into()));
@@ -87,7 +117,15 @@ pub fn discover(request_type: &str, restrictions: &[(&str, String)], properties:
         property_list(restrictions),
         property_list(&props)
     );
-    envelope(session, &body)
+    envelope(h, &body)
+}
+
+/// The session-creating request of the Power BI path: an `Execute` with an empty `Statement`
+/// under `BeginSession` (what `AdomdConnection.Open` sends first), never a `Discover`.
+pub fn create_session(catalog: &str, locale: u32, activity_id: &str, h: Headers<'_>) -> String {
+    let props: Vec<(&str, String)> = vec![("Catalog", catalog.to_string()), ("LocaleIdentifier", locale.to_string()), ("DbpropMsmdActivityID", activity_id.to_string()), ("DbpropMsmdCurrentActivityID", activity_id.to_string())];
+    let body = format!("<Execute xmlns=\"{NS_XMLA}\"><Command><Statement></Statement></Command><Properties><PropertyList>{}</PropertyList></Properties></Execute>", property_list(&props));
+    envelope(h, &body)
 }
 
 /// The `PropertyList` of an `Execute`.
@@ -129,21 +167,21 @@ impl ExecuteProps {
 }
 
 /// An `Execute` with a `Statement` (DAX, MDX or a DMV `SELECT`; the server tells them apart).
-pub fn execute(statement: &str, props: &ExecuteProps, session: SessionHeader<'_>) -> String {
+pub fn execute(statement: &str, props: &ExecuteProps, h: Headers<'_>) -> String {
     let body = format!("<Execute xmlns=\"{NS_XMLA}\"><Command><Statement>{}</Statement></Command><Properties><PropertyList>{}</PropertyList></Properties></Execute>", escape(statement), property_list(&props.pairs()));
-    envelope(session, &body)
+    envelope(h, &body)
 }
 
 /// An `Execute` with `<Cancel/>`: stops what the session is running.
-pub fn cancel(session_id: &str) -> String {
+pub fn cancel(session_id: &str, paas: bool) -> String {
     let body = format!("<Execute xmlns=\"{NS_XMLA}\"><Command><Cancel/></Command><Properties><PropertyList/></Properties></Execute>");
-    envelope(SessionHeader::Existing(session_id), &body)
+    envelope(Headers { session: SessionHeader::Existing(session_id), paas }, &body)
 }
 
 /// An `EndSession` header on a `Discover` nobody reads (the cheapest body there is).
-pub fn end_session(session_id: &str) -> String {
+pub fn end_session(session_id: &str, paas: bool) -> String {
     let body = format!("<Discover xmlns=\"{NS_XMLA}\"><RequestType>DISCOVER_PROPERTIES</RequestType><Restrictions><RestrictionList><PropertyName>Catalog</PropertyName></RestrictionList></Restrictions><Properties><PropertyList><Format>Tabular</Format><Content>SchemaData</Content></PropertyList></Properties></Discover>");
-    envelope(SessionHeader::End(session_id), &body)
+    envelope(Headers { session: SessionHeader::End(session_id), paas }, &body)
 }
 
 #[cfg(test)]
@@ -152,12 +190,12 @@ mod tests {
 
     #[test]
     fn discover_text() {
-        let xml = discover("DBSCHEMA_CATALOGS", &[], &[("Catalog", "Sales & Co".into())], SessionHeader::Begin);
+        let xml = discover("DBSCHEMA_CATALOGS", &[], &[("Catalog", "Sales & Co".into())], Headers::plain(SessionHeader::Begin));
         assert_eq!(
             xml,
             "<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Header><BeginSession xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\"/></soap:Header><soap:Body><Discover xmlns=\"urn:schemas-microsoft-com:xml-analysis\"><RequestType>DBSCHEMA_CATALOGS</RequestType><Restrictions><RestrictionList></RestrictionList></Restrictions><Properties><PropertyList><Catalog>Sales &amp; Co</Catalog><Format>Tabular</Format><Content>SchemaData</Content></PropertyList></Properties></Discover></soap:Body></soap:Envelope>"
         );
-        let xml = discover("MDSCHEMA_FUNCTIONS", &[("ORIGIN", "1".into())], &[], SessionHeader::None);
+        let xml = discover("MDSCHEMA_FUNCTIONS", &[("ORIGIN", "1".into())], &[], Headers::plain(SessionHeader::None));
         assert!(xml.contains("<RestrictionList><ORIGIN>1</ORIGIN></RestrictionList>"));
         assert!(!xml.contains("soap:Header"));
     }
@@ -165,12 +203,12 @@ mod tests {
     #[test]
     fn execute_text() {
         let props = ExecuteProps { catalog: "Sales".into(), timeout_secs: 30, activity_id: "a-1".into(), request_id: "r-1".into(), locale: 0, effective_user_name: Some("u@x.com".into()), roles: vec!["Reader".into(), " ".into(), "EU".into()], memory_limit_kb: None };
-        let xml = execute("EVALUATE FILTER(T, T[x] < 3 && T[y] > \"a\")", &props, SessionHeader::Existing("S-123"));
+        let xml = execute("EVALUATE FILTER(T, T[x] < 3 && T[y] > \"a\")", &props, Headers::plain(SessionHeader::Existing("S-123")));
         assert_eq!(
             xml,
             "<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Header><Session xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\" SessionId=\"S-123\"/></soap:Header><soap:Body><Execute xmlns=\"urn:schemas-microsoft-com:xml-analysis\"><Command><Statement>EVALUATE FILTER(T, T[x] &lt; 3 &amp;&amp; T[y] &gt; &quot;a&quot;)</Statement></Command><Properties><PropertyList><Catalog>Sales</Catalog><Format>Tabular</Format><Content>SchemaData</Content><Timeout>30</Timeout><SspropInitAppName>Cobalt SQL Works</SspropInitAppName><DbpropMsmdActivityID>a-1</DbpropMsmdActivityID><DbpropMsmdRequestID>r-1</DbpropMsmdRequestID><LocaleIdentifier>1033</LocaleIdentifier><EffectiveUserName>u@x.com</EffectiveUserName><Roles>Reader,EU</Roles></PropertyList></Properties></Execute></soap:Body></soap:Envelope>"
         );
-        let plain = execute("EVALUATE {1}", &ExecuteProps { catalog: "m".into(), memory_limit_kb: Some(4096), ..ExecuteProps::default() }, SessionHeader::None);
+        let plain = execute("EVALUATE {1}", &ExecuteProps { catalog: "m".into(), memory_limit_kb: Some(4096), ..ExecuteProps::default() }, Headers::plain(SessionHeader::None));
         assert!(!plain.contains("<Timeout>"));
         assert!(!plain.contains("EffectiveUserName"));
         assert!(plain.contains("<DbpropMsmdRequestMemoryLimit>4096</DbpropMsmdRequestMemoryLimit>"));
@@ -178,11 +216,24 @@ mod tests {
 
     #[test]
     fn cancel_and_end() {
-        let xml = cancel("S-1");
+        let xml = cancel("S-1", false);
         assert!(xml.contains("<Session xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\" SessionId=\"S-1\"/>"));
         assert!(xml.contains("<Command><Cancel/></Command><Properties><PropertyList/></Properties>"));
-        let xml = end_session("S-1");
-        assert!(xml.contains("<EndSession xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\" SessionId=\"S-1\"/>"));
+        assert!(!xml.contains("<Version "));
+        let xml = end_session("S-1", true);
+        assert!(xml.contains("<EndSession xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\" SessionId=\"S-1\"/><Version Sequence=\"922\""));
+    }
+
+    #[test]
+    fn paas_session_creation_text() {
+        let xml = create_session("RetailDemo", 1033, "a-1", Headers::paas(SessionHeader::Begin));
+        assert_eq!(
+            xml,
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?><soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Header><BeginSession xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\"/><Version Sequence=\"922\" xmlns=\"http://schemas.microsoft.com/analysisservices/2003/engine/2\"/><NamespaceCompatibility xmlns=\"http://schemas.microsoft.com/analysisservices/2003/xmla\" mustUnderstand=\"0\"/></soap:Header><soap:Body><Execute xmlns=\"urn:schemas-microsoft-com:xml-analysis\"><Command><Statement></Statement></Command><Properties><PropertyList><Catalog>RetailDemo</Catalog><LocaleIdentifier>1033</LocaleIdentifier><DbpropMsmdActivityID>a-1</DbpropMsmdActivityID><DbpropMsmdCurrentActivityID>a-1</DbpropMsmdCurrentActivityID></PropertyList></Properties></Execute></soap:Body></soap:Envelope>"
+        );
+        // a later PaaS request: Session then Version, no BeginSession
+        let xml = discover("DBSCHEMA_CATALOGS", &[], &[], Headers::paas(SessionHeader::Existing("S")));
+        assert!(xml.contains("<soap:Header><Session xmlns=\"urn:schemas-microsoft-com:xml-analysis\" soap:mustUnderstand=\"1\" SessionId=\"S\"/><Version Sequence=\"922\""));
     }
 
     #[test]

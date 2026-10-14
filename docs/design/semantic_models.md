@@ -3,9 +3,7 @@
 *Design, 2026-10-13. Status: approved by the founder the same day on every decision in §6; slice A
 built 2026-10-13 (`cobalt_core::tabular`, the `cobalt-tabular` crate with the Arrow query API
 transport, `cobalt_sql::dax`, `session/tabular.rs`, `tabularq.rs`, `ui/model_tree.rs`) and
-verified in the app up to the service, which answers a bare 401 until the app registration carries
-`Dataset.Read.All`; a Direct Lake test model "Cobalt test model" exists in the Fabric test
-workspace for the live check; the live check passed on both models after the permission was added. Slice B
+live-verified on both test models after the app registration gained `Dataset.Read.All`. Slice B
 (Explore) built 2026-10-13: `cobalt_core::explore::ExploreSpec`, the DAX emitter in
 `cobalt-tabular::explore`, the local pivot in `cobalt-results::pivot`, `exploreq.rs`,
 `ui/explore.rs`, `ui/results/matrix.rs`, `TileSource` on dashboard tiles; verified live on
@@ -311,19 +309,18 @@ it needs).
   lakehouses automatically, so one may need to be created in the portal.
 - **Tenant settings** on the test tenant: *Dataset Execute Queries REST API* and *Allow XMLA
   endpoints and Analyze in Excel with on-premises semantic models* (both on by default).
-- **For slice C on Power BI**: one Fiddler or mitmproxy capture of SSMS or DAX Studio connecting to
-  a workspace: specifically the first `POST https://<region>.pbidedicated.windows.net/webapi/xmla`
-  with all its request headers. Confirmed live on 2026-10-14 without a capture: `GET
-  api.powerbi.com/powerbi/databases/v201606/workspaces/<name>` answers the workspace record whose
-  `capacityUri` is `pbidedicated://<cluster host>/<capacity object id>`; `POST
-  …/workspaces/<id>/getDatabaseName {"datasetName": …}` answers `[{"databaseName": "<dataset
-  GUID>", "virtualServerName": "sobe_wowvirtualserver", "isAccessAllowedByPublicXmlaEndpoint":
-  true}]`; the cluster's `/webapi/xmla` front door recognises a server only when
-  `x-ms-xmlaserver` is the capacity object id (workspace names, ids and the virtual server name
-  answer NotFound) and then answers `200 {"message": "An internal error occurred."}` whatever
-  database header, catalog, session header or routing header is added. The capture should show
-  what the official client sends that we do not. The work tenant is fine for the capture;
-  nothing is written.
+- **Power BI over XMLA — resolved 2026-10-14 without a capture**, by decompiling ADOMD.NET
+  (`docs/research/adomd_powerbi_xmla.md`): the official client never sends the Entra token to the
+  dedicated cluster. It exchanges it at `POST api.powerbi.com/metadata/v201606/generateastoken`
+  (`{capacityObjectId, workspaceObjectId, datasetName, intendedUsage: 0, …}` → `{"Token"}`) and
+  sends `Authorization: MwcToken <token>`; the cluster comes from an unauthenticated `POST
+  <rollout host>/webapi/clusterResolve {"serverName": <capacity id>, "premiumPublicXmlaEndpoint":
+  true}` → `{clusterFQDN, coreServerName}` (`x-ms-xmlaserver` = `coreServerName`); the session is
+  opened with an `Execute` carrying `BeginSession`, `Version Sequence="922"` and
+  `NamespaceCompatibility` headers and an empty statement; the `Catalog` is the model's friendly
+  name. Confirmed live: session, `DBSCHEMA_CATALOGS`, DAX, DMVs and MDX all answer. One transport
+  limit stands: a DateTime outside 1899-12-30 … 9999-12-31 23:59:59 (sentinel `ValidTo` values)
+  faults the whole result over XMLA; the Arrow query API carries it.
 - **For slice C on Azure AS / SSAS**: an endpoint to test against, if one exists outside the work
   environment; otherwise slice C ships unit-tested on recorded envelopes and Power BI only.
 - The stop-and-coordinate rule holds: no live Entra or Fabric calls against the work tenant

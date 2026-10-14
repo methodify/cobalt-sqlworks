@@ -9,7 +9,8 @@ use crate::xmla::{is_mdx_or_dmv, Credential, XmlaClient, AZURE_AS_RESOURCE};
 use crate::TabularError;
 use cobalt_core::tabular::{ModelCatalog, TabularTarget};
 
-/// A connected transport.
+/// A connected transport. One per tab, so the size gap between the variants is irrelevant.
+#[allow(clippy::large_enum_variant)]
 pub enum Transport {
     Rest(PowerBiClient),
     Xmla(XmlaClient),

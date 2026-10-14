@@ -14,5 +14,10 @@ async fn main() {
         .expect("keyring")
         .expect("no refresh token stored for this profile");
     let ts = refresh(&cfg, &rt).await.expect("refresh failed");
+    // persist the rotated refresh token: Entra invalidates the previous one, so a helper that
+    // refreshes without storing the new token signs the app out
+    if let Some(new_rt) = &ts.refresh {
+        KeyringStore.set(&CredentialResolver::refresh_token_ref(&id), new_rt).expect("keyring write");
+    }
     println!("{}", ts.access.token.expose());
 }

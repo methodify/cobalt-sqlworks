@@ -6,8 +6,9 @@
   **Analysis Services** root for saved XMLA endpoints: Azure Analysis Services (the Fabric
   panel's Entra sign-in, cluster resolution), SQL Server Analysis Services through its HTTP
   endpoint (`msmdpump.dll` on IIS, basic or anonymous authentication, the password in the
-  keyring), and Power BI workspaces over XMLA (experimental: the endpoint resolution is coded
-  from the client library's URL templates and awaits a protocol capture). Expand an endpoint
+  keyring), and Power BI workspaces over XMLA (the official client library's handshake, found by
+  decompiling it: a workload token from the Power BI service, the capacity resolved to its
+  cluster; confirmed live for DAX, DMVs and MDX). Expand an endpoint
   for its models (`DBSCHEMA_CATALOGS`), click a model for the model explorer (the `TMSCHEMA_*`
   DMVs, or INFO.VIEW where the server supports it), double-click for a query tab: DAX, **MDX**
   (`Format=Tabular`, so a cellset lands in the grid with MDX unique names as columns) and the

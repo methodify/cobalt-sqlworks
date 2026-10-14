@@ -1,10 +1,19 @@
-//! XMLA over HTTPS: plain SOAP 1.1 `Discover` / `Execute` against Azure Analysis Services,
-//! `msmdpump.dll` (or any XMLA URL) and, once its routing is captured, Power BI. One session
-//! per client (`BeginSession` on the first call, `Session` after, `EndSession` at the end), a
-//! real `<Cancel/>`, text XML only (the transport capability flags never advertise binary XML
-//! or XPRESS), DAX / MDX / DMV text alike. Results come back as the same `DaxItem` sequence the
-//! Arrow query API yields. `soap` builds envelopes, `rowset` parses answers, `resolve` finds the
-//! URL per target, `tmschema` joins the DMVs into a `ModelCatalog`.
+//! XMLA over HTTPS: plain SOAP 1.1 `Discover` / `Execute` against Power BI's dedicated
+//! clusters, Azure Analysis Services and `msmdpump.dll` (or any XMLA URL). One session per
+//! client, a real `<Cancel/>`, text XML only (the capability flags never advertise binary XML or
+//! XPRESS), DAX / MDX / DMV text alike. Results come back as the same `DaxItem` sequence the
+//! Arrow query API yields.
+//!
+//! Two flavours of endpoint (`resolve::Endpoint::paas`):
+//! - **classic** (`msmdpump.dll`): `SOAPAction`, `X-Transport-Caps-Negotiation-Flags`, `X-AS-*`
+//!   ids, the session opened by `BeginSession` on the first `Discover`;
+//! - **PaaS** (Power BI, Azure AS): the official client's header set (`x-ms-*`, no `SOAPAction`),
+//!   `Authorization: MwcToken` for Power BI, the session opened by an `Execute` with an empty
+//!   statement under `BeginSession`, `x-ms-routing-hint` / `x-ms-workload-resource-moniker`
+//!   echoed back, a `3xx` taken as "the instance moved" (cluster cache cleared).
+//!
+//! `soap` builds envelopes, `rowset` parses answers, `resolve` finds the URL and the credential
+//! exchange per target, `tmschema` joins the DMVs into a `ModelCatalog`.
 
 pub mod resolve;
 pub mod rowset;
@@ -16,9 +25,10 @@ use crate::decode::{collect_items, DaxItem, DaxResult, DaxTable};
 use crate::rest::{DaxOptions, DaxStream};
 use crate::TabularError;
 use cobalt_core::tabular::{ModelCatalog, TabularTarget};
-use resolve::Endpoint;
+pub use resolve::Hosts;
+use resolve::{Auth, Endpoint};
 use rowset::Parsed;
-use soap::{ExecuteProps, SessionHeader, ACTION_DISCOVER, ACTION_EXECUTE};
+use soap::{ExecuteProps, Headers, SessionHeader, ACTION_DISCOVER, ACTION_EXECUTE};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -26,8 +36,14 @@ use std::time::Duration;
 /// The Entra resource a bearer token for Azure Analysis Services is minted for.
 pub const AZURE_AS_RESOURCE: &str = "https://*.asazure.windows.net";
 
-/// The `User-Agent`.
+/// The `User-Agent` on classic endpoints.
 pub const USER_AGENT: &str = concat!("cobalt-sqlworks/", env!("CARGO_PKG_VERSION"));
+
+/// `x-ms-xmlaapp-general-info` on PaaS endpoints.
+pub const APP_GENERAL_INFO: &str = "AppName=cobalt,AadClient=MSAL,CacheUsed=0,ConStrId=1";
+
+/// Response headers a PaaS cluster wants echoed on the next request.
+const ECHO_HEADERS: [&str; 3] = ["x-ms-routing-hint", "x-ms-workload-resource-moniker", "x-ms-root-activity-id"];
 
 /// How the client signs in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -118,9 +134,11 @@ enum Action {
 /// share it behind an `Arc`.
 pub struct XmlaClient {
     http: reqwest::Client,
+    hosts: Hosts,
     endpoint: Endpoint,
-    cred: Credential,
     session: Mutex<Option<String>>,
+    /// Response headers to echo on the next request (PaaS).
+    echo: Mutex<Vec<(String, String)>>,
     negotiated: AtomicBool,
     server_version: Option<String>,
     server_name: Option<String>,
@@ -128,12 +146,14 @@ pub struct XmlaClient {
 
 impl std::fmt::Debug for XmlaClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("XmlaClient").field("url", &self.endpoint.url).field("catalog", &self.endpoint.catalog).field("session", &self.session_id()).finish()
+        f.debug_struct("XmlaClient").field("url", &self.endpoint.url).field("catalog", &self.endpoint.catalog).field("paas", &self.endpoint.paas).field("session", &self.session_id()).finish()
     }
 }
 
+/// No automatic redirects: api.powerbi.com's `307`s are followed by hand with the bearer kept,
+/// and a `3xx` from a cluster means the instance moved.
 fn http_client() -> Result<reqwest::Client, TabularError> {
-    Ok(reqwest::Client::builder().user_agent(USER_AGENT).connect_timeout(Duration::from_secs(30)).build()?)
+    Ok(reqwest::Client::builder().user_agent(USER_AGENT).redirect(reqwest::redirect::Policy::none()).connect_timeout(Duration::from_secs(30)).build()?)
 }
 
 fn first_line(text: &str) -> String {
@@ -141,15 +161,31 @@ fn first_line(text: &str) -> String {
 }
 
 impl XmlaClient {
-    /// Resolve the endpoint and open a session with a `DISCOVER_PROPERTIES` (which also proves
-    /// the credential and reads the server version).
+    /// Resolve the endpoint and open a session; on a classic endpoint with a
+    /// `DISCOVER_PROPERTIES` under `BeginSession`, on a PaaS endpoint with the official
+    /// client's `Execute` (then a `DISCOVER_PROPERTIES` for the server version, best effort).
     pub async fn connect(target: &TabularTarget, cred: Credential) -> Result<XmlaClient, TabularError> {
+        Self::connect_with(target, cred, &Hosts::default()).await
+    }
+
+    /// `connect` against other hosts (tests).
+    pub async fn connect_with(target: &TabularTarget, cred: Credential, hosts: &Hosts) -> Result<XmlaClient, TabularError> {
         let http = http_client()?;
-        let endpoint = resolve::resolve(&http, target, &cred).await?;
-        tracing::debug!(url = %endpoint.url, catalog = %endpoint.catalog, cred = %cred, "xmla connect");
-        let mut client = XmlaClient { http, endpoint, cred, session: Mutex::new(None), negotiated: AtomicBool::new(false), server_version: None, server_name: None };
+        let endpoint = resolve::resolve(&http, target, &cred, hosts).await?;
+        tracing::debug!(url = %endpoint.url, catalog = %endpoint.catalog, paas = endpoint.paas, cred = %cred, "xmla connect");
+        let mut client = XmlaClient { http, hosts: hosts.clone(), endpoint, session: Mutex::new(None), echo: Mutex::new(Vec::new()), negotiated: AtomicBool::new(false), server_version: None, server_name: None };
+        if client.endpoint.paas {
+            if let Err(e) = client.create_session().await {
+                resolve::forget(target);
+                return Err(e);
+            }
+        }
         let props = match client.discover("DISCOVER_PROPERTIES", &[]).await {
             Ok(t) => t,
+            Err(e) if client.endpoint.paas => {
+                tracing::debug!(error = %e, "DISCOVER_PROPERTIES failed after the session opened; no server version");
+                DaxTable { columns: Vec::new(), batches: Vec::new(), rows: 0 }
+            }
             Err(e) => {
                 resolve::forget(target);
                 return Err(e);
@@ -181,6 +217,11 @@ impl XmlaClient {
         &self.endpoint.catalog
     }
 
+    /// True on Power BI / Azure AS (the official client's header set and session flow).
+    pub fn is_paas(&self) -> bool {
+        self.endpoint.paas
+    }
+
     /// The session id, once the server issued one.
     pub fn session_id(&self) -> Option<String> {
         self.session.lock().ok().and_then(|s| s.clone())
@@ -192,15 +233,38 @@ impl XmlaClient {
         }
     }
 
-    /// One POST and its parsed answer; a lost session is retried once with a new `BeginSession`.
-    async fn call(&self, action: Action, build: &(dyn Fn(SessionHeader<'_>) -> String + Sync), timeout: Duration, row_cap: Option<u64>) -> Result<Parsed, TabularError> {
+    fn headers<'a>(&self, session: SessionHeader<'a>) -> Headers<'a> {
+        Headers { session, paas: self.endpoint.paas }
+    }
+
+    /// PaaS: the session-creating `Execute`; the server must answer with a `Session` header.
+    async fn create_session(&self) -> Result<(), TabularError> {
+        let body = soap::create_session(&self.endpoint.catalog, 1033, &uuid::Uuid::new_v4().to_string(), self.headers(SessionHeader::Begin));
+        let parsed = self.post(Action::Execute, body, None, Duration::from_secs(120), None).await?;
+        if let Some(f) = parsed.fault {
+            return Err(TabularError::Query { code: f.code, message: f.message });
+        }
+        match parsed.session_id {
+            Some(id) => {
+                self.set_session(Some(id));
+                Ok(())
+            }
+            None => Err(TabularError::Decode("the server opened no session (no Session header in the BeginSession answer)".into())),
+        }
+    }
+
+    /// One POST and its parsed answer; a lost session is retried once with a new session.
+    async fn call(&self, action: Action, build: &(dyn Fn(Headers<'_>) -> String + Sync), timeout: Duration, row_cap: Option<u64>) -> Result<Parsed, TabularError> {
         for attempt in 0..2 {
+            if self.endpoint.paas && self.session_id().is_none() {
+                self.create_session().await?;
+            }
             let session = self.session_id();
             let header = match session.as_deref() {
                 Some(id) => SessionHeader::Existing(id),
                 None => SessionHeader::Begin,
             };
-            let body = build(header);
+            let body = build(self.headers(header));
             let parsed = self.post(action, body, session.as_deref(), timeout, row_cap).await?;
             if let Some(id) = parsed.session_id.as_deref() {
                 self.set_session(Some(id.to_string()));
@@ -217,56 +281,107 @@ impl XmlaClient {
         unreachable!("the retry loop returns")
     }
 
+    async fn authorization(&self) -> Result<Option<String>, TabularError> {
+        Ok(match &self.endpoint.auth {
+            Auth::Credential(Credential::Bearer(t)) => Some(format!("Bearer {t}")),
+            Auth::Credential(Credential::Basic { user, password }) => {
+                use base64::Engine;
+                Some(format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"))))
+            }
+            Auth::Credential(Credential::Anonymous) => None,
+            Auth::Mwc { entra, workspace_id, capacity_id, model } => Some(format!("MwcToken {}", resolve::mwc_token(&self.http, &self.hosts, entra, workspace_id, capacity_id, model).await?)),
+        })
+    }
+
     async fn post(&self, action: Action, body: String, session: Option<&str>, timeout: Duration, row_cap: Option<u64>) -> Result<Parsed, TabularError> {
-        let flags = if self.negotiated.load(Ordering::Relaxed) { "1,0,0,0,0" } else { "0,0,0,0,0" };
-        let mut req = self
-            .http
-            .post(&self.endpoint.url)
-            .header("Content-Type", "text/xml; charset=utf-8")
-            .header("SOAPAction", if action == Action::Discover { ACTION_DISCOVER } else { ACTION_EXECUTE })
-            .header("X-Transport-Caps-Negotiation-Flags", flags)
-            .header("x-ms-xmlacaps-negotiation-flags", flags)
-            .header("X-AS-ActivityID", uuid::Uuid::new_v4().to_string())
-            .header("X-AS-RequestID", uuid::Uuid::new_v4().to_string())
-            .timeout(timeout);
-        if let Some(id) = session {
-            req = req.header("X-AS-SessionID", id).header("x-ms-xmlasession-id", id);
+        let paas = self.endpoint.paas;
+        let mut req = self.http.post(&self.endpoint.url).timeout(timeout);
+        if paas {
+            req = req
+                .header("Content-Type", "text/xml")
+                .header("User-Agent", resolve::AS_CLIENT_AGENT)
+                .header("X-AS-AcquireTokenStats", "AppName=")
+                .header("x-ms-xmlaapp-general-info", APP_GENERAL_INFO)
+                .header("x-ms-xmlaclienttraits", "1")
+                .header("x-ms-xmladedicatedconnection", "0")
+                .header("x-ms-xmlacaps-negotiation-flags", "0,0,0,0,0")
+                .header("x-ms-request-registration-id", uuid::Uuid::new_v4().to_string())
+                .header("x-ms-accepts-continuations", "1")
+                .header("x-ms-round-trip-id", "0")
+                .header("x-ms-parent-activity-id", uuid::Uuid::new_v4().to_string());
+            if let Some(id) = session {
+                req = req.header("x-ms-xmlasession-id", id);
+            }
+            if let Ok(echo) = self.echo.lock() {
+                for (k, v) in echo.iter() {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
+        } else {
+            let flags = if self.negotiated.load(Ordering::Relaxed) { "1,0,0,0,0" } else { "0,0,0,0,0" };
+            req = req
+                .header("Content-Type", "text/xml; charset=utf-8")
+                .header("SOAPAction", if action == Action::Discover { ACTION_DISCOVER } else { ACTION_EXECUTE })
+                .header("X-Transport-Caps-Negotiation-Flags", flags)
+                .header("x-ms-xmlacaps-negotiation-flags", flags)
+                .header("X-AS-ActivityID", uuid::Uuid::new_v4().to_string())
+                .header("X-AS-RequestID", uuid::Uuid::new_v4().to_string());
+            if let Some(id) = session {
+                req = req.header("X-AS-SessionID", id).header("x-ms-xmlasession-id", id);
+            }
         }
         for (k, v) in &self.endpoint.headers {
             req = req.header(*k, v);
         }
-        req = match &self.cred {
-            Credential::Bearer(t) => req.bearer_auth(t),
-            Credential::Basic { user, password } => req.basic_auth(user, Some(password)),
-            Credential::Anonymous => req,
-        };
+        if let Some(a) = self.authorization().await? {
+            req = req.header("Authorization", a);
+        }
         let resp = req.body(body).send().await?;
         let status = resp.status().as_u16();
-        let content_type = resp.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").trim().to_ascii_lowercase();
+        let header = |name: &str| resp.headers().get(name).and_then(|v| v.to_str().ok()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let content_type = header("content-type").unwrap_or_default().to_ascii_lowercase();
+        let extended_error = header("x-ms-xmlaerror-extended");
+        let wrong_node = status == 400 && header("x-ms-wrong-node").as_deref() == Some("1");
+        if paas {
+            let echoes: Vec<(String, String)> = ECHO_HEADERS.iter().filter_map(|n| header(n).map(|v| (n.to_string(), v))).collect();
+            if let Ok(mut e) = self.echo.lock() {
+                if status == 200 {
+                    for (k, v) in echoes {
+                        e.retain(|(x, _)| x != &k);
+                        e.push((k, v));
+                    }
+                } else if !wrong_node {
+                    e.clear();
+                }
+            }
+        }
+        if (300..400).contains(&status) {
+            resolve::forget_clusters();
+            return Err(TabularError::Api { status, code: "ServerMoved".into(), message: "the Analysis Services instance was moved to another node; reconnect".into() });
+        }
         let bytes = resp.bytes().await?;
         let text = String::from_utf8_lossy(&bytes);
         let looks_xml = content_type.starts_with("text/xml") || content_type.starts_with("application/soap+xml") || content_type.starts_with("application/xml") || (content_type.is_empty() && text.trim_start().starts_with('<'));
         tracing::debug!(status, content_type = %content_type, bytes = bytes.len(), "xmla response");
         if !looks_xml {
+            let message = extended_error.unwrap_or_else(|| first_line(&text));
             return Err(match status {
-                401 | 403 => TabularError::Unauthorized(status, first_line(&text)),
-                200..=299 if content_type.starts_with("application/json") => {
-                    // the Power BI dedicated cluster's front door answers JSON on routing failures
-                    let msg = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string)).unwrap_or_else(|| first_line(&text));
-                    TabularError::Unsupported(format!("the XMLA front door answered: {}. The Power BI XMLA routing is not confirmed yet (the capacity, cluster and database are resolved; the remaining header needs a protocol capture, see docs/design/semantic_models.md §7). The Arrow query API path is unaffected.", msg.trim_end_matches('.')))
-                }
+                401 | 403 => TabularError::Unauthorized(status, message),
                 200..=299 => TabularError::Unsupported(format!("the server answered with {}; binary XML is not supported", if content_type.is_empty() { "no content type" } else { content_type.as_str() })),
-                _ => TabularError::Api { status, code: String::new(), message: first_line(&text) },
+                _ => match crate::rest::parse_http_error(status, &text) {
+                    TabularError::Api { status, code, message: m } => TabularError::Api { status, code, message: if m.is_empty() { message } else { m } },
+                    other => other,
+                },
             });
         }
         self.negotiated.store(true, Ordering::Relaxed);
         let parsed = rowset::parse(&text, row_cap)?;
         if status == 401 || status == 403 {
-            let detail = parsed.fault.as_ref().map(|f| f.message.clone()).unwrap_or_else(|| first_line(&text));
+            let detail = extended_error.or_else(|| parsed.fault.as_ref().map(|f| f.message.clone())).unwrap_or_else(|| first_line(&text));
             return Err(TabularError::Unauthorized(status, detail));
         }
-        if !(200..300).contains(&status) && parsed.fault.is_none() {
-            return Err(TabularError::Api { status, code: String::new(), message: first_line(&text) });
+        if !(200..300).contains(&status) && !wrong_node && parsed.fault.is_none() {
+            return Err(TabularError::Api { status, code: String::new(), message: extended_error.unwrap_or_else(|| first_line(&text)) });
         }
         Ok(parsed)
     }
@@ -274,7 +389,7 @@ impl XmlaClient {
     /// A `Discover` as one table (its first rowset); a fault is `TabularError::Query`.
     pub async fn discover(&self, request_type: &str, restrictions: &[(&str, String)]) -> Result<DaxTable, TabularError> {
         let props: Vec<(&str, String)> = if self.endpoint.catalog.trim().is_empty() { Vec::new() } else { vec![("Catalog", self.endpoint.catalog.clone())] };
-        let build = |h: SessionHeader<'_>| soap::discover(request_type, restrictions, &props, h);
+        let build = |h: Headers<'_>| soap::discover(request_type, restrictions, &props, h);
         let parsed = self.call(Action::Discover, &build, Duration::from_secs(120), None).await?;
         if let Some(f) = parsed.fault {
             return Err(TabularError::Query { code: f.code, message: f.message });
@@ -305,7 +420,7 @@ impl XmlaClient {
             memory_limit_kb: None,
         };
         let row_cap = if opts.schema_only { Some(0) } else { opts.row_limit };
-        let build = |h: SessionHeader<'_>| soap::execute(text, &props, h);
+        let build = |h: Headers<'_>| soap::execute(text, &props, h);
         let parsed = self.call(Action::Execute, &build, request_timeout(opts.timeout_secs), row_cap).await?;
         let items = match parsed.fault {
             Some(f) => vec![DaxItem::Error { message: f.message, code: f.code }],
@@ -318,7 +433,7 @@ impl XmlaClient {
     /// flight). Nothing to cancel without a session.
     pub async fn cancel(&self) -> Result<(), TabularError> {
         let Some(id) = self.session_id() else { return Ok(()) };
-        let body = soap::cancel(&id);
+        let body = soap::cancel(&id, self.endpoint.paas);
         let parsed = self.post(Action::Execute, body, Some(&id), Duration::from_secs(60), None).await?;
         if let Some(f) = parsed.fault {
             tracing::debug!(message = %f.message, "xmla cancel answered with a fault");
@@ -326,7 +441,8 @@ impl XmlaClient {
         Ok(())
     }
 
-    /// `DBSCHEMA_CATALOGS`: the models on the server.
+    /// `DBSCHEMA_CATALOGS`: the models on the server (on Power BI, the workspace's models by
+    /// their friendly names).
     pub async fn list_catalogs(&self) -> Result<Vec<String>, TabularError> {
         let t = self.discover("DBSCHEMA_CATALOGS", &[]).await?;
         Ok((0..t.num_rows()).filter_map(|r| t.text("CATALOG_NAME", r)).collect())
@@ -403,7 +519,7 @@ impl XmlaClient {
     pub async fn end_session(&self) {
         let Some(id) = self.session_id() else { return };
         self.set_session(None);
-        let body = soap::end_session(&id);
+        let body = soap::end_session(&id, self.endpoint.paas);
         if let Err(e) = self.post(Action::Discover, body, Some(&id), Duration::from_secs(30), None).await {
             tracing::debug!(error = %e, "xmla EndSession failed");
         }

@@ -733,11 +733,12 @@ rowset's inline schema becomes the grid's columns; `_x0020_`-style escaped names
 
 Power BI over XMLA: a Fabric semantic model's tab has an **XMLA** button on its toolbar (next
 to the model chip) that routes the tab through the XMLA endpoint instead of the Arrow query
-API; MDX and the `$SYSTEM` DMVs need it. Cobalt resolves the workspace to its dedicated
-cluster and the model to the dataset id the service calls the database (both confirmed live),
-and the cluster's front door accepts the capacity as the server, but it still answers "An
-internal error occurred" to our request: one request header the official client sends is
-missing, and a protocol capture will name it. Until then the XMLA button on a Fabric model
-tab reports that message; the Arrow query API path is unaffected. Not supported: SQL Server Analysis Services over its native TCP
+API; MDX and the `$SYSTEM` DMVs need it. Cobalt does what the official client library does
+(found by decompiling it): it exchanges the Entra token for a workload token at the Power BI
+service, resolves the capacity to its cluster, and talks XMLA to that cluster. One transport
+limit to know: a date outside 1899-12-30 … 9999-12-31 23:59:59 in the result (the
+`ValidTo = 9999-12-31 23:59:59.999…` sentinel that slowly changing dimensions use) faults the
+whole query over XMLA, exactly as it does in SSMS; the Arrow query API carries such values, so
+use the API path (the toggle off) for those tables, or project the columns you need. Not supported: SQL Server Analysis Services over its native TCP
 port (that is not HTTP; use the IIS HTTP endpoint), and Windows integrated authentication on
 the HTTP endpoint (basic over HTTPS or anonymous for now).

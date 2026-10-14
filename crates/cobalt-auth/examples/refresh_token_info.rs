@@ -17,7 +17,13 @@ async fn main() {
     println!("has whitespace: {}", s.chars().any(char::is_whitespace));
     let cfg = EntraConfig::from_settings(&ConnectionSettings::default()).with_tenant(tenant.as_deref()).with_resource(&resource);
     match refresh(&cfg, &rt).await {
-        Ok(ts) => println!("refresh OK: scope {}", ts.access.scope),
+        Ok(ts) => {
+            // persist the rotated refresh token: Entra invalidates the previous one
+            if let Some(new_rt) = &ts.refresh {
+                KeyringStore.set(&CredentialResolver::refresh_token_ref(&id), new_rt).expect("keyring write");
+            }
+            println!("refresh OK: scope {}", ts.access.scope)
+        }
         Err(e) => println!("refresh FAILED: {e:#?}"),
     }
 }
