@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.1 — unreleased
+## 0.10.1 — 2026-10-14
 
 - **Semantic models: the transport is a setting.** Settings › Connections › **Semantic
   models** chooses how Cobalt reaches a Power BI / Fabric model: **Auto** (the Arrow query API
