@@ -253,7 +253,7 @@ pub fn ensure_lakehouses_loaded(state: &mut AppState, cx: &Ctx) {
     on_panel_shown(state, cx);
     let ws: Vec<String> = state.fabric.workspaces.get().map(|w| w.iter().map(|w| w.id.clone()).collect()).unwrap_or_default();
     for id in ws {
-        if state.fabric.items.get(&id).map(|l| l.needs_load()).unwrap_or(true) {
+        if state.fabric.items.get(&id).map(|l| l.needs_load() || matches!(l, Loadable::Failed(_))).unwrap_or(true) {
             load_items(state, cx, &id);
         }
     }
@@ -271,7 +271,7 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
         FabricAction::ToggleWorkspace(id) => {
             if !state.fabric.expanded.remove(&id) {
                 state.fabric.expanded.insert(id.clone());
-                if state.fabric.items.get(&id).map(|l| l.needs_load()).unwrap_or(true) {
+                if state.fabric.items.get(&id).map(|l| l.needs_load() || matches!(l, Loadable::Failed(_))).unwrap_or(true) {
                     load_items(state, cx, &id);
                 }
             }
@@ -995,6 +995,14 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             crate::notebook::pump_all_spark(state, cx);
             let _ = cx.store.set_kv(KV_ACCOUNT_SLOT, &slot.to_string());
             load_workspaces(state, cx);
+            // listings that failed for want of a sign-in load again now
+            let failed: Vec<String> = state.fabric.items.iter().filter(|(_, l)| matches!(l, Loadable::Failed(_))).map(|(k, _)| k.clone()).collect();
+            for ws in failed {
+                state.fabric.items.remove(&ws);
+                if state.fabric.expanded.contains(&ws) {
+                    load_items(state, cx, &ws);
+                }
+            }
             // DAX tabs restored before the sign-in get their model catalogs now
             crate::tabularq::ensure_all(state, cx);
         }
