@@ -635,7 +635,7 @@ Known limits: one file per import, no column reordering or transforms, geography
 targets are not supported, and CSV row counts in the progress bar are estimates.
 Agent: `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?}`, `import_state`.
 
-## Semantic models: DAX query tabs and the model explorer (0.9.6)
+## Semantic models: DAX query tabs and the model explorer (0.10.0)
 
 Power BI / Fabric semantic models show up in the Fabric panel under their workspace, with a
 cube icon. Click the row for the **model explorer** (Tables with their columns, measures and
@@ -674,7 +674,7 @@ Agent: `fabric_state` lists `semantic_models` per expanded workspace; `dax_query
 model, text?, run?}` opens a tab; `model {workspace, model, action: tree|refresh|functions}`
 returns the catalog; `state` tabs carry `kind: "dax"` and a `tabular` block.
 
-## Explore: the pivot builder on semantic models (0.9.6)
+## Explore: the pivot builder on semantic models (0.10.0)
 
 For the people who want "rows, columns, values" without writing DAX. Right-click a semantic
 model on the Fabric panel › **Explore** (a measure's context menu has "Explore with this
@@ -709,7 +709,7 @@ value picker loads the first 500 distinct values; a non-additive measure in a ma
 the model's own subtotal (not a local sum), which is why subtotals come from the query. The
 spec is engine-agnostic, so the same builder can later produce SQL for a warehouse table.
 
-## Analysis Services over XMLA (0.9.6)
+## Analysis Services over XMLA (0.10.0)
 
 The Servers tree has an **Analysis Services** root for the engines that speak XMLA but are not
 Fabric semantic models: right-click it (or the "Add an endpoint…" row) for the dialog. Three

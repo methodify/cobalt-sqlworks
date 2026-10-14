@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.6 — unreleased
+## 0.10.0 — 2026-10-14
 
 - **Analysis Services over XMLA, in pure Rust (slice C).** The Servers tree gains an
   **Analysis Services** root for saved XMLA endpoints: Azure Analysis Services (the Fabric
