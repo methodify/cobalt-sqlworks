@@ -396,7 +396,7 @@ fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat
             for (i, fl) in ex.spec.filters.clone().iter().enumerate() {
                 egui::Frame::new().fill(theme.bg_hover).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let r = ui.add(egui::Label::new(RichText::new(fl.summary()).size(12.0)).sense(Sense::click()));
+                        let r = ui.add(egui::Label::new(RichText::new(fl.summary()).size(12.0)).selectable(false).sense(Sense::click()));
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore filter {}", fl.column)));
                         if r.clicked() {
                             acts.push(Act::EditFilter(i));
@@ -485,7 +485,7 @@ fn field_chip(ui: &mut Ui, theme: &Theme, f: &FieldRef, well: Well, i: usize, n:
             let by = SortBy::Field { field: f.clone() };
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { f.label() } else { format!("{} {sorted}", f.label()) };
-            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click_and_drag()));
+            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).selectable(false).sense(Sense::click_and_drag()));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore chip {}", f.qualified())));
             r.dnd_set_drag_payload(DragField { field: f.clone(), from: Some(well) });
             if let Some(p) = r.dnd_release_payload::<DragField>() {
@@ -548,7 +548,7 @@ fn value_chip(ui: &mut Ui, theme: &Theme, i: usize, v: &cobalt_core::explore::Va
             let by = SortBy::Value { index: i };
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { v.name() } else { format!("{} {sorted}", v.name()) };
-            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click_and_drag()));
+            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).selectable(false).sense(Sense::click_and_drag()));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore value {}", v.name())));
             r.dnd_set_drag_payload(DragField { field: v.field.clone(), from: Some(Well::Values) });
             if let Some(p) = r.dnd_release_payload::<DragField>() {
