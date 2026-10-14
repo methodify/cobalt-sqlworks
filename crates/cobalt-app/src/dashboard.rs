@@ -268,7 +268,7 @@ fn run_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
         if let Some(tt) = tile.tab.tabular.as_mut() {
             tt.last_limit = if cap == 0 { None } else { Some(cap) };
         }
-        let force = tile.tab.tabular.as_ref().map(|t| t.force_xmla).unwrap_or(false);
+        let force = tile.tab.tabular.as_ref().map(|t| t.transport_is_xmla(cx.settings, &text)).unwrap_or(false);
         let auth = match crate::tabularq::auth(state, cx, &target, force) {
             Ok(a) => a,
             Err(e) => {

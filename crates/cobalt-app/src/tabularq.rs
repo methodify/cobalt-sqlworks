@@ -20,10 +20,11 @@ pub fn auth(state: &AppState, cx: &Ctx, target: &TabularTarget, force_xmla: bool
     crate::tabular_root::auth_for(state, cx, target, force_xmla)
 }
 
-/// Whether a target runs over XMLA: always for Azure AS and HTTP, on request for Power BI (the
-/// flag of an open tab on the same model, else no).
-pub fn force_xmla_for(state: &AppState, target: &TabularTarget) -> bool {
-    if !matches!(target, TabularTarget::PowerBi { .. }) {
+/// Whether a DAX request (catalog, distinct values, tiles) on `target` goes over XMLA: always
+/// for Azure AS and HTTP, for Power BI when Settings › Semantic models says `xmla` or an open
+/// tab on the model is a saved XMLA endpoint.
+pub fn force_xmla_for(state: &AppState, cx: &Ctx, target: &TabularTarget) -> bool {
+    if !matches!(target, TabularTarget::PowerBi { .. }) || cx.settings.semantic.transport == "xmla" {
         return true;
     }
     state.tabs.iter().filter_map(|t| t.tabular.as_ref()).any(|tt| tt.target == *target && tt.force_xmla)
@@ -41,7 +42,123 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, target: TabularTarget, text: Opti
     t.editor.request_focus = true;
     retitle(t);
     ensure_catalog(state, cx, &target);
+    note_recent(cx, &target, None);
     idx
+}
+
+/// A model the user opened a tab on lately (the chooser's and the welcome pane's "Recent").
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct RecentModel {
+    pub target: TabularTarget,
+    /// The saved Analysis Services profile it came from, when it did.
+    pub profile: Option<uuid::Uuid>,
+}
+
+const KV_RECENT: &str = "tabular:recent";
+const RECENT_MAX: usize = 8;
+
+/// The recently used models, newest first.
+pub fn recent_models(cx: &Ctx) -> Vec<RecentModel> {
+    cx.store.get_kv::<Vec<RecentModel>>(KV_RECENT).ok().flatten().unwrap_or_default()
+}
+
+/// Move `target` to the front of the recent list.
+pub fn note_recent(cx: &Ctx, target: &TabularTarget, profile: Option<uuid::Uuid>) {
+    if target.model().trim().is_empty() {
+        return;
+    }
+    let mut list = recent_models(cx);
+    list.retain(|r| r.target.key() != target.key());
+    list.insert(0, RecentModel { target: target.clone(), profile });
+    list.truncate(RECENT_MAX);
+    let _ = cx.store.set_kv(KV_RECENT, &list);
+}
+
+/// Point an open DAX or Explore tab at another model: the catalog of the new model loads,
+/// the title follows, an Explore tab's wells start over (its fields belonged to the old model).
+pub fn set_target(state: &mut AppState, cx: &Ctx, idx: usize, target: TabularTarget, profile: Option<uuid::Uuid>) {
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    if t.tabular.is_none() {
+        return;
+    }
+    if t.is_running() {
+        cx.toast(ToastKind::Info, "Wait for the running query to finish (or cancel it) before changing the model.");
+        return;
+    }
+    let Some(tt) = t.tabular.as_mut() else { return };
+    let same = tt.target == target;
+    tt.target = target.clone();
+    tt.profile = profile;
+    tt.force_xmla = profile.is_some();
+    tt.transport = None;
+    tt.last_limit = None;
+    tt.uncapped_next = false;
+    t.model_catalog = None;
+    t.dax_functions = None;
+    if let Some(ex) = t.explore.as_deref_mut() {
+        if !same {
+            ex.spec.rows.clear();
+            ex.spec.columns.clear();
+            ex.spec.values.clear();
+            ex.spec.filters.clear();
+            ex.spec.sort = None;
+            ex.distinct.clear();
+            ex.field_expanded.clear();
+            ex.filter_editor = None;
+            ex.pivot = None;
+            ex.pivot_built_for = None;
+            ex.dax = None;
+            ex.dax_error = None;
+            ex.dirty = true;
+        }
+        ex.spec.source = Some(cobalt_core::explore::ExploreSource::SemanticModel { target: target.clone() });
+        crate::exploreq::retitle(t);
+    } else {
+        retitle(t);
+    }
+    ensure_catalog(state, cx, &target);
+    if state.tabs[idx].explore.is_some() {
+        crate::exploreq::regenerate(state, idx);
+    }
+    note_recent(cx, &target, profile);
+}
+
+/// Open the model chooser for a tab (`None` = a new tab; `explore` = a new Explore tab).
+pub fn open_chooser(state: &mut AppState, cx: &Ctx, tab_index: Option<usize>, explore: bool) {
+    crate::tabular_root::ensure_loaded(state, cx);
+    let current = tab_index.and_then(|i| state.tabs.get(i)).and_then(|t| t.tabular.as_ref());
+    let source = match current {
+        Some(tt) if tt.profile.is_some() => tt.profile.map(crate::state::ModelSource::Profile),
+        Some(tt) => match &tt.target {
+            TabularTarget::PowerBi { workspace_id, .. } => Some(crate::state::ModelSource::Workspace(workspace_id.clone())),
+            _ => None,
+        },
+        None => None,
+    };
+    let source = source.or_else(|| if recent_models(cx).is_empty() { None } else { Some(crate::state::ModelSource::Recent) });
+    state.dialog = crate::state::Dialog::ChooseModel { tab_index, explore, source, search: String::new() };
+}
+
+/// The chooser's pick: rebind the tab, or open a new DAX / Explore tab.
+pub fn choose(state: &mut AppState, cx: &Ctx, tab_index: Option<usize>, explore: bool, target: TabularTarget, profile: Option<uuid::Uuid>) -> usize {
+    match tab_index.filter(|&i| state.tabs.get(i).map(|t| t.tabular.is_some()).unwrap_or(false)) {
+        Some(i) => {
+            set_target(state, cx, i, target, profile);
+            state.active_tab = Some(i);
+            i
+        }
+        None => {
+            let i = if explore { crate::exploreq::new_tab(state, cx, target.clone(), None, None) } else { new_tab(state, cx, target.clone(), None) };
+            if profile.is_some() {
+                if let Some(tt) = state.tabs[i].tabular.as_mut() {
+                    tt.profile = profile;
+                    tt.force_xmla = true;
+                }
+                note_recent(cx, &target, profile);
+            }
+            i
+        }
+    }
 }
 
 /// `DAX_n · model` unless the user renamed the tab.
@@ -98,7 +215,7 @@ pub fn load_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget, forc
     if !force && state.model_catalogs.get(&key).map(|l| !l.needs_load()).unwrap_or(false) {
         return;
     }
-    let force_xmla = force_xmla_for(state, target);
+    let force_xmla = force_xmla_for(state, cx, target);
     let auth = match auth(state, cx, target, force_xmla) {
         Ok(a) => a,
         // no sign-in yet: stay NotLoaded, the panel's sign-in loads it (`ensure_all`)
@@ -196,18 +313,8 @@ fn script_for(t: &EditorTab, mode: RunMode) -> Option<String> {
 
 /// F5 and friends on a DAX tab.
 pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
-    let (target, force) = match state.tabs.get(idx).and_then(|t| t.tabular.as_ref()) {
-        Some(tt) => (tt.target.clone(), tt.force_xmla),
-        None => return,
-    };
-    let auth = match auth(state, cx, &target, force) {
-        Ok(a) => a,
-        Err(e) => {
-            cx.toast(ToastKind::Warning, e);
-            return;
-        }
-    };
-    let t = &mut state.tabs[idx];
+    let Some(target) = state.tabs.get(idx).and_then(|t| t.tabular.as_ref()).map(|tt| tt.target.clone()) else { return };
+    let t = &state.tabs[idx];
     if t.is_running() {
         return;
     }
@@ -216,11 +323,20 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         return;
     }
     let Some(script) = script_for(t, mode) else { return };
+    let force = t.tabular.as_ref().map(|tt| tt.transport_is_xmla(cx.settings, &script)).unwrap_or(false);
+    let auth = match auth(state, cx, &target, force) {
+        Ok(a) => a,
+        Err(e) => {
+            cx.toast(ToastKind::Warning, e);
+            return;
+        }
+    };
+    let t = &mut state.tabs[idx];
     t.last_run_mode = Some(mode);
     t.pending_run = None;
     let Some(tt) = t.tabular.as_mut() else { return };
     let uncapped = std::mem::take(&mut tt.uncapped_next);
-    tt.transport = Some(if tt.uses_xmla() { "XMLA" } else { "Arrow query API" });
+    tt.transport = Some(if force { "XMLA" } else { "Arrow query API" });
     let cap = cx.settings.execution.row_cap;
     let job = t.pending_export.take();
     let limit = if uncapped || job.is_some() || cap == 0 { None } else { Some(cap) };

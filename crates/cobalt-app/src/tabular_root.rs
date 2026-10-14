@@ -156,11 +156,12 @@ pub fn test_profile(state: &mut AppState, cx: &Ctx, profile: TabularProfile, pas
 pub fn query_tab(state: &mut AppState, cx: &Ctx, id: uuid::Uuid, model: &str) -> Option<usize> {
     let p = state.tabular.profile(id)?.clone();
     let target = p.target_for(model);
-    let idx = crate::tabularq::new_tab(state, cx, target, None);
+    let idx = crate::tabularq::new_tab(state, cx, target.clone(), None);
     if let Some(tt) = state.tabs[idx].tabular.as_mut() {
         tt.profile = Some(id);
         tt.force_xmla = true;
     }
+    crate::tabularq::note_recent(cx, &target, Some(id));
     Some(idx)
 }
 
@@ -168,11 +169,12 @@ pub fn query_tab(state: &mut AppState, cx: &Ctx, id: uuid::Uuid, model: &str) ->
 pub fn explore_tab(state: &mut AppState, cx: &Ctx, id: uuid::Uuid, model: &str) -> Option<usize> {
     let p = state.tabular.profile(id)?.clone();
     let target = p.target_for(model);
-    let idx = crate::exploreq::new_tab(state, cx, target, None, None);
+    let idx = crate::exploreq::new_tab(state, cx, target.clone(), None, None);
     if let Some(tt) = state.tabs[idx].tabular.as_mut() {
         tt.profile = Some(id);
         tt.force_xmla = true;
     }
+    crate::tabularq::note_recent(cx, &target, Some(id));
     Some(idx)
 }
 

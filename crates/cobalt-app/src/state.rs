@@ -368,9 +368,29 @@ impl TabularTab {
     pub fn new(target: cobalt_core::tabular::TabularTarget) -> Self {
         Self { target, profile: None, force_xmla: false, transport: None, last_limit: None, uncapped_next: false, effective_username: None, roles: Vec::new() }
     }
-    /// XMLA is the only transport for Azure AS and HTTP targets; Power BI uses it on request.
-    pub fn uses_xmla(&self) -> bool {
-        self.force_xmla || !matches!(self.target, cobalt_core::tabular::TabularTarget::PowerBi { .. })
+    /// Whether a run of `text` goes over XMLA: always for Azure AS, HTTP endpoints and saved
+    /// Power BI endpoints (`force_xmla`); for Fabric models per Settings › Semantic models
+    /// (`auto` = XMLA only for MDX and DMV text).
+    pub fn transport_is_xmla(&self, settings: &cobalt_core::Settings, text: &str) -> bool {
+        if self.force_xmla || !matches!(self.target, cobalt_core::tabular::TabularTarget::PowerBi { .. }) {
+            return true;
+        }
+        match settings.semantic.transport.as_str() {
+            "xmla" => true,
+            "arrow" => false,
+            _ => cobalt_tabular::is_mdx_or_dmv(text),
+        }
+    }
+    /// MDX and DMV text can run on this tab (the language label says "DAX / MDX").
+    pub fn may_use_xmla(&self, settings: &cobalt_core::Settings) -> bool {
+        self.force_xmla || !matches!(self.target, cobalt_core::tabular::TabularTarget::PowerBi { .. }) || settings.semantic.transport != "arrow"
+    }
+    /// The transport label before the first run.
+    pub fn transport_label(&self, settings: &cobalt_core::Settings) -> &'static str {
+        if let Some(t) = self.transport {
+            return t;
+        }
+        if self.transport_is_xmla(settings, "") { "XMLA" } else if settings.semantic.transport == "auto" { "Arrow query API · auto" } else { "Arrow query API" }
     }
     pub fn model_key(&self) -> String {
         self.target.key()
@@ -1375,8 +1395,19 @@ pub enum Dialog {
     Rename { tab_index: usize, title: String },
     /// Pick a workspace and lakehouse for a Spark SQL tab (`tab_index` None = a new tab).
     SparkLakehouse { tab_index: Option<usize>, workspace: Option<String> },
+    /// Pick a semantic model (a Fabric workspace's, or one of a saved Analysis Services
+    /// endpoint) for a DAX or Explore tab; `tab_index` None = a new tab (`explore` = an Explore tab).
+    ChooseModel { tab_index: Option<usize>, explore: bool, source: Option<ModelSource>, search: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
+}
+
+/// Where the model chooser lists models from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelSource {
+    Recent,
+    Workspace(String),
+    Profile(uuid::Uuid),
 }
 
 impl Dialog {

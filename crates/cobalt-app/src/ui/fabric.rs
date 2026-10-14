@@ -362,7 +362,8 @@ pub(crate) fn tree_leaf(ui: &mut Ui, theme: &Theme, depth: usize, icon: &str, la
 
 #[allow(clippy::too_many_arguments)]
 fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    // click_and_drag: rows can carry a drag payload (Explore's fields, the model tree's names)
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click_and_drag());
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.to_string()));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, theme.bg_hover);

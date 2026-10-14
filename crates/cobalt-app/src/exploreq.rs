@@ -307,6 +307,90 @@ pub fn add_field(state: &mut AppState, cx: &Ctx, idx: usize, field: FieldRef, we
     changed(state, cx, idx);
 }
 
+/// What a drag carries: a field from the list (`from` None) or a chip out of a well.
+#[derive(Clone, Debug)]
+pub struct DragField {
+    pub field: FieldRef,
+    pub from: Option<Well>,
+}
+
+/// Whether `well` takes `field` (measures only go in Values; filters take columns).
+pub fn accepts(well: Well, field: &FieldRef) -> bool {
+    match well {
+        Well::Rows | Well::Columns | Well::Filters => !field.is_measure(),
+        Well::Values => true,
+    }
+}
+
+/// A drop on a well: the field lands before `before` (a chip of that well) or at the end,
+/// leaves the well it came from, and keeps its aggregation when it is already a value.
+pub fn drop_field(state: &mut AppState, cx: &Ctx, idx: usize, field: FieldRef, from: Option<Well>, to: Well, before: Option<FieldRef>) {
+    if !accepts(to, &field) {
+        cx.toast(ToastKind::Info, if to == Well::Filters { "Filters take columns; a measure filters through its own expression." } else { "Measures go in Values." });
+        return;
+    }
+    let cat = catalog_of(state, idx);
+    {
+        let Some(ex) = state.tabs.get_mut(idx).and_then(|t| t.explore.as_deref_mut()) else { return };
+        // the field the sort points at, so a reorder keeps it
+        let sorted_value = match &ex.spec.sort {
+            Some(SortSpec { by: SortBy::Value { index }, .. }) => ex.spec.values.get(*index).map(|v| v.field.clone()),
+            _ => None,
+        };
+        match to {
+            Well::Rows | Well::Columns => {
+                ex.spec.rows.retain(|f| f != &field);
+                ex.spec.columns.retain(|f| f != &field);
+                if from == Some(Well::Values) {
+                    ex.spec.values.retain(|v| v.field != field);
+                }
+                let list = if to == Well::Rows { &mut ex.spec.rows } else { &mut ex.spec.columns };
+                let at = before.and_then(|b| list.iter().position(|f| *f == b)).unwrap_or(list.len());
+                list.insert(at, field);
+            }
+            Well::Values => {
+                let existing = ex.spec.values.iter().position(|v| v.field == field).map(|i| ex.spec.values.remove(i));
+                if matches!(from, Some(Well::Rows | Well::Columns)) {
+                    ex.spec.rows.retain(|f| f != &field);
+                    ex.spec.columns.retain(|f| f != &field);
+                }
+                let v = existing.unwrap_or_else(|| {
+                    let agg = match &field {
+                        FieldRef::Column { table, column } => default_agg(cat.as_deref(), table, column),
+                        FieldRef::Measure { .. } => Agg::None,
+                    };
+                    ValueRef { field: field.clone(), agg, label: None }
+                });
+                let at = before.and_then(|b| ex.spec.values.iter().position(|v| v.field == b)).unwrap_or(ex.spec.values.len());
+                ex.spec.values.insert(at, v);
+            }
+            Well::Filters => {
+                if let FieldRef::Column { table, column } = field {
+                    ex.filter_editor = Some(FilterEditor { table, column, index: None, op: FilterOp::In { values: Vec::new() }, search: String::new(), text_a: String::new(), text_b: String::new(), last_n: 30 });
+                }
+                return;
+            }
+        }
+        // the sort follows its value, or goes when that value left
+        if let Some(sf) = sorted_value {
+            match ex.spec.values.iter().position(|v| v.field == sf) {
+                Some(i) => {
+                    if let Some(SortSpec { by: SortBy::Value { index }, .. }) = &mut ex.spec.sort {
+                        *index = i;
+                    }
+                }
+                None => ex.spec.sort = None,
+            }
+        }
+        if let Some(SortSpec { by: SortBy::Field { field: sf }, .. }) = &ex.spec.sort {
+            if !ex.spec.rows.contains(sf) && !ex.spec.columns.contains(sf) {
+                ex.spec.sort = None;
+            }
+        }
+    }
+    changed(state, cx, idx);
+}
+
 pub fn remove_field(state: &mut AppState, cx: &Ctx, idx: usize, field: &FieldRef) {
     if let Some(ex) = state.tabs.get_mut(idx).and_then(|t| t.explore.as_deref_mut()) {
         ex.spec.remove(field);
@@ -411,7 +495,7 @@ pub fn load_distinct(state: &mut AppState, cx: &Ctx, idx: usize, table: &str, co
     if ex.distinct.get(&k).map(|l| !l.needs_load()).unwrap_or(false) {
         return;
     }
-    let force = state.tabs[idx].tabular.as_ref().map(|t| t.force_xmla).unwrap_or(false);
+    let force = tabularq::force_xmla_for(state, cx, &target);
     let auth = match tabularq::auth(state, cx, &target, force) {
         Ok(a) => a,
         Err(e) => {

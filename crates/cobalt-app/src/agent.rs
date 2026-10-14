@@ -101,7 +101,7 @@ impl CobaltApp {
                             "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
                         "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
                     })),
-                    "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "uses_xmla": tt.uses_xmla(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
+                    "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "transport_setting": self.settings.semantic.transport.clone(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
                     "cells": cells,
@@ -210,6 +210,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ExecOptions { .. } => "exec_options",
         Rename { .. } => "rename",
         SparkLakehouse { .. } => "spark_lakehouse",
+        ChooseModel { .. } => "choose_model",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -490,6 +491,23 @@ impl AgentApp for CobaltApp {
                             _ => crate::exploreq::Well::Rows,
                         };
                         self.with_ctx(egui, |s, cx| crate::exploreq::add_field(s, cx, idx, field, well));
+                    }
+                    // drop: what a drag-and-drop does — `field` lands in `well` before `before` (a field of that well), out of `from`
+                    "drop" => {
+                        let Some(field) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required: Table[Column] or [Measure]".into()) };
+                        let well_of = |s: Option<String>| -> Option<crate::exploreq::Well> {
+                            match s.as_deref()? {
+                                "rows" => Some(crate::exploreq::Well::Rows),
+                                "columns" => Some(crate::exploreq::Well::Columns),
+                                "values" => Some(crate::exploreq::Well::Values),
+                                "filters" => Some(crate::exploreq::Well::Filters),
+                                _ => None,
+                            }
+                        };
+                        let to = well_of(arg_str(args, "well")).unwrap_or(crate::exploreq::Well::Rows);
+                        let from = well_of(arg_str(args, "from"));
+                        let before = arg_str(args, "before").and_then(|s| parse_field(&s));
+                        self.with_ctx(egui, |s, cx| crate::exploreq::drop_field(s, cx, idx, field, from, to, before));
                     }
                     "remove" => {
                         let Some(field) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required".into()) };
@@ -966,6 +984,9 @@ impl AgentApp for CobaltApp {
                 let mut steps: Vec<Vec<egui::Event>> = vec![vec![egui::Event::PointerMoved(at(x, y))]];
                 match act.as_str() {
                     "move" => {}
+                    // down / up: half a gesture, so a drag can pause mid-way (a screenshot of the drag state)
+                    "down" => steps.push(vec![press(at(x, y), true)]),
+                    "up" => steps.push(vec![press(at(x, y), false)]),
                     // scroll: a mouse wheel at (x, y); dy in points, positive scrolls the content down
                     "scroll" => {
                         let dy = args.and_then(|a| a.get("dy")).and_then(|v| v.as_f64()).unwrap_or(300.0) as f32;

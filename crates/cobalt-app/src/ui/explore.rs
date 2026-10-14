@@ -3,7 +3,7 @@
 //! and the generated DAX above the results, which show as the matrix or the flat grid.
 //! Design: `docs/design/semantic_models.md` §3.1 (5).
 
-use crate::exploreq::{self as ops, Well};
+use crate::exploreq::{self as ops, DragField, Well};
 use crate::state::{Focus, Loadable, ResultsTab, ToastKind};
 use crate::ui::results::{self, ResultsAction};
 use crate::ui::shell::Frame;
@@ -21,6 +21,8 @@ const AGGS: [(Agg, &str); 6] = [(Agg::Sum, "Sum"), (Agg::Count, "Count"), (Agg::
 
 enum Act {
     Add(FieldRef, Well),
+    /// A drag-and-drop: field, the well it came from, the well it landed on, the chip it landed before.
+    Drop(FieldRef, Option<Well>, Well, Option<FieldRef>),
     Remove(FieldRef),
     Move(FieldRef, Well, i32),
     Agg(usize, Agg),
@@ -38,6 +40,8 @@ enum Act {
     Save(bool),
     Pin,
     Refresh,
+    /// Switch the tab to another semantic model.
+    ChooseModel,
 }
 
 pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
@@ -65,6 +69,25 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         let mut wui = top.new_child(egui::UiBuilder::new().max_rect(wells_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         wui.set_clip_rect(wells_rect);
         wells_pane(&mut wui, theme, tab, cat.as_deref(), &mut acts);
+        // a chip dropped back on the field list leaves its well; the floating label follows the drag
+        if let Some(p) = egui::DragAndDrop::payload::<DragField>(ui.ctx()) {
+            let pointer = ui.ctx().input(|i| i.pointer.latest_pos());
+            if ui.ctx().input(|i| i.pointer.any_released()) {
+                if p.from.is_some() && pointer.map(|pos| fields_rect.contains(pos)).unwrap_or(false) {
+                    acts.push(Act::Remove(p.field.clone()));
+                }
+                egui::DragAndDrop::clear_payload(ui.ctx());
+            } else {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let Some(pos) = pointer {
+                    egui::Area::new(egui::Id::new(("explore-drag-label", tab.id))).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(12.0, 8.0)).interactable(false).show(ui.ctx(), |ui| {
+                        egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
+                            ui.add(egui::Label::new(RichText::new(format!("{} {}", if p.field.is_measure() { icons::SIGMA } else { icons::COLUMNS }, p.field.label())).size(12.0)).extend());
+                        });
+                    });
+                }
+            }
+        }
     }
     // ---- results ----
     let mut res_actions: Vec<ResultsAction> = Vec::new();
@@ -98,6 +121,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     for a in acts {
         match a {
             Act::Add(field, well) => ops::add_field(f.state, f.cx, idx, field, well),
+            Act::Drop(field, from, to, before) => ops::drop_field(f.state, f.cx, idx, field, from, to, before),
             Act::Remove(field) => ops::remove_field(f.state, f.cx, idx, &field),
             Act::Move(field, well, d) => ops::move_field(f.state, f.cx, idx, &field, well, d),
             Act::Agg(i, agg) => ops::set_agg(f.state, f.cx, idx, i, agg),
@@ -125,6 +149,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     crate::tabularq::load_catalog(f.state, f.cx, &target, true);
                 }
             }
+            Act::ChooseModel => crate::tabularq::open_chooser(f.state, f.cx, Some(idx), true),
         }
     }
 }
@@ -134,6 +159,7 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
     let tab = &mut f.state.tabs[idx];
     let running = tab.is_running();
     let model = tab.tabular.as_ref().map(|tt| tt.target.model().to_string()).unwrap_or_default();
+    let host = tab.tabular.as_ref().map(|tt| tt.target.host_label()).unwrap_or_default();
     let cat_state = tab.tabular.as_ref().and_then(|tt| f.state.model_catalogs.get(&tt.model_key()));
     let Some(ex) = tab.explore.as_deref_mut() else { return };
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
@@ -141,7 +167,11 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
             let r = ui.add(egui::TextEdit::singleline(&mut ex.spec.title).hint_text("Explore title").desired_width(200.0));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "explore title"));
             ui.label(RichText::new(icons::CUBE).color(theme.accent));
-            ui.label(RichText::new(&model).strong());
+            let r = ui.add(egui::Button::new(RichText::new(&model).strong()).frame(false)).on_hover_text(format!("Semantic model {model} in {host}\nClick to explore another model"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore model"));
+            if r.clicked() {
+                acts.push(Act::ChooseModel);
+            }
             match cat_state {
                 Some(Loadable::Loaded(c)) => {
                     ui.label(RichText::new(format!("{} tables · {} measures", c.tables.len(), c.measure_count())).size(12.0).color(theme.text_muted));
@@ -237,6 +267,10 @@ fn fields_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, ca
         });
         return;
     };
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+        ui.label(RichText::new("drag a field onto a well, or click it").size(10.5).italics().color(theme.text_faint));
+    });
     let filter = ex.field_filter.trim().to_lowercase();
     egui::ScrollArea::vertical().id_salt(("explore-fields", tab.id)).auto_shrink([false, false]).show(ui, |ui| {
         for t in cat.tables.iter().filter(|t| !t.hidden) {
@@ -257,6 +291,7 @@ fn fields_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, ca
                 let field = FieldRef::Measure { name: m.name.clone() };
                 let used = ex.spec.contains(&field);
                 let r = crate::ui::fabric::tree_leaf(ui, theme, 1, icons::SIGMA, &m.name, if used { "in Values" } else { "measure" }, &format!("explore field {}", field.qualified()));
+                r.dnd_set_drag_payload(DragField { field: field.clone(), from: None });
                 if r.clicked() || r.double_clicked() {
                     if used { acts.push(Act::Remove(field.clone())) } else { acts.push(Act::Add(field.clone(), Well::Values)) }
                 }
@@ -283,6 +318,7 @@ fn fields_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, ca
                 };
                 let sub = if used { "in use" } else { c.data_type.label() };
                 let r = crate::ui::fabric::tree_leaf(ui, theme, 1, icon, &c.name, sub, &format!("explore field {}", field.qualified()));
+                r.dnd_set_drag_payload(DragField { field: field.clone(), from: None });
                 if r.clicked() || r.double_clicked() {
                     if used {
                         acts.push(Act::Remove(field.clone()));
@@ -321,35 +357,42 @@ fn fields_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, ca
 
 fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat: Option<&ModelCatalog>, acts: &mut Vec<Act>) {
     let Some(ex) = tab.explore.as_deref_mut() else { return };
+    let dragging: Option<Arc<DragField>> = egui::DragAndDrop::payload::<DragField>(ui.ctx());
     egui::ScrollArea::vertical().id_salt(("explore-wells", tab.id)).auto_shrink([false, false]).show(ui, |ui| {
         ui.add_space(4.0);
-        well(ui, theme, "Rows", icons::ROWS, "explore well rows", |ui| {
+        if let Some(a) = well(ui, theme, "Rows", icons::ROWS, "explore well rows", Well::Rows, dragging.as_deref(), |ui| {
             let n = ex.spec.rows.len();
             for (i, f) in ex.spec.rows.clone().iter().enumerate() {
                 field_chip(ui, theme, f, Well::Rows, i, n, &ex.spec, acts);
             }
             if ex.spec.rows.is_empty() {
-                hint(ui, theme, "click a column, or right-click it › Add to Rows");
+                hint(ui, theme, if dragging.is_some() { "drop here" } else { "drag a column here, or click it in the list" });
             }
-        });
-        well(ui, theme, "Columns", icons::COLUMNS, "explore well columns", |ui| {
+        }) {
+            acts.push(a);
+        }
+        if let Some(a) = well(ui, theme, "Columns", icons::COLUMNS, "explore well columns", Well::Columns, dragging.as_deref(), |ui| {
             let n = ex.spec.columns.len();
             for (i, f) in ex.spec.columns.clone().iter().enumerate() {
                 field_chip(ui, theme, f, Well::Columns, i, n, &ex.spec, acts);
             }
             if ex.spec.columns.is_empty() {
-                hint(ui, theme, "optional: a field across the top makes a matrix");
+                hint(ui, theme, if dragging.is_some() { "drop here" } else { "optional: a field across the top makes a matrix" });
             }
-        });
-        well(ui, theme, "Values", icons::SIGMA, "explore well values", |ui| {
+        }) {
+            acts.push(a);
+        }
+        if let Some(a) = well(ui, theme, "Values", icons::SIGMA, "explore well values", Well::Values, dragging.as_deref(), |ui| {
             for (i, v) in ex.spec.values.clone().iter().enumerate() {
                 value_chip(ui, theme, i, v, &ex.spec, acts);
             }
             if ex.spec.values.is_empty() {
-                hint(ui, theme, "a measure, or a column with Sum / Count / Average…");
+                hint(ui, theme, if dragging.is_some() { "drop here" } else { "a measure, or a column with Sum / Count / Average…" });
             }
-        });
-        well(ui, theme, "Filters", icons::FUNNEL, "explore well filters", |ui| {
+        }) {
+            acts.push(a);
+        }
+        if let Some(a) = well(ui, theme, "Filters", icons::FUNNEL, "explore well filters", Well::Filters, dragging.as_deref(), |ui| {
             for (i, fl) in ex.spec.filters.clone().iter().enumerate() {
                 egui::Frame::new().fill(theme.bg_hover).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
                     ui.horizontal(|ui| {
@@ -365,9 +408,11 @@ fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat
                 });
             }
             if ex.spec.filters.is_empty() {
-                hint(ui, theme, "right-click a column › Filter on…");
+                hint(ui, theme, if dragging.is_some() { "drop a column here to filter on it" } else { "drag a column here, or right-click it › Filter on…" });
             }
-        });
+        }) {
+            acts.push(a);
+        }
         if let Some(e) = &ex.dax_error {
             ui.horizontal_wrapped(|ui| {
                 ui.add_space(8.0);
@@ -396,17 +441,37 @@ fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat
     });
 }
 
-fn well(ui: &mut Ui, theme: &Theme, title: &str, icon: &str, a11y: &str, body: impl FnOnce(&mut Ui)) {
+/// A well: its chips in a frame that is a drop zone while a field is being dragged (outlined
+/// when it takes the field, lit when the pointer is over it, dimmed when it does not).
+#[allow(clippy::too_many_arguments)]
+fn well(ui: &mut Ui, theme: &Theme, title: &str, icon: &str, a11y: &str, which: Well, dragging: Option<&DragField>, body: impl FnOnce(&mut Ui)) -> Option<Act> {
     ui.horizontal(|ui| {
         ui.add_space(8.0);
         ui.label(RichText::new(format!("{icon} {title}")).size(11.0).strong().color(theme.text_muted));
     });
-    let r = ui.horizontal_wrapped(|ui| {
-        ui.add_space(8.0);
-        body(ui);
-    });
-    r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, a11y.to_string()));
+    let takes = dragging.map(|d| ops::accepts(which, &d.field)).unwrap_or(false);
+    let mut frame = egui::Frame::new().inner_margin(egui::Margin { left: 6, right: 6, top: 2, bottom: 2 }).outer_margin(egui::Margin { left: 4, right: 6, top: 0, bottom: 0 }).corner_radius(6.0).begin(ui);
+    {
+        let ui = &mut frame.content_ui;
+        ui.set_min_width(ui.available_width());
+        // a steady height: an empty well is a target the size of a chip, and nothing moves
+        // when a drag begins
+        ui.set_min_height(24.0);
+        ui.horizontal_wrapped(|ui| {
+            body(ui);
+        });
+    }
+    let r = frame.allocate_space(ui);
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, a11y.to_string()));
+    if dragging.is_some() {
+        let over = takes && r.contains_pointer();
+        frame.frame.stroke = if !takes { egui::Stroke::new(1.0, theme.border) } else if over { egui::Stroke::new(1.5, theme.accent) } else { egui::Stroke::new(1.0, theme.accent.gamma_multiply(0.55)) };
+        frame.frame.fill = if over { theme.accent.gamma_multiply(0.12) } else { egui::Color32::TRANSPARENT };
+    }
+    frame.paint(ui);
+    let dropped = if takes { r.dnd_release_payload::<DragField>().map(|p| Act::Drop(p.field.clone(), p.from, which, None)) } else { None };
     ui.add_space(4.0);
+    dropped
 }
 
 fn hint(ui: &mut Ui, theme: &Theme, text: &str) {
@@ -420,9 +485,15 @@ fn field_chip(ui: &mut Ui, theme: &Theme, f: &FieldRef, well: Well, i: usize, n:
             let by = SortBy::Field { field: f.clone() };
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { f.label() } else { format!("{} {sorted}", f.label()) };
-            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click()));
+            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click_and_drag()));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore chip {}", f.qualified())));
-            r.on_hover_text(format!("{}\nclick: sort menu · ✕ removes", f.qualified())).context_menu(|ui| chip_menu(ui, f, well, i, n, spec, acts));
+            r.dnd_set_drag_payload(DragField { field: f.clone(), from: Some(well) });
+            if let Some(p) = r.dnd_release_payload::<DragField>() {
+                if p.field != *f {
+                    acts.push(Act::Drop(p.field.clone(), p.from, well, Some(f.clone())));
+                }
+            }
+            r.on_hover_text(format!("{}\nright-click: sort, move · drag to reorder or to another well · ✕ removes", f.qualified())).context_menu(|ui| chip_menu(ui, f, well, i, n, spec, acts));
             if ui.add(egui::Button::new(RichText::new(icons::X).size(11.0)).frame(false)).on_hover_text("Remove").clicked() {
                 acts.push(Act::Remove(f.clone()));
             }
@@ -477,8 +548,15 @@ fn value_chip(ui: &mut Ui, theme: &Theme, i: usize, v: &cobalt_core::explore::Va
             let by = SortBy::Value { index: i };
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { v.name() } else { format!("{} {sorted}", v.name()) };
-            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click()));
+            let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).sense(Sense::click_and_drag()));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore value {}", v.name())));
+            r.dnd_set_drag_payload(DragField { field: v.field.clone(), from: Some(Well::Values) });
+            if let Some(p) = r.dnd_release_payload::<DragField>() {
+                if p.field != v.field {
+                    acts.push(Act::Drop(p.field.clone(), p.from, Well::Values, Some(v.field.clone())));
+                }
+            }
+            let r = r.on_hover_text(format!("{}\nright-click: aggregation, sort · drag to reorder · ✕ removes", v.field.qualified()));
             r.context_menu(|ui| {
                 if let FieldRef::Column { .. } = v.field {
                     for (agg, label) in AGGS {

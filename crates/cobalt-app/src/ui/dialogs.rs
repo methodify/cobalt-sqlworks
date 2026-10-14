@@ -808,6 +808,163 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::SparkLakehouse { tab_index, workspace };
             }
         }
+        Dialog::ChooseModel { tab_index, explore, source, mut search } => {
+            use crate::state::{Loadable, ModelSource};
+            crate::tabular_root::ensure_loaded(f.state, f.cx);
+            let mut source = source;
+            let mut pick: Option<(cobalt_core::tabular::TabularTarget, Option<uuid::Uuid>)> = None;
+            let mut cancel = false;
+            let mut open_fabric = false;
+            let mut add_endpoint = false;
+            let mut load_ws: Option<String> = None;
+            let mut load_profile: Option<uuid::Uuid> = None;
+            let signed_in = f.state.fabric.slot.is_some();
+            let workspaces: Vec<(String, String)> = f.state.fabric.workspaces.get().map(|v| v.iter().map(|w| (w.id.clone(), w.display_name.clone())).collect()).unwrap_or_default();
+            let profiles: Vec<(uuid::Uuid, String, &'static str)> = f.state.tabular.profiles.iter().map(|p| (p.id, p.name.clone(), p.kind_label())).collect();
+            let recent = crate::tabularq::recent_models(f.cx);
+            let rebinding = tab_index.and_then(|i| f.state.tabs.get(i)).and_then(|t| t.tabular.as_ref()).map(|tt| tt.target.clone());
+            // the models of the selected source: (label, target, profile) or a status line
+            enum Models {
+                Ready(Vec<(String, cobalt_core::tabular::TabularTarget, Option<uuid::Uuid>)>),
+                Loading,
+                Failed(String),
+                None,
+            }
+            let models = match &source {
+                Some(ModelSource::Recent) => Models::Ready(recent.iter().map(|r| (format!("{}   {}", r.target.model(), r.target.host_label()), r.target.clone(), r.profile)).collect()),
+                Some(ModelSource::Workspace(ws)) => match f.state.fabric.semantic_models.get(ws) {
+                    Some(Loadable::Loaded(items)) => Models::Ready(items.iter().filter(|i| i.is_semantic_model()).map(|i| (i.display_name.clone(), f.state.fabric.model_target(i), None)).collect()),
+                    Some(Loadable::Loading) => Models::Loading,
+                    Some(Loadable::Failed(e)) => Models::Failed(e.clone()),
+                    _ => Models::None,
+                },
+                Some(ModelSource::Profile(id)) => match (f.state.tabular.profile(*id), f.state.tabular.catalogs.get(id)) {
+                    (Some(p), Some(Loadable::Loaded(names))) => Models::Ready(names.iter().map(|n| (n.clone(), p.target_for(n), Some(*id))).collect()),
+                    (Some(_), Some(Loadable::Loading)) => Models::Loading,
+                    (Some(_), Some(Loadable::Failed(e))) => Models::Failed(e.clone()),
+                    _ => Models::None,
+                },
+                None => Models::None,
+            };
+            let (_, close) = modal(ctx, theme, "choose-model", 620.0, |ui| {
+                ui.heading(match (tab_index, explore) {
+                    (Some(_), true) => "Explore another semantic model",
+                    (Some(_), false) => "Query another semantic model",
+                    (None, true) => "Explore a semantic model",
+                    (None, false) => "New DAX query on a semantic model",
+                });
+                ui.label(RichText::new(if tab_index.is_some() && explore { "The wells start over on the new model; the tab keeps its title and settings." } else { "A Power BI / Fabric semantic model from a workspace, or a model of a saved Analysis Services endpoint." }).size(12.0).color(theme.text_muted));
+                ui.add_space(8.0);
+                ui.columns(2, |cols| {
+                    cols[0].label(RichText::new("From").strong());
+                    egui::ScrollArea::vertical().id_salt("choose-model-src").max_height(320.0).auto_shrink([false, true]).show(&mut cols[0], |ui| {
+                        if !recent.is_empty() {
+                            let r = ui.selectable_label(source == Some(ModelSource::Recent), format!("{} Recent models", icons::CLOCK));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "model source recent"));
+                            if r.clicked() {
+                                source = Some(ModelSource::Recent);
+                            }
+                            ui.add_space(4.0);
+                        }
+                        ui.label(RichText::new("Fabric workspaces").size(11.0).color(theme.text_muted));
+                        if !signed_in {
+                            ui.label(RichText::new("Sign in on the Fabric panel to list them.").size(11.0).color(theme.warning));
+                            if ui.small_button("Open the Fabric panel").clicked() {
+                                open_fabric = true;
+                            }
+                        } else if workspaces.is_empty() {
+                            ui.label(RichText::new("Loading workspaces…").size(11.0).color(theme.text_faint));
+                        }
+                        for (id, name) in &workspaces {
+                            let r = ui.selectable_label(source == Some(ModelSource::Workspace(id.clone())), name);
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model source {name}")));
+                            if r.clicked() {
+                                source = Some(ModelSource::Workspace(id.clone()));
+                                load_ws = Some(id.clone());
+                            }
+                        }
+                        ui.add_space(4.0);
+                        ui.label(RichText::new("Analysis Services").size(11.0).color(theme.text_muted));
+                        for (id, name, kind) in &profiles {
+                            let r = ui.selectable_label(source == Some(ModelSource::Profile(*id)), name).on_hover_text(*kind);
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model source {name}")));
+                            if r.clicked() {
+                                source = Some(ModelSource::Profile(*id));
+                                load_profile = Some(*id);
+                            }
+                        }
+                        if ui.add(egui::Button::new(RichText::new(format!("{} Add an endpoint…", icons::PLUS)).size(12.0)).frame(false)).on_hover_text("Azure Analysis Services, an HTTP (msmdpump) endpoint, or a Power BI workspace over XMLA").clicked() {
+                            add_endpoint = true;
+                        }
+                    });
+                    cols[1].label(RichText::new("Semantic model").strong());
+                    let r = cols[1].add(egui::TextEdit::singleline(&mut search).hint_text("Filter").desired_width(f32::INFINITY));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "model filter"));
+                    egui::ScrollArea::vertical().id_salt("choose-model-models").max_height(296.0).auto_shrink([false, true]).show(&mut cols[1], |ui| match &models {
+                        Models::None if source.is_none() => {
+                            ui.label(RichText::new("Pick a workspace or an endpoint").size(11.0).color(theme.text_faint));
+                        }
+                        Models::None | Models::Loading => {
+                            ui.label(RichText::new("Loading models…").size(11.0).color(theme.text_faint));
+                        }
+                        Models::Failed(e) => {
+                            ui.label(RichText::new(format!("{} {e}", icons::WARNING)).size(11.0).color(theme.warning));
+                        }
+                        Models::Ready(list) => {
+                            let needle = search.trim().to_lowercase();
+                            let mut shown = 0;
+                            for (label, target, profile) in list {
+                                if !needle.is_empty() && !label.to_lowercase().contains(&needle) {
+                                    continue;
+                                }
+                                shown += 1;
+                                let current = rebinding.as_ref().map(|t| t.key() == target.key()).unwrap_or(false);
+                                let r = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::CUBE)).color(if current { theme.accent } else { theme.text })).frame(false).min_size(Vec2::new(ui.available_width(), 24.0)));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model {}", target.model())));
+                                if r.clicked() {
+                                    pick = Some((target.clone(), *profile));
+                                }
+                            }
+                            if shown == 0 {
+                                ui.label(RichText::new(if list.is_empty() { "No semantic models here" } else { "No model matches the filter" }).size(11.0).color(theme.text_faint));
+                            }
+                        }
+                    });
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if open_fabric {
+                f.state.sidebar_visible = true;
+                f.state.sidebar_view = crate::state::SidebarView::Fabric;
+                crate::fabric::on_panel_shown(f.state, f.cx);
+            }
+            if signed_in && workspaces.is_empty() && f.state.fabric.workspaces.get().is_none() && !f.state.fabric.workspaces.is_loading() {
+                crate::fabric::load_workspaces(f.state, f.cx);
+            }
+            if let Some(ws) = load_ws.or_else(|| match &source { Some(ModelSource::Workspace(w)) => Some(w.clone()), _ => None }) {
+                if f.state.fabric.semantic_models.get(&ws).map(|l| l.needs_load()).unwrap_or(true) && signed_in {
+                    crate::fabric::load_items(f.state, f.cx, &ws);
+                }
+            }
+            if let Some(id) = load_profile.or(match &source { Some(ModelSource::Profile(p)) => Some(*p), _ => None }) {
+                if f.state.tabular.catalogs.get(&id).map(|l| l.needs_load()).unwrap_or(true) {
+                    crate::tabular_root::load_catalogs(f.state, f.cx, id, false);
+                }
+            }
+            if add_endpoint {
+                crate::tabular_root::edit_dialog(f.state, None);
+            } else if let Some((target, profile)) = pick {
+                let i = crate::tabularq::choose(f.state, f.cx, tab_index, explore, target, profile);
+                f.state.active_tab = Some(i);
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search };
+            }
+        }
         Dialog::Rename { tab_index, mut title } => {
             let mut ok = false;
             let mut cancel = false;

@@ -731,14 +731,43 @@ advertised), opens a session (`BeginSession`), sends `Execute` / `Discover` with
 id, and `Cancel` on Stop. A session the service moved or expired is reopened once. The
 rowset's inline schema becomes the grid's columns; `_x0020_`-style escaped names are decoded.
 
-Power BI over XMLA: a Fabric semantic model's tab has an **XMLA** button on its toolbar (next
-to the model chip) that routes the tab through the XMLA endpoint instead of the Arrow query
-API; MDX and the `$SYSTEM` DMVs need it. Cobalt does what the official client library does
+Power BI over XMLA: Settings › Connections › **Semantic models** chooses the transport for
+Fabric models (0.10.1): **Auto** sends DAX through the Arrow query API and MDX or `$SYSTEM` DMV
+text through the XMLA endpoint, **XMLA** sends everything there, **Arrow query API** never
+uses XMLA (MDX and DMVs are then refused). Cobalt does what the official client library does
 (found by decompiling it): it exchanges the Entra token for a workload token at the Power BI
 service, resolves the capacity to its cluster, and talks XMLA to that cluster. One transport
 limit to know: a date outside 1899-12-30 … 9999-12-31 23:59:59 in the result (the
 `ValidTo = 9999-12-31 23:59:59.999…` sentinel that slowly changing dimensions use) faults the
 whole query over XMLA, exactly as it does in SSMS; the Arrow query API carries such values, so
-use the API path (the toggle off) for those tables, or project the columns you need. Not supported: SQL Server Analysis Services over its native TCP
+use the API path (the Auto or Arrow setting) for those tables, or project the columns you need. Not supported: SQL Server Analysis Services over its native TCP
 port (that is not HTTP; use the IIS HTTP endpoint), and Windows integrated authentication on
 the HTTP endpoint (basic over HTTPS or anonymous for now).
+
+## Semantic models: chooser, connection controls, drag and drop (0.10.1)
+
+Your first-pass notes on 0.10.0, addressed:
+
+- **The transport is a setting**, not a toggle on the query: Settings › Connections ›
+  Semantic models, Auto / Arrow query API / XMLA, for every query on a model (DAX tabs,
+  Explore, the model explorer, tiles). Auto is the rational default: DAX goes through the Arrow
+  API (fast, lossless), MDX and `$SYSTEM` DMVs through XMLA because the API cannot run them.
+  The status bar names the transport each run used.
+- **New DAX query** is in the + menu (and "A click on + opens"), in File, and in the command
+  palette. With a DAX or Explore tab active it inherits that model; otherwise the chooser
+  opens: Fabric workspaces and saved Analysis Services endpoints on the left, models on the
+  right, a filter, a Recent models entry. The chooser is the same dialog Connect / Change
+  Connection open on a DAX tab, and what the model button on the toolbar opens — on a DAX tab
+  and on an Explore tab (where switching models clears the wells, since the fields belonged
+  to the old model). The getting-started pane on an empty DAX tab is now about DAX: the model,
+  Choose another model, Explore this model, starting-point queries, recent models.
+- **Drag and drop in Explore**: fields from the list onto any well, chips between wells and
+  within a well to reorder (a chip lands before the one you drop it on), a chip back onto the
+  field list to remove it. A label follows the pointer; the wells that take the field are
+  outlined and the one under the pointer lights up. Clicking still works as before.
+
+Agent labels: `tab model` (the DAX toolbar's model button), `explore model`, `model source
+<workspace or endpoint>`, `model source recent`, `model <name>`, `model filter`, `recent model
+<name>`, `semantic transport auto|arrow|xmla` in Settings; verbs `command {id:
+"file.new_dax_query"}`, `explore {action: "drop", …}`, `settings {set: {"semantic.transport":
+"xmla"}}`.

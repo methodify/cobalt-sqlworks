@@ -96,6 +96,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::NewQuery);
                 item(ui, &mut cmds, Command::NewNotebook);
                 item(ui, &mut cmds, Command::NewSparkQuery);
+                item(ui, &mut cmds, Command::NewDaxQuery);
                 item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
@@ -200,6 +201,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 });
                 ui.separator();
                 item(ui, &mut cmds, Command::NewSparkQuery);
+                item(ui, &mut cmds, Command::NewDaxQuery);
                 item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::ShowLakehouse);
                 ui.separator();
@@ -392,6 +394,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let mut close_all = false;
     let mut new_spark = false;
     let mut new_tab_kind: Option<&str> = None;
+    let mut new_dax = false;
     egui::Frame::new().fill(theme.bg_sidebar).show(ui, |ui| {
         ui.set_width(ui.available_width());
         egui::ScrollArea::horizontal().id_salt("tabs-scroll").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
@@ -485,6 +488,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 let default_kind = f.cx.settings.appearance.new_tab_kind.clone();
                 let (default_label, default_key) = match default_kind.as_str() {
                     "spark" => ("Spark SQL query", ""),
+                    "dax" => ("DAX query", ""),
                     "notebook" => ("notebook", " (Ctrl+Shift+N)"),
                     _ => ("query", " (Ctrl+N)"),
                 };
@@ -495,7 +499,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
                 ui.painter().text(crect.center(), egui::Align2::CENTER_CENTER, icons::CARET_DOWN, egui::FontId::proportional(11.0), theme.text_faint);
                 cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab menu"));
-                let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
+                let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_dax: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
                     ui.set_min_width(230.0);
                     if ui.button(format!("{} New query{}", icons::DATABASE, if default_kind == "query" { "   (default)" } else { "" })).clicked() {
                         *new_tab = true;
@@ -505,24 +509,29 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                         *new_spark = true;
                         ui.close();
                     }
+                    if ui.button(format!("{} New DAX query{}", icons::CUBE, if default_kind == "dax" { "   (default)" } else { "" })).on_hover_text("A query on a semantic model (Power BI / Fabric, Analysis Services)").clicked() {
+                        *new_dax = true;
+                        ui.close();
+                    }
                     if ui.button(format!("{} New notebook{}", icons::NOTEBOOK, if default_kind == "notebook" { "   (default)" } else { "" })).clicked() {
                         *new_notebook = true;
                         ui.close();
                     }
                     ui.separator();
                     ui.label(RichText::new("A click on + opens").size(11.0).color(theme.text_muted));
-                    for (k, label) in [("query", "a query"), ("spark", "a Spark SQL query"), ("notebook", "a notebook")] {
+                    for (k, label) in [("query", "a query"), ("spark", "a Spark SQL query"), ("dax", "a DAX query"), ("notebook", "a notebook")] {
                         if ui.selectable_label(default_kind == k, label).clicked() {
                             *new_tab_kind = Some(k);
                             ui.close();
                         }
                     }
                 };
-                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_notebook, &mut new_tab_kind));
-                resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_notebook, &mut new_tab_kind));
+                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_notebook, &mut new_tab_kind));
+                resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_notebook, &mut new_tab_kind));
                 if resp.on_hover_text(format!("New {default_label}{default_key} · the arrow (or a right-click) offers the other kinds")).clicked() {
                     match default_kind.as_str() {
                         "spark" => new_spark = true,
+                        "dax" => new_dax = true,
                         "notebook" => new_notebook = true,
                         _ => new_tab = true,
                     }
@@ -565,6 +574,9 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_spark {
         dispatch(f, Command::NewSparkQuery);
+    }
+    if new_dax {
+        dispatch(f, Command::NewDaxQuery);
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);
@@ -947,10 +959,134 @@ fn spark_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     }
 }
 
+/// The getting-started pane of an empty DAX tab: the model, how to change it, what to type.
+fn dax_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
+    let theme = f.theme;
+    let (model, host, saved) = {
+        let tt = f.state.tabs[idx].tabular.as_ref().unwrap();
+        (tt.target.model().to_string(), tt.target.host_label(), tt.profile.is_some())
+    };
+    let cat: Option<crate::state::Loadable<String>> = f.state.tabs[idx].tabular.as_ref().and_then(|tt| f.state.model_catalogs.get(&tt.model_key())).map(|l| match l {
+        crate::state::Loadable::Loaded(c) => crate::state::Loadable::Loaded(format!("{} tables · {} measures · {} columns", c.tables.len(), c.measure_count(), c.column_count())),
+        crate::state::Loadable::Loading => crate::state::Loadable::Loading,
+        crate::state::Loadable::Failed(e) => crate::state::Loadable::Failed(e.clone()),
+        crate::state::Loadable::NotLoaded => crate::state::Loadable::NotLoaded,
+    });
+    let recent = crate::tabularq::recent_models(f.cx);
+    let may_xmla = f.state.tabs[idx].tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false);
+    let mut choose = false;
+    let mut explore = false;
+    let mut open_recent: Option<crate::tabularq::RecentModel> = None;
+    let mut cmd: Option<Command> = None;
+    let mut insert: Option<String> = None;
+    egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        egui::ScrollArea::vertical().id_salt("dax-welcome-pane").auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(RichText::new("DAX on a semantic model").size(18.0).color(theme.accent));
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("This tab queries {model} in {host}{}. Type a DAX query and press F5.", if saved { " (a saved Analysis Services endpoint)" } else { "" })).size(12.0));
+            match &cat {
+                Some(crate::state::Loadable::Loaded(summary)) => {
+                    ui.label(RichText::new(summary).size(11.0).color(theme.text_muted));
+                }
+                Some(crate::state::Loadable::Loading) => {
+                    ui.label(RichText::new("Loading the model's tables and measures…").size(11.0).color(theme.text_muted));
+                }
+                Some(crate::state::Loadable::Failed(e)) => {
+                    ui.label(RichText::new(format!("{} The model did not load: {e}", icons::WARNING)).size(11.0).color(theme.warning));
+                }
+                _ => {}
+            }
+            ui.add_space(8.0);
+            let b = |ui: &mut Ui, icon: &str, label: &str| ui.add(egui::Button::new(format!("{icon}  {label}")).min_size(Vec2::new(230.0, 30.0))).clicked();
+            if b(ui, icons::CUBE, "Choose another semantic model…") {
+                choose = true;
+            }
+            if b(ui, icons::TABLE, "Explore this model (pivot)") {
+                explore = true;
+            }
+            if b(ui, icons::CUBE, "Browse Fabric workspaces") {
+                cmd = Some(Command::ShowFabric);
+            }
+            if b(ui, icons::KEYBOARD, "Keyboard shortcuts") {
+                cmd = Some(Command::KeyboardShortcuts);
+            }
+            ui.add_space(12.0);
+            ui.label(RichText::new("Starting points").size(12.0).color(theme.text_muted));
+            for (label, text) in [
+                ("The model's tables", "EVALUATE INFO.VIEW.TABLES()"),
+                ("Its measures with their expressions", "EVALUATE INFO.VIEW.MEASURES()"),
+                ("The first 100 rows of a table", "EVALUATE TOPN(100, 'Table')"),
+                ("A grouped total", "EVALUATE SUMMARIZECOLUMNS('Table'[Column], \"Total\", [Measure])"),
+            ] {
+                let r = ui.add(egui::Button::new(RichText::new(format!("{}  {label}", icons::CODE)).size(12.0)).frame(false)).on_hover_text(text);
+                if r.clicked() {
+                    insert = Some(text.to_string());
+                }
+            }
+            if !recent.is_empty() {
+                ui.add_space(12.0);
+                ui.label(RichText::new("Recent models").size(12.0).color(theme.text_muted));
+                for r in &recent {
+                    let label = format!("{}  {}   {}", icons::CUBE, r.target.model(), r.target.host_label());
+                    let resp = ui.add(egui::Button::new(label).frame(false));
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("recent model {}", r.target.model())));
+                    if resp.clicked() {
+                        open_recent = Some(r.clone());
+                    }
+                }
+            }
+            ui.add_space(12.0);
+            ui.label(RichText::new("Tips").size(12.0).color(theme.text_muted));
+            let mut tips = vec![
+                "F5 runs the script, Ctrl+Enter the query under the caret; every EVALUATE returns its own result set.",
+                "Ctrl+Space completes tables, columns, measures and DAX functions from the model; hover a function for its signature.",
+                "The model explorer under the model's row (Fabric panel or Servers › Analysis Services) inserts names and shows measure expressions.",
+                "Run to File streams a result straight into Parquet, Delta, CSV… or a lakehouse table.",
+            ];
+            if may_xmla {
+                tips.push("MDX and $SYSTEM DMV queries (SELECT * FROM $SYSTEM.TMSCHEMA_MEASURES) run through the XMLA endpoint; Settings › Connections › Semantic models picks the transport.");
+            } else {
+                tips.push("Settings › Connections › Semantic models is set to the Arrow query API only; switch it to Auto for MDX and $SYSTEM DMV queries.");
+            }
+            for tip in tips {
+                ui.label(RichText::new(format!("•  {tip}")).size(12.0));
+            }
+            ui.add_space(14.0);
+            if ui.add(egui::Button::new(RichText::new("Hide this pane").size(11.0)).frame(false)).on_hover_text("Settings › Appearance brings it back").clicked() {
+                f.state.settings_patch.push(SettingsPatch::ShowWelcome(false));
+            }
+        });
+    });
+    if choose {
+        crate::tabularq::open_chooser(f.state, f.cx, Some(idx), false);
+    }
+    if explore {
+        if let Some((target, profile)) = f.state.tabs[idx].tabular.as_ref().map(|tt| (tt.target.clone(), tt.profile)) {
+            let i = crate::tabularq::choose(f.state, f.cx, None, true, target, profile);
+            f.state.active_tab = Some(i);
+        }
+    }
+    if let Some(r) = open_recent {
+        crate::tabularq::set_target(f.state, f.cx, idx, r.target, r.profile);
+    }
+    if let Some(text) = insert {
+        let t = &mut f.state.tabs[idx];
+        crate::sparkq::insert_at_cursor(t, &text);
+        t.editor.request_focus = true;
+    }
+    if let Some(c) = cmd {
+        dispatch(f, c);
+    }
+}
+
 /// The getting-started pane shown beside a fresh, empty query tab (Settings → Appearance).
 fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     if f.state.tabs[idx].spark.is_some() {
         return spark_welcome_pane(ui, f, idx);
+    }
+    if f.state.tabs[idx].tabular.is_some() {
+        return dax_welcome_pane(ui, f, idx);
     }
     let theme = f.theme;
     let tab_id = f.state.tabs[idx].id;
@@ -1368,7 +1504,6 @@ fn text_plan(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme) {
 }
 
 fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
-    let mut xmla_toggle: Option<bool> = None;
     let theme = f.theme;
     let mut cmds: Vec<Command> = Vec::new();
     let mut change_db: Option<String> = None;
@@ -1393,16 +1528,12 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             let tab = &f.state.tabs[idx];
             if let Some(tt) = &tab.tabular {
                 ui.label(RichText::new(icons::CUBE).color(theme.accent));
-                ui.label(RichText::new(tt.target.model()).strong()).on_hover_text(format!("Semantic model {} in {}", tt.target.model(), tt.target.host_label()));
-                if matches!(tt.target, cobalt_core::tabular::TabularTarget::PowerBi { .. }) {
-                    let mut x = tt.force_xmla;
-                    let r = ui.add(egui::Button::selectable(x, "XMLA").small()).on_hover_text("Run through the Power BI XMLA endpoint instead of the Arrow query API (MDX and DMV queries need it; the endpoint resolution is still being confirmed)");
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab xmla toggle"));
-                    if r.clicked() {
-                        x = !x;
-                        xmla_toggle = Some(x);
-                    }
+                let r = ui.add(egui::Button::new(RichText::new(tt.target.model()).size(13.0)).frame(false)).on_hover_text(format!("Semantic model {} in {}{}\nClick to query another model", tt.target.model(), tt.target.host_label(), if tt.profile.is_some() { " (saved Analysis Services endpoint)" } else { "" }));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab model"));
+                if r.clicked() {
+                    cmds.push(Command::ChangeConnection);
                 }
+                ui.label(RichText::new(tt.target.host_label()).size(12.0).color(theme.text_muted));
             } else if tab.spark.is_some() {
                 // no connection, database list or plans on a Spark tab
             } else {
@@ -1515,11 +1646,6 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     if let Some(db) = change_db {
         ops::change_database(f.state, f.cx, idx, db);
     }
-    if let Some(x) = xmla_toggle {
-        if let Some(tt) = f.state.tabs[idx].tabular.as_mut() {
-            tt.force_xmla = x;
-        }
-    }
     for c in cmds {
         dispatch(f, c);
     }
@@ -1549,7 +1675,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     if let Some(crate::state::Loadable::Failed(e)) = cat {
                         r.on_hover_text(e);
                     }
-                    ui.label(RichText::new(if tt.uses_xmla() { "XMLA" } else { "Arrow query API" }).color(theme.text_faint)).on_hover_text(if tt.uses_xmla() { "Queries go to the XMLA endpoint (DAX, MDX and DMVs)" } else { "Queries go through the Power BI Arrow query API (DAX and INFO functions); switch the tab to XMLA for MDX and DMVs" });
+                    ui.label(RichText::new(tt.transport_label(f.cx.settings)).color(theme.text_faint)).on_hover_text("The transport of the last run (Settings › Connections › Semantic models chooses: Auto, Arrow query API or XMLA)");
                 } else if let Some(sp) = &t.spark {
                     let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
                     ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
@@ -1642,7 +1768,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.uses_xmla()).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
@@ -1757,6 +1883,16 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             let i = crate::sparkq::new_tab(state, cx, binding, names, None);
             if ask && state.fabric.slot.is_some() {
                 state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: None };
+            }
+        }
+        Command::NewDaxQuery => {
+            // inherit the active tab's model, else ask
+            let inherited = state.active().and_then(|t| t.tabular.as_ref()).map(|tt| (tt.target.clone(), tt.profile));
+            match inherited {
+                Some((target, profile)) => {
+                    crate::tabularq::choose(state, cx, None, false, target, profile);
+                }
+                None => crate::tabularq::open_chooser(state, cx, None, false),
             }
         }
         Command::NewDashboard => {
@@ -1896,6 +2032,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ConnectTab => {
             if let Some(i) = idx {
                 let t = &state.tabs[i];
+                if t.tabular.is_some() {
+                    crate::tabularq::open_chooser(state, cx, Some(i), t.explore.is_some());
+                    return;
+                }
                 if t.spark.is_some() {
                     let ws = t.spark.as_ref().and_then(|s| s.binding.as_ref()).map(|b| b.workspace_id.clone());
                     state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: ws };
@@ -1918,6 +2058,11 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         }
         Command::ChangeConnection => {
             if let Some(i) = idx {
+                if state.tabs[i].tabular.is_some() {
+                    let explore = state.tabs[i].explore.is_some();
+                    crate::tabularq::open_chooser(state, cx, Some(i), explore);
+                    return;
+                }
                 if state.tabs[i].spark.is_some() {
                     let ws = state.tabs[i].spark.as_ref().and_then(|s| s.binding.as_ref()).map(|b| b.workspace_id.clone());
                     state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: ws };

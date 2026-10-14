@@ -15,6 +15,7 @@ pub struct Settings {
     pub advanced: AdvancedSettings,
     pub notebooks: NotebookSettings,
     pub spark: SparkSettings,
+    pub semantic: SemanticSettings,
     /// Keyboard shortcut overrides: command id → "Ctrl+Shift+P" (empty = unbound).
     pub keybindings: std::collections::BTreeMap<String, String>,
 }
@@ -298,6 +299,32 @@ pub struct NotebookSettings {
 impl Default for NotebookSettings {
     fn default() -> Self {
         Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12, spark_row_limit: 10_000 }
+    }
+}
+
+/// Semantic models (Power BI / Fabric, Analysis Services): the transport their queries use.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SemanticSettings {
+    /// `auto` (the Arrow query API for DAX, XMLA for MDX and DMV queries), `arrow` (the Arrow
+    /// query API only), or `xmla` (everything through the XMLA endpoint). Azure Analysis
+    /// Services and HTTP endpoints always use XMLA; this applies to Power BI / Fabric models.
+    pub transport: String,
+}
+impl Default for SemanticSettings {
+    fn default() -> Self {
+        Self { transport: "auto".into() }
+    }
+}
+
+impl SemanticSettings {
+    pub const TRANSPORTS: [(&'static str, &'static str, &'static str); 3] = [
+        ("auto", "Auto", "The Arrow query API for DAX (fastest, lossless Arrow), the XMLA endpoint when the query is MDX or a $SYSTEM DMV"),
+        ("arrow", "Arrow query API", "Always the Power BI Arrow query API; MDX and DMV queries are refused"),
+        ("xmla", "XMLA", "Always the XMLA endpoint (the same path SSMS, DAX Studio and Excel use)"),
+    ];
+    pub fn label(&self) -> &'static str {
+        Self::TRANSPORTS.iter().find(|(k, _, _)| *k == self.transport).map(|(_, l, _)| *l).unwrap_or("Auto")
     }
 }
 

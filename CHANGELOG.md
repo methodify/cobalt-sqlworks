@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.10.1 — unreleased
+
+- **Semantic models: the transport is a setting.** Settings › Connections › **Semantic
+  models** chooses how Cobalt reaches a Power BI / Fabric model: **Auto** (the Arrow query API
+  for DAX, the XMLA endpoint when the text is MDX or a `$SYSTEM` DMV), **Arrow query API**
+  only, or **XMLA** for everything. It applies to every query on a model: DAX tabs, Explore,
+  the model explorer, dashboard tiles. The per-tab XMLA toggle is gone; the status bar still
+  names the transport the last run used, and the language label reads "DAX / MDX" whenever
+  MDX can run. Azure Analysis Services and HTTP endpoints always use XMLA.
+- **New DAX query, with a model chooser.** The **+** menu, the File menu and the "A click on +
+  opens" setting offer *New DAX query*. With a DAX or Explore tab active the new tab inherits
+  its model; otherwise a chooser lists the Fabric workspaces (signed in on the Fabric panel)
+  and the saved Analysis Services endpoints on the left, their models on the right, a filter
+  box, and a *Recent models* entry; *Add an endpoint…* opens the endpoint dialog from there.
+- **Connection controls on DAX and Explore tabs.** The model's name on the toolbar is a button
+  that opens the chooser to switch the tab to another model (Connect / Change Connection do
+  the same): the new model's catalog loads, the tab is retitled, and an Explore tab's wells
+  start over. An empty DAX tab shows a getting-started pane for DAX: the model and its size,
+  *Choose another semantic model…*, *Explore this model*, starting-point queries that insert
+  (`INFO.VIEW.TABLES()`, measures, `TOPN`, `SUMMARIZECOLUMNS`), the recent models, and tips
+  that match the transport setting.
+- **Explore: drag and drop.** Drag a field from the list onto Rows, Columns, Values or
+  Filters (a label follows the pointer; wells that take the field are outlined, the one under
+  the pointer lit; a measure dropped on Rows or Columns is refused with a note). Drag a chip
+  to reorder within its well (it lands before the chip it is dropped on), to move it to another
+  well (a value keeps its aggregation when it comes back), or back onto the field list to
+  remove it. The sort follows a reordered value. Agent: `explore {action: "drop", field, well,
+  from?, before?}`; `pointer {action: "down" | "up"}` for half a gesture.
+
 ## 0.10.0 — 2026-10-14
 
 - **Analysis Services over XMLA, in pure Rust (slice C).** The Servers tree gains an

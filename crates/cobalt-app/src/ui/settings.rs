@@ -237,6 +237,18 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 }
             });
             ui.checkbox(&mut draft.connections.reconnect_on_run, "Reconnect automatically when a run finds the session closed");
+                            section(ui, theme, "Semantic models");
+            ui.label(RichText::new("How DAX query tabs, Explore, the model explorer and dashboard tiles reach a Power BI / Fabric semantic model. Azure Analysis Services and HTTP endpoints always use XMLA.").size(11.0).color(theme.text_muted));
+            ui.horizontal(|ui| {
+                ui.label("Transport");
+                for (k, label, hint) in cobalt_core::SemanticSettings::TRANSPORTS {
+                    let r = ui.selectable_label(draft.semantic.transport == k, label).on_hover_text(hint);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("semantic transport {k}")));
+                    if r.clicked() {
+                        draft.semantic.transport = k.into();
+                    }
+                }
+            });
                             section(ui, theme, "History");
             ui.checkbox(&mut draft.history.capture, "Record query history");
             ui.horizontal(|ui| {
@@ -397,6 +409,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     Tab::Connections => {
                         draft.connections = d.connections;
                         draft.history = d.history;
+                        draft.semantic = d.semantic;
                     }
                     Tab::Notebooks => {
                         draft.notebooks = d.notebooks;
