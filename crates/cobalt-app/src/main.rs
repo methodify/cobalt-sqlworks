@@ -20,6 +20,7 @@ mod runtime;
 mod session;
 mod sparkq;
 mod tabularq;
+mod exploreq;
 mod dashboard;
 mod state;
 mod update;

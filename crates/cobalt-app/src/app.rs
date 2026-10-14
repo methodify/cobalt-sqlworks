@@ -301,6 +301,8 @@ impl CobaltApp {
             crate::runtime::poll(&mut self.state.runtime, &self.settings, &self.paths, ctx);
             crate::notebook::poll_kernel(&mut self.state, &cx);
             crate::dashboard::tick(&mut self.state, &cx);
+            let fmt = self.state.formatter.clone();
+            crate::exploreq::tick(&mut self.state, &cx, &fmt);
             // session events
             let events = self.session.drain();
             let mut followups = Vec::new();

@@ -11,11 +11,13 @@
 
 pub mod catalog;
 pub mod decode;
+pub mod explore;
 pub mod rest;
 pub mod xmla;
 
 pub use catalog::{load_catalog, load_functions, probe, DaxFunction};
 pub use decode::{DaxItem, DaxResult, DaxTable};
+pub use explore::{describe as describe_explore, to_dax, DaxQuery};
 pub use rest::{DaxOptions, DaxStream, PowerBiClient, POWERBI_RESOURCE};
 
 use cobalt_core::tabular::TabularTarget;

@@ -5,7 +5,11 @@ built 2026-10-13 (`cobalt_core::tabular`, the `cobalt-tabular` crate with the Ar
 transport, `cobalt_sql::dax`, `session/tabular.rs`, `tabularq.rs`, `ui/model_tree.rs`) and
 verified in the app up to the service, which answers a bare 401 until the app registration carries
 `Dataset.Read.All`; a Direct Lake test model "Cobalt test model" exists in the Fabric test
-workspace for the live check. Scope from the founder: consume
+workspace for the live check; the live check passed on both models after the permission was added. Slice B
+(Explore) built 2026-10-13: `cobalt_core::explore::ExploreSpec`, the DAX emitter in
+`cobalt-tabular::explore`, the local pivot in `cobalt-results::pivot`, `exploreq.rs`,
+`ui/explore.rs`, `ui/results/matrix.rs`, `TileSource` on dashboard tiles; verified live on
+RetailDemo. Scope from the founder: consume
 semantic models (query them, get results into the results UX), a visual query builder for people
 who don't write DAX, dashboards fed by models, a pure-Rust transport (no .NET sidecar), Analysis
 Services endpoints where the same protocol allows. Not in scope: authoring or modifying models.

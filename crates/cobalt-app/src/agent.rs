@@ -8,6 +8,7 @@
 //! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
 //! - `dax_query {workspace, model, text?, run?}` → a DAX query tab on a semantic model (the Fabric panel's sign-in; `fabric_state` lists models once a workspace is expanded)
 //! - `model {action: tree|refresh|functions, workspace, model}` → the model's catalog (tables, columns, measures, relationships) as JSON
+//! - `explore {action: new|state|add|remove|agg|sort|top_n|subtotals|filter|remove_filter|run|dax|save|open|matrix, workspace?, model?, field?: "Table[Column]"|"[Measure]", well?: rows|columns|values|filters, agg?, index?, desc?, n?, on?, op?, values?, lo?, hi?, text?, path?}` → the Explore pivot builder (the active Explore tab unless `new`/`open`)
 //! - `set_query {text}` (active tab), `run {mode?: all|current|selection|estimated_plan}`, `cancel`
 //! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
@@ -85,7 +86,20 @@ impl CobaltApp {
                     "index": i,
                     "id": t.id.to_string(),
                     "title": t.title,
-                    "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else if t.is_tabular() { "dax" } else { "query" },
+                    "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else if t.is_explore() { "explore" } else if t.is_tabular() { "dax" } else { "query" },
+                    "explore": t.explore.as_deref().map(|e| json!({
+                        "spec": e.spec,
+                        "summary": crate::exploreq::describe(&e.spec),
+                        "dax": e.dax.as_ref().map(|q| q.text.clone()),
+                        "dax_error": e.dax_error,
+                        "dirty": e.dirty,
+                        "auto_run": e.auto_run,
+                        "matrix": e.matrix,
+                        "pivot": e.pivot.as_ref().map(|p| json!({"rows": p.row_keys.len(), "cols": p.col_keys.len(), "values": p.value_names, "row_key_names": p.row_key_names, "truncated": p.truncated, "error": p.error,
+                            "first_rows": p.row_keys.iter().take(5).enumerate().map(|(r, k)| json!({"key": k.labels, "subtotal": k.subtotal_level, "cells": (0..p.column_count()).map(|c| p.cell(r, c / p.value_names.len().max(1), c % p.value_names.len().max(1)).map(|x| x.text.to_string())).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+                            "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
+                        "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
+                    })),
                     "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -413,6 +427,125 @@ impl AgentApp for CobaltApp {
                 };
                 let idx = self.with_ctx(egui, |s, cx| crate::sparkq::new_tab(s, cx, binding, None, text));
                 ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}))
+            }
+            "explore" => {
+                use cobalt_core::explore::{FieldRef, FilterOp, FilterSpec, SortBy, SortSpec};
+                let action = arg_str(args, "action").unwrap_or_else(|| "state".into());
+                let parse_field = |s: &str| -> Option<FieldRef> {
+                    let s = s.trim();
+                    if let Some(m) = s.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+                        return Some(FieldRef::Measure { name: m.to_string() });
+                    }
+                    let (t, c) = s.split_once('[')?;
+                    Some(FieldRef::Column { table: t.trim_matches('\'').to_string(), column: c.trim_end_matches(']').to_string() })
+                };
+                if action == "new" {
+                    let Some(ws_arg) = arg_str(args, "workspace") else { return ActionResult::BadArgs("workspace is required".into()) };
+                    let Some(ws_id) = self.state.fabric.workspaces.get().and_then(|v| v.iter().find(|w| w.id == ws_arg || w.display_name.eq_ignore_ascii_case(&ws_arg)).map(|w| w.id.clone())) else {
+                        return ActionResult::BadArgs("unknown workspace (load the Fabric panel first)".into());
+                    };
+                    let Some(m_arg) = arg_str(args, "model") else { return ActionResult::BadArgs("model is required".into()) };
+                    let item = self.state.fabric.semantic_models.get(&ws_id).and_then(|l| l.get()).and_then(|v| v.iter().find(|i| i.id == m_arg || i.display_name.eq_ignore_ascii_case(&m_arg)).cloned());
+                    let Some(item) = item else { return ActionResult::BadArgs("unknown semantic model (expand the workspace first)".into()) };
+                    let target = self.state.fabric.model_target(&item);
+                    let idx = self.with_ctx(egui, |s, cx| crate::exploreq::new_tab(s, cx, target, None, None));
+                    return ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}));
+                }
+                if action == "open" {
+                    let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                    let idx = self.with_ctx(egui, |s, cx| crate::exploreq::open_path(s, cx, std::path::Path::new(&path)));
+                    return match idx {
+                        Some(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title})),
+                        None => ActionResult::BadArgs("could not open the file".into()),
+                    };
+                }
+                let Some(idx) = self.state.active_tab.filter(|&i| self.state.tabs.get(i).map(|t| t.is_explore()).unwrap_or(false)) else {
+                    return ActionResult::BadArgs("the active tab is not an Explore tab".into());
+                };
+                match action.as_str() {
+                    "state" => {}
+                    "add" => {
+                        let Some(field) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required: Table[Column] or [Measure]".into()) };
+                        let well = match arg_str(args, "well").as_deref().unwrap_or("rows") {
+                            "columns" => crate::exploreq::Well::Columns,
+                            "values" => crate::exploreq::Well::Values,
+                            "filters" => crate::exploreq::Well::Filters,
+                            _ => crate::exploreq::Well::Rows,
+                        };
+                        self.with_ctx(egui, |s, cx| crate::exploreq::add_field(s, cx, idx, field, well));
+                    }
+                    "remove" => {
+                        let Some(field) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required".into()) };
+                        self.with_ctx(egui, |s, cx| crate::exploreq::remove_field(s, cx, idx, &field));
+                    }
+                    "agg" => {
+                        let i = arg_usize(args, "index").unwrap_or(0);
+                        let Some(agg) = arg_str(args, "agg").and_then(|a| cobalt_core::chart::Agg::parse(&a)) else { return ActionResult::BadArgs("agg is required (sum|count|avg|min|max|count_distinct)".into()) };
+                        self.with_ctx(egui, |s, cx| crate::exploreq::set_agg(s, cx, idx, i, agg));
+                    }
+                    "sort" => {
+                        let desc = arg_bool(args, "desc").unwrap_or(true);
+                        let by = match (arg_str(args, "field"), arg_usize(args, "index")) {
+                            (Some(f), _) => parse_field(&f).map(|field| SortBy::Field { field }),
+                            (None, Some(i)) => Some(SortBy::Value { index: i }),
+                            _ => None,
+                        };
+                        self.with_ctx(egui, |s, cx| crate::exploreq::set_sort(s, cx, idx, by.map(|by| SortSpec { by, desc })));
+                    }
+                    "top_n" => {
+                        let n = args.and_then(|a| a.get("n")).and_then(|v| v.as_u64());
+                        self.with_ctx(egui, |s, cx| crate::exploreq::set_top_n(s, cx, idx, n));
+                    }
+                    "subtotals" => {
+                        let on = arg_bool(args, "on").unwrap_or(true);
+                        self.with_ctx(egui, |s, cx| crate::exploreq::set_subtotals(s, cx, idx, on));
+                    }
+                    "filter" => {
+                        let Some(FieldRef::Column { table, column }) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required: Table[Column]".into()) };
+                        let values: Vec<String> = args.and_then(|a| a.get("values")).and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string).or_else(|| x.as_f64().map(|n| n.to_string()))).collect()).unwrap_or_default();
+                        let op = match arg_str(args, "op").as_deref().unwrap_or("in") {
+                            "not_in" => FilterOp::NotIn { values },
+                            "between" => FilterOp::Between { lo: arg_str(args, "lo"), hi: arg_str(args, "hi") },
+                            "contains" => FilterOp::Contains { text: arg_str(args, "text").unwrap_or_default() },
+                            "starts_with" => FilterOp::StartsWith { text: arg_str(args, "text").unwrap_or_default() },
+                            "is_blank" => FilterOp::IsBlank,
+                            "not_blank" => FilterOp::NotBlank,
+                            "last_days" => FilterOp::RelativeDate { unit: cobalt_core::explore::DateUnit::Days, last: args.and_then(|a| a.get("n")).and_then(|v| v.as_u64()).unwrap_or(30) as u32 },
+                            _ => FilterOp::In { values },
+                        };
+                        if let Some(ex) = self.state.tabs[idx].explore.as_deref_mut() {
+                            ex.spec.filters.retain(|f| !(f.table == table && f.column == column));
+                            ex.spec.filters.push(FilterSpec { table, column, op });
+                        }
+                        self.with_ctx(egui, |s, cx| crate::exploreq::changed(s, cx, idx));
+                    }
+                    "remove_filter" => {
+                        let i = arg_usize(args, "index").unwrap_or(0);
+                        self.with_ctx(egui, |s, cx| crate::exploreq::remove_filter(s, cx, idx, i));
+                    }
+                    "run" => self.with_ctx(egui, |s, cx| crate::exploreq::run(s, cx, idx)),
+                    "dax" => {
+                        self.with_ctx(egui, |s, _| crate::exploreq::regenerate(s, idx));
+                    }
+                    "matrix" => {
+                        if let Some(ex) = self.state.tabs[idx].explore.as_deref_mut() {
+                            ex.matrix = arg_bool(args, "on").unwrap_or(true);
+                        }
+                    }
+                    "save" => {
+                        if let Some(path) = arg_str(args, "path") {
+                            self.state.tabs[idx].file_path = Some(std::path::PathBuf::from(path));
+                        }
+                        let ok = self.with_ctx(egui, |s, cx| crate::exploreq::save(s, cx, idx, false));
+                        if !ok {
+                            return ActionResult::BadArgs("save failed".into());
+                        }
+                    }
+                    other => return ActionResult::BadArgs(format!("unknown explore action {other}")),
+                }
+                let t = &self.state.tabs[idx];
+                let e = t.explore.as_deref();
+                ActionResult::with(&json!({"tab": idx, "title": t.title, "summary": e.map(|e| crate::exploreq::describe(&e.spec)), "dax": e.and_then(|e| e.dax.as_ref().map(|q| q.text.clone())), "dax_error": e.and_then(|e| e.dax_error.clone()), "run": t.run.as_ref().map(|r| format!("{:?}", r.state).to_lowercase()), "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string())}))
             }
             "dax_query" | "model" => {
                 let Some(ws_arg) = arg_str(args, "workspace") else { return ActionResult::BadArgs("workspace is required".into()) };

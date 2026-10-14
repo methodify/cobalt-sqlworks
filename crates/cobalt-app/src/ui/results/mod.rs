@@ -2,6 +2,7 @@
 //! the fetch-more bar, the cell viewer, and the per-grid context menu.
 
 pub mod chart;
+pub mod matrix;
 pub mod grid;
 pub mod profile;
 pub mod viewer;
@@ -255,7 +256,15 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), grid_h), egui::Sense::hover());
                         let mut child = ui.new_child(egui::UiBuilder::new().id_salt(("rs-child", run.id, set)).max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
                         child.set_clip_rect(rect.intersect(ui.clip_rect()));
-                        let grid_actions = if view.chart.is_some() {
+                        let matrix = if set == 0 && view.chart.is_none() { tab.explore.as_deref().filter(|e| e.matrix).and_then(|e| e.pivot.clone()) } else { None };
+                        let grid_actions = if let Some(pt) = matrix {
+                            for a in matrix::show(&mut child, theme, &pt, "explore matrix") {
+                                match a {
+                                    matrix::MatrixAction::CopyTsv(s) => ui.ctx().copy_text(s),
+                                }
+                            }
+                            Vec::new()
+                        } else if view.chart.is_some() {
                             // the chart in place of the grid; the grid's state (selection, view) stays
                             for a in chart::show(&mut child, view, theme, args.fmt, set, false) {
                                 match a {

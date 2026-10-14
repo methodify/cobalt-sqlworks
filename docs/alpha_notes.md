@@ -673,3 +673,38 @@ SSAS and MDX / DMV queries come with the XMLA transport (slice C of the design).
 Agent: `fabric_state` lists `semantic_models` per expanded workspace; `dax_query {workspace,
 model, text?, run?}` opens a tab; `model {workspace, model, action: tree|refresh|functions}`
 returns the catalog; `state` tabs carry `kind: "dax"` and a `tabular` block.
+
+## Explore: the pivot builder on semantic models (0.9.6)
+
+For the people who want "rows, columns, values" without writing DAX. Right-click a semantic
+model on the Fabric panel › **Explore** (a measure's context menu has "Explore with this
+measure"; a model explorer's Tables row has Explore too). The tab shows the model's tables on
+the left with their columns and measures (search box on top; hidden objects stay hidden) and
+four wells on the right: **Rows**, **Columns**, **Values**, **Filters**. Click a field to add
+it (a measure goes to Values; a numeric column to Values as a Sum, since that is what it was
+modelled for; any other column to Rows); right-click for Add to Rows / Columns / Values and
+Filter on…. Chips in the wells: ✕ removes; right-click a Rows or Columns chip to sort by it,
+move it left or right, move it to the other well, or filter on it; right-click a Values chip to
+change the aggregation (Sum, Count, Count distinct, Average, Min, Max for columns) or sort by
+it. **Top** on the toolbar keeps the first n rows by the sort (or by the first value);
+**Subtotals** adds a subtotal row per grouping level (the DAX uses `ROLLUPADDISSUBTOTAL`; the
+matrix shows them as "Total" rows, set off). A filter opens a small window: pick the operator
+(is one of / is not one of with a checklist of the column's values, loaded from the model;
+between; contains; starts with; in the last n days, months or years for dates; blank; not
+blank) and Apply.
+
+With **Auto** on (the default) every change runs the query; otherwise Run does. The result
+lands in the usual results area — grid, charts, totals, find, Copy, Export, history — and with a
+field in Columns it shows as a **matrix** (row keys down the left, column keys across the top,
+values in the cells; right-click › Copy matrix for tab-separated text) with **Flat** a click
+away. **DAX** on the toolbar shows the generated query; Copy copies it; **Open in query tab**
+puts it in a DAX tab to edit and run, which is the quickest way to learn what a well does.
+**Save** writes a `.cobalt-explore.json` file (File › Open and the command line open them;
+the title in the toolbar names the tab). **Pin to dashboard** makes a tile from the current
+query: dashboard tiles can now run on a semantic model (through the Fabric panel's sign-in,
+no connection to pick), and a tile pinned from Explore has an Open in Explore button.
+
+Limits worth knowing: the matrix keeps the first 10,000 row keys and 500 column keys; the
+value picker loads the first 500 distinct values; a non-additive measure in a matrix shows
+the model's own subtotal (not a local sum), which is why subtotals come from the query. The
+spec is engine-agnostic, so the same builder can later produce SQL for a warehouse table.

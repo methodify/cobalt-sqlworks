@@ -110,6 +110,9 @@ pub fn apply_launch(state: &mut AppState, cx: &Ctx, launch: LaunchArgs) {
             _ if cobalt_core::DashboardFile::is_dashboard_path(path) => {
                 crate::dashboard::open_path(state, cx, path.clone());
             }
+            _ if cobalt_core::explore::ExploreSpec::is_explore_path(path) => {
+                crate::exploreq::open_path(state, cx, path);
+            }
             Some("ipynb") => {
                 crate::notebook::open_path(state, cx, path.clone());
             }
@@ -921,7 +924,7 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let text = if t.is_notebook() { snapshot_document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).unwrap_or_default() } else { t.text.clone() };
     let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
-    snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| crate::tabularq::snapshot_binding(&t)).or_else(|| t.conn.database().map(str::to_string));
+    snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| crate::exploreq::snapshot_binding(&t)).or_else(|| crate::tabularq::snapshot_binding(&t)).or_else(|| t.conn.database().map(str::to_string));
     snap.cursor = t.editor.cursor;
     snap.file_path = t.file_path.clone();
     let _ = cx.store.save_tab(&snap);
@@ -977,6 +980,13 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
         t.spark = Some(sp);
         return;
     }
+    if let Some((target, spec)) = snap.database.as_deref().and_then(crate::exploreq::from_snapshot) {
+        t.tabular = Some(crate::state::TabularTab::new(target.clone()));
+        crate::exploreq::restore(t, spec);
+        crate::exploreq::retitle(t);
+        crate::tabularq::ensure_catalog(state, cx, &target);
+        return;
+    }
     if let Some(tt) = snap.database.as_deref().and_then(crate::tabularq::from_snapshot) {
         let target = tt.target.clone();
         t.tabular = Some(tt);
@@ -1020,7 +1030,7 @@ pub fn snapshot_tabs(state: &mut AppState, cx: &Ctx, force: bool) {
         if force || h != t.snapshot_hash {
             let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
             snap.profile_id = t.profile.as_ref().map(|p| p.id);
-            snap.database = crate::sparkq::snapshot_binding(t).or_else(|| crate::tabularq::snapshot_binding(t)).or_else(|| t.conn.database().map(str::to_string));
+            snap.database = crate::sparkq::snapshot_binding(t).or_else(|| crate::exploreq::snapshot_binding(t)).or_else(|| crate::tabularq::snapshot_binding(t)).or_else(|| t.conn.database().map(str::to_string));
             snap.cursor = t.editor.cursor;
             snap.file_path = t.file_path.clone();
             if cx.store.save_tab(&snap).is_ok() {
@@ -1039,15 +1049,19 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         let t = &mut state.tabs[idx];
         t.id = snap.tab_id;
         t.title = snap.title;
-        t.custom_title = !(t.title.starts_with("SQLQuery_") || t.title.starts_with("SparkSQL_") || t.title.starts_with("DAX_"));
-        if let Some(n) = t.title.strip_prefix("SQLQuery_").or_else(|| t.title.strip_prefix("SparkSQL_")).or_else(|| t.title.strip_prefix("DAX_")).and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
+        t.custom_title = !(t.title.starts_with("SQLQuery_") || t.title.starts_with("SparkSQL_") || t.title.starts_with("DAX_") || t.title.starts_with("Explore_") || snap.database.as_deref().map(|d| d.starts_with("explore:")).unwrap_or(false));
+        if let Some(n) = t.title.strip_prefix("SQLQuery_").or_else(|| t.title.strip_prefix("SparkSQL_")).or_else(|| t.title.strip_prefix("DAX_")).or_else(|| t.title.strip_prefix("Explore_")).and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
             t.untitled_index = n;
             state.next_untitled = state.next_untitled.max(n + 1);
         }
         if let Some(sp) = snap.database.as_deref().and_then(crate::sparkq::from_snapshot) {
             t.spark = Some(sp);
         }
-        if let Some(tt) = snap.database.as_deref().and_then(crate::tabularq::from_snapshot) {
+        if let Some((target, spec)) = snap.database.as_deref().and_then(crate::exploreq::from_snapshot) {
+            restored_models.push(target.clone());
+            t.tabular = Some(crate::state::TabularTab::new(target));
+            crate::exploreq::restore(t, spec);
+        } else if let Some(tt) = snap.database.as_deref().and_then(crate::tabularq::from_snapshot) {
             restored_models.push(tt.target.clone());
             t.tabular = Some(tt);
         }
@@ -1094,6 +1108,10 @@ pub fn open_file(state: &mut AppState, cx: &Ctx, path: Option<PathBuf>) {
     };
     if cobalt_core::DashboardFile::is_dashboard_path(&path) {
         crate::dashboard::open_path(state, cx, path);
+        return;
+    }
+    if cobalt_core::explore::ExploreSpec::is_explore_path(&path) {
+        crate::exploreq::open_path(state, cx, &path);
         return;
     }
     if path.extension().map(|e| e.eq_ignore_ascii_case("sqlplan")).unwrap_or(false) {
@@ -1152,6 +1170,10 @@ pub fn save_file(state: &mut AppState, cx: &Ctx, idx: usize, save_as: bool) {
     }
     if t.is_dashboard() {
         return crate::dashboard::save(state, cx, idx, save_as);
+    }
+    if t.is_explore() {
+        crate::exploreq::save(state, cx, idx, save_as);
+        return;
     }
     let path = match (&t.file_path, save_as) {
         (Some(p), false) => p.clone(),
@@ -1237,6 +1259,9 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     }
     if t.spark.is_some() {
         return crate::sparkq::run(state, cx, idx, mode);
+    }
+    if t.explore.is_some() {
+        return crate::exploreq::run(state, cx, idx);
     }
     if t.tabular.is_some() {
         return crate::tabularq::run(state, cx, idx, mode);

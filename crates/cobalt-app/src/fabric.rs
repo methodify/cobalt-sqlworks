@@ -131,6 +131,8 @@ pub enum FabricEvent {
     ModelCatalog { key: String, result: Result<std::sync::Arc<cobalt_core::tabular::ModelCatalog>, String> },
     /// The DAX functions a model reports (`INFO.FUNCTIONS()`).
     DaxFunctions { key: String, result: Result<Vec<cobalt_tabular::DaxFunction>, String> },
+    /// Explore: the distinct values of a column for the filter picker (by model key).
+    ExploreDistinct { key: String, table: String, column: String, result: Result<Vec<String>, String> },
     /// A notebook item's definition arrived (open it, or open a copy).
     NotebookDefinition { item: cobalt_fabric::FabricItem, copy: bool, result: Result<cobalt_fabric::ItemDefinition, String> },
     NotebookSaved { tab: cobalt_core::TabId, result: Result<(), String> },
@@ -174,6 +176,8 @@ pub enum FabricAction {
     DaxQuery { item_id: String },
     /// Toggle the model explorer under a semantic model's row.
     ToggleModel { item_id: String },
+    /// An Explore (pivot builder) tab on a semantic model.
+    Explore { item_id: String },
     /// An action from a model explorer row.
     Model(crate::ui::model_tree::ModelAction),
 }
@@ -337,6 +341,11 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             let target = state.fabric.model_target(&item);
             crate::tabularq::new_tab(state, cx, target, None);
         }
+        FabricAction::Explore { item_id } => {
+            let Some(item) = state.fabric.semantic_model(&item_id).cloned() else { return };
+            let target = state.fabric.model_target(&item);
+            crate::exploreq::new_tab(state, cx, target, None, None);
+        }
         FabricAction::ToggleModel { item_id } => {
             if state.fabric.expanded_models.remove(&item_id) {
                 return;
@@ -357,6 +366,9 @@ pub fn model_action(state: &mut AppState, cx: &Ctx, a: crate::ui::model_tree::Mo
     match a {
         M::Query { target, text, run } => {
             crate::tabularq::open_query(state, cx, target, text, run);
+        }
+        M::Explore { target, spec } => {
+            crate::exploreq::new_tab(state, cx, target, spec.map(|b| *b), None);
         }
         M::Insert { target, text } => crate::tabularq::insert_or_open(state, cx, target, &text),
         M::Copy(s) => {
@@ -651,7 +663,12 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
                     }
                 }
             }
-            Err(None) => (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into())),
+            Err(None) => {
+                // the stored sign-in no longer refreshes: the panel asks for a sign-in instead of
+                // showing cached rows that fail one by one
+                let _ = tx.send(FabricEvent::NeedSignIn);
+                (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()))
+            }
             Err(Some(e)) => (Err(e.clone()), Err(e.clone()), Err(e)),
         };
         let _ = tx.send(FabricEvent::Items { workspace_id: ws.clone(), result });
@@ -1065,6 +1082,17 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Ok(c) => Loadable::Loaded(c),
                 Err(e) => Loadable::Failed(e),
             });
+        }
+        FabricEvent::ExploreDistinct { key, table, column, result } => {
+            for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false)) {
+                if let Some(ex) = t.explore.as_deref_mut() {
+                    let v = match &result {
+                        Ok(v) => Loadable::Loaded(v.clone()),
+                        Err(e) => Loadable::Failed(e.clone()),
+                    };
+                    ex.distinct.insert((table.clone(), column.clone()), v);
+                }
+            }
         }
         FabricEvent::DaxFunctions { key, result } => {
             if let Ok(f) = result {

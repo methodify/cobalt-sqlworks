@@ -269,6 +269,61 @@ pub struct EditorTab {
     pub model_catalog: Option<Arc<cobalt_core::tabular::ModelCatalog>>,
     /// The model's DAX function list for completion (`INFO.FUNCTIONS()`).
     pub dax_functions: Option<Arc<Vec<cobalt_sql::dax::DaxFunctionDoc>>>,
+    /// `Some` = an Explore tab: the pivot builder generates the DAX this tab runs (`exploreq.rs`);
+    /// `tabular` carries the model, `text` the generated query.
+    pub explore: Option<Box<ExploreState>>,
+}
+
+/// The Explore builder's state on top of a DAX tab.
+pub struct ExploreState {
+    pub spec: cobalt_core::explore::ExploreSpec,
+    /// The last generated query (`None` until the catalog is loaded or the spec is empty).
+    pub dax: Option<cobalt_tabular::explore::DaxQuery>,
+    pub dax_error: Option<String>,
+    pub show_dax: bool,
+    pub field_filter: String,
+    /// Tables open in the field list.
+    pub field_expanded: std::collections::HashSet<String>,
+    /// Distinct values per (table, column) for the "is one of" filter picker.
+    pub distinct: std::collections::HashMap<(String, String), Loadable<Vec<String>>>,
+    /// The filter being edited in the popup.
+    pub filter_editor: Option<FilterEditor>,
+    /// The matrix built from the first result set (when the Columns well is used).
+    pub pivot: Option<Arc<cobalt_results::pivot::PivotTable>>,
+    pub pivot_built_for: Option<(u64, usize)>,
+    /// Show the matrix (otherwise the flat grid).
+    pub matrix: bool,
+    /// The spec changed since the last run.
+    pub dirty: bool,
+    /// Run again as soon as the spec changes (and the catalog is loaded).
+    pub auto_run: bool,
+    pub saved_hash: u64,
+    /// Run once the catalog arrives.
+    pub run_when_loaded: bool,
+}
+
+impl ExploreState {
+    pub fn new(spec: cobalt_core::explore::ExploreSpec) -> Self {
+        let saved_hash = hash_text(&spec.to_json());
+        Self { spec, dax: None, dax_error: None, show_dax: false, field_filter: String::new(), field_expanded: Default::default(), distinct: Default::default(), filter_editor: None, pivot: None, pivot_built_for: None, matrix: true, dirty: true, auto_run: true, saved_hash, run_when_loaded: false }
+    }
+    pub fn spec_hash(&self) -> u64 {
+        hash_text(&self.spec.to_json())
+    }
+}
+
+/// The filter popup's draft.
+#[derive(Clone, Debug)]
+pub struct FilterEditor {
+    pub table: String,
+    pub column: String,
+    /// Index into `spec.filters` when editing an existing filter.
+    pub index: Option<usize>,
+    pub op: cobalt_core::explore::FilterOp,
+    pub search: String,
+    pub text_a: String,
+    pub text_b: String,
+    pub last_n: u32,
 }
 
 /// A DAX query tab's state: the model it queries and the options of its runs.
@@ -556,6 +611,7 @@ impl EditorTab {
             tabular: None,
             model_catalog: None,
             dax_functions: None,
+            explore: None,
         }
     }
 
@@ -598,6 +654,9 @@ impl EditorTab {
         if let Some(d) = self.dashboard.as_deref() {
             return d.dirty;
         }
+        if self.explore.is_some() {
+            return crate::exploreq::is_dirty(self);
+        }
         match &self.notebook {
             Some(nb) => nb.dirty,
             None => hash_text(&self.text) != self.saved_text_hash,
@@ -605,6 +664,9 @@ impl EditorTab {
     }
     pub fn is_tabular(&self) -> bool {
         self.tabular.is_some()
+    }
+    pub fn is_explore(&self) -> bool {
+        self.explore.is_some()
     }
     pub fn is_dashboard(&self) -> bool {
         self.dashboard.is_some()
@@ -627,6 +689,8 @@ impl EditorTab {
             t = format!("{} {t}", egui_phosphor::regular::NOTEBOOK);
         } else if self.spark.is_some() {
             t = format!("{} {t}", egui_phosphor::regular::FIRE);
+        } else if self.explore.is_some() {
+            t = format!("{} {t}", egui_phosphor::regular::TABLE);
         } else if self.tabular.is_some() {
             t = format!("{} {t}", egui_phosphor::regular::CUBE);
         }

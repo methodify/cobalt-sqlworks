@@ -6,7 +6,7 @@
 
 use crate::ops::{self, Ctx};
 use crate::state::{AppState, ChartView, ConnState, ConnectPurpose, DashboardState, Dialog, EditorTab, RunView, Tile, ToastKind};
-use cobalt_core::{ConnectionProfile, DashboardFile, ProfileId, ProfileRef, TileKind, TileSpec, DASHBOARD_EXT};
+use cobalt_core::{ConnectionProfile, DashboardFile, ProfileId, ProfileRef, TileKind, TileSource, TileSpec, DASHBOARD_EXT};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -135,6 +135,9 @@ pub fn add_tile(state: &mut AppState, cx: &Ctx, idx: usize, spec: TileSpec) -> O
     tab.custom_title = true;
     tab.text = spec.sql.clone();
     tab.mark_saved();
+    if let TileSource::SemanticModel { target } = &spec.source {
+        tab.tabular = Some(crate::state::TabularTab::new(target.clone()));
+    }
     let d = state.tabs.get_mut(idx)?.dashboard.as_deref_mut()?;
     d.tiles.push(Tile { spec, tab, last_refresh: None, pending: true, configure: false, error: None });
     d.dirty = true;
@@ -147,8 +150,13 @@ pub fn add_tile(state: &mut AppState, cx: &Ctx, idx: usize, spec: TileSpec) -> O
 pub fn update_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize, spec: TileSpec) {
     let Some(d) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()) else { return };
     let Some(tile) = d.tiles.get_mut(ti) else { return };
-    let reconnect = tile.spec.profile != spec.profile || tile.spec.database != spec.database;
+    let reconnect = tile.spec.profile != spec.profile || tile.spec.database != spec.database || tile.spec.source != spec.source;
     let rerun = reconnect || tile.spec.sql != spec.sql;
+    if let TileSource::SemanticModel { target } = &spec.source {
+        tile.tab.tabular = Some(crate::state::TabularTab::new(target.clone()));
+    } else {
+        tile.tab.tabular = None;
+    }
     let chart_changed = tile.spec.chart != spec.chart || tile.spec.kind != spec.kind;
     tile.spec = spec;
     tile.tab.title = tile.spec.title.clone();
@@ -190,11 +198,20 @@ pub fn close(state: &mut AppState, cx: &Ctx, idx: usize) {
 }
 
 fn connect_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
-    let (tab_id, pref, database) = {
+    let (tab_id, pref, database, model) = {
         let Some(d) = state.tabs.get(idx).and_then(|t| t.dashboard.as_deref()) else { return };
         let Some(tile) = d.tiles.get(ti) else { return };
-        (tile.tab.id, tile.spec.profile.clone(), tile.spec.database.clone())
+        (tile.tab.id, tile.spec.profile.clone(), tile.spec.database.clone(), tile.spec.source.is_model())
     };
+    if model {
+        // no connection to open: the query goes straight to the service
+        if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
+            tile.error = None;
+            tile.pending = false;
+        }
+        run_tile(state, cx, idx, ti);
+        return;
+    }
     let Some(profile) = resolve_profile(state, &pref) else {
         if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
             tile.error = Some(format!("no connection named {:?} ({}) in the library — edit the tile and pick one", pref.name, pref.server));
@@ -215,7 +232,7 @@ fn connect_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
 
 /// Refresh one tile now (connecting first when it is not connected).
 pub fn refresh_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
-    let connected = state.tabs.get(idx).and_then(|t| t.dashboard.as_deref()).and_then(|d| d.tiles.get(ti)).map(|t| t.tab.conn.is_connected());
+    let connected = state.tabs.get(idx).and_then(|t| t.dashboard.as_deref()).and_then(|d| d.tiles.get(ti)).map(|t| t.tab.conn.is_connected() || t.spec.source.is_model());
     match connected {
         Some(true) => run_tile(state, cx, idx, ti),
         Some(false) => connect_tile(state, cx, idx, ti),
@@ -242,6 +259,26 @@ fn run_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
     tile.tab.run = Some(view);
     tile.pending = false;
     tile.last_refresh = Some(Instant::now());
+    if let TileSource::SemanticModel { target } = &tile.spec.source {
+        let target = target.clone();
+        let tab_id = tile.tab.id;
+        let text = tile.spec.sql.clone();
+        let timeout = cx.settings.execution.command_timeout_secs;
+        let cap = cx.settings.execution.row_cap;
+        if let Some(tt) = tile.tab.tabular.as_mut() {
+            tt.last_limit = if cap == 0 { None } else { Some(cap) };
+        }
+        let Some(auth) = crate::tabularq::auth(state, cx) else {
+            if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
+                tile.error = Some("Sign in on the Fabric panel: this tile queries a semantic model".into());
+                tile.tab.run = None;
+            }
+            return;
+        };
+        let opts = cobalt_tabular::DaxOptions { timeout_secs: if timeout == 0 { None } else { Some(timeout) }, row_limit: if cap == 0 { None } else { Some(cap) }, ..Default::default() };
+        cx.session.send(crate::session::Command::RunTabular { tab: tab_id, run: run_id, target, auth, text, opts, sink: None });
+        return;
+    }
     let mut opts = tile.tab.exec.clone().with_defaults(&cx.settings.execution.session);
     if opts.timeout_secs == 0 {
         opts.timeout_secs = cx.settings.execution.command_timeout_secs;
@@ -276,7 +313,7 @@ pub fn tick(state: &mut AppState, cx: &Ctx) {
                 any_clock = true;
                 let due = tile.last_refresh.map(|r| r.elapsed().as_secs() >= tile.spec.interval_secs).unwrap_or(false);
                 if due && !tile.is_live() && !tile.pending {
-                    if tile.tab.conn.is_connected() {
+                    if tile.tab.conn.is_connected() || tile.spec.source.is_model() {
                         to_run.push((i, k));
                     } else if matches!(tile.tab.conn, ConnState::Disconnected) {
                         to_connect.push((i, k));
@@ -316,9 +353,24 @@ pub fn tick(state: &mut AppState, cx: &Ctx) {
 /// the set is charted.
 pub fn spec_from_tab(state: &AppState, idx: usize, set: usize, title: String, interval_secs: u64, kind: TileKind) -> Option<TileSpec> {
     let t = state.tabs.get(idx)?;
-    let profile = t.profile.as_ref()?;
     let view = t.run.as_ref().and_then(|r| r.result_sets.get(set));
     let chart = view.and_then(|v| v.chart.as_ref()).map(|c| c.spec.clone());
+    if let Some(tt) = &t.tabular {
+        let target = tt.target.clone();
+        return Some(TileSpec {
+            title,
+            profile: ProfileRef { id: None, name: target.model().to_string(), server: format!("Power BI · {}", target.host_label()) },
+            database: None,
+            sql: t.text.clone(),
+            kind,
+            chart,
+            interval_secs,
+            source: TileSource::SemanticModel { target },
+            explore: t.explore.as_deref().map(|e| Box::new(e.spec.clone())),
+            ..Default::default()
+        });
+    }
+    let profile = t.profile.as_ref()?;
     Some(TileSpec {
         title,
         profile: profile_ref(profile),
@@ -344,8 +396,12 @@ pub fn suggested_kind(state: &AppState, idx: usize, set: usize) -> TileKind {
 
 /// Open the pin dialog for a result set of the tab.
 pub fn open_pin_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
-    if state.tabs.get(idx).and_then(|t| t.profile.as_ref()).is_none() {
+    if state.tabs.get(idx).map(|t| t.profile.is_none() && t.tabular.is_none()).unwrap_or(true) {
         cx.toast(ToastKind::Warning, "Connect the tab first: a tile needs a connection to run on.");
+        return;
+    }
+    if state.tabs.get(idx).map(|t| t.explore.is_some() && t.text.trim().is_empty()).unwrap_or(false) {
+        cx.toast(ToastKind::Warning, "Add fields to the wells first.");
         return;
     }
     let title = state.tabs[idx].title.trim_end_matches(".sql").to_string();

@@ -1019,6 +1019,10 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         crate::ui::notebook::show(ui, f, idx);
         return;
     }
+    if f.state.tabs[idx].is_explore() {
+        crate::ui::explore::show(ui, f, idx);
+        return;
+    }
     // a fresh, empty tab gets the getting-started pane on its right (until something is typed)
     let pristine = {
         let t = &f.state.tabs[idx];

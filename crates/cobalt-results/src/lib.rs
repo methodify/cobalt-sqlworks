@@ -12,6 +12,7 @@ pub mod budget;
 pub mod chart;
 pub mod display;
 pub mod filter;
+pub mod pivot;
 pub mod spill;
 pub mod summary;
 pub mod value;
@@ -19,6 +20,7 @@ pub mod value;
 pub use budget::MemoryBudget;
 pub use display::{CellFormatter, DisplayCache};
 pub use filter::{ColumnFilter, FilterOp};
+pub use pivot::{pivot, pivot_spec_by_name, PivotCell, PivotKey, PivotSpec, PivotTable};
 pub use summary::{Summary, summarize};
 pub use value::CellValue;
 

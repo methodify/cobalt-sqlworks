@@ -2,6 +2,7 @@ pub mod chrome;
 pub mod dashboard;
 pub mod dialogs;
 pub mod editor;
+pub mod explore;
 pub mod fabric;
 pub mod files;
 pub mod lakehouse;

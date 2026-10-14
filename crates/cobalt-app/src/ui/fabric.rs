@@ -291,6 +291,10 @@ fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_f
             actions.push(FabricAction::DaxQuery { item_id: m.id.clone() });
             ui.close();
         }
+        if ui.button(format!("{} Explore", icons::TABLE)).on_hover_text("A pivot-table builder: rows, columns, values, filters; the DAX is generated").clicked() {
+            actions.push(FabricAction::Explore { item_id: m.id.clone() });
+            ui.close();
+        }
         if ui.button(if expanded { "Hide model" } else { "Explore model" }).on_hover_text("Tables, columns, measures and relationships under this row").clicked() {
             actions.push(FabricAction::ToggleModel { item_id: m.id.clone() });
             ui.close();

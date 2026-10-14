@@ -24,12 +24,15 @@ pub struct TabularRun {
     pub sink: Option<RunSink>,
 }
 
+/// The message when the stored sign-in cannot mint a token (the panel is told to ask for one).
+pub const NEED_SIGN_IN: &str = "Sign in on the Fabric panel: the stored sign-in no longer refreshes (semantic model queries use that account).";
+
 /// A Power BI token for the slot, silently (the panel's sign-in already consented).
 pub async fn powerbi_token(auth: &TabularAuth) -> Result<String, String> {
     let resource = cobalt_auth::provider::POWERBI_RESOURCE;
     let mut ts = match auth.resolver.resource_token_silent(auth.slot, resource, auth.tenant.as_deref()).await {
         Ok(Some(ts)) => ts,
-        Ok(None) => return Err("Sign in on the Fabric panel first: semantic model queries use that account.".into()),
+        Ok(None) => return Err(NEED_SIGN_IN.into()),
         Err(e) => return Err(format!("Could not get a Power BI token: {e}")),
     };
     if !cobalt_auth::provider::missing_powerbi_scopes(&ts.access.scope).is_empty() {

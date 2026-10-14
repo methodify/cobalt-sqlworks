@@ -15,6 +15,8 @@ use egui_phosphor::regular as icons;
 
 enum DashAction {
     Refresh(usize),
+    /// A tile pinned from Explore opens in the builder again.
+    OpenExplore(usize),
     RefreshAll,
     Edit(Option<usize>),
     Remove(usize),
@@ -125,6 +127,14 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         match a {
             DashAction::Refresh(k) => ops::refresh_tile(f.state, cx, idx, k),
             DashAction::RefreshAll => ops::refresh_all(f.state, cx, idx),
+            DashAction::OpenExplore(k) => {
+                let spec = f.state.tabs.get(idx).and_then(|t| t.dashboard.as_deref()).and_then(|d| d.tiles.get(k)).map(|t| t.spec.clone());
+                if let Some(spec) = spec {
+                    if let (cobalt_core::TileSource::SemanticModel { target }, Some(ex)) = (spec.source, spec.explore) {
+                        crate::exploreq::new_tab(f.state, f.cx, target, Some(*ex), None);
+                    }
+                }
+            }
             DashAction::Edit(None) => {
                 let profile = f.state.tabs.iter().find_map(|t| t.profile.as_ref().map(|p| p.id)).or_else(|| f.state.library.profiles.first().map(|p| p.id));
                 let mut draft = cobalt_core::TileSpec::default();
@@ -199,6 +209,13 @@ fn tile_card(ui: &mut Ui, tile: &mut Tile, k: usize, theme: &Theme, fmt: &cobalt
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} edit", k + 1)));
                 if r.clicked() {
                     actions.push(DashAction::Edit(Some(k)));
+                }
+                if tile.spec.explore.is_some() {
+                    let r = icon_button(ui, icons::TABLE, "Open in Explore (the pivot builder this tile came from)", true);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} explore", k + 1)));
+                    if r.clicked() {
+                        actions.push(DashAction::OpenExplore(k));
+                    }
                 }
                 if tile.spec.kind == TileKind::Chart {
                     let r = icon_button(ui, icons::SLIDERS_HORIZONTAL, if tile.configure { "Hide the chart settings" } else { "Chart settings (kind, X, Y, aggregation…)" }, true);

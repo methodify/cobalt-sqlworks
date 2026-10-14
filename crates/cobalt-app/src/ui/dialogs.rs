@@ -326,7 +326,15 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     let r = ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(440.0));
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile title"));
                     ui.end_row();
-                    ui.label("Connection");
+                    ui.label(if draft.source.is_model() { "Model" } else { "Connection" });
+                    if let cobalt_core::TileSource::SemanticModel { target } = &draft.source {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(egui_phosphor::regular::CUBE).color(theme.accent));
+                            ui.label(format!("{} · {}", target.model(), target.host_label()));
+                            ui.label(RichText::new("DAX, through the Fabric panel's sign-in").size(11.0).color(theme.text_faint));
+                        });
+                        ui.end_row();
+                    } else {
                     let current = profile.and_then(|id| profiles.iter().find(|(pid, _, _)| *pid == id)).map(|(_, n, _)| n.clone()).unwrap_or_else(|| if draft.profile.name.is_empty() { "choose…".into() } else { format!("{} (not in the library)", draft.profile.name) });
                     let cb = egui::ComboBox::from_id_salt("tile-profile").width(440.0).selected_text(current).show_ui(ui, |ui| {
                         for (pid, name, db) in &profiles {
@@ -348,6 +356,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                         draft.database = if db.trim().is_empty() { None } else { Some(db) };
                     }
                     ui.end_row();
+                    }
                     ui.label("Query");
                     let r = ui.add(egui::TextEdit::multiline(&mut draft.sql).desired_width(440.0).desired_rows(6).font(egui::TextStyle::Monospace).hint_text("SELECT … (a number tile shows the first cell; a chart or grid the first result set)"));
                     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile query"));

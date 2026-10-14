@@ -2,6 +2,27 @@
 
 ## 0.9.6 — unreleased
 
+- **Explore: a pivot-table builder on semantic models (slice B).** Right-click a semantic
+  model › Explore (or "Explore with this measure" on a measure) for a tab with the model's
+  fields on the left and four wells: Rows, Columns, Values, Filters. Click a column to add it
+  (numeric columns go to Values as a Sum, others to Rows), a measure to add it to Values;
+  right-click for the other wells. Value chips choose Sum / Count / Count distinct / Average /
+  Min / Max for columns; chips sort ascending or descending and move left or right; Top N and
+  Subtotals are on the toolbar. Filters: is one of (a picker of the column's values, loaded
+  from the model), is not one of, between, contains, starts with, in the last n days / months
+  / years, blank, not blank. The DAX is generated (`SUMMARIZECOLUMNS` with `TREATAS` /
+  `FILTER` tables, `ROLLUPADDISSUBTOTAL`, `TOPN`, `ORDER BY`), shown on request, copied, or
+  opened in a DAX query tab to edit. The query runs on every change (Auto, or Run by hand) and
+  lands in the usual results area; with a field in Columns the result shows as a matrix (a
+  local pivot: row keys down, column keys across, subtotal rows set off, copy as tab-separated
+  text), with Flat a click away. An Explore saves as a `.cobalt-explore.json` file (File ›
+  Open and the command line open it) and pins to a dashboard: tiles gain a source, so a tile
+  can query a semantic model through the Fabric panel's sign-in, and a tile pinned from Explore
+  opens in Explore again. The spec (`cobalt_core::explore::ExploreSpec`) is engine-agnostic; a
+  SQL emitter can follow. Agent: `explore {action: new|state|add|remove|agg|sort|top_n|
+  subtotals|filter|remove_filter|run|dax|save|open|matrix}`, tab kind `explore`, `state` tabs
+  carry an `explore` block with the spec, the DAX and the matrix's first rows.
+
 - **Semantic models: DAX query tabs and the model explorer (slice A).** Power BI / Fabric
   semantic models now appear in the Fabric panel under their workspace. Double-click opens a
   DAX query tab: DAX syntax, completion from the model (tables as `'Table'`, columns after

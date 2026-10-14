@@ -116,7 +116,7 @@ fn col_index(rs: &ResultSet, name: &str) -> Option<usize> {
 }
 
 /// The series values of a column as f64 (NaN for NULL), whatever its numeric Arrow type.
-fn as_f64(col: &ArrayRef) -> Option<Float64Array> {
+pub(crate) fn as_f64(col: &ArrayRef) -> Option<Float64Array> {
     match col.data_type() {
         DataType::Float64 => col.as_any().downcast_ref::<Float64Array>().cloned(),
         DataType::Boolean | DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 | DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 | DataType::Float32 | DataType::Float16 | DataType::Decimal128(_, _) | DataType::Decimal256(_, _) => {
@@ -521,9 +521,9 @@ mod tests {
         let cols = vec![ColumnInfo::new("region", SqlType::NVarChar { len: Some(20) }, true, 0), ColumnInfo::new("amount", SqlType::Decimal { precision: 18, scale: 2 }, true, 1), ColumnInfo::new("qty", SqlType::Int, false, 2)];
         let rs = ResultSet::new(0, cols, Arc::new(MemoryBudget::unlimited()), std::env::temp_dir());
         // two chunks; amounts: east 10+30+5, west 20+40, north 7; a NULL region
-        let regions = vec![Some("east"), Some("west"), Some("east"), None, Some("north"), Some("west"), Some("east")];
-        let amounts = vec![Some(10.0), Some(20.0), Some(30.0), Some(99.0), Some(7.0), Some(40.0), Some(5.0)];
-        let qty = vec![1, 2, 3, 4, 5, 6, 7];
+        let regions = [Some("east"), Some("west"), Some("east"), None, Some("north"), Some("west"), Some("east")];
+        let amounts = [Some(10.0), Some(20.0), Some(30.0), Some(99.0), Some(7.0), Some(40.0), Some(5.0)];
+        let qty = [1, 2, 3, 4, 5, 6, 7];
         for (lo, hi) in [(0, 4), (4, 7)] {
             let b = RecordBatch::try_new(
                 rs.schema.clone(),

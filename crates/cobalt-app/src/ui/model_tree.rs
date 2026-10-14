@@ -23,6 +23,8 @@ pub enum ModelAction {
     ToggleHidden,
     /// Open or close a tree node (`<key>/tables`, `<key>/t/<table>` …).
     ToggleNode(String),
+    /// An Explore tab, seeded with a spec (a measure in Values, a column in Rows…).
+    Explore { target: TabularTarget, spec: Option<Box<cobalt_core::explore::ExploreSpec>> },
 }
 
 const MAX_HOVER_EXPR: usize = 600;
@@ -132,6 +134,10 @@ fn muted(ui: &mut Ui, theme: &Theme, depth: usize, text: &str) {
 fn root_menu(ui: &mut Ui, target: &TabularTarget, cat: &ModelCatalog, show_hidden: bool, actions: &mut Vec<ModelAction>) {
     if ui.button("New DAX query").clicked() {
         actions.push(ModelAction::Query { target: target.clone(), text: String::new(), run: false });
+        ui.close();
+    }
+    if ui.button("Explore").on_hover_text("A pivot-table builder on this model").clicked() {
+        actions.push(ModelAction::Explore { target: target.clone(), spec: None });
         ui.close();
     }
     if ui.button("Model metadata (INFO.VIEW)").on_hover_text("Tables, columns, measures and relationships as result sets").clicked() {
@@ -349,6 +355,12 @@ fn measure_row(ui: &mut Ui, theme: &Theme, target: &TabularTarget, t: &Table, m:
     r.context_menu(|ui| {
         if ui.button("Evaluate").clicked() {
             actions.push(ModelAction::Query { target: target.clone(), text: crate::tabularq::q_evaluate_measure(&m.name), run: true });
+            ui.close();
+        }
+        if ui.button("Explore with this measure").clicked() {
+            let mut spec = cobalt_core::explore::ExploreSpec::new(cobalt_core::explore::ExploreSource::SemanticModel { target: target.clone() });
+            spec.values.push(cobalt_core::explore::ValueRef::measure(&m.name));
+            actions.push(ModelAction::Explore { target: target.clone(), spec: Some(Box::new(spec)) });
             ui.close();
         }
         ui.menu_button("Evaluate by…", |ui| {

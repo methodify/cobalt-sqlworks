@@ -7,6 +7,7 @@ pub mod catalog;
 pub mod chart;
 pub mod dashboard;
 pub mod engine;
+pub mod explore;
 pub mod ids;
 pub mod message;
 pub mod profile;

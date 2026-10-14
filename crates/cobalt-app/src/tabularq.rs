@@ -111,7 +111,12 @@ pub fn load_catalog(state: &mut AppState, cx: &Ctx, target: &TabularTarget, forc
                 }
                 cat
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                if e == crate::session::tabular::NEED_SIGN_IN {
+                    let _ = tx.send(FabricEvent::NeedSignIn);
+                }
+                Err(e)
+            }
         };
         let _ = tx.send(FabricEvent::ModelCatalog { key, result });
         egui.request_repaint();

@@ -109,6 +109,22 @@ impl TileSize {
     }
 }
 
+/// Where a tile's query runs: a SQL connection from the library (`profile`), or a semantic
+/// model through the Fabric panel's sign-in (`sql` holds DAX then).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TileSource {
+    #[default]
+    Sql,
+    SemanticModel { target: crate::tabular::TabularTarget },
+}
+
+impl TileSource {
+    pub fn is_model(&self) -> bool {
+        matches!(self, TileSource::SemanticModel { .. })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TileSpec {
@@ -122,11 +138,15 @@ pub struct TileSpec {
     /// Seconds between refreshes; 0 = only by hand.
     pub interval_secs: u64,
     pub size: TileSize,
+    /// SQL connection (default) or a semantic model.
+    pub source: TileSource,
+    /// The Explore spec the tile was pinned from (opens in Explore again).
+    pub explore: Option<Box<crate::explore::ExploreSpec>>,
 }
 
 impl Default for TileSpec {
     fn default() -> Self {
-        Self { id: new_tile_id(), title: "New tile".into(), profile: ProfileRef::default(), database: None, sql: String::new(), kind: TileKind::Chart, chart: None, interval_secs: 300, size: TileSize::Medium }
+        Self { id: new_tile_id(), title: "New tile".into(), profile: ProfileRef::default(), database: None, sql: String::new(), kind: TileKind::Chart, chart: None, interval_secs: 300, size: TileSize::Medium, source: TileSource::Sql, explore: None }
     }
 }
 
