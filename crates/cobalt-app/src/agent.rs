@@ -939,6 +939,24 @@ impl AgentApp for CobaltApp {
                 self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
                 ActionResult::with(&json!({"tab": self.state.active_tab}))
             }
+            // drop: what dropping files on the window does — {paths: [..], classify?: true (report the plan only)}
+            "drop" => {
+                let paths: Vec<std::path::PathBuf> = args.and_then(|a| a.get("paths")).and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|p| p.as_str()).map(std::path::PathBuf::from).collect()).unwrap_or_default();
+                if paths.is_empty() {
+                    return ActionResult::BadArgs("paths is required".into());
+                }
+                let plan: Vec<Value> = paths.iter().map(|p| json!({"path": p, "action": format!("{:?}", crate::drop::classify(p))})).collect();
+                let only_plan = args.and_then(|a| a.get("classify")).and_then(Value::as_bool).unwrap_or(false);
+                // hover: true shows the overlay for these paths (until a drop or {hover: false})
+                if let Some(h) = args.and_then(|a| a.get("hover")).and_then(Value::as_bool) {
+                    self.state.simulated_hover = if h { paths.clone() } else { Vec::new() };
+                    egui.request_repaint();
+                    return ActionResult::with(&json!({"plan": plan, "hovering": h}));
+                }
+                self.state.simulated_hover.clear();
+                let opened = if only_plan { 0 } else { self.with_ctx(egui, |s, cx| crate::drop::drop_files(s, cx, &paths)) };
+                ActionResult::with(&json!({"plan": plan, "opened": opened, "tab": self.state.active_tab, "dialog": dialog_name(&self.state.dialog)}))
+            }
             "complete" => {
                 let Some(t) = self.state.active_mut() else { return ActionResult::BadArgs("no active tab".into()) };
                 if let Some(text) = arg_str(args, "append") {

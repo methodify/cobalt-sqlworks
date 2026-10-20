@@ -37,6 +37,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
             welcome(ui, f);
         }
     });
+    drop_overlay(ctx, f);
     // commands queued by widgets that could not call dispatch themselves (status bar)
     for c in std::mem::take(&mut f.state.pending_commands) {
         dispatch(f, c);
@@ -581,6 +582,44 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     if new_notebook {
         dispatch(f, Command::NewNotebook);
     }
+}
+
+/// While files hover over the window: a veil and a card naming each file and what the drop
+/// will do with it (`crate::drop::classify`).
+fn drop_overlay(ctx: &egui::Context, f: &mut Frame<'_>) {
+    let hovered: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.hovered_files.iter().filter_map(|h| h.path.clone()).collect());
+    if hovered.is_empty() {
+        return;
+    }
+    let theme = f.theme;
+    let lines = crate::drop::hover_lines(&hovered, &f.cx.settings.appearance.new_tab_kind);
+    let screen = ctx.content_rect();
+    // the veil goes in the Middle order (above the panels, below every window and area); the
+    // card is an area of its own on top of it
+    let veil = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("drop-veil")));
+    veil.rect_filled(screen, 0.0, theme.bg.gamma_multiply(0.6));
+    veil.rect_stroke(screen.shrink(6.0), 8.0, egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+    let card_w = 560.0_f32.min(screen.width() - 40.0);
+    let card_h = 70.0 + 22.0 * lines.len() as f32;
+    egui::Area::new(egui::Id::new("drop-overlay")).order(egui::Order::Tooltip).fixed_pos(screen.center() - Vec2::new(card_w / 2.0, card_h / 2.0)).interactable(false).show(ctx, |ui| {
+        let card = egui::Rect::from_min_size(ui.max_rect().min, Vec2::new(card_w, card_h));
+        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(card).layout(egui::Layout::top_down(egui::Align::Min)));
+        egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(22, 16)).shadow(egui::Shadow { offset: [0, 4], blur: 18, spread: 0, color: egui::Color32::from_black_alpha(60) }).show(&mut cui, |ui| {
+            ui.set_width(card_w - 44.0);
+            ui.label(RichText::new(format!("{}  Drop to open", icons::DOWNLOAD_SIMPLE)).size(16.0).color(theme.accent));
+            ui.add_space(8.0);
+            for (name, what, ok) in &lines {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(if *ok { icons::FILE } else { icons::PROHIBIT }).color(if *ok { theme.text_muted } else { theme.warning }));
+                    ui.label(RichText::new(name).strong());
+                    ui.label(RichText::new(what).size(12.0).color(if *ok { theme.text_muted } else { theme.warning }));
+                });
+            }
+            if hovered.len() > lines.len() {
+                ui.label(RichText::new(format!("… and {} more", hovered.len() - lines.len())).size(12.0).color(theme.text_faint));
+            }
+        });
+    });
 }
 
 /// Sandbox clones of OneLake tables in the running session: inspect, discard, rewind.

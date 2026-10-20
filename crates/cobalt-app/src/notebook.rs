@@ -65,6 +65,14 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, language: CellLanguage) -> usize 
     idx
 }
 
+/// A notebook of one language with `source` as its first cell (a dropped `.py` or script).
+pub fn new_tab_from_source(state: &mut AppState, cx: &Ctx, language: CellLanguage, source: &str, title: &str) -> usize {
+    let mut nb = Notebook::new(language);
+    nb.cells.push(Cell::code(source));
+    let title = if title.ends_with(".ipynb") { title.to_string() } else { format!("{title}.ipynb") };
+    install(state, cx, nb, None, title)
+}
+
 /// Make a notebook tab from a parsed document. Inherits the active tab's connection profile.
 fn install(state: &mut AppState, cx: &Ctx, nb: Notebook, path: Option<PathBuf>, title: String) -> usize {
     let inherit = state.active().and_then(|t| t.profile.clone());

@@ -298,6 +298,11 @@ impl CobaltApp {
             if let Some(launch) = self.launch.take() {
                 ops::apply_launch(&mut self.state, &cx, launch);
             }
+            // files dropped on the window (the OS drag-and-drop; the hover overlay is in ui/shell.rs)
+            let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
+            if !dropped.is_empty() {
+                crate::drop::drop_files(&mut self.state, &cx, &dropped);
+            }
             // Spark runtime jobs (Settings → Spark runtime) and the Spark kernel
             crate::runtime::poll(&mut self.state.runtime, &self.settings, &self.paths, ctx);
             crate::notebook::poll_kernel(&mut self.state, &cx);
@@ -456,6 +461,10 @@ impl CobaltApp {
 
 impl eframe::App for CobaltApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // the agent's simulated file hover (the drop overlay cannot be driven through the OS)
+        for p in &self.state.simulated_hover {
+            raw_input.hovered_files.push(egui::HoveredFile { path: Some(p.clone()), mime: String::new() });
+        }
         // the frame a chart capture asked for: crop the plot's rect and hand it on
         if self.state.pending_capture.as_ref().map(|p| p.requested).unwrap_or(false) {
             if let Some(image) = raw_input.events.iter().find_map(|e| match e {

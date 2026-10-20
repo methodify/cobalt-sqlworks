@@ -136,7 +136,7 @@ pub fn open_chooser(state: &mut AppState, cx: &Ctx, tab_index: Option<usize>, ex
         None => None,
     };
     let source = source.or_else(|| if recent_models(cx).is_empty() { None } else { Some(crate::state::ModelSource::Recent) });
-    state.dialog = crate::state::Dialog::ChooseModel { tab_index, explore, source, search: String::new() };
+    state.dialog = crate::state::Dialog::ChooseModel { tab_index, explore, source, search: String::new(), file: None };
 }
 
 /// The chooser's pick: rebind the tab, or open a new DAX / Explore tab.

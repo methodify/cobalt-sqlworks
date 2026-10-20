@@ -1225,6 +1225,8 @@ pub struct FilesState {
 }
 
 pub struct AppState {
+    /// Paths the agent asked to show as hovering over the window (the drop overlay), until cleared.
+    pub simulated_hover: Vec<PathBuf>,
     pub library: Library,
     pub fabric: crate::fabric::FabricState,
     pub files: FilesState,
@@ -1397,7 +1399,7 @@ pub enum Dialog {
     SparkLakehouse { tab_index: Option<usize>, workspace: Option<String> },
     /// Pick a semantic model (a Fabric workspace's, or one of a saved Analysis Services
     /// endpoint) for a DAX or Explore tab; `tab_index` None = a new tab (`explore` = an Explore tab).
-    ChooseModel { tab_index: Option<usize>, explore: bool, source: Option<ModelSource>, search: String },
+    ChooseModel { tab_index: Option<usize>, explore: bool, source: Option<ModelSource>, search: String, file: Option<PathBuf> },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
 }
@@ -1530,6 +1532,7 @@ pub struct ExportDialog {
 impl AppState {
     pub fn new() -> Self {
         Self {
+            simulated_hover: Vec::new(),
             library: Library::default(),
             tabs: Vec::new(),
             active_tab: None,

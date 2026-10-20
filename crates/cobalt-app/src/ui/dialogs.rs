@@ -808,7 +808,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::SparkLakehouse { tab_index, workspace };
             }
         }
-        Dialog::ChooseModel { tab_index, explore, source, mut search } => {
+        Dialog::ChooseModel { tab_index, explore, source, mut search, file } => {
             use crate::state::{Loadable, ModelSource};
             crate::tabular_root::ensure_loaded(f.state, f.cx);
             let mut source = source;
@@ -961,8 +961,12 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
             } else if let Some((target, profile)) = pick {
                 let i = crate::tabularq::choose(f.state, f.cx, tab_index, explore, target, profile);
                 f.state.active_tab = Some(i);
+                if let Some(p) = &file {
+                    // a dropped query file waiting for its model
+                    crate::drop::load_into_tab(f.state, f.cx, i, p);
+                }
             } else if !cancel && !close {
-                f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search };
+                f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search, file };
             }
         }
         Dialog::Rename { tab_index, mut title } => {

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.2 — unreleased
+
+- **Drop files on the window.** Dragging files from the desktop onto Cobalt now opens them,
+  and while they hover a card says what the drop will do with each one. A `.sql` file opens
+  in a query tab of the dialect its text reads as: T-SQL (brackets, `GO`, `NOLOCK`, `DECLARE
+  @`…), Spark SQL (backticks, `USING DELTA`, `LATERAL VIEW`, `LIMIT`…), or DAX / MDX
+  (`EVALUATE`, `ON COLUMNS`, `$SYSTEM`); a text that does not say follows the "A click on +
+  opens" setting. `.dax`, `.msdax`, `.mdx`, `.hql` and `.sparksql` name their dialect. A T-SQL
+  file lands in the empty active tab (or a new tab on the active connection), a Spark file on
+  the active lakehouse, a DAX file on the active model, or the model chooser opens and the file
+  loads once a model is picked. Also handled: `.sqlplan` and showplan `.xml` (the plan viewer),
+  `.ipynb` and Fabric `notebook-content.py` (a notebook), any other `.py` (a PySpark notebook
+  with the file as one cell), `.cobalt-dash.json` and `.cobalt-explore.json`, data files
+  (`.csv .tsv .txt .parquet .arrow .feather .jsonl .xlsx`, JSON arrays: the Import dialog on
+  the active tab's connection), a Cobalt connections export (imported) and an Azure Data Studio
+  `settings.json` (the ADS importer), a folder with a `_delta_log` (a Spark SQL tab reading the
+  Delta table) and any other folder (the Files sidebar). A file that is already open is
+  brought to front rather than opened twice; several files at once each go their own way.
+  Agent: `drop {paths, classify?: true, hover?: true|false}`.
+
 ## 0.10.1 — 2026-10-14
 
 - **Semantic models: the transport is a setting.** Settings › Connections › **Semantic

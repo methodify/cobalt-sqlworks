@@ -771,3 +771,25 @@ Agent labels: `tab model` (the DAX toolbar's model button), `explore model`, `mo
 <name>`, `semantic transport auto|arrow|xmla` in Settings; verbs `command {id:
 "file.new_dax_query"}`, `explore {action: "drop", …}`, `settings {set: {"semantic.transport":
 "xmla"}}`.
+
+## Drop files on the window (0.10.2)
+
+Drag files from Explorer (or a folder) onto the Cobalt window. While they hover, a card lists
+each file and what the drop will do; the drop does it. The routing: a `.sql` file is read and
+opened in a tab of the dialect it looks like — T-SQL, Spark SQL or DAX / MDX — and when the
+text does not say (a plain `SELECT id FROM t`), in the kind "A click on + opens" names (the +
+menu's setting). `.dax`, `.msdax`, `.mdx`, `.hql`, `.sparksql` and `.sqlplan` say what they are
+by name; `.txt` is sniffed too (a query opens, otherwise it is a delimited data file). T-SQL
+lands in the empty active tab, or a new tab on the active connection; Spark SQL on the active
+lakehouse; DAX on the active model, or the model chooser opens and the file loads once you pick
+one. Data files (`.csv .tsv .parquet .arrow .feather .jsonl .xlsx`, JSON arrays) open the
+Import dialog on the active tab's connection. `.ipynb` and Fabric `notebook-content.py` open as
+notebooks; any other `.py` becomes a PySpark notebook with the file as its first cell. A
+`cobalt-connections.json` export imports the connections; an Azure Data Studio `settings.json`
+opens the ADS importer. A folder with a `_delta_log` opens a Spark SQL tab reading the Delta
+table; any other folder opens in the Files sidebar. Dashboards and Explores open as themselves.
+A file that is already open comes to the front instead of opening twice. The command line
+(`cobalt file.sql …`) still opens files the File › Open way (no dialect sniffing yet).
+
+Agent: `drop {paths: [...]}` does what a drop does; `classify: true` reports the plan without
+opening; `hover: true` shows the overlay for those paths (`hover: false` clears it).
