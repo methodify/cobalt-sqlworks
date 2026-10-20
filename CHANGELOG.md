@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.2 — unreleased
+## 0.10.2 — 2026-10-20
 
 - **Drop files on the window.** Dragging files from the desktop onto Cobalt now opens them,
   and while they hover a card says what the drop will do with each one. A `.sql` file opens
