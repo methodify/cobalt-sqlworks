@@ -149,6 +149,7 @@ impl<'a> CodeEditor<'a> {
         let margin_h = (margin.top + margin.bottom) as f32;
         let wrap_width = if word_wrap { (ui.available_width() - margin_w).max(40.0) } else { f32::INFINITY };
         let layout = |ui: &Ui, text: &str| -> Arc<Galley> {
+            crate::fonts::note(ui.ctx(), text);
             let job = super::layout_job_for(syntax, text, colors, font.clone(), wrap_width);
             ui.fonts_mut(|f| f.layout_job(job))
         };

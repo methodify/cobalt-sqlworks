@@ -453,6 +453,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     ui.style_mut().override_font_id = Some(egui::FontId::monospace(args.settings.appearance.grid_font_size));
                     for m in &run.messages {
                         let color = if m.is_error { theme.error } else if m.is_batch_header { theme.text_muted } else { theme.text };
+                        crate::fonts::note(ui.ctx(), &m.text);
                         let text = RichText::new(&m.text).color(color);
                         if let Some(line) = m.line {
                             let r = ui.add(egui::Label::new(text.underline()).sense(egui::Sense::click()));

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.3 — unreleased
+
+- **Non-Latin text renders.** Japanese, Chinese, Korean, Arabic, Hebrew, Indic, Thai and
+  other scripts drew as boxes everywhere (the editor, the grid, the trees): egui's bundled
+  fonts cover Latin, Greek and Cyrillic only. Cobalt now borrows the system's fonts on
+  demand: the first time a script is drawn, its font is read from the OS font folder (Yu
+  Gothic, Microsoft YaHei / JhengHei, Malgun Gothic, Segoe UI, Nirmala UI, Leelawadee UI…
+  on Windows; Hiragino / PingFang / Apple SD Gothic Neo on macOS; the Noto CJK collection or
+  whatever `fc-match` names on Linux) and appended to both font families as a fallback.
+  Nothing loads for ASCII-only sessions; a Japanese dataset costs one font once. Kanji
+  without kana follows the locale (Japanese, Traditional or Simplified Chinese glyph style);
+  kana, bopomofo or hangul in the text decide outright. Agent: `state.font_packs` lists what
+  was loaded.
+
 ## 0.10.2 — 2026-10-20
 
 - **Drop files on the window.** Dragging files from the desktop onto Cobalt now opens them,

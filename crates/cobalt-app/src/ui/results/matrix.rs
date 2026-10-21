@@ -101,6 +101,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, pt: &PivotTable, a11y: &str) -> Vec<Matr
                 if cell.intersects(viewport.translate(origin.to_vec2())) {
                     p.line_segment([egui::pos2(x1, y), egui::pos2(x1, y + ROW_H)], egui::Stroke::new(1.0, theme.border));
                     let shown = if pt.col_keys[c].subtotal_level > 0 && label == cobalt_results::pivot::TOTAL_LABEL { "Total".to_string() } else { label };
+                    crate::fonts::note(p.ctx(), &shown);
                     p.text(egui::pos2(x0 + PAD, y + ROW_H / 2.0), Align2::LEFT_CENTER, clip_text(&shown, (x1 - x0 - 2.0 * PAD).max(10.0), 6.2), hfont.clone(), theme.text);
                 }
                 c = end;
@@ -132,6 +133,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, pt: &PivotTable, a11y: &str) -> Vec<Matr
                 // a subtotal row shows "Total" at its level and blanks the inner levels
                 let txt = l.to_string();
                 let f = if strong { FontId::proportional(12.5) } else { font.clone() };
+                crate::fonts::note(p.ctx(), &txt);
                 p.text(egui::pos2(x0 + PAD, y + ROW_H / 2.0), Align2::LEFT_CENTER, clip_text(&txt, rk_w[i] - 2.0 * PAD, 7.5), f, theme.text);
             }
             for c in 0..ncols {
@@ -139,6 +141,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, pt: &PivotTable, a11y: &str) -> Vec<Matr
                     let align = if cell.num.is_some() { Align2::RIGHT_CENTER } else { Align2::LEFT_CENTER };
                     let x = if cell.num.is_some() { xs[c + 1] - PAD } else { xs[c] + PAD };
                     let f = if strong { FontId::proportional(12.5) } else { font.clone() };
+                    crate::fonts::note(p.ctx(), &cell.text);
                     p.text(egui::pos2(x, y + ROW_H / 2.0), align, clip_text(&cell.text, col_w[c] - 2.0 * PAD, 7.5), f, theme.text);
                 }
             }

@@ -125,6 +125,10 @@ pub struct TreeRowResponse {
 }
 
 pub fn tree_row(ui: &mut Ui, theme: &Theme, row: TreeRow<'_>) -> TreeRowResponse {
+    crate::fonts::note(ui.ctx(), row.label);
+    if let Some(d) = row.detail {
+        crate::fonts::note(ui.ctx(), d);
+    }
     let row_h = 22.0;
     let indent = 14.0 * row.depth as f32 + 4.0;
     let desired = Vec2::new(ui.available_width().max(100.0), row_h);

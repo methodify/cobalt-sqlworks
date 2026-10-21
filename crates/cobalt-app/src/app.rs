@@ -461,6 +461,12 @@ impl CobaltApp {
 
 impl eframe::App for CobaltApp {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // typed or pasted text in any box: its scripts get their fonts
+        for ev in &raw_input.events {
+            if let egui::Event::Text(t) | egui::Event::Paste(t) = ev {
+                crate::fonts::note(ctx, t);
+            }
+        }
         // the agent's simulated file hover (the drop overlay cannot be driven through the OS)
         for p in &self.state.simulated_hover {
             raw_input.hovered_files.push(egui::HoveredFile { path: Some(p.clone()), mime: String::new() });

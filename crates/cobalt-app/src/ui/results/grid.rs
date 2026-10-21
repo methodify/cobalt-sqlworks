@@ -96,6 +96,7 @@ impl TableDelegate for Delegate<'_> {
                     let right = self.rs.columns.get(col).map(|c| c.sql_type.right_align()).unwrap_or(false);
                     let text_rect = rect.shrink2(Vec2::new(6.0, 0.0));
                     let clip = painter.with_clip_rect(text_rect.intersect(painter.clip_rect()));
+                    crate::fonts::note(clip.ctx(), v);
                     let galley = clip.layout_no_wrap(v.clone(), self.font.clone(), self.theme.accent);
                     let x = if right { text_rect.right() - galley.size().x } else { text_rect.left() };
                     clip.galley(Pos2::new(x.max(text_rect.left()), rect.center().y - galley.size().y / 2.0), galley, self.theme.accent);
@@ -135,6 +136,7 @@ impl TableDelegate for Delegate<'_> {
         let filtered = self.grid.view.filters.iter().any(|f| f.column == col);
         let name = if info.name.is_empty() { "(No column name)".to_string() } else { info.name.clone() };
         let label_rect = Rect::from_min_max(rect.min + Vec2::new(6.0, 0.0), rect.max - Vec2::new(22.0, 0.0));
+        crate::fonts::note(painter.ctx(), &name);
         let galley = painter.layout_no_wrap(name, self.header_font.clone(), self.theme.text);
         let clip = painter.with_clip_rect(label_rect.intersect(painter.clip_rect()));
         clip.galley(Pos2::new(label_rect.left(), rect.center().y - galley.size().y / 2.0), galley, self.theme.text);

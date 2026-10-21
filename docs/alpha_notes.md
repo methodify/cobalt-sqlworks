@@ -793,3 +793,21 @@ A file that is already open comes to the front instead of opening twice. The com
 
 Agent: `drop {paths: [...]}` does what a drop does; `classify: true` reports the plan without
 opening; `hover: true` shows the overlay for those paths (`hover: false` clears it).
+
+## Non-Latin text: system fonts on demand (0.10.3)
+
+Your Japanese names drew as tofu boxes because egui ships Latin / Greek / Cyrillic fonts
+only. Rather than bundling tens of megabytes of CJK fonts, Cobalt now watches what it draws
+(grid cells and headers, the matrix, editor lines, tree rows, messages, anything typed or
+pasted) with a byte scan, and the first time a script appears it loads that script's font
+from the OS on a worker thread and adds it as a fallback to both families: the next frame
+draws it. Windows: Yu Gothic (Japanese), Microsoft YaHei (Simplified), Microsoft JhengHei
+(Traditional), Malgun Gothic (Korean), Segoe UI (Arabic, Hebrew, Georgian, Armenian…),
+Nirmala UI (Indic), Leelawadee UI (Thai, Lao, Khmer), Ebrima, Myanmar Text, Microsoft
+Himalaya, Mongolian Baiti, Gadugi, Segoe UI Symbol. Han-only text (no kana, bopomofo or
+hangul) is ambiguous between the three CJK glyph styles, so the user locale decides: `ja` →
+Japanese, `zh-TW` / `zh-HK` / `Hant` → Traditional, otherwise Simplified. Emoji stay on
+egui's bundled Noto Emoji (monochrome). macOS and Linux paths are best effort (Hiragino,
+PingFang, Apple SD Gothic Neo; Noto CJK or `fc-match`) and untested so far. The agent `state`
+has `font_packs`, the packs loaded this session; the log line `system font loaded for glyph
+fallback` names the file.

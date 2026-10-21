@@ -147,6 +147,7 @@ impl CobaltApp {
             "kernel": kernel_json(&self.state.kernel),
             "toasts": self.state.recent_toasts.iter().cloned().collect::<Vec<_>>(),
             "sidebar": format!("{:?}", self.state.sidebar_view),
+            "font_packs": crate::fonts::requested(),
             "theme": if self.theme.is_dark() { "dark" } else { "light" },
         })
     }

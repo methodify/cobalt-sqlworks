@@ -364,6 +364,7 @@ pub(crate) fn tree_leaf(ui: &mut Ui, theme: &Theme, depth: usize, icon: &str, la
 fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>, icon: &str, label: &str, subtitle: &str, a11y: &str) -> egui::Response {
     // click_and_drag: rows can carry a drag payload (Explore's fields, the model tree's names)
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click_and_drag());
+    crate::fonts::note(ui.ctx(), label);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.to_string()));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, theme.bg_hover);
@@ -387,6 +388,7 @@ fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>
 /// One item row. `expandable` rows get a chevron that opens the inline object explorer.
 fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, name: &str, kind: Option<SqlItemKind>, subtitle: Option<&str>, pinned: bool, known: bool, actions: &mut Vec<FabricAction>, depth: usize, expandable: bool) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
+    crate::fonts::note(ui.ctx(), name);
     resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("fabric item {name}")));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, theme.bg_hover);
