@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.4 — unreleased
+## 0.10.4 — 2026-10-21
 
 - **Stylised names and symbols render.** The mathematical alphanumerics (𝓚𝓲𝔂𝓪, 𝐬𝐚𝐫𝐚𝐡, 𝙈𝙖𝙧𝙞𝙙𝙞𝙤𝙧),
   dingbats (✕ ✰ ❀) and emoji modifiers drew as boxes: the on-demand loader did not map those
