@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.3 — unreleased
+## 0.10.3 — 2026-10-21
 
 - **Non-Latin text renders.** Japanese, Chinese, Korean, Arabic, Hebrew, Indic, Thai and
   other scripts drew as boxes everywhere (the editor, the grid, the trees): egui's bundled
