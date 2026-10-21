@@ -811,3 +811,34 @@ egui's bundled Noto Emoji (monochrome). macOS and Linux paths are best effort (H
 PingFang, Apple SD Gothic Neo; Noto CJK or `fc-match`) and untested so far. The agent `state`
 has `font_packs`, the packs loaded this session; the log line `system font loaded for glyph
 fallback` names the file.
+
+## Fonts: the manager, downloadable packs, your own font (0.10.4)
+
+The stylised names (𝓚𝓲𝔂𝓪 𝓑✰, 𝐬𝐚𝐫𝐚𝐡❀, ✕NAHO) boxed because the mathematical-alphanumeric and
+dingbat blocks were not mapped to any pack; they now load Segoe UI Symbol on Windows, which
+covers them all, including the emoji modifiers.
+
+Your proposal is in as **Settings › Fonts**. The page has three parts. *Interface font* and
+*Editor and grid font*: the bundled defaults (Ubuntu Light, Hack), an installed pack from the
+list (Noto Sans, JetBrains Mono), or any `.ttf` / `.otf` / `.ttc` on the computer; they apply
+on Save. *Font packs for other scripts*: the registry — Noto Sans CJK (one 19 MB collection
+with the Japanese, Korean, Simplified and Traditional faces; the locale orders them), Symbols
+and Math (2.5 MB), Arabic / Hebrew and neighbours, Indic, Thai / Lao / Khmer / Myanmar, and
+Ethiopic / Tibetan / Mongolian / Cherokee — each with Download / Remove and a progress bar;
+files land in the app data folder (`…\Cobalt SQL Works\data\fonts`) and load at startup
+before any system font, so a downloaded pack also gives consistent glyph style across
+machines. *Refresh the list from cobaltsql.org* fetches `site/fonts.json` (the same file ships
+in the binary as the fallback), so new packs or moved URLs need no release.
+
+The suggestion: when a script shows up that no font on the computer draws (on Windows that is
+rare; on Linux and macOS it is the common case), a card at the bottom right names the script
+and the pack that covers it with its size, and offers Download / Settings › Fonts / Not now /
+Don't suggest again (the last is the `fonts.suggest_downloads` setting). Only one suggestion
+is up at a time, and a declined pack is not offered again that session.
+
+Agent: `fonts` (state: registry entries with installed flags, system fonts loaded, the
+requested packs, the chosen fonts, downloads in flight, the current suggestion), `fonts
+{action: download|remove, id}`, `{action: refresh}`, `{action: set_ui|set_mono, value}`,
+`{action: suggest, pack: "MiddleEast"}` (shows the card for a pack as if it had no system
+font). Labels: `settings tab Fonts`, `settings ui-font`, `settings mono-font`, `font pack
+download <id>`, `font pack remove <id>`, `font suggestion download`, `font suggestion later`.

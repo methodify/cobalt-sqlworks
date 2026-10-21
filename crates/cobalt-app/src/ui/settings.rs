@@ -21,11 +21,12 @@ pub enum SettingsAction {
 /// One page of the settings window.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
-    Appearance, Editor, Execution, Results, Connections, Notebooks, Keyboard, Advanced,
+    Appearance, Fonts, Editor, Execution, Results, Connections, Notebooks, Keyboard, Advanced,
 }
 
 const TABS: &[(Tab, &str, &str)] = &[
     (Tab::Appearance, icons::PALETTE, "Appearance"),
+    (Tab::Fonts, icons::TEXT_AA, "Fonts"),
     (Tab::Editor, icons::CODE, "Editor"),
     (Tab::Execution, icons::PLAY, "Query execution"),
     (Tab::Results, icons::TABLE, "Results & export"),
@@ -35,13 +36,17 @@ const TABS: &[(Tab, &str, &str)] = &[
     (Tab::Advanced, icons::GEAR_SIX, "Advanced"),
 ];
 
-pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str, runtime: &mut RuntimeUi, scroll_to: Option<&str>) -> Option<SettingsAction> {
+#[allow(clippy::too_many_arguments)]
+pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str, runtime: &mut RuntimeUi, fonts: &mut crate::state::FontsState, fonts_dir: &std::path::Path, scroll_to: Option<&str>) -> Option<SettingsAction> {
     let mut action = None;
     let mut open = true;
     let tab_key = egui::Id::new("settings-tab");
     let mut tab: Tab = ctx.memory(|m| m.data.get_temp(tab_key)).unwrap_or(Tab::Appearance);
     if scroll_to == Some("Spark runtime") {
         tab = Tab::Notebooks;
+    }
+    if scroll_to == Some("Fonts") {
+        tab = Tab::Fonts;
     }
     crate::ui::chrome::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([860.0, 620.0]).min_size([640.0, 420.0]).resizable(true).show(ctx, theme, |ui| {
         let total_h = ui.available_height();
@@ -72,6 +77,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     ui.set_width(ui.available_width() - 8.0);
                     ui.spacing_mut().item_spacing.y = 6.0;
                     match tab {
+                            Tab::Fonts => fonts_page(ui, theme, draft, fonts, fonts_dir),
                             Tab::Appearance => {
                             section(ui, theme, "Appearance");
             ui.horizontal(|ui| {
@@ -400,6 +406,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 let d = Settings::default();
                 match tab {
                     Tab::Appearance => draft.appearance = d.appearance,
+                    Tab::Fonts => draft.fonts = d.fonts,
                     Tab::Editor => draft.editor = d.editor,
                     Tab::Execution => draft.execution = d.execution,
                     Tab::Results => {
@@ -432,6 +439,117 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
         action = Some(SettingsAction::Close);
     }
     action
+}
+
+/// Settings › Fonts: the chosen UI and editor fonts, the downloadable packs, the suggestion switch.
+fn fonts_page(ui: &mut Ui, theme: &Theme, draft: &mut Settings, fonts: &mut crate::state::FontsState, dir: &std::path::Path) {
+    use crate::state::FontAction;
+    let reg = crate::fonts::registry();
+    section(ui, theme, "Fonts");
+    ui.label(RichText::new("Cobalt's bundled fonts (Ubuntu Light for the interface, Hack for the editor and grid) cover Latin, Greek and Cyrillic. Other scripts use the fonts your system has; the packs below cover them on any computer.").size(11.0).color(theme.text_muted));
+    for (label, field, kind, default_name, salt) in [("Interface font", &mut draft.fonts.ui_font, "ui", "Ubuntu Light (bundled)", "ui-font"), ("Editor and grid font", &mut draft.fonts.mono_font, "mono", "Hack (bundled)", "mono-font")] {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            let current = if field.is_empty() {
+                default_name.to_string()
+            } else {
+                reg.entries.iter().find(|e| e.id == *field).map(|e| e.name.clone()).unwrap_or_else(|| std::path::Path::new(field.as_str()).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| field.clone()))
+            };
+            let r = egui::ComboBox::from_id_salt(salt).selected_text(current).width(260.0).show_ui(ui, |ui| {
+                if ui.selectable_label(field.is_empty(), default_name).clicked() {
+                    field.clear();
+                }
+                for e in reg.entries.iter().filter(|e| e.kind == kind) {
+                    let installed = e.is_installed(dir);
+                    let text = if installed { e.name.clone() } else { format!("{} (download it below first)", e.name) };
+                    if ui.add_enabled(installed, egui::Button::selectable(*field == e.id, text)).clicked() {
+                        *field = e.id.clone();
+                    }
+                }
+                if ui.button("A font file on this computer…").clicked() {
+                    if let Some(p) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf", "ttc"]).pick_file() {
+                        *field = p.to_string_lossy().to_string();
+                    }
+                }
+            });
+            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("settings {salt}")));
+        });
+    }
+    ui.label(RichText::new("Changes apply when you save; the previews below use the fonts in effect now.").size(11.0).color(theme.text_faint));
+    const PREVIEW: &str = "The quick brown fox jumps over the lazy dog · 田中 タロウ · 北京 · 서울 · القاهرة · 𝓚𝓲𝔂𝓪 ✕";
+    const PREVIEW_MONO: &str = "SELECT TOP (10) [Name] FROM dbo.Customers WHERE Id = @id -- 日本語 ✕ → ∑";
+    crate::fonts::note(ui.ctx(), PREVIEW);
+    crate::fonts::note(ui.ctx(), PREVIEW_MONO);
+    ui.label(RichText::new(PREVIEW).size(14.0));
+    ui.label(RichText::new(PREVIEW_MONO).monospace().size(13.0));
+
+    section(ui, theme, "Font packs for other scripts");
+    ui.label(RichText::new(format!("From the Noto project (OFL licence), stored in {}. A pack loads at startup and comes before any system font.", dir.display())).size(11.0).color(theme.text_muted));
+    let r = ui.checkbox(&mut draft.fonts.suggest_downloads, "Suggest a pack when text uses a script no font on this computer draws");
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "settings suggest font downloads"));
+    ui.add_space(4.0);
+    for e in reg.entries.iter().filter(|e| e.kind == "fallback") {
+        pack_row(ui, theme, e, dir, fonts);
+    }
+    section(ui, theme, "Alternative interface and editor fonts");
+    for e in reg.entries.iter().filter(|e| e.kind != "fallback") {
+        pack_row(ui, theme, e, dir, fonts);
+    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let r = ui.add_enabled(fonts.registry_fetch.is_none(), egui::Button::new("Refresh the list from cobaltsql.org"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "settings refresh font registry"));
+        if r.clicked() {
+            fonts.actions.push(FontAction::Refresh);
+        }
+        if let Some(n) = &fonts.registry_note {
+            ui.label(RichText::new(n).size(11.0).color(theme.text_muted));
+        }
+    });
+    let sys = crate::fonts::requested();
+    if !sys.is_empty() {
+        ui.label(RichText::new(format!("Served by system fonts this session: {}", sys.join(", "))).size(11.0).color(theme.text_faint));
+    }
+}
+
+fn pack_row(ui: &mut Ui, theme: &Theme, e: &crate::fonts::Entry, dir: &std::path::Path, fonts: &mut crate::state::FontsState) {
+    use crate::state::FontAction;
+    let installed = e.is_installed(dir);
+    egui::Frame::new().fill(theme.bg_sidebar).corner_radius(6.0).inner_margin(egui::Margin::symmetric(10, 6)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width() - 150.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&e.name).strong());
+                    ui.label(RichText::new(crate::fonts::human_size(e.total_size())).size(11.0).color(theme.text_faint));
+                    if installed {
+                        ui.label(RichText::new(format!("{} installed", icons::CHECK)).size(11.0).color(theme.success));
+                    }
+                });
+                ui.label(RichText::new(&e.description).size(11.0).color(theme.text_muted));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(p) = fonts.downloads.get(&e.id) {
+                    let p = p.lock();
+                    let frac = if p.total > 0 { p.done as f32 / p.total as f32 } else { 0.0 };
+                    ui.add(egui::ProgressBar::new(frac).desired_width(130.0).text(RichText::new(format!("{} / {}", crate::fonts::human_size(p.done), crate::fonts::human_size(p.total))).size(10.0)));
+                } else if installed {
+                    let r = ui.button("Remove");
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("font pack remove {}", e.id)));
+                    if r.clicked() {
+                        fonts.actions.push(FontAction::Remove(e.id.clone()));
+                    }
+                } else {
+                    let r = ui.add(egui::Button::new(format!("{} Download", icons::DOWNLOAD_SIMPLE)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("font pack download {}", e.id)));
+                    if r.clicked() {
+                        fonts.actions.push(FontAction::Download(e.id.clone()));
+                    }
+                }
+            });
+        });
+    });
 }
 
 fn section(ui: &mut Ui, theme: &Theme, title: &str) -> egui::Response {

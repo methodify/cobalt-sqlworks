@@ -159,10 +159,8 @@ impl CobaltApp {
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
         let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
 
-        // fonts
-        let mut fonts = egui::FontDefinitions::default();
-        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-        cc.egui_ctx.set_fonts(fonts);
+        // fonts: the bundled set, the chosen UI / editor fonts, the downloaded packs (crate::fonts)
+        cc.egui_ctx.set_fonts(crate::fonts::definitions(&settings, &paths));
 
         let system_dark = cc.egui_ctx.system_theme().map(|t| t == egui::Theme::Dark).unwrap_or(true);
         let theme = Theme::for_choice(settings.appearance.theme, system_dark);
@@ -268,7 +266,11 @@ impl CobaltApp {
 
     pub fn apply_settings(&mut self, ctx: &egui::Context, new: Settings) {
         let theme_changed = new.appearance.theme != self.settings.appearance.theme;
+        let fonts_changed = new.fonts != self.settings.fonts;
         self.settings = new;
+        if fonts_changed {
+            crate::fonts::reload(ctx, &self.settings, &self.paths);
+        }
         let _ = cobalt_store::save_settings(&self.paths.settings_file(), &self.settings);
         self.keymap = Keymap::from_settings(&self.settings);
         self.state.formatter = CellFormatter::from_settings(&self.settings.results);
@@ -286,9 +288,107 @@ impl CobaltApp {
         }
     }
 
+    /// The font manager's housekeeping: pending downloads / removals / registry fetches, finished
+    /// downloads (reload the fonts), and the suggestion when a script has no font here.
+    fn font_manager_tick(&mut self, ctx: &egui::Context) {
+        use crate::state::{FontAction, FontSuggest, ToastKind};
+        let dir = crate::fonts::fonts_dir(&self.paths);
+        let actions = std::mem::take(&mut self.state.fonts.actions);
+        for a in actions {
+            match a {
+                FontAction::Download(id) => {
+                    if self.state.fonts.downloads.contains_key(&id) {
+                        continue;
+                    }
+                    if let Some(e) = crate::fonts::registry().entries.into_iter().find(|e| e.id == id) {
+                        let progress = Arc::new(parking_lot::Mutex::new(crate::update::DownloadProgress::default()));
+                        self.state.fonts.downloads.insert(id, Arc::clone(&progress));
+                        crate::fonts::download(&self.session, ctx.clone(), e, dir.clone(), progress);
+                    }
+                }
+                FontAction::Remove(id) => {
+                    if let Some(e) = crate::fonts::registry().entries.iter().find(|e| e.id == id) {
+                        match crate::fonts::remove(e, &dir) {
+                            Ok(()) => {
+                                self.toasts.info(format!("{} removed", e.name));
+                                let mut s = self.settings.clone();
+                                if s.fonts.ui_font == id {
+                                    s.fonts.ui_font.clear();
+                                }
+                                if s.fonts.mono_font == id {
+                                    s.fonts.mono_font.clear();
+                                }
+                                if s != self.settings {
+                                    self.apply_settings(ctx, s);
+                                }
+                                crate::fonts::reload(ctx, &self.settings, &self.paths);
+                            }
+                            Err(err) => {
+                                self.toasts.error(err);
+                            }
+                        }
+                    }
+                }
+                FontAction::Refresh => {
+                    let done = Arc::new(parking_lot::Mutex::new(None));
+                    self.state.fonts.registry_fetch = Some(Arc::clone(&done));
+                    self.state.fonts.registry_note = Some("Fetching the list…".into());
+                    crate::fonts::fetch_registry(&self.session, ctx.clone(), done);
+                }
+            }
+        }
+        let finished: Vec<(String, Result<std::path::PathBuf, String>)> = self.state.fonts.downloads.iter().filter_map(|(id, p)| p.lock().finished.clone().map(|r| (id.clone(), r))).collect();
+        for (id, r) in finished {
+            self.state.fonts.downloads.remove(&id);
+            let name = crate::fonts::registry().entries.iter().find(|e| e.id == id).map(|e| e.name.clone()).unwrap_or(id.clone());
+            match r {
+                Ok(_) => {
+                    crate::fonts::reload(ctx, &self.settings, &self.paths);
+                    self.toasts.success(format!("{name} installed; text in its scripts now draws"));
+                    if self.state.fonts.suggest.as_ref().map(|s| s.entry_id == id).unwrap_or(false) {
+                        self.state.fonts.suggest = None;
+                    }
+                }
+                Err(e) => {
+                    self.toasts.error(format!("{name}: {e}"));
+                }
+            }
+        }
+        if let Some(d) = self.state.fonts.registry_fetch.clone() {
+            if let Some(r) = d.lock().take() {
+                self.state.fonts.registry_fetch = None;
+                self.state.fonts.registry_note = Some(match r {
+                    Ok(n) => format!("List refreshed from cobaltsql.org: {n} packs"),
+                    Err(e) => format!("Could not fetch the list ({e}); the bundled list is in use"),
+                });
+            }
+        }
+        for p in crate::fonts::take_missing() {
+            if !self.settings.fonts.suggest_downloads {
+                continue;
+            }
+            let reg = crate::fonts::registry();
+            let Some(e) = reg.entries.iter().find(|e| e.kind == "fallback" && e.covers(p) && !e.is_installed(&dir)) else { continue };
+            if self.state.fonts.declined.contains(&e.id) || self.state.fonts.downloads.contains_key(&e.id) {
+                continue;
+            }
+            match &mut self.state.fonts.suggest {
+                Some(s) if s.entry_id == e.id => {
+                    if !s.packs.contains(&p) {
+                        s.packs.push(p);
+                    }
+                }
+                Some(_) => {}
+                None => self.state.fonts.suggest = Some(FontSuggest { packs: vec![p], entry_id: e.id.clone() }),
+            }
+        }
+        let _ = ToastKind::Info;
+    }
+
     /// One frame of logic: events, auth/export completions, shortcuts, housekeeping.
     fn logic(&mut self, ctx: &egui::Context) {
         self.frames += 1;
+        self.font_manager_tick(ctx);
         let toasts = RefCell::new(Vec::new());
         let mut update_outcomes: Vec<crate::update::UpdateOutcome> = Vec::new();
         let skip_request: Option<String>;
@@ -440,6 +540,9 @@ impl CobaltApp {
                 SettingsPatch::ShowWelcome(v) => s.appearance.show_welcome = v,
                 SettingsPatch::SparkEngine(e) => s.spark.engine = e,
                 SettingsPatch::NewTabKind(k) => s.appearance.new_tab_kind = k,
+                SettingsPatch::SuggestFonts(v) => s.fonts.suggest_downloads = v,
+                SettingsPatch::UiFont(v) => s.fonts.ui_font = v,
+                SettingsPatch::MonoFont(v) => s.fonts.mono_font = v,
                 SettingsPatch::AddPythonPackages(specs) => {
                     for spec in specs {
                         let name = cobalt_runtime::libraries::python_dist_name(&spec);
@@ -639,7 +742,8 @@ impl eframe::App for CobaltApp {
             let mut draft = self.state.settings_draft.take().unwrap();
             let theme = self.theme.clone();
             let scroll_to = self.state.settings_scroll_to.take();
-            match crate::ui::settings::show(&ctx, &mut draft, &theme, &info, &mut self.state.runtime, scroll_to) {
+            let fonts_dir = crate::fonts::fonts_dir(&self.paths);
+            match crate::ui::settings::show(&ctx, &mut draft, &theme, &info, &mut self.state.runtime, &mut self.state.fonts, &fonts_dir, scroll_to) {
                 Some(crate::ui::settings::SettingsAction::Apply(s)) => {
                     self.apply_settings(&ctx, s);
                     self.state.settings_open = false;

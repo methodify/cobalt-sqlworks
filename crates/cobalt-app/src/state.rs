@@ -1224,9 +1224,36 @@ pub struct FilesState {
     pub filter: String,
 }
 
+/// Downloads, suggestions and pending actions of the font manager (Settings › Fonts).
+#[derive(Default)]
+pub struct FontsState {
+    pub downloads: crate::fonts::Downloads,
+    pub actions: Vec<FontAction>,
+    /// A pack to offer: text used scripts no font on this computer draws.
+    pub suggest: Option<FontSuggest>,
+    /// Entry ids the user said "not now" to this session.
+    pub declined: HashSet<String>,
+    pub registry_fetch: Option<Arc<parking_lot::Mutex<Option<Result<usize, String>>>>>,
+    pub registry_note: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FontAction {
+    Download(String),
+    Remove(String),
+    Refresh,
+}
+
+#[derive(Clone, Debug)]
+pub struct FontSuggest {
+    pub packs: Vec<crate::fonts::Pack>,
+    pub entry_id: String,
+}
+
 pub struct AppState {
     /// Paths the agent asked to show as hovering over the window (the drop overlay), until cleared.
     pub simulated_hover: Vec<PathBuf>,
+    pub fonts: FontsState,
     pub library: Library,
     pub fabric: crate::fabric::FabricState,
     pub files: FilesState,
@@ -1329,6 +1356,11 @@ pub enum SettingsPatch {
     SparkEngine(String),
     /// `appearance.new_tab_kind`: what the + on the tab strip opens.
     NewTabKind(String),
+    /// `fonts.suggest_downloads`.
+    SuggestFonts(bool),
+    /// `fonts.ui_font` / `fonts.mono_font`: a registry entry id, a file path, or empty for the default.
+    UiFont(String),
+    MonoFont(String),
     /// `spark.python_packages`: add these specs (a notebook's `%pip install` lines) when absent.
     AddPythonPackages(Vec<String>),
 }
@@ -1533,6 +1565,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             simulated_hover: Vec::new(),
+            fonts: FontsState::default(),
             library: Library::default(),
             tabs: Vec::new(),
             active_tab: None,

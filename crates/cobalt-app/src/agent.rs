@@ -940,6 +940,41 @@ impl AgentApp for CobaltApp {
                 self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
                 ActionResult::with(&json!({"tab": self.state.active_tab}))
             }
+            // fonts: the font manager — {action: state | download | remove | refresh | set_ui | set_mono | suggest, id?, value?}
+            "fonts" => {
+                let action = arg_str(args, "action").unwrap_or_else(|| "state".into());
+                match action.as_str() {
+                    "download" | "remove" => {
+                        let Some(id) = arg_str(args, "id") else { return ActionResult::BadArgs("id is required".into()) };
+                        self.state.fonts.actions.push(if action == "download" { crate::state::FontAction::Download(id) } else { crate::state::FontAction::Remove(id) });
+                        egui.request_repaint();
+                    }
+                    "refresh" => {
+                        self.state.fonts.actions.push(crate::state::FontAction::Refresh);
+                        egui.request_repaint();
+                    }
+                    "set_ui" | "set_mono" => {
+                        let v = arg_str(args, "value").unwrap_or_default();
+                        self.state.settings_patch.push(if action == "set_ui" { crate::state::SettingsPatch::UiFont(v) } else { crate::state::SettingsPatch::MonoFont(v) });
+                        egui.request_repaint();
+                    }
+                    // suggest: pretend a script had no system font (the suggestion card appears when a pack covers it)
+                    "suggest" => {
+                        let Some(p) = arg_str(args, "pack").and_then(|s| crate::fonts::Pack::parse(&s)) else { return ActionResult::BadArgs("pack is required (e.g. Symbols)".into()) };
+                        let dir = crate::fonts::fonts_dir(&self.paths);
+                        if let Some(e) = crate::fonts::registry().entries.iter().find(|e| e.kind == "fallback" && e.covers(p) && !e.is_installed(&dir)) {
+                            self.state.fonts.suggest = Some(crate::state::FontSuggest { packs: vec![p], entry_id: e.id.clone() });
+                        }
+                        egui.request_repaint();
+                    }
+                    _ => {}
+                }
+                let mut v = crate::fonts::status_json(&self.settings, &self.paths);
+                v["downloads"] = json!(self.state.fonts.downloads.iter().map(|(id, p)| { let p = p.lock(); json!({"id": id, "done": p.done, "total": p.total, "stage": p.stage, "finished": p.finished.as_ref().map(|r| r.is_ok())}) }).collect::<Vec<_>>());
+                v["suggest"] = json!(self.state.fonts.suggest.as_ref().map(|s| json!({"entry": s.entry_id, "packs": s.packs})));
+                v["registry_note"] = json!(self.state.fonts.registry_note);
+                ActionResult::with(&v)
+            }
             // drop: what dropping files on the window does — {paths: [..], classify?: true (report the plan only)}
             "drop" => {
                 let paths: Vec<std::path::PathBuf> = args.and_then(|a| a.get("paths")).and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|p| p.as_str()).map(std::path::PathBuf::from).collect()).unwrap_or_default();

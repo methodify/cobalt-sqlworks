@@ -38,6 +38,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
         }
     });
     drop_overlay(ctx, f);
+    font_suggestion(ctx, f);
     // commands queued by widgets that could not call dispatch themselves (status bar)
     for c in std::mem::take(&mut f.state.pending_commands) {
         dispatch(f, c);
@@ -581,6 +582,58 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);
+    }
+}
+
+/// A small card at the bottom right: text used scripts no font on this computer draws; offer
+/// the pack that covers them (download, open Settings › Fonts, not now, never).
+fn font_suggestion(ctx: &egui::Context, f: &mut Frame<'_>) {
+    let Some(s) = f.state.fonts.suggest.clone() else { return };
+    let reg = crate::fonts::registry();
+    let Some(e) = reg.entries.iter().find(|e| e.id == s.entry_id) else {
+        f.state.fonts.suggest = None;
+        return;
+    };
+    let theme = f.theme;
+    let scripts: Vec<&str> = s.packs.iter().map(|p| p.name()).collect();
+    let mut download = false;
+    let mut settings = false;
+    let mut later = false;
+    let mut never = false;
+    egui::Area::new(egui::Id::new("font-suggestion")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -96.0)).show(ctx, |ui| {
+        egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 10)).shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: egui::Color32::from_black_alpha(50) }).show(ui, |ui| {
+            ui.set_max_width(420.0);
+            ui.label(RichText::new(format!("{}  Some text uses {} and no font on this computer draws it", icons::TEXT_AA, scripts.join(", "))).strong());
+            ui.label(RichText::new(format!("{} ({}, Noto project, OFL licence) covers it. Download it into Cobalt's data folder?", e.name, crate::fonts::human_size(e.total_size()))).size(12.0).color(theme.text_muted));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let r = ui.add(egui::Button::new(format!("{} Download", icons::DOWNLOAD_SIMPLE)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "font suggestion download"));
+                download = r.clicked();
+                settings = ui.button("Settings › Fonts…").clicked();
+                let r = ui.button("Not now");
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "font suggestion later"));
+                later = r.clicked();
+                never = ui.add(egui::Button::new(RichText::new("Don't suggest again").size(11.0)).frame(false)).clicked();
+            });
+        });
+    });
+    if download {
+        f.state.fonts.actions.push(crate::state::FontAction::Download(e.id.clone()));
+        f.state.fonts.suggest = None;
+    }
+    if settings {
+        f.state.settings_open = true;
+        f.state.settings_scroll_to = Some("Fonts");
+        f.state.fonts.suggest = None;
+    }
+    if later {
+        f.state.fonts.declined.insert(e.id.clone());
+        f.state.fonts.suggest = None;
+    }
+    if never {
+        f.state.settings_patch.push(SettingsPatch::SuggestFonts(false));
+        f.state.fonts.suggest = None;
     }
 }
 

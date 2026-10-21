@@ -16,6 +16,7 @@ pub struct Settings {
     pub notebooks: NotebookSettings,
     pub spark: SparkSettings,
     pub semantic: SemanticSettings,
+    pub fonts: FontSettings,
     /// Keyboard shortcut overrides: command id → "Ctrl+Shift+P" (empty = unbound).
     pub keybindings: std::collections::BTreeMap<String, String>,
 }
@@ -299,6 +300,23 @@ pub struct NotebookSettings {
 impl Default for NotebookSettings {
     fn default() -> Self {
         Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12, spark_row_limit: 10_000 }
+    }
+}
+
+/// Fonts: the chosen UI and editor fonts, and whether to suggest downloadable packs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FontSettings {
+    /// Empty = the bundled default (Ubuntu Light); else a registry entry id (`noto-sans`) or a font file path.
+    pub ui_font: String,
+    /// Empty = the bundled default (Hack); else a registry entry id (`jetbrains-mono`) or a font file path.
+    pub mono_font: String,
+    /// Offer a downloadable pack when text uses a script no font on this computer covers.
+    pub suggest_downloads: bool,
+}
+impl Default for FontSettings {
+    fn default() -> Self {
+        Self { ui_font: String::new(), mono_font: String::new(), suggest_downloads: true }
     }
 }
 

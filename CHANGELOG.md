@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.10.4 — unreleased
+
+- **Stylised names and symbols render.** The mathematical alphanumerics (𝓚𝓲𝔂𝓪, 𝐬𝐚𝐫𝐚𝐡, 𝙈𝙖𝙧𝙞𝙙𝙞𝙤𝙧),
+  dingbats (✕ ✰ ❀) and emoji modifiers drew as boxes: the on-demand loader did not map those
+  blocks to a font. They now take the Symbols pack (Segoe UI Symbol on Windows).
+- **Settings › Fonts: a font manager.** A registry of downloadable packs (Noto Sans CJK,
+  Noto Sans Symbols and Math, Arabic / Hebrew and neighbours, Indic scripts, Thai / Lao /
+  Khmer / Myanmar, Ethiopic / Tibetan / Mongolian / Cherokee, plus Noto Sans and JetBrains
+  Mono as alternative interface and editor fonts), each with its size and licence (OFL, from
+  the Noto project and JetBrains), downloaded into Cobalt's data folder and loaded at startup
+  ahead of any system font. The list ships with the app and refreshes from cobaltsql.org on
+  request. Pick the **interface font** and the **editor and grid font** from the bundled
+  defaults, an installed pack, or any font file on the computer. When text uses a script no
+  font on the computer draws, a card offers the pack that covers it (Download, Settings,
+  Not now, Don't suggest again; the suggestion is a setting). Agent: `fonts {action: state |
+  download | remove | refresh | set_ui | set_mono | suggest}`.
+
 ## 0.10.3 — 2026-10-21
 
 - **Non-Latin text renders.** Japanese, Chinese, Korean, Arabic, Hebrew, Indic, Thai and

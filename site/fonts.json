@@ -1,0 +1,117 @@
+{
+  "version": 1,
+  "note": "Font packs Cobalt SQL Works can download for scripts its bundled fonts do not cover, and alternative UI / editor fonts. All files are OFL-licensed releases from the Noto project (github.com/notofonts) and JetBrains. The app ships a copy of this list; the copy at https://cobaltsql.org/fonts.json takes precedence when it can be fetched.",
+  "entries": [
+    {
+      "id": "noto-cjk",
+      "name": "Noto Sans CJK",
+      "description": "Japanese, Simplified Chinese, Traditional Chinese and Korean in one collection (the Japanese, Korean, Simplified and Traditional faces are all loaded; kana, bopomofo or hangul in the text pick the face, otherwise your locale does).",
+      "kind": "fallback",
+      "packs": ["Japanese", "Korean", "ChineseSimplified", "ChineseTraditional"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansCJK-Regular.ttc", "url": "https://github.com/notofonts/noto-cjk/raw/main/Sans/OTC/NotoSansCJK-Regular.ttc", "size": 19484784, "faces": [["Japanese", 0], ["Korean", 1], ["ChineseSimplified", 2], ["ChineseTraditional", 3]] }
+      ]
+    },
+    {
+      "id": "noto-symbols",
+      "name": "Noto Sans Symbols and Math",
+      "description": "Arrows, mathematical operators, the mathematical alphanumerics used in stylised names (𝓚𝓲𝔂𝓪, 𝐬𝐚𝐫𝐚𝐡), dingbats (✕ ✰ ❀), box drawing, geometric shapes, musical and technical symbols.",
+      "kind": "fallback",
+      "packs": ["Symbols"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansMath-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansMath/full/ttf/NotoSansMath-Regular.ttf", "size": 1015684 },
+        { "name": "NotoSansSymbols-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansSymbols/full/ttf/NotoSansSymbols-Regular.ttf", "size": 264032 },
+        { "name": "NotoSansSymbols2-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansSymbols2/full/ttf/NotoSansSymbols2-Regular.ttf", "size": 1233128 }
+      ]
+    },
+    {
+      "id": "noto-middle-east",
+      "name": "Noto Sans Arabic, Hebrew and neighbours",
+      "description": "Arabic, Hebrew, Syriac, Thaana, Armenian and Georgian.",
+      "kind": "fallback",
+      "packs": ["MiddleEast"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansArabic-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansArabic/full/ttf/NotoSansArabic-Regular.ttf", "size": 271652 },
+        { "name": "NotoSansHebrew-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansHebrew/full/ttf/NotoSansHebrew-Regular.ttf", "size": 66156 },
+        { "name": "NotoSansSyriac-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansSyriac/full/ttf/NotoSansSyriac-Regular.ttf", "size": 111064 },
+        { "name": "NotoSansThaana-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansThaana/full/ttf/NotoSansThaana-Regular.ttf", "size": 64768 },
+        { "name": "NotoSansArmenian-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansArmenian/full/ttf/NotoSansArmenian-Regular.ttf", "size": 69172 },
+        { "name": "NotoSansGeorgian-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansGeorgian/full/ttf/NotoSansGeorgian-Regular.ttf", "size": 88660 }
+      ]
+    },
+    {
+      "id": "noto-indic",
+      "name": "Noto Sans Indic scripts",
+      "description": "Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam and Sinhala.",
+      "kind": "fallback",
+      "packs": ["Indic"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansDevanagari-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansDevanagari/full/ttf/NotoSansDevanagari-Regular.ttf", "size": 277680 },
+        { "name": "NotoSansBengali-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansBengali/full/ttf/NotoSansBengali-Regular.ttf", "size": 179596 },
+        { "name": "NotoSansGurmukhi-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansGurmukhi/full/ttf/NotoSansGurmukhi-Regular.ttf", "size": 93984 },
+        { "name": "NotoSansGujarati-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansGujarati/full/ttf/NotoSansGujarati-Regular.ttf", "size": 232560 },
+        { "name": "NotoSansOriya-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansOriya/full/ttf/NotoSansOriya-Regular.ttf", "size": 223960 },
+        { "name": "NotoSansTamil-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansTamil/full/ttf/NotoSansTamil-Regular.ttf", "size": 115856 },
+        { "name": "NotoSansTelugu-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansTelugu/full/ttf/NotoSansTelugu-Regular.ttf", "size": 269636 },
+        { "name": "NotoSansKannada-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansKannada/full/ttf/NotoSansKannada-Regular.ttf", "size": 214140 },
+        { "name": "NotoSansMalayalam-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansMalayalam/full/ttf/NotoSansMalayalam-Regular.ttf", "size": 150284 },
+        { "name": "NotoSansSinhala-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansSinhala/full/ttf/NotoSansSinhala-Regular.ttf", "size": 165748 }
+      ]
+    },
+    {
+      "id": "noto-southeast-asia",
+      "name": "Noto Sans Thai, Lao, Khmer and Myanmar",
+      "description": "Thai, Lao, Khmer and Myanmar.",
+      "kind": "fallback",
+      "packs": ["Thai", "Myanmar"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansThai-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansThai/full/ttf/NotoSansThai-Regular.ttf", "size": 72812 },
+        { "name": "NotoSansLao-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansLao/full/ttf/NotoSansLao-Regular.ttf", "size": 75480 },
+        { "name": "NotoSansKhmer-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansKhmer/full/ttf/NotoSansKhmer-Regular.ttf", "size": 147792 },
+        { "name": "NotoSansMyanmar-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansMyanmar/full/ttf/NotoSansMyanmar-Regular.ttf", "size": 235524 }
+      ]
+    },
+    {
+      "id": "noto-other-scripts",
+      "name": "Noto Sans Ethiopic, Tibetan, Mongolian, Cherokee, Canadian Aboriginal",
+      "description": "Ethiopic, Tibetan (Noto Serif Tibetan), Mongolian, Cherokee and Canadian Aboriginal syllabics.",
+      "kind": "fallback",
+      "packs": ["Ethiopic", "Tibetan", "Mongolian", "Cherokee"],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSansEthiopic-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansEthiopic/full/ttf/NotoSansEthiopic-Regular.ttf", "size": 426272 },
+        { "name": "NotoSerifTibetan-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSerifTibetan/full/ttf/NotoSerifTibetan-Regular.ttf", "size": 919508 },
+        { "name": "NotoSansMongolian-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansMongolian/full/ttf/NotoSansMongolian-Regular.ttf", "size": 388168 },
+        { "name": "NotoSansCherokee-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansCherokee/full/ttf/NotoSansCherokee-Regular.ttf", "size": 131400 },
+        { "name": "NotoSansCanadianAboriginal-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSansCanadianAboriginal/full/ttf/NotoSansCanadianAboriginal-Regular.ttf", "size": 222088 }
+      ]
+    },
+    {
+      "id": "noto-sans",
+      "name": "Noto Sans",
+      "description": "A UI font alternative to the bundled Ubuntu Light: Latin, Greek and Cyrillic, with a wider range of weights of glyph coverage.",
+      "kind": "ui",
+      "packs": [],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "NotoSans-Regular.ttf", "url": "https://github.com/notofonts/notofonts.github.io/raw/main/fonts/NotoSans/full/ttf/NotoSans-Regular.ttf", "size": 825628 }
+      ]
+    },
+    {
+      "id": "jetbrains-mono",
+      "name": "JetBrains Mono",
+      "description": "An editor and grid font alternative to the bundled Hack.",
+      "kind": "mono",
+      "packs": [],
+      "license": "OFL-1.1",
+      "files": [
+        { "name": "JetBrainsMono-Regular.ttf", "url": "https://github.com/JetBrains/JetBrainsMono/raw/master/fonts/ttf/JetBrainsMono-Regular.ttf", "size": 270224 }
+      ]
+    }
+  ]
+}
