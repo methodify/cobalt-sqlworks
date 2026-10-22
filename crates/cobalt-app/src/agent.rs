@@ -217,6 +217,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         ChooseModel { .. } => "choose_model",
         RenameLocalTable { .. } => "rename_local_table",
         DiffSetup { .. } => "diff_setup",
+        SaveScratch { .. } => "save_scratch",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -996,6 +997,25 @@ impl AgentApp for CobaltApp {
                     "query" => {
                         let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
                         self.with_ctx(egui, |s, cx| ops::tree_action(s, cx, crate::ui::servers::TreeAction::LocalQuery(Some(name))));
+                    }
+                    // save_scratch: {name, set?} the active tab's result set as scratch.<name>; remove_scratch: {name}
+                    "save_scratch" => {
+                        let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
+                        let set = arg_usize(args, "set").unwrap_or(0);
+                        let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                        self.with_ctx(egui, |s, cx| crate::localq::save_scratch(s, cx, i, set, name));
+                    }
+                    "remove_scratch" => {
+                        let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
+                        if let Err(e) = self.local.remove_scratch(&name) {
+                            return ActionResult::BadArgs(e);
+                        }
+                    }
+                    // register_onelake: {workspace_id, lakehouse_id, table: "schema/name" | "name"} as a local table (needs the Fabric sign-in)
+                    "register_onelake" => {
+                        let (Some(ws), Some(lh), Some(table)) = (arg_str(args, "workspace_id"), arg_str(args, "lakehouse_id"), arg_str(args, "table")) else { return ActionResult::BadArgs("workspace_id, lakehouse_id and table are required".into()) };
+                        let label = table.rsplit('/').next().unwrap_or(&table).to_string();
+                        self.with_ctx(egui, |s, cx| crate::localq::register_onelake(s, cx, &ws, &lh, &table, &label));
                     }
                     // register_file: a file or Delta folder as a local table with a Local tab over it
                     "register_file" => {

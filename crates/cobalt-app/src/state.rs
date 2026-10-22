@@ -1448,6 +1448,8 @@ pub enum Dialog {
     RenameLocalTable { name: String, to: String },
     /// Diff two local tables: A (was), B (now), the key columns, the compared columns (empty = all shared).
     DiffSetup { a: String, b: String, keys: Vec<String>, compare: Vec<String> },
+    /// Save a result set as `scratch.<name>`.
+    SaveScratch { tab_index: usize, set: usize, name: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
 }

@@ -1087,6 +1087,8 @@ fn local_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     cobalt_local::TableSource::Result { title, .. } => format!("from {title}"),
                     cobalt_local::TableSource::File { path } => format!("file {}", path.display()),
                     cobalt_local::TableSource::Statement => "made by a statement".to_string(),
+                    cobalt_local::TableSource::Scratch { .. } => "scratch, kept across sessions".to_string(),
+                    cobalt_local::TableSource::OneLake { url } => format!("OneLake {url}"),
                 };
                 let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
                 let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {rows} · {} columns · {src}", icons::TABLE, t.name, t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");

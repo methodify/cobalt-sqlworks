@@ -163,6 +163,15 @@ impl CobaltApp {
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
         let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
         let local = Arc::new(cobalt_local::Engine::new(budget.clone(), settings.advanced.memory_budget_bytes as usize, paths.spill_dir().join("local")).expect("local query engine"));
+        {
+            // scratch tables saved earlier come back
+            let scratch_dir = paths.data_dir.join("local").join("scratch");
+            let l = Arc::clone(&local);
+            let n = session.handle().block_on(async move { l.load_scratch(scratch_dir).await });
+            if n > 0 {
+                tracing::info!(n, "scratch tables loaded");
+            }
+        }
 
         // fonts: the bundled set, the chosen UI / editor fonts, the downloaded packs (crate::fonts)
         cc.egui_ctx.set_fonts(crate::fonts::definitions(&settings, &paths));
@@ -420,10 +429,20 @@ impl CobaltApp {
             // every result set of every tab is a local table the moment it starts arriving
             for ev in &events {
                 match ev {
-                    Event::RunStarted { tab, .. } => self.local.deregister_tab(&tab.to_string()),
+                    Event::RunStarted { tab, .. } => {
+                        // a notebook cell's run replaces that cell's tables only; a tab's run replaces its tables
+                        let cell = self.state.tab_mut(*tab).and_then(|t| t.notebook.as_deref()).and_then(|nb| nb.running_cell());
+                        match cell {
+                            Some(c) => self.local.deregister_tab_prefix(&tab.to_string(), &format!("cell_{}", c + 1)),
+                            None => self.local.deregister_tab(&tab.to_string()),
+                        }
+                    }
                     Event::ResultSetStarted { tab, rs, .. } => {
                         if let Some(t) = self.state.tab_mut(*tab) {
-                            let title = t.title.clone();
+                            let title = match t.notebook.as_deref().and_then(|nb| nb.running_cell()) {
+                                Some(c) => format!("cell_{}", c + 1),
+                                None => t.title.clone(),
+                            };
                             crate::localq::register_result(&self.local, *tab, &title, rs);
                         }
                     }

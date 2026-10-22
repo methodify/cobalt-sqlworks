@@ -281,6 +281,59 @@ pub fn import_file_into_connection(state: &mut AppState, cx: &Ctx, idx: usize) {
     ops::open_import_dialog(state, cx, target, Some(path));
 }
 
+/// Persist a tab's result set as `scratch.<name>` (Parquet in the app data folder), off the UI thread.
+pub fn save_scratch(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, name: String) {
+    let Some(rs) = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).map(|v| Arc::clone(&v.rs)) else { return };
+    if rs.state().is_live() {
+        cx.toast(ToastKind::Info, "Wait for the result to finish arriving.");
+        return;
+    }
+    let engine = Arc::clone(cx.local);
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    cx.session.spawn(async move {
+        let result = engine.save_scratch(&name, rs).await.map(|i| i.name);
+        let _ = tx.send(crate::fabric::FabricEvent::LocalScratch { result });
+        egui.request_repaint();
+    });
+}
+
+/// A lakehouse Delta table read from OneLake with the signed-in token, as a local table, with
+/// a Local tab over it once it is open.
+pub fn register_onelake(state: &mut AppState, cx: &Ctx, workspace_id: &str, lakehouse_id: &str, rel: &str, label: &str) {
+    let Some(slot) = state.fabric.slot else {
+        cx.toast(ToastKind::Warning, "Sign in on the Fabric panel first.");
+        return;
+    };
+    let url = format!("abfss://{workspace_id}@onelake.dfs.fabric.microsoft.com/{lakehouse_id}/Tables/{}", rel.trim_matches('/'));
+    let name = {
+        let base = cobalt_local::sanitize_name(label);
+        let mut n = if base.is_empty() { "lakehouse_table".to_string() } else { base.clone() };
+        let mut i = 2;
+        while cx.local.has_table(&n) && !cx.local.tables().iter().any(|t| t.name == n && matches!(&t.source, TableSource::OneLake { url: u } if *u == url)) {
+            n = format!("{base}_{i}");
+            i += 1;
+        }
+        n
+    };
+    let engine = Arc::clone(cx.local);
+    let tx = cx.fabric_tx.clone();
+    let egui = cx.egui.clone();
+    let resolver = Arc::clone(cx.resolver);
+    let tenant = cx.settings.connections.entra_default_tenant.clone();
+    let hint = state.fabric.account.as_ref().map(|a| a.username.clone());
+    let prompter = ops::UiPrompter { cancel: Arc::new(AtomicBool::new(false)), device: Arc::new(parking_lot::Mutex::new(None)), url: Arc::new(parking_lot::Mutex::new(None)), egui: egui.clone() };
+    cx.toast(ToastKind::Info, format!("Opening {label} from OneLake…"));
+    cx.session.spawn(async move {
+        let result = match ops::onelake_token(resolver, slot, tenant, hint, prompter).await {
+            Ok(token) => engine.register_onelake(&name, &url, &token).await.map(|i| i.name),
+            Err(e) => Err(e),
+        };
+        let _ = tx.send(crate::fabric::FabricEvent::LocalOneLake { result });
+        egui.request_repaint();
+    });
+}
+
 /// Open a Local query tab on a result set of a tab: `SELECT * FROM <its table> LIMIT 100`, run.
 pub fn query_result(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
     let Some(tab_id) = state.tabs.get(idx).map(|t| t.id) else { return };
@@ -318,7 +371,8 @@ pub fn table_name(engine: &Engine, tab: TabId, title: &str, set: usize) -> Strin
 
 /// Register a result set that just started arriving for a tab.
 pub fn register_result(engine: &Engine, tab: TabId, title: &str, rs: &Arc<ResultSet>) {
-    if cobalt_driver::is_showplan_result(&rs.columns) {
+    // plans are not tables, and neither is the empty set a DDL statement answers with
+    if rs.columns.is_empty() || cobalt_driver::is_showplan_result(&rs.columns) {
         return;
     }
     let name = table_name(engine, tab, title, rs.index);
@@ -332,6 +386,12 @@ pub fn register_result(engine: &Engine, tab: TabId, title: &str, rs: &Arc<Result
 /// F5 and friends on a Local tab.
 pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     let t = &mut state.tabs[idx];
+    run_on(t, cx, mode);
+    state.history.loaded = false;
+}
+
+/// Run on any tab that carries a `LocalTab` (a query tab, a dashboard tile's tab).
+pub fn run_on(t: &mut EditorTab, cx: &Ctx, mode: RunMode) {
     if t.is_running() {
         return;
     }
@@ -368,7 +428,6 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         l.run = Some(handle.clone());
         l.notes = statements.iter().flat_map(|(_, n)| n.iter().cloned()).collect();
     }
-    state.history.loaded = false;
     // the tab's previous tables go (its new results replace them)
     cx.local.deregister_tab(&tab.to_string());
     let engine = Arc::clone(cx.local);

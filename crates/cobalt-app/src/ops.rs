@@ -845,6 +845,13 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             }
         }
         TreeAction::LocalDiff(name) => crate::localq::open_diff_dialog(state, cx, Some(name)),
+        TreeAction::LocalDeleteScratch(name) => match cx.local.remove_scratch(&name) {
+            Ok(()) => {
+                cx.toast(ToastKind::Info, format!("{name} deleted"));
+                crate::localq::refresh_all_catalogs(state, cx);
+            }
+            Err(e) => cx.toast(ToastKind::Error, e),
+        },
         TreeAction::LocalToggleRoot => state.local_root_expanded = !state.local_root_expanded,
         TreeAction::LocalToggle(name) => {
             if !state.local_expanded.remove(&name) {
@@ -1939,6 +1946,10 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
         ResultsAction::QueryLocally { set } => crate::localq::query_result(state, cx, idx, set),
         ResultsAction::ExploreLocally { set } => crate::exploreq::explore_result(state, cx, idx, set),
+        ResultsAction::SaveLocally { set } => {
+            let name = state.tabs.get(idx).map(|t| cobalt_local::sanitize_name(t.title.split(" · ").next().unwrap_or(&t.title))).unwrap_or_default();
+            state.dialog = Dialog::SaveScratch { tab_index: idx, set, name };
+        }
         ResultsAction::DiffLocally { set } => {
             let a = state.tabs.get(idx).map(|t| t.id).and_then(|id| crate::localq::table_for_result(cx, id, set));
             crate::localq::open_diff_dialog(state, cx, a);

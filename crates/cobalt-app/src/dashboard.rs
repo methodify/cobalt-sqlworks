@@ -135,6 +135,9 @@ pub fn add_tile(state: &mut AppState, cx: &Ctx, idx: usize, spec: TileSpec) -> O
     tab.custom_title = true;
     tab.text = spec.sql.clone();
     tab.mark_saved();
+    if matches!(spec.source, TileSource::Local) {
+        tab.local = Some(crate::localq::LocalTab::default());
+    }
     if let TileSource::SemanticModel { target } = &spec.source {
         tab.tabular = Some(crate::state::TabularTab::new(target.clone()));
     }
@@ -152,6 +155,7 @@ pub fn update_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize, spec: 
     let Some(tile) = d.tiles.get_mut(ti) else { return };
     let reconnect = tile.spec.profile != spec.profile || tile.spec.database != spec.database || tile.spec.source != spec.source;
     let rerun = reconnect || tile.spec.sql != spec.sql;
+    tile.tab.local = if matches!(spec.source, TileSource::Local) { Some(crate::localq::LocalTab::default()) } else { None };
     if let TileSource::SemanticModel { target } = &spec.source {
         tile.tab.tabular = Some(crate::state::TabularTab::new(target.clone()));
     } else {
@@ -201,10 +205,10 @@ fn connect_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
     let (tab_id, pref, database, model) = {
         let Some(d) = state.tabs.get(idx).and_then(|t| t.dashboard.as_deref()) else { return };
         let Some(tile) = d.tiles.get(ti) else { return };
-        (tile.tab.id, tile.spec.profile.clone(), tile.spec.database.clone(), tile.spec.source.is_model())
+        (tile.tab.id, tile.spec.profile.clone(), tile.spec.database.clone(), !tile.spec.source.needs_connection())
     };
     if model {
-        // no connection to open: the query goes straight to the service
+        // no connection to open: the query goes straight to the service (or the local engine)
         if let Some(tile) = state.tabs.get_mut(idx).and_then(|t| t.dashboard.as_deref_mut()).and_then(|d| d.tiles.get_mut(ti)) {
             tile.error = None;
             tile.pending = false;
@@ -259,6 +263,12 @@ fn run_tile(state: &mut AppState, cx: &Ctx, idx: usize, ti: usize) {
     tile.tab.run = Some(view);
     tile.pending = false;
     tile.last_refresh = Some(Instant::now());
+    if matches!(tile.spec.source, TileSource::Local) {
+        tile.tab.run = None;
+        tile.tab.text = tile.spec.sql.clone();
+        crate::localq::run_on(&mut tile.tab, cx, crate::state::RunMode::All);
+        return;
+    }
     if let TileSource::SemanticModel { target } = &tile.spec.source {
         let target = target.clone();
         let tab_id = tile.tab.id;
@@ -359,6 +369,19 @@ pub fn spec_from_tab(state: &AppState, idx: usize, set: usize, title: String, in
     let t = state.tabs.get(idx)?;
     let view = t.run.as_ref().and_then(|r| r.result_sets.get(set));
     let chart = view.and_then(|v| v.chart.as_ref()).map(|c| c.spec.clone());
+    if t.local.is_some() {
+        return Some(TileSpec {
+            title,
+            profile: ProfileRef { id: None, name: "Local".into(), server: "DataFusion".into() },
+            sql: t.text.clone(),
+            interval_secs,
+            kind,
+            chart,
+            source: TileSource::Local,
+            explore: t.explore.as_deref().map(|e| Box::new(e.spec.clone())),
+            ..TileSpec::default()
+        });
+    }
     if let Some(tt) = &t.tabular {
         let target = tt.target.clone();
         return Some(TileSpec {
@@ -400,7 +423,7 @@ pub fn suggested_kind(state: &AppState, idx: usize, set: usize) -> TileKind {
 
 /// Open the pin dialog for a result set of the tab.
 pub fn open_pin_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
-    if state.tabs.get(idx).map(|t| t.profile.is_none() && t.tabular.is_none()).unwrap_or(true) {
+    if state.tabs.get(idx).map(|t| t.profile.is_none() && t.tabular.is_none() && t.local.is_none()).unwrap_or(true) {
         cx.toast(ToastKind::Warning, "Connect the tab first: a tile needs a connection to run on.");
         return;
     }

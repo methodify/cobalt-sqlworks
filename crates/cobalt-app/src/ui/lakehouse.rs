@@ -18,6 +18,8 @@ pub enum LakehouseAction {
     ExpandFiles(String),
     /// `(lakehouse name, table entry `t` or `schema/t`)`
     Mount(String, String),
+    /// The table read from OneLake by the local engine (no Spark): `(lakehouse name, entry)`.
+    QueryLocally(String, String),
     /// Session-catalog spelling of the shadow (`lh.t` or `lh__schema.t`).
     Discard(String),
     Restore(String),
@@ -207,6 +209,10 @@ fn table_row(ui: &mut Ui, theme: &Theme, sql_tab: bool, lh: &str, schema: Option
             ui.close();
         }
         ui.separator();
+        if ui.button(format!("{} Query locally (no Spark)", icons::LIGHTNING)).on_hover_text("Read the Delta table straight from OneLake with your sign-in, in the local engine: a Local tab with the first 1,000 rows. Read-only.").clicked() {
+            actions.push(LakehouseAction::QueryLocally(lh.to_string(), entry.clone()));
+            ui.close();
+        }
         if ui.add_enabled(session_ready && state_label.is_empty(), egui::Button::new("Clone now")).on_hover_text("Materialize the table in the session now (a shallow clone in sandbox mode) so the first query does not wait.").clicked() {
             actions.push(LakehouseAction::Mount(lh.to_string(), entry.clone()));
             ui.close();

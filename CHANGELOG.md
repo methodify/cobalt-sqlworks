@@ -46,6 +46,21 @@
   query tab* hands the SQL to a Local tab. Agent: `diff {a, b, keys?, compare?}`, `explore
   {action: new, table}`; labels `diff locally <set>`, `explore locally <set>`, `diff filter
   <class>`, `diff go`.
+- **Local query, slice D: scratch tables, notebook cells, lakehouse tables, tiles.** Result
+  tables live with their tab; **Save as local table…** (the box icon on a result set's toolbar)
+  keeps one: the rows are written as Parquet under the app data folder (`data/local/scratch`)
+  and the table is `scratch.<name>` in this and every later session until *Delete the scratch
+  table* in the Local root (or `DROP TABLE scratch.<name>`). `CREATE TABLE scratch.<name> AS
+  SELECT …` in a Local tab does the same. A SQL notebook's cells register as `cell_1`,
+  `cell_2`, … (a re-run replaces that cell's table only), so a Local tab, Diff or Explore can
+  join cells. Lakehouse tables: *Query locally (no Spark)* on a table in the Lakehouse pane
+  reads the Delta table straight from OneLake with your Fabric sign-in into a Local tab
+  (read-only; the Spark route is unchanged). Dashboards: **Pin to dashboard** on a Local tab or
+  a local Explore tab makes a tile that runs on the local engine (scratch tables and files are
+  stable across sessions; a tile over a result table shows the error until that tab runs again).
+  Agent: `local_tables {action: save_scratch, name, set?}`, `{action: remove_scratch, name}`,
+  `{action: register_onelake, workspace_id, lakehouse_id, table}`; label `save locally <set>`,
+  dialog `save_scratch` (`scratch name`, `scratch save`).
 
 ## 0.10.4 — 2026-10-21
 

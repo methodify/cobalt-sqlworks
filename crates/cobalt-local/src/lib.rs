@@ -112,6 +112,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn scratch_tables_persist() {
+        let dir = std::env::temp_dir().join(format!("cobalt-local-scratch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = Engine::new(Arc::new(cobalt_results::MemoryBudget::unlimited()), 256 << 20, dir.join("spill")).unwrap();
+        assert_eq!(e.load_scratch(dir.join("scratch")).await, 0);
+        e.register_result("prod", result(0, 9), TableSource::Result { tab: "1".into(), set: 0, title: "prod".into() });
+        let info = e.save_scratch("Prod Snapshot", result(0, 9)).await.unwrap();
+        assert_eq!(info.name, "scratch.prod_snapshot");
+        assert!(info.rows_known && info.rows == 9);
+        let n = e.sql("SELECT count(*) FROM scratch.prod_snapshot").await.unwrap().collect().await.unwrap();
+        assert_eq!(n[0].column(0).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0), 9);
+        // a CTAS into scratch is persisted on sync
+        e.sql("CREATE TABLE scratch.evens AS SELECT id FROM prod WHERE id % 2 = 0").await.unwrap().collect().await.unwrap();
+        e.sync_from_context().await;
+        assert!(dir.join("scratch").join("evens.parquet").is_file());
+        assert!(e.tables().iter().any(|t| t.name == "scratch.evens" && matches!(t.source, TableSource::Scratch { .. })));
+        // a fresh engine finds both on disk
+        let e2 = Engine::new(Arc::new(cobalt_results::MemoryBudget::unlimited()), 256 << 20, dir.join("spill2")).unwrap();
+        assert_eq!(e2.load_scratch(dir.join("scratch")).await, 2);
+        let n = e2.sql("SELECT count(*) FROM scratch.evens").await.unwrap().collect().await.unwrap();
+        assert_eq!(n[0].column(0).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0), 5);
+        // drop removes the file
+        e2.sql("DROP TABLE scratch.evens").await.unwrap().collect().await.unwrap();
+        e2.sync_from_context().await;
+        assert!(!dir.join("scratch").join("evens.parquet").exists());
+        e2.remove_scratch("scratch.prod_snapshot").unwrap();
+        assert!(!dir.join("scratch").join("prod_snapshot.parquet").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn names_are_sanitised() {
         assert_eq!(sanitize_name("SQLQuery_1 · cobalt_test"), "sqlquery_1_cobalt_test");

@@ -254,7 +254,7 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
                 acts.push(Act::OpenDax);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if !is_local && icon_button(ui, icons::PUSH_PIN, "Pin to dashboard", !ex.spec.is_empty()).clicked() {
+                if icon_button(ui, icons::PUSH_PIN, "Pin to dashboard", !ex.spec.is_empty()).clicked() {
                     acts.push(Act::Pin);
                 }
                 if icon_button(ui, icons::FLOPPY_DISK, "Save (.cobalt-explore.json)", !ex.spec.is_empty()).clicked() {

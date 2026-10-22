@@ -17,6 +17,7 @@ pub enum TreeAction {
     LocalRename(String),
     LocalExplore(String),
     LocalDiff(String),
+    LocalDeleteScratch(String),
     LocalToggleRoot,
     LocalToggle(String),
     /// Analysis Services root: add / edit / remove a saved endpoint, open its catalogs, a model.
@@ -238,6 +239,8 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
             cobalt_local::TableSource::Result { title, .. } => title.clone(),
             cobalt_local::TableSource::File { path } => path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
             cobalt_local::TableSource::Statement => "made by a statement".to_string(),
+            cobalt_local::TableSource::Scratch { .. } => "scratch (kept across sessions)".to_string(),
+            cobalt_local::TableSource::OneLake { .. } => "OneLake".to_string(),
         };
         let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
         let detail = format!("{rows} · {} cols · {src}{}", t.columns.len(), if t.live { " · arriving" } else { "" });
@@ -267,7 +270,12 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
                 actions.push(TreeAction::LocalReveal(t.name.clone()));
                 ui.close();
             }
-            if ui.button(format!("{} Rename…", icons::PENCIL_SIMPLE)).clicked() {
+            if matches!(t.source, cobalt_local::TableSource::Scratch { .. }) {
+                if ui.button(format!("{} Delete the scratch table", icons::TRASH)).clicked() {
+                    actions.push(TreeAction::LocalDeleteScratch(t.name.clone()));
+                    ui.close();
+                }
+            } else if ui.button(format!("{} Rename…", icons::PENCIL_SIMPLE)).clicked() {
                 actions.push(TreeAction::LocalRename(t.name.clone()));
                 ui.close();
             }

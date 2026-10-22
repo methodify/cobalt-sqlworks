@@ -942,3 +942,38 @@ Agent: `diff {a, b, keys?: [...], compare?: [...]}` (keys guessed when absent; t
 the usual `add`, `drop`, `filter`, `top_n`, `subtotals`. Labels: `diff locally <set>`,
 `explore locally <set>`, `diff filter all|added|removed|changed|same`, the dialog's `diff-a`,
 `diff-b`, `diff key <col>`, `diff go`.
+
+## Local query, slice D: scratch tables, cells, lakehouse tables, tiles (0.11.0)
+
+**Scratch tables.** Result tables go with their tab. To keep one, *Save as local table…* (the
+box icon on the result set's toolbar) asks for a name and writes the rows as Parquet to
+`data/local/scratch` under the app data folder; the table is `scratch.<name>` from then on,
+loaded at every start, listed in the Local root with a "scratch (kept across sessions)" badge
+and *Delete the scratch table* in its menu. The same happens for `CREATE TABLE scratch.<name>
+AS SELECT …` in a Local tab, and `DROP TABLE scratch.<name>` deletes the file. Nothing else is
+persisted: a scratch table exists only because you asked for it.
+
+**Notebook cells.** In a SQL notebook (a connection kernel), each cell's result registers as
+`cell_1`, `cell_2`, … while the notebook is open; re-running a cell replaces that cell's table
+only, so a Local tab can `SELECT … FROM cell_1 JOIN cell_2`, and Diff or Explore take cells
+too. A "Local SQL" cell kind (a cell that runs on the engine inside the notebook) is not in
+this slice.
+
+**Lakehouse tables from OneLake.** In the Lakehouse pane, right-click a table: *Query locally
+(no Spark)* reads the Delta table from OneLake with your Fabric sign-in (the storage-scope
+token the exports use) in the local engine and opens a Local tab with the first 1,000 rows;
+the table is listed in the Local root with its `abfss://` URL. Read-only; Spark remains the
+way to write. Verified in the engine against local Delta folders; the live OneLake read needs
+a Fabric sign-in (a browser flow) and is for you to try on the "Fabric test" workspace, e.g.
+`publicholidays` in the `test` lakehouse.
+
+**Tiles on the local engine.** *Pin to dashboard* is now offered on Local tabs and on Explore
+tabs over local tables; the tile runs the SQL on the local engine with no connection. Pin
+queries over scratch tables or files: a tile over a result table (`sqlquery_1`) errors after a
+restart until that tab runs again.
+
+Agent: `local_tables {action: save_scratch, name, set?}` (active tab), `{action:
+remove_scratch, name: "scratch.x"}`, `{action: register_onelake, workspace_id, lakehouse_id,
+table: "schema/name" | "name"}`; the results toolbar label `save locally <set>`; dialog
+`save_scratch` with `scratch name` and `scratch save`; `dashboard {action: pin}` on a Local
+tab.

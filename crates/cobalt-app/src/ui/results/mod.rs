@@ -50,6 +50,8 @@ pub enum ResultsAction {
     ExploreLocally { set: usize },
     /// The Diff setup with this result set's table as A.
     DiffLocally { set: usize },
+    /// Persist this result set as `scratch.<name>` (back next session).
+    SaveLocally { set: usize },
 }
 
 pub struct ResultsArgs<'a> {
@@ -190,6 +192,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore locally {set}")));
                         if r.clicked() {
                             actions.push(ResultsAction::ExploreLocally { set });
+                        }
+                        let r = icon_button(ui, icons::ARCHIVE, "Save as local table… (scratch.<name>, kept across sessions in the app data folder)", true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("save locally {set}")));
+                        if r.clicked() {
+                            actions.push(ResultsAction::SaveLocally { set });
                         }
                         let r = icon_button(ui, icons::ARROWS_LEFT_RIGHT, "Diff with another result… (added / removed / changed rows by key)", true);
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("diff locally {set}")));

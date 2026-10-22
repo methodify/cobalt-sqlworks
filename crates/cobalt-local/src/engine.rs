@@ -29,6 +29,11 @@ pub enum TableSource {
     File { path: PathBuf },
     /// A table a statement made (`CREATE TABLE … AS`, `CREATE EXTERNAL TABLE`).
     Statement,
+    /// A scratch table: persisted as Parquet in the app data folder, back next session
+    /// (`scratch.<name>`).
+    Scratch { path: PathBuf },
+    /// A Delta table in a Fabric lakehouse, read from OneLake with the signed-in token.
+    OneLake { url: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -55,11 +60,18 @@ struct Registry {
     latest: Option<String>,
 }
 
+/// The schema scratch tables live in.
+pub const SCRATCH_SCHEMA: &str = "scratch";
+/// Registry names of scratch tables start with this.
+pub const SCRATCH_PREFIX: &str = "scratch.";
+
 pub struct Engine {
     ctx: SessionContext,
     registry: Mutex<Registry>,
     budget: Arc<MemoryBudget>,
     spill_dir: PathBuf,
+    /// Where scratch tables persist (`<name>.parquet`), once `load_scratch` ran.
+    scratch_dir: Mutex<Option<PathBuf>>,
     /// Bumped whenever the registry changes (callers rebuild their catalogs).
     generation: std::sync::atomic::AtomicU64,
 }
@@ -74,7 +86,109 @@ impl Engine {
         let rt = RuntimeEnvBuilder::new().with_memory_pool(Arc::new(FairSpillPool::new(budget_bytes.max(64 << 20)))).with_temp_file_path(spill_dir.clone()).build_arc().map_err(|e| e.to_string())?;
         let config = SessionConfig::new().with_batch_size(8192).with_information_schema(true);
         let ctx = SessionContext::new_with_config_rt(config, rt);
-        Ok(Self { ctx, registry: Mutex::new(Registry::default()), budget, spill_dir, generation: std::sync::atomic::AtomicU64::new(1) })
+        if let Some(cat) = ctx.catalog("datafusion") {
+            let _ = cat.register_schema(SCRATCH_SCHEMA, Arc::new(datafusion::catalog::memory::MemorySchemaProvider::new()));
+        }
+        // delta-rs learns abfss:// (OneLake) once
+        deltalake::azure::register_handlers(None);
+        Ok(Self { ctx, registry: Mutex::new(Registry::default()), budget, spill_dir, scratch_dir: Mutex::new(None), generation: std::sync::atomic::AtomicU64::new(1) })
+    }
+
+    /// Where scratch tables persist; the `.parquet` files there register as `scratch.<name>`.
+    pub async fn load_scratch(&self, dir: PathBuf) -> usize {
+        let _ = std::fs::create_dir_all(&dir);
+        let mut n = 0;
+        if let Ok(rd) = std::fs::read_dir(&dir) {
+            let mut paths: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().map(|e| e.eq_ignore_ascii_case("parquet")).unwrap_or(false)).collect();
+            paths.sort();
+            for p in paths {
+                let name = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                if name.is_empty() {
+                    continue;
+                }
+                match self.register_scratch_file(&name, &p).await {
+                    Ok(_) => n += 1,
+                    Err(e) => tracing::warn!(path = %p.display(), "scratch table not loaded: {e}"),
+                }
+            }
+        }
+        *self.scratch_dir.lock() = Some(dir);
+        self.bump();
+        n
+    }
+
+    pub fn scratch_dir(&self) -> Option<PathBuf> {
+        self.scratch_dir.lock().clone()
+    }
+
+    async fn register_scratch_file(&self, name: &str, path: &Path) -> Result<TableInfo, String> {
+        let qualified = format!("{SCRATCH_SCHEMA}.{}", quote_ident(name));
+        let _ = self.ctx.deregister_table(qualified.as_str());
+        self.ctx.register_parquet(qualified.as_str(), path.to_string_lossy().replace('\\', "/"), datafusion::prelude::ParquetReadOptions::default()).await.map_err(|e| friendly(e.to_string()))?;
+        let provider = self.ctx.table_provider(qualified.as_str()).await.map_err(|e| e.to_string())?;
+        let info = TableInfo { name: format!("{SCRATCH_SCHEMA}.{name}"), source: TableSource::Scratch { path: path.to_path_buf() }, columns: columns_for(&provider.schema()), rows: parquet_rows(path).unwrap_or(0), rows_known: true, live: false };
+        self.registry.lock().tables.insert(info.name.clone(), Entry { info: info.clone(), rs: None });
+        Ok(info)
+    }
+
+    /// Persist a result set as `scratch.<name>` (Parquet in the scratch folder) and register it.
+    pub async fn save_scratch(&self, name: &str, rs: Arc<ResultSet>) -> Result<TableInfo, String> {
+        let name = sanitize_name(name);
+        if name.is_empty() {
+            return Err("a name needs at least one letter".into());
+        }
+        let Some(dir) = self.scratch_dir() else { return Err("no scratch folder".into()) };
+        let path = dir.join(format!("{name}.parquet"));
+        let tmp = dir.join(format!("{name}.parquet.part"));
+        {
+            let f = std::fs::File::create(&tmp).map_err(|e| format!("could not write {}: {e}", tmp.display()))?;
+            let mut w = datafusion::parquet::arrow::ArrowWriter::try_new(f, Arc::clone(&rs.schema), None).map_err(|e| e.to_string())?;
+            for b in rs.raw_batches() {
+                w.write(&b).map_err(|e| e.to_string())?;
+            }
+            w.close().map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+        let info = self.register_scratch_file(&name, &path).await?;
+        self.bump();
+        Ok(info)
+    }
+
+    /// Delete a scratch table (its file goes).
+    pub fn remove_scratch(&self, name: &str) -> Result<(), String> {
+        let bare = name.strip_prefix("scratch.").unwrap_or(name);
+        let qualified = format!("{SCRATCH_SCHEMA}.{}", quote_ident(bare));
+        let _ = self.ctx.deregister_table(qualified.as_str());
+        let path = self.registry.lock().tables.remove(&format!("{SCRATCH_SCHEMA}.{bare}")).and_then(|e| match e.info.source {
+            TableSource::Scratch { path } => Some(path),
+            _ => None,
+        });
+        if let Some(p) = path {
+            std::fs::remove_file(&p).map_err(|e| format!("could not delete {}: {e}", p.display()))?;
+        }
+        self.bump();
+        Ok(())
+    }
+
+    /// A Delta table in OneLake (`abfss://<workspace>@onelake.dfs.fabric.microsoft.com/<lakehouse>/Tables/…`)
+    /// with a bearer token, as a local table. Read-only.
+    pub async fn register_onelake(&self, name: &str, url: &str, bearer_token: &str) -> Result<TableInfo, String> {
+        let u = url::Url::parse(url).map_err(|e| format!("bad OneLake URL: {e}"))?;
+        let mut opts = std::collections::HashMap::new();
+        opts.insert("bearer_token".to_string(), bearer_token.to_string());
+        let table = deltalake::open_table_with_storage_options(u, opts).await.map_err(|e| format!("could not open the Delta table: {e}"))?;
+        let provider = table.table_provider().await.map_err(|e| format!("Delta table provider: {e}"))?;
+        let _ = self.ctx.deregister_table(name);
+        self.ctx.register_table(name, Arc::clone(&provider)).map_err(|e| e.to_string())?;
+        let _ = self.ctx.deregister_table(LATEST);
+        let _ = self.ctx.register_table(LATEST, provider);
+        let info = TableInfo { name: name.to_string(), source: TableSource::OneLake { url: url.to_string() }, columns: columns_for(&self.ctx.table_provider(name).await.map_err(|e| e.to_string())?.schema()), rows: 0, rows_known: false, live: false };
+        let mut r = self.registry.lock();
+        r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
+        r.latest = Some(name.to_string());
+        drop(r);
+        self.bump();
+        Ok(info)
     }
 
     pub fn budget(&self) -> &Arc<MemoryBudget> {
@@ -122,6 +236,14 @@ impl Engine {
         }
         drop(r);
         self.bump();
+    }
+
+    /// Forget the tables of a tab whose names start with `prefix` (a notebook cell's run).
+    pub fn deregister_tab_prefix(&self, tab: &str, prefix: &str) {
+        let names: Vec<String> = self.registry.lock().tables.values().filter(|e| e.info.name.starts_with(prefix) && matches!(&e.info.source, TableSource::Result { tab: t, .. } if t == tab)).map(|e| e.info.name.clone()).collect();
+        for n in names {
+            self.deregister(&n);
+        }
     }
 
     /// Forget every table a tab produced (the tab closed or started a new run).
@@ -221,9 +343,11 @@ impl Engine {
     /// Tables a statement created in the engine (`CREATE TABLE … AS`, `CREATE EXTERNAL TABLE`)
     /// that the registry does not know yet; tables a statement dropped leave the registry.
     pub async fn sync_from_context(&self) {
+        self.sync_scratch().await;
         let Some(schema) = self.ctx.catalog("datafusion").and_then(|c| c.schema("public")) else { return };
         let names = schema.table_names();
-        let known: Vec<String> = self.registry.lock().tables.keys().cloned().collect();
+        // scratch tables live in their own schema (synced above)
+        let known: Vec<String> = self.registry.lock().tables.keys().filter(|k| !k.starts_with(SCRATCH_PREFIX)).cloned().collect();
         let mut changed = false;
         for n in names.iter().filter(|n| n.as_str() != LATEST && !known.contains(n)) {
             if let Ok(Some(p)) = schema.table(n).await {
@@ -234,6 +358,55 @@ impl Engine {
         }
         for k in known.iter().filter(|k| !names.contains(k)) {
             self.registry.lock().tables.remove(k);
+            changed = true;
+        }
+        if changed {
+            self.bump();
+        }
+    }
+
+    /// `CREATE TABLE scratch.x AS …` made an in-memory table: write it to the scratch folder
+    /// and re-register it from the file; `DROP TABLE scratch.x` dropped one: its file goes.
+    async fn sync_scratch(&self) {
+        let Some(schema) = self.ctx.catalog("datafusion").and_then(|c| c.schema(SCRATCH_SCHEMA)) else { return };
+        let Some(dir) = self.scratch_dir() else { return };
+        let names = schema.table_names();
+        let known: Vec<String> = self.registry.lock().tables.keys().filter(|k| k.starts_with(SCRATCH_PREFIX)).map(|k| k[SCRATCH_PREFIX.len()..].to_string()).collect();
+        let mut changed = false;
+        for n in names.iter().filter(|n| !known.contains(n)) {
+            // an in-memory table: materialise it
+            let qualified = format!("{SCRATCH_SCHEMA}.{}", quote_ident(n));
+            let Ok(df) = self.ctx.sql(&format!("SELECT * FROM {qualified}")).await else { continue };
+            let Ok(batches) = df.collect().await else { continue };
+            let Some(first) = batches.first() else { continue };
+            let path = dir.join(format!("{n}.parquet"));
+            let tmp = dir.join(format!("{n}.parquet.part"));
+            let ok = (|| -> Result<(), String> {
+                let f = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+                let mut w = datafusion::parquet::arrow::ArrowWriter::try_new(f, first.schema(), None).map_err(|e| e.to_string())?;
+                for b in &batches {
+                    w.write(b).map_err(|e| e.to_string())?;
+                }
+                w.close().map_err(|e| e.to_string())?;
+                std::fs::rename(&tmp, &path).map_err(|e| e.to_string())
+            })();
+            if let Err(e) = ok {
+                tracing::warn!(name = n, "scratch table not persisted: {e}");
+                continue;
+            }
+            let _ = self.ctx.deregister_table(qualified.as_str());
+            if self.register_scratch_file(n, &path).await.is_ok() {
+                changed = true;
+            }
+        }
+        for k in known.iter().filter(|k| !names.contains(k)) {
+            let path = self.registry.lock().tables.remove(&format!("scratch.{k}")).and_then(|e| match e.info.source {
+                TableSource::Scratch { path } => Some(path),
+                _ => None,
+            });
+            if let Some(p) = path {
+                let _ = std::fs::remove_file(p);
+            }
             changed = true;
         }
         if changed {
@@ -297,6 +470,11 @@ impl Engine {
         }
         Ok(out)
     }
+}
+
+/// A quoted identifier for the engine.
+pub fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
 }
 
 /// The row count in a Parquet file's footer.

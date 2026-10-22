@@ -494,6 +494,10 @@ pub fn lakehouse_action(state: &mut AppState, cx: &Ctx, a: crate::ui::lakehouse:
                 }
             }
         }
+        A::QueryLocally(lh, table) => {
+            let label = table.rsplit('/').next().unwrap_or(&table).to_string();
+            crate::localq::register_onelake(state, cx, &ws, &lh_id, &table, &format!("{lh} {label}"));
+        }
         A::Mount(lh, table) => {
             // mount_table takes the `schema/table` entry form since local-spark-mcp 0.6.3 and
             // answers when the clone exists

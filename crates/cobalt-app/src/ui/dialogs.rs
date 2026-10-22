@@ -969,6 +969,39 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search, file };
             }
         }
+        Dialog::SaveScratch { tab_index, set, mut name } => {
+            let mut ok = false;
+            let mut cancel = false;
+            let dir = f.cx.local.scratch_dir().map(|d| d.display().to_string()).unwrap_or_default();
+            let (_, close) = modal(ctx, theme, "save-scratch", 420.0, |ui| {
+                ui.heading("Save as local table");
+                ui.label(RichText::new(format!("The rows are written as Parquet to {dir} and the table is scratch.<name> in every session until you delete it (Servers › Local).")).size(12.0).color(theme.text_muted));
+                ui.horizontal(|ui| {
+                    ui.label("scratch.");
+                    let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "scratch name"));
+                    if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        ok = true;
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let r = primary_button(ui, theme, "Save", !name.trim().is_empty());
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "scratch save"));
+                    if r.clicked() {
+                        ok = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if ok {
+                crate::localq::save_scratch(f.state, f.cx, tab_index, set, name);
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::SaveScratch { tab_index, set, name };
+            }
+        }
         Dialog::DiffSetup { mut a, mut b, mut keys, mut compare } => {
             let tables = f.cx.local.tables();
             let names: Vec<String> = tables.iter().map(|t| t.name.clone()).collect();

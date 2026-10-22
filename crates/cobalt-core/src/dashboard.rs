@@ -117,11 +117,20 @@ pub enum TileSource {
     #[default]
     Sql,
     SemanticModel { target: crate::tabular::TabularTarget },
+    /// The local engine (scratch tables, files; result tables while their tabs are open).
+    Local,
 }
 
 impl TileSource {
     pub fn is_model(&self) -> bool {
         matches!(self, TileSource::SemanticModel { .. })
+    }
+    pub fn is_local(&self) -> bool {
+        matches!(self, TileSource::Local)
+    }
+    /// Sql tiles open a connection; model and local tiles run straight away.
+    pub fn needs_connection(&self) -> bool {
+        matches!(self, TileSource::Sql)
     }
 }
 

@@ -133,6 +133,10 @@ pub enum FabricEvent {
     DaxFunctions { key: String, result: Result<Vec<cobalt_tabular::DaxFunction>, String> },
     /// Explore: the distinct values of a column for the filter picker (by model key).
     ExploreDistinct { key: String, table: String, column: String, result: Result<Vec<String>, String> },
+    /// A result set saved as a scratch table (`Ok(name)`).
+    LocalScratch { result: Result<String, String> },
+    /// A lakehouse Delta table opened from OneLake as a local table (`Ok(name)`).
+    LocalOneLake { result: Result<String, String> },
     /// Analysis Services root: a profile's catalogs (models).
     TabularCatalogs { profile: uuid::Uuid, result: Result<Vec<String>, String> },
     /// The profile dialog's Test outcome.
@@ -1111,6 +1115,25 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 }
             }
         }
+        FabricEvent::LocalScratch { result } => match result {
+            Ok(name) => {
+                cx.toast(ToastKind::Success, format!("Saved as {name}; it is back next session (Servers › Local)"));
+                crate::localq::refresh_all_catalogs(state, cx);
+            }
+            Err(e) => cx.toast(ToastKind::Error, format!("Save as local table: {e}")),
+        },
+        FabricEvent::LocalOneLake { result } => match result {
+            Ok(name) => {
+                crate::localq::refresh_all_catalogs(state, cx);
+                let text = format!("SELECT *\nFROM {}\nLIMIT 1000", crate::localq::quote(&name));
+                let i = crate::localq::new_tab(state, cx, Some(text));
+                state.tabs[i].title = format!("{name} · OneLake");
+                state.tabs[i].custom_title = true;
+                state.active_tab = Some(i);
+                crate::localq::run(state, cx, i, crate::state::RunMode::All);
+            }
+            Err(e) => cx.toast(ToastKind::Error, format!("OneLake table: {e}")),
+        },
         FabricEvent::ExploreDistinct { key, table, column, result } => {
             for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false) || t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(|lt| format!("local:{lt}") == key).unwrap_or(false)) {
                 if let Some(ex) = t.explore.as_deref_mut() {
