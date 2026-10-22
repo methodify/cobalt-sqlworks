@@ -1064,12 +1064,21 @@ pub fn quote_for(name: &str, dialect: Dialect) -> String {
     match dialect {
         Dialect::TSql => quote_ident(name),
         Dialect::Dax => cobalt_core::tabular::dax_table_ref(name),
-        Dialect::Spark | Dialect::Local => {
+        Dialect::Spark => {
             let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             if simple {
                 name.to_string()
             } else {
                 format!("`{}`", name.replace('`', "``"))
+            }
+        }
+        Dialect::Local => {
+            // the local engine folds bare names to lower case, so a name with capitals is quoted
+            let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_lowercase() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+            if simple {
+                name.to_string()
+            } else {
+                format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
     }
@@ -1120,6 +1129,32 @@ mod tests {
     }
     fn of_kind(c: &Completions, k: CompletionKind) -> Vec<&str> {
         c.items.iter().filter(|i| i.kind == k).map(|i| i.label.as_str()).collect()
+    }
+
+    #[test]
+    fn local_dialect_quotes_schema_and_name_apart() {
+        let mut cat = DatabaseCatalog { database: "local".into(), schemas: vec!["scratch".into()], ..Default::default() };
+        cat.objects.push(ObjectRef { database: "local".into(), schema: String::new(), name: "orders".into(), kind: ObjectKind::Table, object_id: Some(1) });
+        cat.objects.push(ObjectRef { database: "local".into(), schema: "scratch".into(), name: "orders_snapshot".into(), kind: ObjectKind::Table, object_id: Some(2) });
+        cat.objects.push(ObjectRef { database: "local".into(), schema: "scratch".into(), name: "Mixed Case".into(), kind: ObjectKind::Table, object_id: Some(3) });
+        cat.columns.insert(2, vec![ColumnInfo::new("countryOrRegion", SqlType::NVarChar { len: None }, true, 0)]);
+        let req = |text: &str, cursor: usize| complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &[], max_items: 0, user_snippets: &[], dialect: Dialect::Local, extra_functions: &[] });
+        let c = req("SELECT * FROM scratch.ord", 25);
+        // after a typed `scratch.` only the name is inserted (never the whole dotted name, quoted)
+        let item = c.items.iter().find(|i| i.label == "orders_snapshot").expect("the scratch table is offered");
+        assert_eq!(item.insert, "orders_snapshot");
+        let c = req("SELECT * FROM scratch.Mi", 24);
+        let item = c.items.iter().find(|i| i.label == "Mixed Case").expect("offered");
+        assert_eq!(item.insert, "\"Mixed Case\"");
+        // from the top level the scratch table is offered with its schema, each part on its own
+        let c = req("SELECT * FROM ord", 17);
+        let item = c.items.iter().find(|i| i.label == "orders_snapshot").expect("offered at the top level");
+        assert_eq!(item.insert, "scratch.orders_snapshot");
+        let c = req("SELECT * FROM scr", 17);
+        assert!(c.items.iter().any(|i| i.label == "scratch" && i.insert == "scratch"));
+        let c = req("SELECT  FROM scratch.orders_snapshot", 7);
+        let item = c.items.iter().find(|i| i.label == "countryOrRegion").expect("the column is offered");
+        assert_eq!(item.insert, "\"countryOrRegion\"");
     }
 
     #[test]

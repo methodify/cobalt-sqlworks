@@ -154,8 +154,10 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             Act::ChooseModel => {
                 if f.state.tabs[idx].tabular.is_some() {
                     crate::tabularq::open_chooser(f.state, f.cx, Some(idx), true);
+                } else if f.state.tabs[idx].explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.sql_table()).is_some() {
+                    f.cx.toast(ToastKind::Info, "This Explore is over a table on a connection; right-click another table in the Servers tree › Explore.");
                 } else {
-                    f.cx.toast(ToastKind::Info, "This Explore is over a local table; open another one from the Servers tree's Local root (right-click › Explore).");
+                    f.cx.toast(ToastKind::Info, "This Explore is over a local table; pick another one in the Local sidebar (right-click › Explore).");
                 }
             }
         }
@@ -167,9 +169,12 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
     let tab = &mut f.state.tabs[idx];
     let running = tab.is_running();
     let local_table = tab.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string);
-    let is_local = local_table.is_some();
-    let model = tab.tabular.as_ref().map(|tt| tt.target.model().to_string()).or_else(|| local_table.clone()).unwrap_or_default();
-    let host = tab.tabular.as_ref().map(|tt| tt.target.host_label()).unwrap_or_else(|| "a local table".into());
+    let sql_table = tab.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.sql_table()).map(|(_, db, s, t)| (db.to_string(), format!("{s}.{t}")));
+    let is_local = local_table.is_some() || sql_table.is_some();
+    let model = tab.tabular.as_ref().map(|tt| tt.target.model().to_string()).or_else(|| local_table.clone()).or_else(|| sql_table.as_ref().map(|(_, t)| t.clone())).unwrap_or_default();
+    let host = tab.tabular.as_ref().map(|tt| tt.target.host_label()).or_else(|| sql_table.as_ref().map(|(db, _)| format!("{} · {db}", tab.profile.as_ref().and_then(|p| p.name.clone()).unwrap_or_else(|| tab.profile.as_ref().map(|p| p.server.clone()).unwrap_or_default())))).unwrap_or_else(|| "a local table".into());
+    let is_sql = sql_table.is_some();
+    let sql_state = if is_sql { Some(match &tab.conn { crate::state::ConnState::Connected { .. } => "reading the columns", crate::state::ConnState::Connecting => "connecting", _ => "not connected" }) } else { None };
     let local_cols = if is_local { tab.model_catalog.as_ref().and_then(|c| c.tables.first()).map(|t| t.columns.len()) } else { None };
     let cat_state = tab.tabular.as_ref().and_then(|tt| f.state.model_catalogs.get(&tt.model_key()));
     let Some(ex) = tab.explore.as_deref_mut() else { return };
@@ -177,8 +182,8 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
             let r = ui.add(egui::TextEdit::singleline(&mut ex.spec.title).hint_text("Explore title").desired_width(200.0));
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "explore title"));
-            ui.label(RichText::new(icons::CUBE).color(theme.accent));
-            let r = ui.add(egui::Button::new(RichText::new(&model).strong()).frame(false)).on_hover_text(format!("Semantic model {model} in {host}\nClick to explore another model"));
+            ui.label(RichText::new(if is_local { icons::TABLE } else { icons::CUBE }).color(theme.accent));
+            let r = ui.add(egui::Button::new(RichText::new(&model).strong()).frame(false)).on_hover_text(if is_sql { format!("Table {model} on {host}\nThe builder writes T-SQL and runs it on this connection") } else if is_local { format!("Local table {model}") } else { format!("Semantic model {model} in {host}\nClick to explore another model") });
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore model"));
             if r.clicked() {
                 acts.push(Act::ChooseModel);
@@ -198,7 +203,11 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
                     }
                 }
                 None if local_cols.is_some() => {
-                    ui.label(RichText::new(format!("local table · {} columns", local_cols.unwrap_or(0))).size(12.0).color(theme.text_muted));
+                    ui.label(RichText::new(format!("{} · {} columns", if is_sql { "table" } else { "local table" }, local_cols.unwrap_or(0))).size(12.0).color(theme.text_muted));
+                }
+                None if is_sql => {
+                    ui.spinner();
+                    ui.label(RichText::new(format!("{}…", sql_state.unwrap_or_default())).size(12.0).color(theme.text_muted)).on_hover_text("Connecting and reading the table's columns");
                 }
                 _ => {}
             }
@@ -245,12 +254,12 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
                 }
             }
             ui.separator();
-            let r = ui.selectable_label(ex.show_dax, format!("{} DAX", icons::CODE)).on_hover_text("Show the generated query");
+            let r = ui.selectable_label(ex.show_dax, format!("{} {}", icons::CODE, if is_local { "SQL" } else { "DAX" })).on_hover_text("Show the generated query");
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore show dax"));
             if r.clicked() {
                 ex.show_dax = !ex.show_dax;
             }
-            if tool_button(ui, icons::ARROW_SQUARE_OUT, "Open in query tab", if is_local { "The generated SQL in a Local query tab, to edit and run" } else { "The generated DAX in a DAX query tab, to edit and run" }, ex.dax.is_some()).clicked() {
+            if tool_button(ui, icons::ARROW_SQUARE_OUT, "Open in query tab", if is_sql { "The generated T-SQL in a query tab on this connection, to edit and run" } else if is_local { "The generated SQL in a Local query tab, to edit and run" } else { "The generated DAX in a DAX query tab, to edit and run" }, ex.dax.is_some()).clicked() {
                 acts.push(Act::OpenDax);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -434,10 +443,11 @@ fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat
             });
         }
         if ex.show_dax {
+            let is_sql_text = ex.spec.source.as_ref().map(|s| s.local_table().is_some() || s.sql_table().is_some()).unwrap_or(false);
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.add_space(8.0);
-                ui.label(RichText::new("DAX").size(11.0).strong().color(theme.text_muted));
+                ui.label(RichText::new(if is_sql_text { "SQL" } else { "DAX" }).size(11.0).strong().color(theme.text_muted));
                 if let Some(q) = &ex.dax {
                     if ui.small_button("Copy").clicked() {
                         ui.ctx().copy_text(q.text.clone());

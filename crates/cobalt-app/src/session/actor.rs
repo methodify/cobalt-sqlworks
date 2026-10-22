@@ -570,5 +570,6 @@ async fn serve(conn: &mut dyn Connection, kind: MetadataRequest) -> Result<Metad
         MetadataRequest::LoadCatalog { database } => MetadataResponse::Catalog(conn.load_catalog(&database).await?),
         MetadataRequest::Script { obj, kind } => MetadataResponse::Script(conn.script(&obj, kind).await?),
         MetadataRequest::TableStats { obj } => MetadataResponse::TableStats(conn.table_stats(&obj).await?),
+        MetadataRequest::DistinctValues { obj, column, limit } => MetadataResponse::Values(conn.distinct_values(&obj, &column, limit).await?),
     })
 }

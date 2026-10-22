@@ -46,6 +46,10 @@ pub struct TableInfo {
     pub rows_known: bool,
     /// `true` while the producing run is still streaming rows into it.
     pub live: bool,
+    /// Bytes the result set holds in memory (result tables; `None` for files and scratch).
+    pub memory_bytes: Option<usize>,
+    /// Size of the file on disk (Parquet, CSV, scratch tables; `None` for folders and results).
+    pub file_bytes: Option<u64>,
 }
 
 struct Entry {
@@ -122,11 +126,12 @@ impl Engine {
     }
 
     async fn register_scratch_file(&self, name: &str, path: &Path) -> Result<TableInfo, String> {
+        let file_bytes = std::fs::metadata(path).ok().map(|m| m.len());
         let qualified = format!("{SCRATCH_SCHEMA}.{}", quote_ident(name));
         let _ = self.ctx.deregister_table(qualified.as_str());
         self.ctx.register_parquet(qualified.as_str(), path.to_string_lossy().replace('\\', "/"), datafusion::prelude::ParquetReadOptions::default()).await.map_err(|e| friendly(e.to_string()))?;
         let provider = self.ctx.table_provider(qualified.as_str()).await.map_err(|e| e.to_string())?;
-        let info = TableInfo { name: format!("{SCRATCH_SCHEMA}.{name}"), source: TableSource::Scratch { path: path.to_path_buf() }, columns: columns_for(&provider.schema()), rows: parquet_rows(path).unwrap_or(0), rows_known: true, live: false };
+        let info = TableInfo { name: format!("{SCRATCH_SCHEMA}.{name}"), source: TableSource::Scratch { path: path.to_path_buf() }, columns: columns_for(&provider.schema()), rows: parquet_rows(path).unwrap_or(0), rows_known: true, live: false, memory_bytes: None, file_bytes };
         self.registry.lock().tables.insert(info.name.clone(), Entry { info: info.clone(), rs: None });
         Ok(info)
     }
@@ -182,7 +187,7 @@ impl Engine {
         self.ctx.register_table(name, Arc::clone(&provider)).map_err(|e| e.to_string())?;
         let _ = self.ctx.deregister_table(LATEST);
         let _ = self.ctx.register_table(LATEST, provider);
-        let info = TableInfo { name: name.to_string(), source: TableSource::OneLake { url: url.to_string() }, columns: columns_for(&self.ctx.table_provider(name).await.map_err(|e| e.to_string())?.schema()), rows: 0, rows_known: false, live: false };
+        let info = TableInfo { name: name.to_string(), source: TableSource::OneLake { url: url.to_string() }, columns: columns_for(&self.ctx.table_provider(name).await.map_err(|e| e.to_string())?.schema()), rows: 0, rows_known: false, live: false, memory_bytes: None, file_bytes: None };
         let mut r = self.registry.lock();
         r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
         r.latest = Some(name.to_string());
@@ -219,7 +224,7 @@ impl Engine {
         let _ = self.ctx.register_table(LATEST, provider);
         let mut r = self.registry.lock();
         let live = rs.state().is_live();
-        r.tables.insert(name.to_string(), Entry { info: TableInfo { name: name.to_string(), source, columns: rs.columns.clone(), rows: rs.row_count(), rows_known: true, live }, rs: Some(rs) });
+        r.tables.insert(name.to_string(), Entry { info: TableInfo { name: name.to_string(), source, columns: rs.columns.clone(), rows: rs.row_count(), rows_known: true, live, memory_bytes: Some(rs.bytes_in_memory()), file_bytes: None }, rs: Some(rs) });
         r.latest = Some(name.to_string());
         drop(r);
         self.bump();
@@ -236,6 +241,48 @@ impl Engine {
         }
         drop(r);
         self.bump();
+    }
+
+    /// `CREATE TABLE scratch.<name> AS SELECT * FROM <from>`: any local table becomes a scratch
+    /// table (persisted). Returns the scratch table.
+    pub async fn copy_to_scratch(&self, name: &str, from: &str) -> Result<TableInfo, String> {
+        let Some(_) = self.scratch_dir() else { return Err("no scratch folder".into()) };
+        let name = sanitize_name(name);
+        if name.is_empty() {
+            return Err("give the table a name".into());
+        }
+        if !self.has_table(from) {
+            return Err(format!("no local table named {from}"));
+        }
+        let qualified = format!("{SCRATCH_SCHEMA}.{}", quote_ident(&name));
+        if self.has_table(&format!("{SCRATCH_PREFIX}{name}")) {
+            self.remove_scratch(&format!("{SCRATCH_PREFIX}{name}"))?;
+        }
+        let sql = format!("CREATE TABLE {qualified} AS SELECT * FROM {}", quote_ident(from));
+        let df = self.ctx.sql(&sql).await.map_err(|e| friendly(e.to_string()))?;
+        df.collect().await.map_err(|e| friendly(e.to_string()))?;
+        self.sync_from_context().await;
+        self.tables().into_iter().find(|t| t.name == format!("{SCRATCH_PREFIX}{name}")).ok_or_else(|| "the scratch table was not written".to_string())
+    }
+
+    /// Drop a table whatever its source: a result or file table is forgotten (the tab keeps its
+    /// results; the file stays), a statement table is dropped, a scratch table's file is deleted.
+    pub fn forget(&self, name: &str) -> Result<(), String> {
+        let source = self.registry.lock().tables.get(name).map(|e| e.info.source.clone());
+        match source {
+            None => Err(format!("no local table named {name}")),
+            Some(TableSource::Scratch { .. }) => self.remove_scratch(name),
+            Some(TableSource::Statement) => {
+                let _ = self.ctx.deregister_table(quote_ident(name).as_str());
+                self.registry.lock().tables.remove(name);
+                self.bump();
+                Ok(())
+            }
+            Some(_) => {
+                self.deregister(name);
+                Ok(())
+            }
+        }
     }
 
     /// Forget the tables of a tab whose names start with `prefix` (a notebook cell's run).
@@ -331,7 +378,7 @@ impl Engine {
         let columns = columns_for(&provider.schema());
         let _ = self.ctx.deregister_table(LATEST);
         let _ = self.ctx.register_table(LATEST, provider);
-        let info = TableInfo { name: name.to_string(), source: TableSource::File { path: path.to_path_buf() }, columns, rows: rows.unwrap_or(0), rows_known: rows.is_some(), live: false };
+        let info = TableInfo { name: name.to_string(), source: TableSource::File { path: path.to_path_buf() }, columns, rows: rows.unwrap_or(0), rows_known: rows.is_some(), live: false, memory_bytes: None, file_bytes: std::fs::metadata(path).ok().filter(|m| m.is_file()).map(|m| m.len()) };
         let mut r = self.registry.lock();
         r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
         r.latest = Some(name.to_string());
@@ -351,7 +398,7 @@ impl Engine {
         let mut changed = false;
         for n in names.iter().filter(|n| n.as_str() != LATEST && !known.contains(n)) {
             if let Ok(Some(p)) = schema.table(n).await {
-                let info = TableInfo { name: n.clone(), source: TableSource::Statement, columns: columns_for(&p.schema()), rows: 0, rows_known: false, live: false };
+                let info = TableInfo { name: n.clone(), source: TableSource::Statement, columns: columns_for(&p.schema()), rows: 0, rows_known: false, live: false, memory_bytes: None, file_bytes: None };
                 self.registry.lock().tables.insert(n.clone(), Entry { info, rs: None });
                 changed = true;
             }
@@ -424,6 +471,7 @@ impl Engine {
                 if let Some(rs) = &e.rs {
                     i.rows = rs.row_count();
                     i.live = rs.state().is_live();
+                    i.memory_bytes = Some(rs.bytes_in_memory());
                 }
                 i
             })

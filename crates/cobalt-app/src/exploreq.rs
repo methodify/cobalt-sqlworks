@@ -6,6 +6,9 @@
 
 use crate::fabric::FabricEvent;
 use crate::ops::Ctx;
+use crate::session::MetadataRequest;
+use crate::state::MetaPurpose;
+use cobalt_core::{ColumnInfo, ObjectKind, ObjectRef, ProfileId};
 use crate::state::{hash_text, AppState, EditorTab, ExploreState, FilterEditor, Loadable, RunMode, ToastKind};
 use crate::tabularq;
 use cobalt_core::chart::Agg;
@@ -72,6 +75,53 @@ pub fn new_local_tab(state: &mut AppState, cx: &Ctx, table: &str, spec: Option<E
     Ok(idx)
 }
 
+/// A model catalog with one table from SQL column infos (local tables, SQL tables).
+pub fn catalog_from_columns(name: &str, cols: &[ColumnInfo]) -> ModelCatalog {
+    use cobalt_core::tabular::{Column, Table};
+    let columns = cols
+        .iter()
+        .map(|c| {
+            let dt = crate::localq::tabular_type(&c.sql_type);
+            let numeric = matches!(dt, TabularDataType::Int64 | TabularDataType::Double | TabularDataType::Decimal);
+            Column { name: c.name.clone(), data_type: dt, hidden: false, key: c.in_primary_key, calculated: false, format_string: None, sort_by_column: None, display_folder: None, description: Some(c.sql_type.to_string()), expression: None, summarize_by: Some(if numeric { "Sum".into() } else { "None".into() }) }
+        })
+        .collect();
+    ModelCatalog { name: name.to_string(), description: None, tables: vec![Table { name: name.to_string(), hidden: false, storage_mode: None, description: None, expression: None, columns, measures: Vec::new(), hierarchies: Vec::new() }], relationships: Vec::new(), calculation_groups: Vec::new(), expressions_hidden: false }
+}
+
+fn bracket(s: &str) -> String {
+    format!("[{}]", s.replace(']', "]]"))
+}
+
+/// A new Explore tab over a table or view on a SQL connection: a query tab on the profile
+/// (connecting), the field list from the table's columns, T-SQL generated and run there.
+pub fn new_sql_tab(state: &mut AppState, cx: &Ctx, profile: ProfileId, database: String, schema: String, table: String) -> usize {
+    let idx = crate::ops::new_query_tab(state, cx, Some(profile), Some(database.clone()), None, false);
+    let t = &mut state.tabs[idx];
+    let spec = ExploreSpec::new(ExploreSource::Sql { profile, database, schema, table });
+    let mut ex = ExploreState::new(spec);
+    ex.run_when_loaded = false;
+    t.explore = Some(Box::new(ex));
+    t.custom_title = false;
+    retitle(t);
+    t.mark_saved();
+    request_sql_columns(state, cx, idx);
+    state.active_tab = Some(idx);
+    idx
+}
+
+/// Ask the connection for the columns of a SQL Explore tab's table (the field list).
+fn request_sql_columns(state: &mut AppState, cx: &Ctx, idx: usize) {
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    let tab = t.id;
+    let Some((profile, database, schema, table)) = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.sql_table()).map(|(p, d, s, t)| (p, d.to_string(), s.to_string(), t.to_string())) else { return };
+    if let Some(ex) = t.explore.as_deref_mut() {
+        ex.catalog_asked = Some(std::time::Instant::now());
+    }
+    let obj = ObjectRef { database, schema, name: table, kind: ObjectKind::Table, object_id: None };
+    crate::ops::request_meta(state, cx, profile, MetadataRequest::ListColumns { obj }, MetaPurpose::ExploreColumns { tab });
+}
+
 /// Explore a tab's result set (its local table).
 pub fn explore_result(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
     let Some(tab_id) = state.tabs.get(idx).map(|t| t.id) else { return };
@@ -94,7 +144,7 @@ pub fn retitle(t: &mut EditorTab) {
         return;
     }
     let title = t.explore.as_ref().map(|e| e.spec.title.trim().to_string()).filter(|s| !s.is_empty());
-    let source = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string);
+    let source = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table().map(str::to_string).or_else(|| s.sql_field_table()));
     if let Some(tt) = &t.tabular {
         t.title = match title {
             Some(s) => format!("{s} · {}", tt.target.model()),
@@ -190,9 +240,11 @@ pub fn regenerate(state: &mut AppState, idx: usize) {
         ex.dax_error = None; // not an error: the catalog is on its way
         return;
     };
-    let generated = match ex.spec.source.as_ref().and_then(|s| s.local_table()) {
-        Some(_) => cobalt_local::explore::to_sql(&ex.spec, &cat).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
-        None => cobalt_tabular::explore::to_dax(&ex.spec, &cat),
+    let sql_from = ex.spec.source.as_ref().and_then(|s| s.sql_table()).map(|(_, db, schema, table)| format!("{}.{}.{}", bracket(db), bracket(schema), bracket(table)));
+    let generated = match (ex.spec.source.as_ref().and_then(|s| s.local_table()), sql_from) {
+        (Some(_), _) => cobalt_local::explore::to_sql(&ex.spec, &cat).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
+        (None, Some(from)) => cobalt_local::explore::to_sql_in(&ex.spec, &cat, cobalt_local::explore::SqlDialect::TSql, Some(&from)).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
+        (None, None) => cobalt_tabular::explore::to_dax(&ex.spec, &cat),
     };
     match generated {
         Ok(q) => {
@@ -231,8 +283,11 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize) {
     ex.pivot = None;
     ex.pivot_built_for = None;
     let local = ex.spec.source.as_ref().and_then(|s| s.local_table()).is_some();
+    let sql = ex.spec.source.as_ref().and_then(|s| s.sql_table()).is_some();
     if local {
         crate::localq::run(state, cx, idx, RunMode::All);
+    } else if sql {
+        crate::ops::run_sql(state, cx, idx, RunMode::All);
     } else {
         tabularq::run(state, cx, idx, RunMode::All);
     }
@@ -270,6 +325,22 @@ pub fn tick(state: &mut AppState, cx: &Ctx, fmt: &CellFormatter) {
             ex.run_when_loaded = false;
         }
         run(state, cx, i);
+    }
+    // SQL tables: the field list comes from the connection; ask again while it connects
+    let mut to_ask = Vec::new();
+    for (i, t) in state.tabs.iter().enumerate() {
+        if let Some(ex) = t.explore.as_deref() {
+            if t.model_catalog.is_none() && ex.spec.source.as_ref().and_then(|s| s.sql_table()).is_some() && ex.dax_error.is_none() {
+                let pending = state.pending_meta.values().any(|p| matches!(p.purpose, MetaPurpose::ExploreColumns { tab } if tab == t.id));
+                let due = ex.catalog_asked.map(|a| a.elapsed() > std::time::Duration::from_secs(2)).unwrap_or(true);
+                if !pending && due {
+                    to_ask.push(i);
+                }
+            }
+        }
+    }
+    for i in to_ask {
+        request_sql_columns(state, cx, i);
     }
     for t in state.tabs.iter_mut() {
         ensure_pivot(t, fmt);
@@ -314,6 +385,12 @@ pub fn open_in_query_tab(state: &mut AppState, cx: &Ctx, idx: usize) {
     if ex.spec.source.as_ref().and_then(|s| s.local_table()).is_some() {
         let i = crate::localq::new_tab(state, cx, Some(text));
         state.active_tab = Some(i);
+        return;
+    }
+    if let Some((profile, database, schema, table)) = ex.spec.source.as_ref().and_then(|s| s.sql_table()) {
+        let title = format!("{schema}.{table} (explore)");
+        let (database, title) = (database.to_string(), title);
+        crate::ops::new_query_tab(state, cx, Some(profile), Some(database), Some((title, text)), false);
         return;
     }
     let Some(tt) = &t.tabular else { return };
@@ -574,6 +651,22 @@ pub fn load_distinct(state: &mut AppState, cx: &Ctx, idx: usize, table: &str, co
         });
         return;
     }
+    if let Some((profile, database, schema, name)) = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.sql_table()).map(|(p, d, s, t)| (p, d.to_string(), s.to_string(), t.to_string())) {
+        let tab = t.id;
+        let Some(ex) = t.explore.as_deref_mut() else { return };
+        let k = (table.to_string(), column.to_string());
+        if ex.distinct.get(&k).map(|l| !l.needs_load()).unwrap_or(false) {
+            return;
+        }
+        ex.distinct.insert(k.clone(), Loadable::Loading);
+        let obj = ObjectRef { database, schema, name, kind: ObjectKind::Table, object_id: None };
+        if crate::ops::request_meta(state, cx, profile, MetadataRequest::DistinctValues { obj, column: column.to_string(), limit: DISTINCT_LIMIT }, MetaPurpose::ExploreDistinct { tab, table: table.to_string(), column: column.to_string() }).is_none() {
+            if let Some(ex) = state.tabs.get_mut(idx).and_then(|t| t.explore.as_deref_mut()) {
+                ex.distinct.insert(k, Loadable::Failed("not connected yet; try again in a moment".into()));
+            }
+        }
+        return;
+    }
     let Some(tt) = &t.tabular else { return };
     let target = tt.target.clone();
     let key = tt.model_key();
@@ -640,9 +733,22 @@ struct Snapshot {
 }
 
 pub fn snapshot_binding(t: &EditorTab) -> Option<String> {
-    let tt = t.tabular.as_ref()?;
     let ex = t.explore.as_deref()?;
+    if ex.spec.source.as_ref().and_then(|s| s.sql_table()).is_some() {
+        return Some(format!("{SQL_SNAPSHOT_PREFIX}{}", ex.spec.to_json()));
+    }
+    let tt = t.tabular.as_ref()?;
     Some(format!("{SNAPSHOT_PREFIX}{}", serde_json::to_string(&Snapshot { target: tt.target.clone(), spec: ex.spec.clone() }).unwrap_or_default()))
+}
+
+const SQL_SNAPSHOT_PREFIX: &str = "explore-sql:";
+
+/// A snapshot's `database` column back into the spec of an Explore over a SQL table.
+pub fn from_sql_snapshot(database: &str) -> Option<ExploreSpec> {
+    let json = database.strip_prefix(SQL_SNAPSHOT_PREFIX)?;
+    let spec: ExploreSpec = serde_json::from_str(json).ok()?;
+    spec.source.as_ref().and_then(|s| s.sql_table())?;
+    Some(spec)
 }
 
 /// A snapshot's `database` column back into (target, spec).

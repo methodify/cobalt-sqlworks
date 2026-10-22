@@ -720,6 +720,52 @@ pub fn request_meta(state: &mut AppState, cx: &Ctx, profile: ProfileId, kind: Me
     Some(req)
 }
 
+/// The Local sidebar's actions.
+pub fn local_action(state: &mut AppState, cx: &Ctx, a: crate::ui::local::LocalAction) {
+    use crate::ui::local::LocalAction as A;
+    match a {
+        A::Query(name) => tree_action(state, cx, TreeAction::LocalQuery(name)),
+        A::Explore(name) => tree_action(state, cx, TreeAction::LocalExplore(name)),
+        A::Diff(name) => tree_action(state, cx, TreeAction::LocalDiff(name)),
+        A::Reveal(name) => tree_action(state, cx, TreeAction::LocalReveal(name)),
+        A::Rename(name) => tree_action(state, cx, TreeAction::LocalRename(name)),
+        A::Toggle(name) => tree_action(state, cx, TreeAction::LocalToggle(name)),
+        A::InsertName(name) => tree_action(state, cx, TreeAction::InsertIntoEditor(crate::localq::quote(&name))),
+        A::CopyName(name) => tree_action(state, cx, TreeAction::CopyText(name)),
+        A::Forget(name) => state.dialog = Dialog::ConfirmForgetLocal { name },
+        A::SaveScratch(name) => {
+            let short = name.rsplit('.').next().unwrap_or(&name).to_string();
+            state.dialog = Dialog::SaveScratch { from: crate::state::ScratchFrom::Table(name), name: cobalt_local::sanitize_name(&short) };
+        }
+        A::Refresh => crate::localq::refresh_all_catalogs(state, cx),
+        A::RegisterFile => {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Data files", &["parquet", "csv", "tsv", "txt", "psv", "jsonl", "ndjson", "json", "arrow", "feather", "ipc"]).add_filter("All files", &["*"]).pick_file() {
+                if let Err(e) = crate::localq::open_file_table(state, cx, &p) {
+                    cx.toast(ToastKind::Error, e);
+                }
+            }
+        }
+        A::RegisterDelta => {
+            if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                if let Err(e) = crate::localq::open_file_table(state, cx, &p) {
+                    cx.toast(ToastKind::Error, e);
+                }
+            }
+        }
+    }
+}
+
+/// Forget / delete a local table after the confirmation.
+pub fn forget_local_table(state: &mut AppState, cx: &Ctx, name: &str) {
+    match cx.local.forget(name) {
+        Ok(()) => {
+            cx.toast(ToastKind::Info, format!("{name} forgotten"));
+            crate::localq::refresh_all_catalogs(state, cx);
+        }
+        Err(e) => cx.toast(ToastKind::Error, e),
+    }
+}
+
 pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
     match action {
         TreeAction::NewConnection { group } => open_connection_dialog(state, cx, None, group, None),
@@ -845,13 +891,10 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             }
         }
         TreeAction::LocalDiff(name) => crate::localq::open_diff_dialog(state, cx, Some(name)),
-        TreeAction::LocalDeleteScratch(name) => match cx.local.remove_scratch(&name) {
-            Ok(()) => {
-                cx.toast(ToastKind::Info, format!("{name} deleted"));
-                crate::localq::refresh_all_catalogs(state, cx);
-            }
-            Err(e) => cx.toast(ToastKind::Error, e),
-        },
+        TreeAction::LocalDeleteScratch(name) => state.dialog = Dialog::ConfirmForgetLocal { name },
+        TreeAction::Explore { profile, obj } => {
+            crate::exploreq::new_sql_tab(state, cx, profile, obj.database.clone(), obj.schema.clone(), obj.name.clone());
+        }
         TreeAction::LocalToggleRoot => state.local_root_expanded = !state.local_root_expanded,
         TreeAction::LocalToggle(name) => {
             if !state.local_expanded.remove(&name) {
@@ -1062,6 +1105,15 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
         crate::tabularq::ensure_catalog(state, cx, &target);
         return;
     }
+    if let Some(spec) = snap.database.as_deref().and_then(crate::exploreq::from_sql_snapshot) {
+        let database = spec.source.as_ref().and_then(|s| s.sql_table()).map(|(_, db, _, _)| db.to_string());
+        crate::exploreq::restore(t, spec);
+        crate::exploreq::retitle(t);
+        if let Some(pid) = snap.profile_id.and_then(|id| state.library.profile(id).cloned()) {
+            begin_connect(state, cx, pid, ConnectPurpose::Tab { tab: tab_id, database });
+        }
+        return;
+    }
     if let Some(tt) = snap.database.as_deref().and_then(crate::tabularq::from_snapshot) {
         let target = tt.target.clone();
         t.tabular = Some(tt);
@@ -1124,7 +1176,7 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         let t = &mut state.tabs[idx];
         t.id = snap.tab_id;
         t.title = snap.title;
-        t.custom_title = !(t.title.starts_with("SQLQuery_") || t.title.starts_with("SparkSQL_") || t.title.starts_with("DAX_") || t.title.starts_with("Explore_") || snap.database.as_deref().map(|d| d.starts_with("explore:")).unwrap_or(false));
+        t.custom_title = !(t.title.starts_with("SQLQuery_") || t.title.starts_with("SparkSQL_") || t.title.starts_with("DAX_") || t.title.starts_with("Explore_") || snap.database.as_deref().map(|d| d.starts_with("explore")).unwrap_or(false));
         if let Some(n) = t.title.strip_prefix("SQLQuery_").or_else(|| t.title.strip_prefix("SparkSQL_")).or_else(|| t.title.strip_prefix("DAX_")).or_else(|| t.title.strip_prefix("Explore_")).and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
             t.untitled_index = n;
             state.next_untitled = state.next_untitled.max(n + 1);
@@ -1138,6 +1190,8 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         if let Some((target, spec)) = snap.database.as_deref().and_then(crate::exploreq::from_snapshot) {
             restored_models.push(target.clone());
             t.tabular = Some(crate::state::TabularTab::new(target));
+            crate::exploreq::restore(t, spec);
+        } else if let Some(spec) = snap.database.as_deref().and_then(crate::exploreq::from_sql_snapshot) {
             crate::exploreq::restore(t, spec);
         } else if let Some(tt) = snap.database.as_deref().and_then(crate::tabularq::from_snapshot) {
             restored_models.push(tt.target.clone());
@@ -1347,6 +1401,13 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     if t.tabular.is_some() {
         return crate::tabularq::run(state, cx, idx, mode);
     }
+    run_sql(state, cx, idx, mode)
+}
+
+/// The plain run on the tab's SQL connection, with no routing by tab kind (an Explore over a
+/// SQL table runs its generated T-SQL through here).
+pub fn run_sql(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
+    let Some(t) = state.tabs.get_mut(idx) else { return };
     if t.is_running() {
         return;
     }
@@ -1489,7 +1550,9 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                     // update the title and run anything queued
                     if let Some(t) = state.tab_mut(tab) {
                         if !t.custom_title {
-                            if let Some(db) = t.conn.database() {
+                            if t.explore.is_some() {
+                                crate::exploreq::retitle(t);
+                            } else if let Some(db) = t.conn.database() {
                                 t.title = format!("SQLQuery_{} · {}", t.untitled_index, db);
                             }
                         }
@@ -1948,7 +2011,7 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         ResultsAction::ExploreLocally { set } => crate::exploreq::explore_result(state, cx, idx, set),
         ResultsAction::SaveLocally { set } => {
             let name = state.tabs.get(idx).map(|t| cobalt_local::sanitize_name(t.title.split(" · ").next().unwrap_or(&t.title))).unwrap_or_default();
-            state.dialog = Dialog::SaveScratch { tab_index: idx, set, name };
+            state.dialog = Dialog::SaveScratch { from: crate::state::ScratchFrom::Result { tab_index: idx, set }, name };
         }
         ResultsAction::DiffLocally { set } => {
             let a = state.tabs.get(idx).map(|t| t.id).and_then(|id| crate::localq::table_for_result(cx, id, set));

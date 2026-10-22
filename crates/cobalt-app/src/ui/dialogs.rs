@@ -969,7 +969,40 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search, file };
             }
         }
-        Dialog::SaveScratch { tab_index, set, mut name } => {
+        Dialog::ConfirmForgetLocal { name } => {
+            let info = f.cx.local.tables().into_iter().find(|t| t.name == name);
+            let (title, body) = match info.as_ref().map(|t| &t.source) {
+                Some(cobalt_local::TableSource::Scratch { path }) => ("Delete the scratch table?".to_string(), format!("{name} is deleted with its file:\n{}\nThis cannot be undone.", path.display())),
+                Some(cobalt_local::TableSource::Result { title, .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the tab {title} keeps its results and the table comes back the next time that tab runs.")),
+                Some(cobalt_local::TableSource::File { path }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the file stays:\n{}", path.display())),
+                Some(cobalt_local::TableSource::OneLake { .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; nothing changes in the lakehouse.")),
+                Some(cobalt_local::TableSource::Statement) => ("Drop the table?".to_string(), format!("{name} was made by a statement and is dropped.")),
+                None => ("Forget the table?".to_string(), format!("{name} is no longer listed.")),
+            };
+            let mut ok = false;
+            let mut cancel = false;
+            let (_, close) = modal(ctx, theme, "forget-local", 420.0, |ui| {
+                ui.heading(title);
+                ui.label(RichText::new(body).size(12.0).color(theme.text_muted));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let r = primary_button(ui, theme, "Forget", true);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "forget local go"));
+                    if r.clicked() {
+                        ok = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if ok {
+                crate::ops::forget_local_table(f.state, f.cx, &name);
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::ConfirmForgetLocal { name };
+            }
+        }
+        Dialog::SaveScratch { from, mut name } => {
             let mut ok = false;
             let mut cancel = false;
             let dir = f.cx.local.scratch_dir().map(|d| d.display().to_string()).unwrap_or_default();
@@ -997,9 +1030,9 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 });
             });
             if ok {
-                crate::localq::save_scratch(f.state, f.cx, tab_index, set, name);
+                crate::localq::save_scratch(f.state, f.cx, from, name);
             } else if !cancel && !close {
-                f.state.dialog = Dialog::SaveScratch { tab_index, set, name };
+                f.state.dialog = Dialog::SaveScratch { from, name };
             }
         }
         Dialog::DiffSetup { mut a, mut b, mut keys, mut compare } => {

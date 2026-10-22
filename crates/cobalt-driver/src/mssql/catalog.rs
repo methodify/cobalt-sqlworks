@@ -188,6 +188,27 @@ pub(crate) async fn table_stats(conn: &mut MssqlConnection, obj: &ObjectRef) -> 
     Ok(TableStats { rows: cell_i64(r, 0).unwrap_or(0).max(0) as u64, reserved_bytes: cell_i64(r, 1).unwrap_or(0).max(0) as u64 })
 }
 
+pub(crate) async fn distinct_values(conn: &mut MssqlConnection, obj: &ObjectRef, column: &str, limit: usize) -> Result<Vec<String>> {
+    let col = br(column);
+    let sql = format!(
+        "SELECT DISTINCT TOP ({}) CAST({col} AS NVARCHAR(4000)) AS v FROM {}.{}.{} WHERE {col} IS NOT NULL ORDER BY v",
+        limit.max(1),
+        br(&obj.database),
+        br(&obj.schema),
+        br(&obj.name)
+    );
+    let rows = match conn.query_rows(&sql).await {
+        Ok(rows) => rows,
+        Err(DriverError::Server(_)) if !conn.engine.capabilities.multiple_databases => {
+            // no three-part names here (Azure SQL): the connection's database is the one
+            let sql = format!("SELECT DISTINCT TOP ({}) CAST({col} AS NVARCHAR(4000)) AS v FROM {}.{} WHERE {col} IS NOT NULL ORDER BY v", limit.max(1), br(&obj.schema), br(&obj.name));
+            conn.query_rows(&sql).await?
+        }
+        Err(e) => return Err(e),
+    };
+    Ok(rows.iter().filter_map(|r| cell_string(r, 0)).collect())
+}
+
 pub(crate) async fn list_parameters(conn: &mut MssqlConnection, obj: &ObjectRef) -> Result<Vec<ParameterInfo>> {
     let rows = query_in_db(conn, &obj.database, |p| {
         format!(

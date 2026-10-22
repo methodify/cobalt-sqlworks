@@ -100,6 +100,7 @@ impl CobaltApp {
                             "first_rows": p.row_keys.iter().take(5).enumerate().map(|(r, k)| json!({"key": k.labels, "subtotal": k.subtotal_level, "cells": (0..p.column_count()).map(|c| p.cell(r, c / p.value_names.len().max(1), c % p.value_names.len().max(1)).map(|x| x.text.to_string())).collect::<Vec<_>>()})).collect::<Vec<_>>(),
                             "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
                         "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
+                        "distinct": e.distinct.iter().map(|((t, c), l)| (format!("{t}[{c}]"), match l { crate::state::Loadable::Loaded(v) => json!({"state": "loaded", "count": v.len(), "first": v.iter().take(5).cloned().collect::<Vec<_>>()}), crate::state::Loadable::Loading => json!({"state": "loading"}), crate::state::Loadable::Failed(e) => json!({"state": "failed", "error": e}), _ => json!({"state": "not_loaded"}) })).collect::<serde_json::Map<String, Value>>(),
                     })),
                     "local": t.local.as_ref().map(|l| json!({"running": t.is_running(), "notes": l.notes, "file": l.file, "diff": l.diff.as_ref().map(|d| json!({"a": d.spec.a, "b": d.spec.b, "keys": d.spec.keys, "counts": d.counts.as_ref().map(|c| &c.1), "class": d.class}))})),
                     "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "transport_setting": self.settings.semantic.transport.clone(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
@@ -218,6 +219,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         RenameLocalTable { .. } => "rename_local_table",
         DiffSetup { .. } => "diff_setup",
         SaveScratch { .. } => "save_scratch",
+        ConfirmForgetLocal { .. } => "confirm_forget_local",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -457,6 +459,17 @@ impl AgentApp for CobaltApp {
                     Some(FieldRef::Column { table: t.trim_matches('\'').to_string(), column: c.trim_end_matches(']').to_string() })
                 };
                 if action == "new" {
+                    // {action: new, profile: <SQL profile>, table: "schema.name", database?} → the builder over a table on that connection
+                    if let (Some(p), Some(table)) = (arg_str(args, "profile").and_then(|p| self.find_profile(&p)), arg_str(args, "table")) {
+                        let (schema, name) = match table.split_once('.') {
+                            Some((s, n)) => (s.to_string(), n.to_string()),
+                            None => ("dbo".to_string(), table.clone()),
+                        };
+                        let database = arg_str(args, "database").or_else(|| p.database.clone()).unwrap_or_else(|| "master".into());
+                        let pid = p.id;
+                        let i = self.with_ctx(egui, |s, cx| crate::exploreq::new_sql_tab(s, cx, pid, database, schema, name));
+                        return ActionResult::with(&json!({"tab": i}));
+                    }
                     if let Some(table) = arg_str(args, "table") {
                         let r = self.with_ctx(egui, |s, cx| crate::exploreq::new_local_tab(s, cx, &table, None));
                         return match r {
@@ -548,6 +561,12 @@ impl AgentApp for CobaltApp {
                     "subtotals" => {
                         let on = arg_bool(args, "on").unwrap_or(true);
                         self.with_ctx(egui, |s, cx| crate::exploreq::set_subtotals(s, cx, idx, on));
+                    }
+                    // distinct: {field} → load the column's distinct values (the filter picker's list), read back in state.explore.distinct
+                    "distinct" => {
+                        let Some(FieldRef::Column { table, column }) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required: Table[Column]".into()) };
+                        self.with_ctx(egui, |s, cx| crate::exploreq::load_distinct(s, cx, idx, &table, &column));
+                        return ActionResult::ok();
                     }
                     "filter" => {
                         let Some(FieldRef::Column { table, column }) = arg_str(args, "field").and_then(|s| parse_field(&s)) else { return ActionResult::BadArgs("field is required: Table[Column]".into()) };
@@ -998,12 +1017,22 @@ impl AgentApp for CobaltApp {
                         let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
                         self.with_ctx(egui, |s, cx| ops::tree_action(s, cx, crate::ui::servers::TreeAction::LocalQuery(Some(name))));
                     }
-                    // save_scratch: {name, set?} the active tab's result set as scratch.<name>; remove_scratch: {name}
+                    // save_scratch: {name, set?} the active tab's result set as scratch.<name>, or {name, from: <table>} any local table; remove_scratch: {name}; forget: {name}
                     "save_scratch" => {
                         let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
-                        let set = arg_usize(args, "set").unwrap_or(0);
-                        let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
-                        self.with_ctx(egui, |s, cx| crate::localq::save_scratch(s, cx, i, set, name));
+                        let from = match arg_str(args, "from") {
+                            Some(t) => crate::state::ScratchFrom::Table(t),
+                            None => {
+                                let set = arg_usize(args, "set").unwrap_or(0);
+                                let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                                crate::state::ScratchFrom::Result { tab_index: i, set }
+                            }
+                        };
+                        self.with_ctx(egui, |s, cx| crate::localq::save_scratch(s, cx, from, name));
+                    }
+                    "forget" => {
+                        let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
+                        self.with_ctx(egui, |s, cx| ops::forget_local_table(s, cx, &name));
                     }
                     "remove_scratch" => {
                         let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };

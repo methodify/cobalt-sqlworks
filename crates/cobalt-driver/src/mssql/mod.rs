@@ -319,6 +319,11 @@ impl Connection for MssqlConnection {
         catalog::table_stats(self, obj).await
     }
 
+    async fn distinct_values(&mut self, obj: &ObjectRef, column: &str, limit: usize) -> Result<Vec<String>> {
+        self.settle().await?;
+        catalog::distinct_values(self, obj, column, limit).await
+    }
+
     async fn script(&mut self, obj: &ObjectRef, kind: ScriptKind) -> Result<String> {
         self.settle().await?;
         script::script(self, obj, kind).await

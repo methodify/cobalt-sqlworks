@@ -139,6 +139,12 @@ pub trait Connection: Send {
     async fn load_catalog(&mut self, database: &str) -> Result<DatabaseCatalog>;
     /// T-SQL for "Script as ...".
     async fn script(&mut self, obj: &ObjectRef, kind: ScriptKind) -> Result<String>;
+    /// Up to `limit` distinct non-null values of a column, as text, sorted (the Explore filter
+    /// picker). May be unsupported on an engine.
+    async fn distinct_values(&mut self, obj: &ObjectRef, column: &str, limit: usize) -> Result<Vec<String>> {
+        let _ = (obj, column, limit);
+        Err(DriverError::Unsupported("distinct_values"))
+    }
     /// Row count and reserved size of a table. May be unsupported on an engine.
     async fn table_stats(&mut self, obj: &ObjectRef) -> Result<TableStats> {
         let _ = obj;

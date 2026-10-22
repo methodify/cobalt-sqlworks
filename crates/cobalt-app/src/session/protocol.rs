@@ -86,6 +86,8 @@ pub enum MetadataRequest {
     LoadCatalog { database: String },
     Script { obj: ObjectRef, kind: ScriptKind },
     TableStats { obj: ObjectRef },
+    /// Distinct values of a column (the Explore filter picker).
+    DistinctValues { obj: ObjectRef, column: String, limit: usize },
 }
 
 /// Session runtime → UI.
@@ -134,4 +136,5 @@ pub enum MetadataResponse {
     Catalog(DatabaseCatalog),
     Script(String),
     TableStats(TableStats),
+    Values(Vec<String>),
 }

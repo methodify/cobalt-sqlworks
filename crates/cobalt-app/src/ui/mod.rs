@@ -6,6 +6,7 @@ pub mod explore;
 pub mod fabric;
 pub mod files;
 pub mod lakehouse;
+pub mod local;
 pub mod model_tree;
 pub mod history;
 pub mod notebook;

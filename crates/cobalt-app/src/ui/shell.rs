@@ -272,7 +272,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let theme = f.theme;
     egui::Panel::left("strip").exact_size(44.0).resizable(false).show_separator_line(false).frame(egui::Frame::new().fill(theme.bg_sidebar)).show(ui, |ui| {
         ui.add_space(6.0);
-        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::Lakehouse, icons::DROP, "Lakehouse — tables and Files of the active notebook's lakehouse"), (SidebarView::Files, icons::FOLDER_OPEN, "Files"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
+        let items = [(SidebarView::Servers, icons::HARD_DRIVES, "Servers (Ctrl+Shift+E)"), (SidebarView::Local, icons::LIGHTNING, "Local tables — results, files, scratch tables and lakehouse tables in the in-process engine (Ctrl+Shift+L)"), (SidebarView::Fabric, icons::CUBE, "Fabric (Ctrl+Shift+B)"), (SidebarView::Lakehouse, icons::DROP, "Lakehouse — tables and Files of the active notebook's lakehouse"), (SidebarView::Files, icons::FOLDER_OPEN, "Files"), (SidebarView::History, icons::CLOCK_COUNTER_CLOCKWISE, "History (Ctrl+Shift+Y)")];
         for (view, icon, tip) in items {
             let active = f.state.sidebar_visible && f.state.sidebar_view == view;
             let color = if active { theme.accent } else { theme.text_muted };
@@ -325,6 +325,13 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             f.state.spark_root_expanded = spark_expanded;
             for a in actions {
                 ops::tree_action(f.state, f.cx, a);
+            }
+        }
+        SidebarView::Local => {
+            let tables = f.cx.local.tables();
+            let actions = crate::ui::local::show(ui, f.state, &tables, theme);
+            for a in actions {
+                ops::local_action(f.state, f.cx, a);
             }
         }
         SidebarView::History => {
@@ -2652,6 +2659,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ShowServers => {
             state.sidebar_visible = true;
             state.sidebar_view = SidebarView::Servers;
+        }
+        Command::ShowLocal => {
+            state.sidebar_visible = true;
+            state.sidebar_view = SidebarView::Local;
         }
         Command::ShowFabric => {
             state.sidebar_visible = true;

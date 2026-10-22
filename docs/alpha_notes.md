@@ -980,3 +980,39 @@ remove_scratch, name: "scratch.x"}`, `{action: register_onelake, workspace_id, l
 table: "schema/name" | "name"}`; the results toolbar label `save locally <set>`; dialog
 `save_scratch` with `scratch name` and `scratch save`; `dashboard {action: pin}` on a Local
 tab.
+
+## Local tables sidebar, Explore any table, completion quoting (0.11.1)
+
+**The Local sidebar.** The lightning bolt on the rail (Ctrl+Shift+L) lists everything the
+in-process engine knows, grouped by origin: *Results* (live with their tabs), *Files and Delta*,
+*Scratch* (kept across sessions), *OneLake*, *Made by statements*. Each row shows rows, columns
+and the cost (memory a result holds — it is the tab's own memory, nothing is copied — or a
+file's size); the summary line totals the memory. Filter by name or column; expand a table for
+its columns and types; double-click to query it. Right-click: Query, Explore, Diff with…, Save
+as scratch table… (works for any table, so a file or a result you want to keep is one click
+away from `scratch.<name>`), Rename…, Reveal the tab, Copy name, Insert name into editor, and
+Forget / Delete with a confirmation that spells out what happens. The header's buttons open a
+new Local query and register a file or a Delta folder through a picker. The Local root in the
+Servers tree stays as a compact view of the same thing.
+
+**Explore any table.** Right-click a table or view under a connection in the Servers tree:
+*Explore (pivot builder, no SQL)*. The builder you know from semantic models and local tables
+now writes T-SQL and runs it on that connection: `[db].[schema].[table]` so the tab's database
+does not matter, `TOP (n)` for Top N, `GROUP BY ROLLUP` and `GROUPING` for subtotals, `LIKE …
+ESCAPE` for contains / starts with, `DATEADD` for "last n days". The "is one of" picker lists
+the column's distinct values from the server (top 500). *Open in query tab* hands the T-SQL to
+a query tab on the same connection; *Pin to dashboard* makes a tile that runs there; the tab
+comes back after a restart (it reconnects on the first run). Works on SQL Server, Azure SQL,
+Fabric Warehouse and the SQL endpoint. Not yet: Spark tables, joins across tables (one table
+per Explore, as for local tables).
+
+**Completion in Local tabs.** Typing `scratch.` offers the scratch tables and accepting inserts
+the name after the dot; from the top level a scratch table inserts as `scratch.name`. Names are
+quoted only when the engine would otherwise fold them (`"Mixed Case"`, `"countryOrRegion"`),
+with the engine's double quotes, never a bracketed `[schema.name]`.
+
+Agent: `explore {action: new, profile: "idletest", table: "dbo.big", database: "cobalt_test"}`,
+`explore {action: distinct, field: "big[category]"}` then `state.explore.distinct`;
+`local_tables {action: save_scratch, name: "x", from: "orders"}`, `{action: forget, name}`;
+`click` on `sidebar Local`, `local table: <name>`, `local filter`, `local new query`, `local
+register`; `forget local go` in the confirmation.

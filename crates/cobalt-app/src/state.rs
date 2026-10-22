@@ -160,6 +160,15 @@ impl<T> Loadable<T> {
 }
 
 /// What a pending metadata request will fill in when it completes.
+/// What a scratch table is made from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScratchFrom {
+    /// A tab's result set.
+    Result { tab_index: usize, set: usize },
+    /// Any local table, by name.
+    Table(String),
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingMeta {
     pub kind: MetadataRequest,
@@ -177,6 +186,10 @@ pub enum MetaPurpose {
     ImportColumns,
     /// Databases list for a tab's dropdown.
     TabDatabases { tab: TabId },
+    /// Columns of the table an Explore tab is over (its field list).
+    ExploreColumns { tab: TabId },
+    /// Distinct values of a column for an Explore tab's filter picker.
+    ExploreDistinct { tab: TabId, table: String, column: String },
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -302,12 +315,14 @@ pub struct ExploreState {
     pub saved_hash: u64,
     /// Run once the catalog arrives.
     pub run_when_loaded: bool,
+    /// When the columns of a SQL table were last requested (retried while the tab connects).
+    pub catalog_asked: Option<std::time::Instant>,
 }
 
 impl ExploreState {
     pub fn new(spec: cobalt_core::explore::ExploreSpec) -> Self {
         let saved_hash = hash_text(&spec.to_json());
-        Self { spec, dax: None, dax_error: None, show_dax: false, field_filter: String::new(), field_expanded: Default::default(), distinct: Default::default(), filter_editor: None, pivot: None, pivot_built_for: None, matrix: true, dirty: true, auto_run: true, saved_hash, run_when_loaded: false }
+        Self { spec, dax: None, dax_error: None, show_dax: false, field_filter: String::new(), field_expanded: Default::default(), distinct: Default::default(), filter_editor: None, pivot: None, pivot_built_for: None, matrix: true, dirty: true, auto_run: true, saved_hash, run_when_loaded: false, catalog_asked: None }
     }
     pub fn spec_hash(&self) -> u64 {
         hash_text(&self.spec.to_json())
@@ -1166,6 +1181,8 @@ pub struct TotalsRow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidebarView {
     Servers,
+    /// The local engine's tables (results, files, scratch, OneLake).
+    Local,
     History,
     Fabric,
     Files,
@@ -1302,6 +1319,8 @@ pub struct AppState {
     /// The Local root of the Servers tree (local tables), and the tables whose columns are open.
     pub local_root_expanded: bool,
     pub local_expanded: HashSet<String>,
+    /// The Local sidebar's filter text.
+    pub local_filter: String,
     /// The engine's function names, for completion on Local tabs.
     pub local_functions: Arc<Vec<String>>,
     /// The registry generation the tabs' catalogs were built from.
@@ -1448,8 +1467,10 @@ pub enum Dialog {
     RenameLocalTable { name: String, to: String },
     /// Diff two local tables: A (was), B (now), the key columns, the compared columns (empty = all shared).
     DiffSetup { a: String, b: String, keys: Vec<String>, compare: Vec<String> },
-    /// Save a result set as `scratch.<name>`.
-    SaveScratch { tab_index: usize, set: usize, name: String },
+    /// Save a result set or a local table as `scratch.<name>`.
+    SaveScratch { from: ScratchFrom, name: String },
+    /// Forget / delete a local table (a scratch table's file is deleted).
+    ConfirmForgetLocal { name: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
 }
@@ -1618,6 +1639,7 @@ impl AppState {
             spark_root_expanded: true,
             local_root_expanded: true,
             local_expanded: HashSet::new(),
+            local_filter: String::new(),
             local_functions: Arc::new(Vec::new()),
             local_generation: 0,
             spark_catalogs: Default::default(),
@@ -1930,7 +1952,11 @@ impl AppState {
                     }
                     t.last_database = Some(database.clone());
                     if !t.custom_title {
-                        t.title = format!("SQLQuery_{} · {}", t.untitled_index, database);
+                        if t.explore.is_some() {
+                            crate::exploreq::retitle(t);
+                        } else {
+                            t.title = format!("SQLQuery_{} · {}", t.untitled_index, database);
+                        }
                     }
                     out.push(Followup::LoadCatalog(tab, database));
                 }
@@ -2061,6 +2087,35 @@ impl AppState {
                         Err(e) => Loadable::Failed(e),
                         _ => Loadable::Failed("unexpected".into()),
                     };
+                }
+            }
+            MetaPurpose::ExploreColumns { tab } => {
+                if let Some(t) = self.tab_mut(tab) {
+                    let name = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.sql_field_table()).unwrap_or_default();
+                    match result {
+                        Ok(R::Columns(cols)) => {
+                            t.model_catalog = Some(std::sync::Arc::new(crate::exploreq::catalog_from_columns(&name, &cols)));
+                            if let Some(ex) = t.explore.as_deref_mut() {
+                                ex.dax_error = None;
+                            }
+                        }
+                        Err(e) => {
+                            if let Some(ex) = t.explore.as_deref_mut() {
+                                ex.dax_error = Some(format!("columns of {name}: {e}"));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            MetaPurpose::ExploreDistinct { tab, table, column } => {
+                if let Some(ex) = self.tab_mut(tab).and_then(|t| t.explore.as_deref_mut()) {
+                    let v = match result {
+                        Ok(R::Values(v)) => Loadable::Loaded(v),
+                        Err(e) => Loadable::Failed(e),
+                        _ => Loadable::Failed("unexpected".into()),
+                    };
+                    ex.distinct.insert((table, column), v);
                 }
             }
             MetaPurpose::ImportColumns => {

@@ -48,6 +48,8 @@ pub enum TreeAction {
     LoadObjectChildren { profile: ProfileId, obj: ObjectRef, sub: SubFolder },
     NewQuery { profile: ProfileId, database: Option<String> },
     SelectTop { profile: ProfileId, obj: ObjectRef },
+    /// The pivot builder over a table or view (T-SQL generated and run on the connection).
+    Explore { profile: ProfileId, obj: ObjectRef },
     Script { profile: ProfileId, obj: ObjectRef, kind: ScriptKind },
     CopyText(String),
     InsertIntoEditor(String),
@@ -867,6 +869,10 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
     r.response.context_menu(|ui| {
         if matches!(obj.kind, ObjectKind::Table | ObjectKind::View | ObjectKind::Synonym | ObjectKind::TableFunction) && ui.button("Select Top 1000 Rows").clicked() {
             actions.push(TreeAction::SelectTop { profile: p.id, obj: obj.clone() });
+            ui.close();
+        }
+        if matches!(obj.kind, ObjectKind::Table | ObjectKind::View) && ui.button(format!("{} Explore (pivot builder, no SQL)", icons::ROWS)).on_hover_text("Group, aggregate, filter and pivot this table in the Explore builder; the T-SQL it writes runs on this connection.").clicked() {
+            actions.push(TreeAction::Explore { profile: p.id, obj: obj.clone() });
             ui.close();
         }
         if ui.button("New Query").clicked() {

@@ -57,21 +57,11 @@ pub struct DiffView {
 /// A `ModelCatalog` for the Explore builder over a local table: one table, its columns typed
 /// for the filter editor, no measures (numeric columns default to Sum).
 pub fn local_catalog(engine: &Engine, table: &str) -> Option<cobalt_core::tabular::ModelCatalog> {
-    use cobalt_core::tabular::{Column, ModelCatalog, Table, TabularDataType};
     let info = engine.tables().into_iter().find(|t| t.name == table)?;
-    let columns = info
-        .columns
-        .iter()
-        .map(|c| {
-            let dt = tabular_type(&c.sql_type);
-            let numeric = matches!(dt, TabularDataType::Int64 | TabularDataType::Double | TabularDataType::Decimal);
-            Column { name: c.name.clone(), data_type: dt, hidden: false, key: c.in_primary_key, calculated: false, format_string: None, sort_by_column: None, display_folder: None, description: Some(c.sql_type.to_string()), expression: None, summarize_by: Some(if numeric { "Sum".into() } else { "None".into() }) }
-        })
-        .collect();
-    Some(ModelCatalog { name: table.to_string(), description: None, tables: vec![Table { name: table.to_string(), hidden: false, storage_mode: None, description: None, expression: None, columns, measures: Vec::new(), hierarchies: Vec::new() }], relationships: Vec::new(), calculation_groups: Vec::new(), expressions_hidden: false })
+    Some(crate::exploreq::catalog_from_columns(table, &info.columns))
 }
 
-fn tabular_type(t: &cobalt_core::SqlType) -> cobalt_core::tabular::TabularDataType {
+pub(crate) fn tabular_type(t: &cobalt_core::SqlType) -> cobalt_core::tabular::TabularDataType {
     use cobalt_core::tabular::TabularDataType as T;
     use cobalt_core::SqlType as S;
     match t {
@@ -221,7 +211,15 @@ fn catalog(engine: &Engine) -> cobalt_core::DatabaseCatalog {
     let mut cat = cobalt_core::DatabaseCatalog { database: "local".into(), ..Default::default() };
     for (i, t) in engine.tables().into_iter().enumerate() {
         let id = i as i32 + 1;
-        cat.objects.push(cobalt_core::ObjectRef { database: "local".into(), schema: String::new(), name: t.name.clone(), kind: cobalt_core::ObjectKind::Table, object_id: Some(id) });
+        // `scratch.x` is schema `scratch`, name `x`: completion quotes each part on its own
+        let (schema, name) = match t.name.split_once('.') {
+            Some((s, n)) => (s.to_string(), n.to_string()),
+            None => (String::new(), t.name.clone()),
+        };
+        if !schema.is_empty() && !cat.schemas.contains(&schema) {
+            cat.schemas.push(schema.clone());
+        }
+        cat.objects.push(cobalt_core::ObjectRef { database: "local".into(), schema, name, kind: cobalt_core::ObjectKind::Table, object_id: Some(id) });
         cat.columns.insert(id, t.columns.clone());
     }
     cat
@@ -281,21 +279,37 @@ pub fn import_file_into_connection(state: &mut AppState, cx: &Ctx, idx: usize) {
     ops::open_import_dialog(state, cx, target, Some(path));
 }
 
-/// Persist a tab's result set as `scratch.<name>` (Parquet in the app data folder), off the UI thread.
-pub fn save_scratch(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, name: String) {
-    let Some(rs) = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).map(|v| Arc::clone(&v.rs)) else { return };
-    if rs.state().is_live() {
-        cx.toast(ToastKind::Info, "Wait for the result to finish arriving.");
-        return;
-    }
+/// Persist a result set or a local table as `scratch.<name>` (Parquet in the app data folder),
+/// off the UI thread.
+pub fn save_scratch(state: &mut AppState, cx: &Ctx, from: crate::state::ScratchFrom, name: String) {
     let engine = Arc::clone(cx.local);
     let tx = cx.fabric_tx.clone();
     let egui = cx.egui.clone();
-    cx.session.spawn(async move {
-        let result = engine.save_scratch(&name, rs).await.map(|i| i.name);
-        let _ = tx.send(crate::fabric::FabricEvent::LocalScratch { result });
-        egui.request_repaint();
-    });
+    match from {
+        crate::state::ScratchFrom::Result { tab_index, set } => {
+            let Some(rs) = state.tabs.get(tab_index).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).map(|v| Arc::clone(&v.rs)) else { return };
+            if rs.state().is_live() {
+                cx.toast(ToastKind::Info, "Wait for the result to finish arriving.");
+                return;
+            }
+            cx.session.spawn(async move {
+                let result = engine.save_scratch(&name, rs).await.map(|i| i.name);
+                let _ = tx.send(crate::fabric::FabricEvent::LocalScratch { result });
+                egui.request_repaint();
+            });
+        }
+        crate::state::ScratchFrom::Table(table) => {
+            if cx.local.tables().iter().any(|t| t.name == table && t.live) {
+                cx.toast(ToastKind::Info, "Wait for the result to finish arriving.");
+                return;
+            }
+            cx.session.spawn(async move {
+                let result = engine.copy_to_scratch(&name, &table).await.map(|i| i.name);
+                let _ = tx.send(crate::fabric::FabricEvent::LocalScratch { result });
+                egui.request_repaint();
+            });
+        }
+    }
 }
 
 /// A lakehouse Delta table read from OneLake with the signed-in token, as a local table, with

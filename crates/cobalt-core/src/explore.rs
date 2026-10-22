@@ -16,6 +16,8 @@ pub enum ExploreSource {
     SemanticModel { target: TabularTarget },
     /// A local table of the in-process engine (a result set, a file).
     Local { table: String },
+    /// A table or view on a SQL connection (SQL Server, Azure SQL, Fabric), queried in T-SQL.
+    Sql { profile: crate::ProfileId, database: String, schema: String, table: String },
 }
 
 impl ExploreSource {
@@ -24,6 +26,16 @@ impl ExploreSource {
             ExploreSource::Local { table } => Some(table),
             _ => None,
         }
+    }
+    pub fn sql_table(&self) -> Option<(crate::ProfileId, &str, &str, &str)> {
+        match self {
+            ExploreSource::Sql { profile, database, schema, table } => Some((*profile, database, schema, table)),
+            _ => None,
+        }
+    }
+    /// The field-list name of a SQL source's table (`schema.table`, `table` for dbo).
+    pub fn sql_field_table(&self) -> Option<String> {
+        self.sql_table().map(|(_, _, s, t)| if s.eq_ignore_ascii_case("dbo") || s.is_empty() { t.to_string() } else { format!("{s}.{t}") })
     }
 }
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.11.1 — unreleased
+
+- **Local tables sidebar.** A new rail tab (the lightning bolt, Ctrl+Shift+L) is the roster of
+  the in-process engine: every table grouped by where it comes from (results live with their
+  tabs, files and Delta folders, scratch tables kept across sessions, OneLake tables, tables
+  made by statements) with rows, columns and what each costs (the memory a result holds, the
+  size of a file), a filter over names and columns, and expand for the columns with their types.
+  Right-click a table: Query (a Local tab), Explore (the pivot builder), Diff with…, Save as
+  scratch table… (any table, not only a result), Rename…, Reveal the tab, Copy name, Insert name
+  into editor, and Forget / Delete (with a confirmation that says what happens: a result table is
+  forgotten and comes back when its tab runs, a file stays on disk, a scratch table's file is
+  deleted). The header has New local query and Register a file or Delta folder… (a picker); the
+  summary line totals the memory held. Double-click queries the table.
+- **Explore any table.** *Explore* on a table or view in the Servers tree (SQL Server, Azure SQL,
+  Fabric) opens the pivot builder over it: the field list comes from the table's columns, the
+  builder writes T-SQL (`[db].[schema].[table]`, `TOP (n)`, `GROUP BY ROLLUP`, `GROUPING`,
+  `LIKE … ESCAPE`, `DATEADD` for relative dates) and runs it on the connection; the "is one
+  of" filter picker lists the column's distinct values from the server; *Open in query tab*
+  hands the T-SQL to a query tab on the same connection; *Pin to dashboard* makes a tile on
+  that connection; the tab is restored after a restart. The generated-query pane and button say
+  SQL rather than DAX for SQL and local sources.
+- **Completion in Local tabs quotes a schema and a name apart.** Accepting `scratch.orders`
+  no longer produces a single bracketed `[scratch.orders]`; the schema is offered as a schema,
+  the table after the dot, and a name is quoted (`"Mixed Case"`) only when the engine would fold
+  it. Columns with capitals complete as `"countryOrRegion"`.
+- Agent: `explore {action: new, profile: <SQL profile>, table: "schema.name", database?}`,
+  `explore {action: distinct, field}` with `state.explore.distinct`; `local_tables {action:
+  save_scratch, name, from: <table>}`, `{action: forget, name}`; `state.local_tables[*]` carry
+  `memory_bytes` and `file_bytes`; labels `sidebar Local`, `local table: <name>`, `local
+  filter`, `local new query`, `local register`, `forget local go`; toolbar buttons are now
+  reachable by their text (`Open in query tab`).
+
 ## 0.11.0 — 2026-10-21
 
 - **Local query, slice A: SQL over your results, in-process.** A DataFusion engine lives in the
