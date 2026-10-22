@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.2 — unreleased
+## 0.11.2 — 2026-10-22
 
 - **Scratch tables everywhere they are named.** A scratch table's registry name is
   `scratch.<name>`, and every place that turned a table name into SQL quoted it as one
