@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.1 — unreleased
+## 0.11.1 — 2026-10-22
 
 - **Local tables sidebar.** A new rail tab (the lightning bolt, Ctrl+Shift+L) is the roster of
   the in-process engine: every table grouped by where it comes from (results live with their
