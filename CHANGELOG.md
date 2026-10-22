@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 — unreleased
+## 0.11.0 — 2026-10-21
 
 - **Local query, slice A: SQL over your results, in-process.** A DataFusion engine lives in the
   app (`cobalt-local`, DataFusion 53 on the same Arrow as everything else). Every result set of
