@@ -49,7 +49,7 @@ impl CobaltApp {
                 let run = t.run.as_ref().map(|r| {
                     json!({
                         "state": format!("{:?}", r.state).to_lowercase(),
-                        "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| json!({"name": c.name, "type": c.sql_type.to_string()})).collect::<Vec<_>>(), "state": s.rs.state()})).collect::<Vec<_>>(),
+                        "result_sets": r.result_sets.iter().filter(|s| !s.is_plan).map(|s| json!({"rows": s.rs.row_count(), "visible_rows": s.rs.visible_count(), "columns": s.rs.columns.iter().map(|c| json!({"name": c.name, "type": c.sql_type.to_string()})).collect::<Vec<_>>(), "state": s.rs.state(), "selection": format!("{:?}", s.grid.selection)})).collect::<Vec<_>>(),
                         "messages": r.messages.iter().map(|m| json!({"text": m.text, "error": m.is_error})).collect::<Vec<_>>(),
                         "plans": r.plans.len(),
                         "elapsed_ms": if r.is_live() { r.started.elapsed().as_millis() } else { r.elapsed.as_millis() },

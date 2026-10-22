@@ -8,7 +8,7 @@ pub mod explore;
 pub mod provider;
 pub mod sugar;
 
-pub use engine::{columns_for, conform, sanitize_name, sql_type_for, Engine, TableInfo, TableSource, ENGINE_VERSION, LATEST};
+pub use engine::{columns_for, conform, quote_ident, quote_table, sanitize_name, sql_type_for, table_ref, Engine, TableInfo, TableSource, ENGINE_VERSION, LATEST, SCRATCH_PREFIX, SCRATCH_SCHEMA};
 pub use provider::ResultSetProvider;
 
 #[cfg(test)]
@@ -142,6 +142,16 @@ mod tests {
         e2.remove_scratch("scratch.prod_snapshot").unwrap();
         assert!(!dir.join("scratch").join("prod_snapshot.parquet").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scratch_names_quote_by_part() {
+        assert_eq!(quote_table("orders"), "\"orders\"");
+        assert_eq!(quote_table("scratch.orders_v2"), "scratch.\"orders_v2\"");
+        assert_eq!(table_ref("orders"), "orders");
+        assert_eq!(table_ref("scratch.orders_v2"), "scratch.orders_v2");
+        assert_eq!(table_ref("scratch.Mixed Case"), "scratch.\"Mixed Case\"");
+        assert_eq!(table_ref("Caps"), "\"Caps\"");
     }
 
     #[test]

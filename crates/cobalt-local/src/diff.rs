@@ -79,7 +79,7 @@ pub fn to_sql(spec: &DiffSpec, a_cols: &[ColumnInfo], b_cols: &[ColumnInfo]) -> 
     }
     let on = spec.keys.iter().map(|k| format!("a.{k} = b.{k}", k = q(k))).collect::<Vec<_>>().join(" AND ");
     let order = format!("CASE {ch} WHEN 'added' THEN 0 WHEN 'removed' THEN 1 WHEN 'changed' THEN 2 ELSE 3 END, {keys}", ch = q(CHANGE_COLUMN), keys = spec.keys.iter().map(|k| q(k)).collect::<Vec<_>>().join(", "));
-    let text = format!("SELECT {}\nFROM {} a\nFULL OUTER JOIN {} b ON {on}\nORDER BY {order}", select.join(",\n       "), q(&spec.a), q(&spec.b));
+    let text = format!("SELECT {}\nFROM {} a\nFULL OUTER JOIN {} b ON {on}\nORDER BY {order}", select.join(",\n       "), crate::engine::quote_table(&spec.a), crate::engine::quote_table(&spec.b));
     let counts = format!("SELECT {ch}, count(*) AS n FROM (\n{text}\n) d GROUP BY {ch}", ch = q(CHANGE_COLUMN));
     Ok((text, counts))
 }
@@ -110,6 +110,10 @@ mod tests {
         assert!(!text.contains("note"));
         assert!(text.contains("FROM \"prod\" a\nFULL OUTER JOIN \"dev\" b ON a.\"id\" = b.\"id\""));
         assert!(counts.contains("GROUP BY \"__change\""));
+        let spec = DiffSpec { a: "scratch.prod".into(), b: "dev".into(), keys: vec!["id".into()], compare: vec![] };
+        let (text, _) = to_sql(&spec, &cols(&["id"]), &cols(&["id"])).unwrap();
+        assert!(text.contains("FROM scratch.\"prod\" a
+FULL OUTER JOIN \"dev\" b"), "{text}");
         assert!(to_sql(&DiffSpec { a: "p".into(), b: "d".into(), keys: vec![], compare: vec![] }, &cols(&["id"]), &cols(&["id"])).is_err());
     }
 }

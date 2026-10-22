@@ -280,7 +280,9 @@ impl TableDelegate for Delegate<'_> {
         // range. egui stops reporting `hovered`/`dragged` on other widgets once a drag has begun
         // on one cell, so range selection has to go by geometry (`contains_pointer`).
         let (primary_pressed, primary_down) = ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
-        if primary_pressed && resp.contains_pointer() {
+        // the press goes by `hovered`, which egui hit-tests against the topmost widget: a press on
+        // the scroll bar lying over the rightmost column must not pick (and then drag-select) it
+        if primary_pressed && resp.hovered() {
             let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
             self.click = Some((row, col, shift, ctrl));
         } else if self.grid.drag_select && primary_down && resp.contains_pointer() {

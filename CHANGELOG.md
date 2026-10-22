@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.2 — unreleased
+
+- **Scratch tables everywhere they are named.** A scratch table's registry name is
+  `scratch.<name>`, and every place that turned a table name into SQL quoted it as one
+  identifier (`"scratch.x"`, a table that does not exist): Query from the Local sidebar and the
+  Local root, Insert name into editor, Explore over a scratch table, Diff with a scratch table,
+  the distinct-value picker, and Save as scratch table from a scratch table. One helper now
+  writes `scratch."x"` (or `scratch.x` in text you edit) and all of them use it.
+- **Grid: dragging the vertical scroll bar no longer selects the rightmost column.** A press on
+  the scroll bar, which lies over the last visible column's cells, counted as a press on that
+  cell and the drag extended the selection down the column.
+
 ## 0.11.1 — 2026-10-22
 
 - **Local tables sidebar.** A new rail tab (the lightning bolt, Ctrl+Shift+L) is the roster of

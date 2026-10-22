@@ -210,7 +210,7 @@ pub fn to_sql_in(spec: &ExploreSpec, catalog: &ModelCatalog, d: SqlDialect, from
         (SqlDialect::TSql, Some(n)) => format!("TOP ({n}) "),
         _ => String::new(),
     };
-    let from_sql = from.map(str::to_string).unwrap_or_else(|| q(&table));
+    let from_sql = from.map(str::to_string).unwrap_or_else(|| crate::engine::quote_table(&table));
     let mut text = format!("SELECT {top}{}\nFROM {from_sql}", select.join(",\n       "));
     let wheres: Result<Vec<String>, String> = spec.filters.iter().map(|f| filter_sql(f, catalog, d)).collect();
     let wheres: Vec<String> = wheres?.into_iter().filter(|w| !w.is_empty()).collect();
@@ -307,6 +307,16 @@ mod tests {
         assert!(q.text.contains("GROUPING(\"customer\") AS \"IsSubtotal 1\""));
         assert!(q.text.ends_with("ORDER BY \"Sum of amount\" DESC NULLS LAST\nLIMIT 5"));
         assert_eq!(q.subtotal_columns, vec!["IsSubtotal 1"]);
+    }
+
+    #[test]
+    fn scratch_tables_are_schema_qualified() {
+        let mut cat = catalog();
+        cat.tables[0].name = "scratch.orders".into();
+        let mut spec = ExploreSpec::new(ExploreSource::Local { table: "scratch.orders".into() });
+        spec.rows.push(FieldRef::Column { table: "scratch.orders".into(), column: "customer".into() });
+        let q = to_sql(&spec, &cat).unwrap();
+        assert!(q.text.contains("FROM scratch.\"orders\""), "{}", q.text);
     }
 
     #[test]

@@ -1006,6 +1006,12 @@ comes back after a restart (it reconnects on the first run). Works on SQL Server
 Fabric Warehouse and the SQL endpoint. Not yet: Spark tables, joins across tables (one table
 per Explore, as for local tables).
 
+**Scratch tables by name (0.11.2).** The same schema-and-name rule now holds everywhere a
+table name becomes SQL: Query and Insert name from the Local sidebar or the Local root write
+`scratch.name`; Explore, Diff, the filter picker and Save as scratch table over a scratch table
+write `scratch."name"`. Before 0.11.2 those produced `"scratch.name"`, a table the engine does
+not have.
+
 **Completion in Local tabs.** Typing `scratch.` offers the scratch tables and accepting inserts
 the name after the dot; from the top level a scratch table inserts as `scratch.name`. Names are
 quoted only when the engine would otherwise fold them (`"Mixed Case"`, `"countryOrRegion"`),

@@ -361,9 +361,10 @@ pub fn query_result(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
     run(state, cx, i, RunMode::All);
 }
 
-/// Quote a table name for the engine when it needs it.
+/// A registry name as the engine reads it in SQL a person sees: `orders`, `scratch.orders`,
+/// `"Mixed Case"` (a scratch table's schema and name are separate identifiers).
 pub fn quote(name: &str) -> String {
-    cobalt_sql::completion::quote_for(name, cobalt_sql::Dialect::Local)
+    cobalt_local::table_ref(name)
 }
 
 /// The table name a tab's result set gets: the tab's title, sanitised, with `_2`, `_3`… for

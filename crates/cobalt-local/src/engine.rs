@@ -258,7 +258,7 @@ impl Engine {
         if self.has_table(&format!("{SCRATCH_PREFIX}{name}")) {
             self.remove_scratch(&format!("{SCRATCH_PREFIX}{name}"))?;
         }
-        let sql = format!("CREATE TABLE {qualified} AS SELECT * FROM {}", quote_ident(from));
+        let sql = format!("CREATE TABLE {qualified} AS SELECT * FROM {}", quote_table(from));
         let df = self.ctx.sql(&sql).await.map_err(|e| friendly(e.to_string()))?;
         df.collect().await.map_err(|e| friendly(e.to_string()))?;
         self.sync_from_context().await;
@@ -523,6 +523,29 @@ impl Engine {
 /// A quoted identifier for the engine.
 pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// A registry name as a table reference in SQL: `"name"`, or `scratch."name"` for a scratch
+/// table (the schema and the name are separate identifiers; `"scratch.name"` is a different,
+/// non-existent table). Always quoted: for generated SQL.
+pub fn quote_table(name: &str) -> String {
+    match name.strip_prefix(SCRATCH_PREFIX) {
+        Some(rest) => format!("{SCRATCH_SCHEMA}.{}", quote_ident(rest)),
+        None => quote_ident(name),
+    }
+}
+
+/// `quote_table` for text a person reads and edits: each part is left bare when the engine
+/// takes it as is (lower-case letters, digits, underscores), quoted otherwise.
+pub fn table_ref(name: &str) -> String {
+    let part = |p: &str| {
+        let simple = !p.is_empty() && p.chars().next().map(|c| c.is_ascii_lowercase() || c == '_').unwrap_or(false) && p.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if simple { p.to_string() } else { quote_ident(p) }
+    };
+    match name.strip_prefix(SCRATCH_PREFIX) {
+        Some(rest) => format!("{SCRATCH_SCHEMA}.{}", part(rest)),
+        None => part(name),
+    }
 }
 
 /// The row count in a Parquet file's footer.
