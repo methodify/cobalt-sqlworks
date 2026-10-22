@@ -1795,8 +1795,11 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     let name = tab.profile.as_ref().map(|p| p.display_name()).unwrap_or_default();
                     let color = tab.profile.as_ref().and_then(|p| f.state.library.color_for(p)).map(Theme::color32).unwrap_or(theme.success);
                     ui.label(RichText::new(icons::PLUGS_CONNECTED).color(color));
-                    let r = ui.add(egui::Button::new(RichText::new(&name).size(13.0)).frame(false)).on_hover_text(format!("{}\n{}\nSPID {}", engine.short_label(), engine.version, spid.map(|s| s.to_string()).unwrap_or_default()));
+                    let r = ui.add(egui::Button::new(RichText::new(&name).size(13.0)).frame(false)).on_hover_text(format!("{}\n{}\nSPID {}\n\nClick to change the connection", engine.short_label(), engine.version, spid.map(|s| s.to_string()).unwrap_or_default()));
                     if r.clicked() {
+                        cmds.push(Command::ChangeConnection);
+                    }
+                    if tool_button(ui, icons::ARROWS_LEFT_RIGHT, "Change…", "Change the connection of this tab: another server, or another database on it", !running).clicked() {
                         cmds.push(Command::ChangeConnection);
                     }
                     if tool_button(ui, icons::PLUGS, "Disconnect", "Disconnect", !running).clicked() {
@@ -1810,14 +1813,28 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 ConnState::Failed { error, hint } => {
                     let r = ui.add(egui::Button::new(RichText::new(format!("{} Connection failed", icons::WARNING)).color(theme.error)).frame(false));
                     r.on_hover_text(format!("{error}{}", hint.as_ref().map(|h| format!("\n\n{h}")).unwrap_or_default()));
-                    if tool_button(ui, icons::PLUG, "Connect", "Connect", true).clicked() {
+                    if tool_button(ui, icons::PLUG, "Connect", "Connect again", true).clicked() {
                         cmds.push(Command::ConnectTab);
+                    }
+                    if tool_button(ui, icons::ARROWS_LEFT_RIGHT, "Change…", "Connect this tab to a different server or database instead", true).clicked() {
+                        cmds.push(Command::ChangeConnection);
                     }
                 }
                 ConnState::Disconnected => {
-                    let label = tab.profile.as_ref().map(|p| format!("Connect to {}", p.display_name())).unwrap_or_else(|| "Connect…".into());
-                    if tool_button(ui, icons::PLUG, &label, "Connect (or choose a connection)", true).clicked() {
-                        cmds.push(if tab.profile.is_some() { Command::ConnectTab } else { Command::ChangeConnection });
+                    match tab.profile.as_ref() {
+                        Some(p) => {
+                            if tool_button(ui, icons::PLUG, &format!("Connect to {}", p.display_name()), "Connect this tab to its last connection", true).clicked() {
+                                cmds.push(Command::ConnectTab);
+                            }
+                            if tool_button(ui, icons::ARROWS_LEFT_RIGHT, "Change…", "Connect this tab to a different server or database instead", true).clicked() {
+                                cmds.push(Command::ChangeConnection);
+                            }
+                        }
+                        None => {
+                            if tool_button(ui, icons::PLUG, "Connect…", "Choose a connection for this tab", true).clicked() {
+                                cmds.push(Command::ChangeConnection);
+                            }
+                        }
                     }
                 }
             }
