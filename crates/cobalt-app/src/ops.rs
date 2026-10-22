@@ -839,6 +839,12 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             }
         }
         TreeAction::LocalRename(name) => state.dialog = Dialog::RenameLocalTable { to: name.clone(), name },
+        TreeAction::LocalExplore(name) => {
+            if let Err(e) = crate::exploreq::new_local_tab(state, cx, &name, None) {
+                cx.toast(ToastKind::Warning, e);
+            }
+        }
+        TreeAction::LocalDiff(name) => crate::localq::open_diff_dialog(state, cx, Some(name)),
         TreeAction::LocalToggleRoot => state.local_root_expanded = !state.local_root_expanded,
         TreeAction::LocalToggle(name) => {
             if !state.local_expanded.remove(&name) {
@@ -1932,6 +1938,11 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
         ResultsAction::QueryLocally { set } => crate::localq::query_result(state, cx, idx, set),
+        ResultsAction::ExploreLocally { set } => crate::exploreq::explore_result(state, cx, idx, set),
+        ResultsAction::DiffLocally { set } => {
+            let a = state.tabs.get(idx).map(|t| t.id).and_then(|id| crate::localq::table_for_result(cx, id, set));
+            crate::localq::open_diff_dialog(state, cx, a);
+        }
         ResultsAction::PinToDashboard { set } => crate::dashboard::open_pin_dialog(state, cx, idx, set),
         ResultsAction::CaptureChart { set, purpose } => {
             let tab = state.tabs[idx].id;

@@ -101,7 +101,7 @@ impl CobaltApp {
                             "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
                         "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
                     })),
-                    "local": t.local.as_ref().map(|l| json!({"running": t.is_running(), "notes": l.notes})),
+                    "local": t.local.as_ref().map(|l| json!({"running": t.is_running(), "notes": l.notes, "file": l.file, "diff": l.diff.as_ref().map(|d| json!({"a": d.spec.a, "b": d.spec.b, "keys": d.spec.keys, "counts": d.counts.as_ref().map(|c| &c.1), "class": d.class}))})),
                     "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "transport_setting": self.settings.semantic.transport.clone(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -216,6 +216,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         SparkLakehouse { .. } => "spark_lakehouse",
         ChooseModel { .. } => "choose_model",
         RenameLocalTable { .. } => "rename_local_table",
+        DiffSetup { .. } => "diff_setup",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -455,6 +456,13 @@ impl AgentApp for CobaltApp {
                     Some(FieldRef::Column { table: t.trim_matches('\'').to_string(), column: c.trim_end_matches(']').to_string() })
                 };
                 if action == "new" {
+                    if let Some(table) = arg_str(args, "table") {
+                        let r = self.with_ctx(egui, |s, cx| crate::exploreq::new_local_tab(s, cx, &table, None));
+                        return match r {
+                            Ok(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title})),
+                            Err(e) => ActionResult::BadArgs(e),
+                        };
+                    }
                     if let Some(pid) = arg_str(args, "profile").and_then(|p| self.find_tabular_profile(&p)) {
                         let Some(model) = arg_str(args, "model") else { return ActionResult::BadArgs("model is required".into()) };
                         let idx = self.with_ctx(egui, |s, cx| crate::tabular_root::explore_tab(s, cx, pid, &model));
@@ -943,6 +951,24 @@ impl AgentApp for CobaltApp {
                 let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
                 self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
                 ActionResult::with(&json!({"tab": self.state.active_tab}))
+            }
+            // diff: a Diff tab over two local tables — {a, b, keys?: [..], compare?: [..]} (keys guessed when absent)
+            "diff" => {
+                let (Some(a), Some(b)) = (arg_str(args, "a"), arg_str(args, "b")) else { return ActionResult::BadArgs("a and b are required".into()) };
+                let list = |k: &str| -> Vec<String> { args.and_then(|x| x.get(k)).and_then(|v| v.as_array()).map(|v| v.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default() };
+                let mut keys = list("keys");
+                let compare = list("compare");
+                if keys.is_empty() {
+                    let tables = self.local.tables();
+                    if let (Some(x), Some(y)) = (tables.iter().find(|t| t.name == a), tables.iter().find(|t| t.name == b)) {
+                        keys = cobalt_local::diff::guess_keys(&x.columns, &y.columns);
+                    }
+                }
+                let r = self.with_ctx(egui, |s, cx| crate::localq::new_diff_tab(s, cx, cobalt_local::diff::DiffSpec { a, b, keys, compare }));
+                match r {
+                    Ok(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title})),
+                    Err(e) => ActionResult::BadArgs(e),
+                }
             }
             // local_query: a Local query tab — {text?, run?: bool}; local_tables: {action: list | rename | query, name, to}
             "local_query" => {

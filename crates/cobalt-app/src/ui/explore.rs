@@ -147,9 +147,17 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             Act::Refresh => {
                 if let Some(target) = f.state.tabs[idx].tabular.as_ref().map(|tt| tt.target.clone()) {
                     crate::tabularq::load_catalog(f.state, f.cx, &target, true);
+                } else {
+                    crate::localq::refresh_all_catalogs(f.state, f.cx);
                 }
             }
-            Act::ChooseModel => crate::tabularq::open_chooser(f.state, f.cx, Some(idx), true),
+            Act::ChooseModel => {
+                if f.state.tabs[idx].tabular.is_some() {
+                    crate::tabularq::open_chooser(f.state, f.cx, Some(idx), true);
+                } else {
+                    f.cx.toast(ToastKind::Info, "This Explore is over a local table; open another one from the Servers tree's Local root (right-click › Explore).");
+                }
+            }
         }
     }
 }
@@ -158,8 +166,11 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
     let theme = f.theme;
     let tab = &mut f.state.tabs[idx];
     let running = tab.is_running();
-    let model = tab.tabular.as_ref().map(|tt| tt.target.model().to_string()).unwrap_or_default();
-    let host = tab.tabular.as_ref().map(|tt| tt.target.host_label()).unwrap_or_default();
+    let local_table = tab.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string);
+    let is_local = local_table.is_some();
+    let model = tab.tabular.as_ref().map(|tt| tt.target.model().to_string()).or_else(|| local_table.clone()).unwrap_or_default();
+    let host = tab.tabular.as_ref().map(|tt| tt.target.host_label()).unwrap_or_else(|| "a local table".into());
+    let local_cols = if is_local { tab.model_catalog.as_ref().and_then(|c| c.tables.first()).map(|t| t.columns.len()) } else { None };
     let cat_state = tab.tabular.as_ref().and_then(|tt| f.state.model_catalogs.get(&tt.model_key()));
     let Some(ex) = tab.explore.as_deref_mut() else { return };
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
@@ -185,6 +196,9 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
                     if ui.small_button("Retry").clicked() {
                         acts.push(Act::Refresh);
                     }
+                }
+                None if local_cols.is_some() => {
+                    ui.label(RichText::new(format!("local table · {} columns", local_cols.unwrap_or(0))).size(12.0).color(theme.text_muted));
                 }
                 _ => {}
             }
@@ -236,11 +250,11 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
             if r.clicked() {
                 ex.show_dax = !ex.show_dax;
             }
-            if tool_button(ui, icons::ARROW_SQUARE_OUT, "Open in query tab", "The generated DAX in a DAX query tab, to edit and run", ex.dax.is_some()).clicked() {
+            if tool_button(ui, icons::ARROW_SQUARE_OUT, "Open in query tab", if is_local { "The generated SQL in a Local query tab, to edit and run" } else { "The generated DAX in a DAX query tab, to edit and run" }, ex.dax.is_some()).clicked() {
                 acts.push(Act::OpenDax);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if icon_button(ui, icons::PUSH_PIN, "Pin to dashboard", !ex.spec.is_empty()).clicked() {
+                if !is_local && icon_button(ui, icons::PUSH_PIN, "Pin to dashboard", !ex.spec.is_empty()).clicked() {
                     acts.push(Act::Pin);
                 }
                 if icon_button(ui, icons::FLOPPY_DISK, "Save (.cobalt-explore.json)", !ex.spec.is_empty()).clicked() {

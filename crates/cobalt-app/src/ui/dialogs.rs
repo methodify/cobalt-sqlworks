@@ -969,6 +969,84 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search, file };
             }
         }
+        Dialog::DiffSetup { mut a, mut b, mut keys, mut compare } => {
+            let tables = f.cx.local.tables();
+            let names: Vec<String> = tables.iter().map(|t| t.name.clone()).collect();
+            let cols = |n: &str| tables.iter().find(|t| t.name == n).map(|t| t.columns.clone()).unwrap_or_default();
+            let (ca, cb) = (cols(&a), cols(&b));
+            let shared = cobalt_local::diff::shared_columns(&ca, &cb);
+            let mut go = false;
+            let mut cancel = false;
+            let mut reguess = false;
+            let (_, close) = modal(ctx, theme, "diff-setup", 560.0, |ui| {
+                ui.heading("Diff two local tables");
+                ui.label(RichText::new("Rows only in B are added, only in A removed; rows in both whose compared columns differ are changed (nulls equal). The result lands in a Diff tab with the rows tinted and a chip per class.").size(12.0).color(theme.text_muted));
+                ui.add_space(8.0);
+                for (label, field, salt) in [("A (was)", &mut a, "diff-a"), ("B (now)", &mut b, "diff-b")] {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let r = egui::ComboBox::from_id_salt(salt).selected_text(field.clone()).width(300.0).show_ui(ui, |ui| {
+                            for n in &names {
+                                if ui.selectable_label(*field == *n, n).clicked() {
+                                    *field = n.clone();
+                                    reguess = true;
+                                }
+                            }
+                        });
+                        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, salt.to_string()));
+                    });
+                }
+                ui.add_space(6.0);
+                if shared.is_empty() {
+                    ui.label(RichText::new("These tables share no column names; a diff needs at least one shared key column.").color(theme.warning));
+                } else {
+                    ui.label(RichText::new("Key columns (rows match on these)").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for c in &shared {
+                            let mut on = keys.iter().any(|k| k == c);
+                            let r = ui.checkbox(&mut on, c);
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, format!("diff key {c}")));
+                            if r.changed() {
+                                if on { keys.push(c.clone()) } else { keys.retain(|k| k != c) }
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Compared columns (none ticked = every other shared column)").strong());
+                    ui.horizontal_wrapped(|ui| {
+                        for c in shared.iter().filter(|c| !keys.iter().any(|k| k == *c)) {
+                            let mut on = compare.iter().any(|k| k == c);
+                            if ui.checkbox(&mut on, c).changed() {
+                                if on { compare.push(c.clone()) } else { compare.retain(|k| k != c) }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let r = primary_button(ui, theme, "Diff", !keys.is_empty() && a != b);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "diff go"));
+                    if r.clicked() {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if reguess {
+                keys = cobalt_local::diff::guess_keys(&cols(&a), &cols(&b));
+                compare.clear();
+            }
+            if go {
+                let spec = cobalt_local::diff::DiffSpec { a, b, keys, compare };
+                if let Err(e) = crate::localq::new_diff_tab(f.state, f.cx, spec) {
+                    f.cx.toast(crate::state::ToastKind::Warning, e);
+                }
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::DiffSetup { a, b, keys, compare };
+            }
+        }
         Dialog::RenameLocalTable { name, mut to } => {
             let mut ok = false;
             let mut cancel = false;

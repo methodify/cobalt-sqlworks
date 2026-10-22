@@ -46,6 +46,10 @@ pub enum ResultsAction {
     SaveAsTable { set: usize, selection_only: bool },
     /// Open a Local query tab over this result set (`SELECT * FROM <its table> LIMIT 100`).
     QueryLocally { set: usize },
+    /// The Explore builder over this result set's local table.
+    ExploreLocally { set: usize },
+    /// The Diff setup with this result set's table as A.
+    DiffLocally { set: usize },
 }
 
 pub struct ResultsArgs<'a> {
@@ -56,6 +60,7 @@ pub struct ResultsArgs<'a> {
 }
 
 pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
+    let diff_tab = args.tab.local.as_ref().map(|l| l.diff.is_some()).unwrap_or(false);
     let mut actions = Vec::new();
     let theme = args.theme;
     let tab = args.tab;
@@ -181,6 +186,16 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         if r.clicked() {
                             actions.push(ResultsAction::QueryLocally { set });
                         }
+                        let r = icon_button(ui, icons::ROWS, "Explore this result (pivot: rows, columns, values, filters; no SQL)", true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore locally {set}")));
+                        if r.clicked() {
+                            actions.push(ResultsAction::ExploreLocally { set });
+                        }
+                        let r = icon_button(ui, icons::ARROWS_LEFT_RIGHT, "Diff with another result… (added / removed / changed rows by key)", true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("diff locally {set}")));
+                        if r.clicked() {
+                            actions.push(ResultsAction::DiffLocally { set });
+                        }
                         if icon_button(ui, icons::ARROW_SQUARE_OUT, "Open result set in its own tab", true).clicked() {
                             actions.push(ResultsAction::PopOut { set });
                         }
@@ -294,6 +309,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     show_row_numbers: args.settings.results.show_row_numbers,
                                     max_col_width: args.settings.results.max_column_width,
                                     sample_rows: args.settings.results.auto_size_sample_rows,
+                                    row_tint: if diff_tab { grid::DiffTint::from_columns(&view.rs.columns) } else { None },
                                 },
                             )
                         };

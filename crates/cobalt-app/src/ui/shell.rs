@@ -1692,6 +1692,8 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let mut cmds: Vec<Command> = Vec::new();
     let mut change_db: Option<String> = None;
     let mut local_import = false;
+    let mut diff_class: Option<Option<String>> = None;
+    crate::localq::update_diff_counts(f.state, idx);
     egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let tab = &f.state.tabs[idx];
@@ -1742,6 +1744,29 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 ui.separator();
                 if tool_button(ui, icons::TREE_STRUCTURE, "Est. plan", "The engine's logical and physical plan of the statement (Ctrl+L)", !running).clicked() {
                     cmds.push(Command::EstimatedPlan);
+                }
+                if let Some(d) = &l.diff {
+                    ui.separator();
+                    ui.label(RichText::new(format!("{} was · {} now · key {}", d.spec.a, d.spec.b, d.spec.keys.join(", "))).size(12.0).color(theme.text_muted)).on_hover_text("A is the earlier side (\"was\"), B the later (\"now\"): rows only in B are added, only in A removed; rows in both whose compared columns differ are changed. Changed cells show B's value with <column>__was from A.");
+                    let counts = d.counts.as_ref().map(|c| c.1.clone()).unwrap_or_default();
+                    let r = ui.add(egui::Button::selectable(d.class.is_none(), "All").small());
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "diff filter all"));
+                    if r.clicked() {
+                        diff_class = Some(None);
+                    }
+                    for (class, n) in &counts {
+                        let color = match class.as_str() {
+                            "added" => theme.success,
+                            "removed" => theme.error,
+                            "changed" => theme.warning,
+                            _ => theme.text_muted,
+                        };
+                        let r = ui.add(egui::Button::selectable(d.class.as_deref() == Some(class.as_str()), RichText::new(format!("{} {class}", crate::state::fmt_count(*n))).color(color)).small());
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("diff filter {class}")));
+                        if r.clicked() {
+                            diff_class = Some(Some(class.clone()));
+                        }
+                    }
                 }
                 if let Some(file) = &l.file {
                     ui.separator();
@@ -1864,6 +1889,9 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     ui.painter().line_segment([ui.min_rect().left_bottom(), ui.min_rect().right_bottom()], Stroke::new(1.0, theme.border));
     if local_import {
         crate::localq::import_file_into_connection(f.state, f.cx, idx);
+    }
+    if let Some(class) = diff_class {
+        crate::localq::diff_class_filter(f.state, f.cx, idx, class);
     }
     if let Some(db) = change_db {
         ops::change_database(f.state, f.cx, idx, db);

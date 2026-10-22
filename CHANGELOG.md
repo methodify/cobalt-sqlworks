@@ -33,6 +33,19 @@
   under the row cap. Tables made by statements (`CREATE TABLE … AS`) appear in the Local root
   after the run. Agent: `local_tables {action: register_file, path}`; `drop` classifies data
   files as `LocalTable`.
+- **Local query, slice C: Diff, and Explore over local tables.** **Diff with…** on any result
+  set (or a local table in the Servers tree) opens a setup dialog: A (was), B (now), the key
+  columns (guessed: a primary key, `id`, `…_id`, `…key`, `…code`), the compared columns. The
+  Diff tab runs one query (`FULL OUTER JOIN` on the keys, `IS DISTINCT FROM` across the compared
+  columns, nulls equal) and shows the rows tinted — added green, removed red, changed amber with
+  the differing cells lit — with every compared column beside its `<column>__was` value, a chip
+  per class with its count (click to show only that class), and the SQL in the editor to keep.
+  **Explore this result** (and *Explore* on a local table) opens the pivot builder over the
+  local table: the same wells, drag and drop, filters with distinct-value pickers, Top N,
+  subtotals (`GROUP BY ROLLUP`) and the matrix, now emitting SQL for the local engine; *Open in
+  query tab* hands the SQL to a Local tab. Agent: `diff {a, b, keys?, compare?}`, `explore
+  {action: new, table}`; labels `diff locally <set>`, `explore locally <set>`, `diff filter
+  <class>`, `diff go`.
 
 ## 0.10.4 — 2026-10-21
 

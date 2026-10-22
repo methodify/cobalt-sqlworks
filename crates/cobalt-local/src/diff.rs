@@ -68,7 +68,7 @@ pub fn to_sql(spec: &DiffSpec, a_cols: &[ColumnInfo], b_cols: &[ColumnInfo]) -> 
         spec.compare.clone()
     };
     let k0 = q(&spec.keys[0]);
-    let changed = if compare.is_empty() { "FALSE".to_string() } else { compare.iter().map(|c| format!("a.{c} IS DISTINCT FROM b.{c}", c = q(c))).collect::<Vec<_>>().join(" OR ") };
+    let changed = if compare.is_empty() { "FALSE".to_string() } else { compare.iter().map(|c| format!("(a.{c} IS DISTINCT FROM b.{c})", c = q(c))).collect::<Vec<_>>().join(" OR ") };
     let mut select = vec![format!("CASE WHEN b.{k0} IS NULL THEN 'removed' WHEN a.{k0} IS NULL THEN 'added' WHEN {changed} THEN 'changed' ELSE 'same' END AS {}", q(CHANGE_COLUMN))];
     for k in &spec.keys {
         select.push(format!("COALESCE(a.{k}, b.{k}) AS {k}", k = q(k)));
@@ -104,7 +104,7 @@ mod tests {
     fn emits_the_join() {
         let spec = DiffSpec { a: "prod".into(), b: "dev".into(), keys: vec!["id".into()], compare: vec![] };
         let (text, counts) = to_sql(&spec, &cols(&["id", "amount", "note"]), &cols(&["id", "amount", "other"])).unwrap();
-        assert!(text.starts_with("SELECT CASE WHEN b.\"id\" IS NULL THEN 'removed' WHEN a.\"id\" IS NULL THEN 'added' WHEN a.\"amount\" IS DISTINCT FROM b.\"amount\" THEN 'changed' ELSE 'same' END AS \"__change\""));
+        assert!(text.starts_with("SELECT CASE WHEN b.\"id\" IS NULL THEN 'removed' WHEN a.\"id\" IS NULL THEN 'added' WHEN (a.\"amount\" IS DISTINCT FROM b.\"amount\") THEN 'changed' ELSE 'same' END AS \"__change\""));
         assert!(text.contains("COALESCE(a.\"id\", b.\"id\") AS \"id\""));
         assert!(text.contains("b.\"amount\" AS \"amount\",\n       a.\"amount\" AS \"amount__was\""));
         assert!(!text.contains("note"));

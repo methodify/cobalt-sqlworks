@@ -912,3 +912,33 @@ to the Import dialog (the engine reads neither).
 
 Agent: `local_tables {action: register_file, path}`; `drop` reports `LocalTable` and
 `DeltaFolder` for these paths. Labels: `tab local import`.
+
+## Local query, slice C: Diff, and Explore without SQL (0.11.0)
+
+**Diff.** Run the same query twice (or on two servers, or drop two versions of a file), then
+*Diff with…* on either result's toolbar (the arrows icon), or right-click a table under the
+Local root. The dialog takes A (the earlier side, "was") and B ("now"), guesses the key (a
+primary key, `id`, a column ending in `_id`, `key` or `code`, else the first shared column) and
+lets you tick the keys and the columns to compare (none ticked = every other shared column).
+The Diff tab is a Local tab: its editor holds the generated query (`FULL OUTER JOIN` on the
+keys, `IS DISTINCT FROM` across the compared columns, so nulls equal nulls), so you can keep or
+edit it; the grid tints rows green (added: only in B), red (removed: only in A), amber (changed)
+with the differing cells lit, and shows each compared column next to its `<column>__was` value;
+the toolbar has a chip per class with its count, and a click shows only that class (it is a
+filter on the `__change` column, so the funnel can clear it too). Export, copy, Run to File
+and Save as table work on the diff like on any result.
+
+**Explore over local tables.** The pivot builder from semantic models now works on any local
+table: *Explore this result* on a result set's toolbar (the rows icon), or *Explore* on a table
+under the Local root. Same wells, drag and drop, aggregations (Sum / Count / Count distinct /
+Average / Min / Max on columns; a local table has no measures), filters (the "is one of" picker
+loads the column's distinct values from the engine), Top N, subtotals (`GROUP BY ROLLUP`) and
+the matrix or flat view; the DAX button shows the generated SQL and *Open in query tab* hands
+it to a Local tab. Pin to dashboard is not offered here (local tables are not stable across
+sessions); it comes with scratch tables in slice D.
+
+Agent: `diff {a, b, keys?: [...], compare?: [...]}` (keys guessed when absent; the tab's
+`local.diff` carries the counts and the class filter), `explore {action: new, table}` then
+the usual `add`, `drop`, `filter`, `top_n`, `subtotals`. Labels: `diff locally <set>`,
+`explore locally <set>`, `diff filter all|added|removed|changed|same`, the dialog's `diff-a`,
+`diff-b`, `diff key <col>`, `diff go`.

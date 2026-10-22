@@ -1112,7 +1112,7 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
             }
         }
         FabricEvent::ExploreDistinct { key, table, column, result } => {
-            for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false)) {
+            for t in state.tabs.iter_mut().filter(|t| t.tabular.as_ref().map(|tt| tt.model_key() == key).unwrap_or(false) || t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(|lt| format!("local:{lt}") == key).unwrap_or(false)) {
                 if let Some(ex) = t.explore.as_deref_mut() {
                     let v = match &result {
                         Ok(v) => Loadable::Loaded(v.clone()),

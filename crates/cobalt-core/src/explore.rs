@@ -14,6 +14,17 @@ pub const EXPLORE_EXT: &str = ".cobalt-explore.json";
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ExploreSource {
     SemanticModel { target: TabularTarget },
+    /// A local table of the in-process engine (a result set, a file).
+    Local { table: String },
+}
+
+impl ExploreSource {
+    pub fn local_table(&self) -> Option<&str> {
+        match self {
+            ExploreSource::Local { table } => Some(table),
+            _ => None,
+        }
+    }
 }
 
 /// A field of the source: a model column or a measure.

@@ -15,6 +15,8 @@ pub enum TreeAction {
     LocalQuery(Option<String>),
     LocalReveal(String),
     LocalRename(String),
+    LocalExplore(String),
+    LocalDiff(String),
     LocalToggleRoot,
     LocalToggle(String),
     /// Analysis Services root: add / edit / remove a saved endpoint, open its catalogs, a model.
@@ -251,6 +253,14 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
         r.response.context_menu(|ui| {
             if ui.button(format!("{} Query (SELECT * … LIMIT 100)", icons::LIGHTNING)).clicked() {
                 actions.push(TreeAction::LocalQuery(Some(t.name.clone())));
+                ui.close();
+            }
+            if ui.button(format!("{} Explore (pivot builder)", icons::ROWS)).clicked() {
+                actions.push(TreeAction::LocalExplore(t.name.clone()));
+                ui.close();
+            }
+            if ui.button(format!("{} Diff with…", icons::ARROWS_LEFT_RIGHT)).clicked() {
+                actions.push(TreeAction::LocalDiff(t.name.clone()));
                 ui.close();
             }
             if matches!(t.source, cobalt_local::TableSource::Result { .. }) && ui.button(format!("{} Reveal the tab", icons::ARROW_SQUARE_OUT)).clicked() {

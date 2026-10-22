@@ -1446,6 +1446,8 @@ pub enum Dialog {
     ChooseModel { tab_index: Option<usize>, explore: bool, source: Option<ModelSource>, search: String, file: Option<PathBuf> },
     /// Rename a local table (the engine's registry).
     RenameLocalTable { name: String, to: String },
+    /// Diff two local tables: A (was), B (now), the key columns, the compared columns (empty = all shared).
+    DiffSetup { a: String, b: String, keys: Vec<String>, compare: Vec<String> },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
 }

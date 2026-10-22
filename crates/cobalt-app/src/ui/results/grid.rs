@@ -24,6 +24,26 @@ pub enum GridAction {
     Copy,
 }
 
+/// Row tints for a Diff result: the `__change` column decides the row's class, and for
+/// changed rows the compared cells whose `<col>__was` differs are lit.
+#[derive(Clone, Debug)]
+pub struct DiffTint {
+    pub change_col: usize,
+    /// (column, its `__was` column).
+    pub pairs: Vec<(usize, usize)>,
+}
+
+impl DiffTint {
+    pub fn from_columns(columns: &[cobalt_core::ColumnInfo]) -> Option<Self> {
+        let change_col = columns.iter().position(|c| c.name == "__change")?;
+        let pairs = columns.iter().enumerate().filter_map(|(i, c)| {
+            let was = format!("{}__was", c.name);
+            columns.iter().position(|w| w.name == was).map(|j| (i, j))
+        }).collect();
+        Some(Self { change_col, pairs })
+    }
+}
+
 pub struct GridArgs<'a> {
     pub rs: &'a Arc<ResultSet>,
     pub grid: &'a mut GridState,
@@ -34,6 +54,8 @@ pub struct GridArgs<'a> {
     pub show_row_numbers: bool,
     pub max_col_width: f32,
     pub sample_rows: usize,
+    /// A Diff result: tint rows by their class.
+    pub row_tint: Option<DiffTint>,
 }
 
 struct Delegate<'a> {
@@ -59,6 +81,7 @@ struct Delegate<'a> {
     find_current: Option<(usize, usize)>,
     /// Totals row values (one per data column) and its label.
     totals: Option<(String, Vec<String>)>,
+    tint: Option<DiffTint>,
 }
 
 impl Delegate<'_> {
@@ -205,6 +228,19 @@ impl TableDelegate for Delegate<'_> {
         } else if is_match {
             let w = self.theme.warning;
             Color32::from_rgba_unmultiplied(w.r(), w.g(), w.b(), 60)
+        } else if let Some(t) = &self.tint {
+            let class = self.rs.cell_text(row, t.change_col, self.fmt);
+            let tint = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+            match class.as_ref() {
+                "added" => tint(self.theme.success, 48),
+                "removed" => tint(self.theme.error, 44),
+                "changed" => {
+                    let lit = t.pairs.iter().any(|(c, w)| (*c == col || *w == col) && self.rs.cell_text(row, *c, self.fmt) != self.rs.cell_text(row, *w, self.fmt));
+                    tint(self.theme.warning, if lit { 110 } else { 40 })
+                }
+                _ if row % 2 == 1 => self.theme.bg_grid_alt,
+                _ => self.theme.bg_grid,
+            }
         } else if row % 2 == 1 {
             self.theme.bg_grid_alt
         } else {
@@ -402,6 +438,7 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     let has_totals = totals.is_some();
 
     let mut delegate = Delegate {
+        tint: args.row_tint.clone(),
         rs: &rs,
         grid: args.grid,
         theme: args.theme,

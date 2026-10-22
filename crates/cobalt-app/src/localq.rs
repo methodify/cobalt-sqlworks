@@ -40,6 +40,131 @@ pub struct LocalTab {
     pub functions: Arc<Vec<String>>,
     /// A file (or Delta folder) this tab was opened on, for the toolbar's Import.
     pub file: Option<std::path::PathBuf>,
+    /// A Diff tab: the two tables, keys, counts per class and the class filter in force.
+    pub diff: Option<DiffView>,
+}
+
+/// The state of a Diff tab (`cobalt_local::diff`).
+#[derive(Clone, Debug)]
+pub struct DiffView {
+    pub spec: cobalt_local::diff::DiffSpec,
+    /// Counts per class for the run they were computed on.
+    pub counts: Option<(u64, Vec<(String, u64)>)>,
+    /// The class chip in force (a filter on `__change`), or every row.
+    pub class: Option<String>,
+}
+
+/// A `ModelCatalog` for the Explore builder over a local table: one table, its columns typed
+/// for the filter editor, no measures (numeric columns default to Sum).
+pub fn local_catalog(engine: &Engine, table: &str) -> Option<cobalt_core::tabular::ModelCatalog> {
+    use cobalt_core::tabular::{Column, ModelCatalog, Table, TabularDataType};
+    let info = engine.tables().into_iter().find(|t| t.name == table)?;
+    let columns = info
+        .columns
+        .iter()
+        .map(|c| {
+            let dt = tabular_type(&c.sql_type);
+            let numeric = matches!(dt, TabularDataType::Int64 | TabularDataType::Double | TabularDataType::Decimal);
+            Column { name: c.name.clone(), data_type: dt, hidden: false, key: c.in_primary_key, calculated: false, format_string: None, sort_by_column: None, display_folder: None, description: Some(c.sql_type.to_string()), expression: None, summarize_by: Some(if numeric { "Sum".into() } else { "None".into() }) }
+        })
+        .collect();
+    Some(ModelCatalog { name: table.to_string(), description: None, tables: vec![Table { name: table.to_string(), hidden: false, storage_mode: None, description: None, expression: None, columns, measures: Vec::new(), hierarchies: Vec::new() }], relationships: Vec::new(), calculation_groups: Vec::new(), expressions_hidden: false })
+}
+
+fn tabular_type(t: &cobalt_core::SqlType) -> cobalt_core::tabular::TabularDataType {
+    use cobalt_core::tabular::TabularDataType as T;
+    use cobalt_core::SqlType as S;
+    match t {
+        S::Bit => T::Boolean,
+        S::TinyInt | S::SmallInt | S::Int | S::BigInt => T::Int64,
+        S::Float | S::Real => T::Double,
+        S::Decimal { .. } | S::Numeric { .. } | S::Money | S::SmallMoney => T::Decimal,
+        S::Date | S::Time { .. } | S::DateTime | S::DateTime2 { .. } | S::SmallDateTime | S::DateTimeOffset { .. } => T::DateTime,
+        S::Binary { .. } | S::VarBinary { .. } | S::Image | S::Timestamp => T::Binary,
+        S::Char { .. } | S::VarChar { .. } | S::NChar { .. } | S::NVarChar { .. } | S::Text | S::NText | S::Xml | S::Json | S::UniqueIdentifier => T::String,
+        _ => T::Unknown,
+    }
+}
+
+/// The local table of a tab's result set, when registered.
+pub fn table_for_result(cx: &Ctx, tab: TabId, set: usize) -> Option<String> {
+    cx.local.tables().into_iter().find(|t| matches!(&t.source, TableSource::Result { tab: tb, set: s, .. } if *tb == tab.to_string() && *s == set)).map(|t| t.name)
+}
+
+/// A Diff tab: the diff query over `spec`, run, with the class chips on the toolbar.
+pub fn new_diff_tab(state: &mut AppState, cx: &Ctx, spec: cobalt_local::diff::DiffSpec) -> Result<usize, String> {
+    let tables = cx.local.tables();
+    let a = tables.iter().find(|t| t.name == spec.a).ok_or_else(|| format!("no local table named {}", spec.a))?;
+    let b = tables.iter().find(|t| t.name == spec.b).ok_or_else(|| format!("no local table named {}", spec.b))?;
+    let (text, _) = cobalt_local::diff::to_sql(&spec, &a.columns, &b.columns)?;
+    let i = new_tab(state, cx, Some(text));
+    {
+        let t = &mut state.tabs[i];
+        t.title = format!("Diff · {} vs {}", spec.a, spec.b);
+        t.custom_title = true;
+        if let Some(l) = t.local.as_mut() {
+            l.diff = Some(DiffView { spec, counts: None, class: None });
+        }
+    }
+    state.active_tab = Some(i);
+    run(state, cx, i, RunMode::All);
+    Ok(i)
+}
+
+/// The Diff setup dialog, with `a` chosen and the rest guessed.
+pub fn open_diff_dialog(state: &mut AppState, cx: &Ctx, a: Option<String>) {
+    let tables = cx.local.tables();
+    let a = a.or_else(|| tables.first().map(|t| t.name.clone())).unwrap_or_default();
+    let b = tables.iter().rev().find(|t| t.name != a).map(|t| t.name.clone()).unwrap_or_default();
+    let keys = match (tables.iter().find(|t| t.name == a), tables.iter().find(|t| t.name == b)) {
+        (Some(x), Some(y)) => cobalt_local::diff::guess_keys(&x.columns, &y.columns),
+        _ => Vec::new(),
+    };
+    state.dialog = crate::state::Dialog::DiffSetup { a, b, keys, compare: Vec::new() };
+}
+
+/// Count the classes of a finished Diff run once (the toolbar shows them).
+pub fn update_diff_counts(state: &mut AppState, idx: usize) {
+    let fmt = state.formatter.clone();
+    let Some(t) = state.tabs.get_mut(idx) else { return };
+    let Some(run) = t.run.as_ref() else { return };
+    if run.state != RunViewState::Done {
+        return;
+    }
+    let run_id = run.id.0;
+    let Some(rs) = run.result_sets.first().map(|v| Arc::clone(&v.rs)) else { return };
+    let Some(l) = t.local.as_mut() else { return };
+    let Some(d) = l.diff.as_mut() else { return };
+    if d.counts.as_ref().map(|c| c.0 == run_id).unwrap_or(false) {
+        return;
+    }
+    let Some(col) = rs.columns.iter().position(|c| c.name == cobalt_local::diff::CHANGE_COLUMN) else { return };
+    let mut counts: std::collections::BTreeMap<String, u64> = Default::default();
+    for chunk in 0..rs.chunk_count() {
+        if let Some(texts) = rs.column_texts(chunk, col, &fmt) {
+            for s in texts.iter() {
+                *counts.entry(s.to_string()).or_default() += 1;
+            }
+        }
+    }
+    let order = ["added", "removed", "changed", "same"];
+    let mut v: Vec<(String, u64)> = order.iter().map(|k| (k.to_string(), counts.get(*k).copied().unwrap_or(0))).collect();
+    for (k, n) in counts {
+        if !order.contains(&k.as_str()) {
+            v.push((k, n));
+        }
+    }
+    d.counts = Some((run_id, v));
+}
+
+/// Show one class of the diff (a filter on `__change`), or every row.
+pub fn diff_class_filter(state: &mut AppState, cx: &Ctx, idx: usize, class: Option<String>) {
+    let Some(col) = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.first()).and_then(|v| v.rs.columns.iter().position(|c| c.name == cobalt_local::diff::CHANGE_COLUMN)) else { return };
+    let spec = cobalt_results::ViewSpec { filters: class.iter().map(|c| cobalt_results::ColumnFilter { column: col, op: cobalt_results::FilterOp::Equals(c.clone()) }).collect(), sort: Vec::new() };
+    ops::apply_view(state, cx, idx, 0, spec);
+    if let Some(d) = state.tabs.get_mut(idx).and_then(|t| t.local.as_mut()).and_then(|l| l.diff.as_mut()) {
+        d.class = class;
+    }
 }
 
 /// A new Local query tab with `text`.
@@ -83,6 +208,11 @@ pub fn refresh_all_catalogs(state: &mut AppState, cx: &Ctx) {
         if let Some(l) = t.local.as_mut() {
             t.catalog = Some(Arc::clone(&cat));
             l.functions = Arc::clone(&functions);
+            if let Some(table) = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string) {
+                if let Some(mc) = local_catalog(cx.local, &table) {
+                    t.model_catalog = Some(Arc::new(mc));
+                }
+            }
         }
     }
 }
@@ -154,8 +284,7 @@ pub fn import_file_into_connection(state: &mut AppState, cx: &Ctx, idx: usize) {
 /// Open a Local query tab on a result set of a tab: `SELECT * FROM <its table> LIMIT 100`, run.
 pub fn query_result(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
     let Some(tab_id) = state.tabs.get(idx).map(|t| t.id) else { return };
-    let name = cx.local.tables().into_iter().find(|t| matches!(&t.source, TableSource::Result { tab, set: s, .. } if *tab == tab_id.to_string() && *s == set)).map(|t| t.name);
-    let Some(name) = name else {
+    let Some(name) = table_for_result(cx, tab_id, set) else {
         cx.toast(ToastKind::Info, "This result is not registered as a local table (it may still be arriving, or the tab was re-run).");
         return;
     };

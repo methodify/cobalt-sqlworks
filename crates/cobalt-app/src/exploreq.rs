@@ -47,6 +47,43 @@ pub fn new_tab(state: &mut AppState, cx: &Ctx, target: TabularTarget, spec: Opti
     idx
 }
 
+/// A new Explore tab over a local table (a result set, a file), from a spec or empty.
+pub fn new_local_tab(state: &mut AppState, cx: &Ctx, table: &str, spec: Option<ExploreSpec>) -> Result<usize, String> {
+    let cat = crate::localq::local_catalog(cx.local, table).ok_or_else(|| format!("no local table named {table}"))?;
+    let idx = crate::localq::new_tab(state, cx, None);
+    let t = &mut state.tabs[idx];
+    t.model_catalog = Some(Arc::new(cat));
+    let mut spec = spec.unwrap_or_else(|| ExploreSpec::new(ExploreSource::Local { table: table.to_string() }));
+    if spec.source.is_none() {
+        spec.source = Some(ExploreSource::Local { table: table.to_string() });
+    }
+    let run_when_loaded = !spec.is_empty();
+    let mut ex = ExploreState::new(spec);
+    ex.run_when_loaded = run_when_loaded;
+    t.explore = Some(Box::new(ex));
+    t.custom_title = false;
+    retitle(t);
+    t.mark_saved();
+    regenerate(state, idx);
+    state.active_tab = Some(idx);
+    if run_when_loaded {
+        run(state, cx, idx);
+    }
+    Ok(idx)
+}
+
+/// Explore a tab's result set (its local table).
+pub fn explore_result(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) {
+    let Some(tab_id) = state.tabs.get(idx).map(|t| t.id) else { return };
+    let Some(name) = crate::localq::table_for_result(cx, tab_id, set) else {
+        cx.toast(ToastKind::Info, "This result is not registered as a local table yet (it may still be arriving).");
+        return;
+    };
+    if let Err(e) = new_local_tab(state, cx, &name, None) {
+        cx.toast(ToastKind::Warning, e);
+    }
+}
+
 /// `Explore_n · model`, or the file's name.
 pub fn retitle(t: &mut EditorTab) {
     if t.custom_title {
@@ -56,11 +93,17 @@ pub fn retitle(t: &mut EditorTab) {
         t.title = p.file_name().map(|n| n.to_string_lossy().trim_end_matches(EXPLORE_EXT).to_string()).unwrap_or_else(|| "Explore".into());
         return;
     }
+    let title = t.explore.as_ref().map(|e| e.spec.title.trim().to_string()).filter(|s| !s.is_empty());
+    let source = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string);
     if let Some(tt) = &t.tabular {
-        let title = t.explore.as_ref().map(|e| e.spec.title.trim().to_string()).filter(|s| !s.is_empty());
         t.title = match title {
             Some(s) => format!("{s} · {}", tt.target.model()),
             None => format!("Explore_{} · {}", t.untitled_index, tt.target.model()),
+        };
+    } else if let Some(table) = source {
+        t.title = match title {
+            Some(s) => format!("{s} · {table}"),
+            None => format!("Explore_{} · {table}", t.untitled_index),
         };
     }
 }
@@ -147,7 +190,11 @@ pub fn regenerate(state: &mut AppState, idx: usize) {
         ex.dax_error = None; // not an error: the catalog is on its way
         return;
     };
-    match cobalt_tabular::explore::to_dax(&ex.spec, &cat) {
+    let generated = match ex.spec.source.as_ref().and_then(|s| s.local_table()) {
+        Some(_) => cobalt_local::explore::to_sql(&ex.spec, &cat).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
+        None => cobalt_tabular::explore::to_dax(&ex.spec, &cat),
+    };
+    match generated {
         Ok(q) => {
             t.text = q.text.clone();
             ex.dax = Some(q);
@@ -183,7 +230,12 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize) {
     ex.dirty = false;
     ex.pivot = None;
     ex.pivot_built_for = None;
-    tabularq::run(state, cx, idx, RunMode::All);
+    let local = ex.spec.source.as_ref().and_then(|s| s.local_table()).is_some();
+    if local {
+        crate::localq::run(state, cx, idx, RunMode::All);
+    } else {
+        tabularq::run(state, cx, idx, RunMode::All);
+    }
 }
 
 /// The spec changed: regenerate, and run when auto-run is on.
@@ -257,8 +309,14 @@ pub fn ensure_pivot(t: &mut EditorTab, fmt: &CellFormatter) {
 
 pub fn open_in_query_tab(state: &mut AppState, cx: &Ctx, idx: usize) {
     let Some(t) = state.tabs.get(idx) else { return };
-    let (Some(tt), Some(ex)) = (&t.tabular, t.explore.as_deref()) else { return };
+    let Some(ex) = t.explore.as_deref() else { return };
     let text = ex.dax.as_ref().map(|q| q.text.clone()).unwrap_or_else(|| t.text.clone());
+    if ex.spec.source.as_ref().and_then(|s| s.local_table()).is_some() {
+        let i = crate::localq::new_tab(state, cx, Some(text));
+        state.active_tab = Some(i);
+        return;
+    }
+    let Some(tt) = &t.tabular else { return };
     let target = tt.target.clone();
     tabularq::new_tab(state, cx, target, Some(text));
 }
@@ -487,6 +545,35 @@ pub fn remove_filter(state: &mut AppState, cx: &Ctx, idx: usize, i: usize) {
 /// The distinct values of a column for the "is one of" picker (cached per model key).
 pub fn load_distinct(state: &mut AppState, cx: &Ctx, idx: usize, table: &str, column: &str) {
     let Some(t) = state.tabs.get_mut(idx) else { return };
+    if let Some(local) = t.explore.as_ref().and_then(|e| e.spec.source.as_ref()).and_then(|s| s.local_table()).map(str::to_string) {
+        let Some(ex) = t.explore.as_deref_mut() else { return };
+        let k = (table.to_string(), column.to_string());
+        if ex.distinct.get(&k).map(|l| !l.needs_load()).unwrap_or(false) {
+            return;
+        }
+        ex.distinct.insert(k.clone(), Loadable::Loading);
+        let tx = cx.fabric_tx.clone();
+        let egui = cx.egui.clone();
+        let engine = Arc::clone(cx.local);
+        let sql = format!("SELECT DISTINCT CAST({c} AS VARCHAR) AS v FROM {t} WHERE {c} IS NOT NULL ORDER BY 1 LIMIT {}", DISTINCT_LIMIT, c = crate::localq::quote(column), t = crate::localq::quote(&local));
+        let key = format!("local:{local}");
+        let (table, column) = k;
+        cx.session.spawn(async move {
+            let result = match engine.sql(&sql).await {
+                Ok(df) => match df.collect().await {
+                    Ok(batches) => Ok(batches.iter().flat_map(|b| {
+                        let col = b.column(0);
+                        (0..b.num_rows()).filter_map(|i| col.as_any().downcast_ref::<arrow::array::StringArray>().map(|a| a.value(i).to_string()).or_else(|| col.as_any().downcast_ref::<arrow::array::LargeStringArray>().map(|a| a.value(i).to_string())).or_else(|| col.as_any().downcast_ref::<arrow::array::StringViewArray>().map(|a| a.value(i).to_string()))).collect::<Vec<_>>()
+                    }).collect::<Vec<String>>()),
+                    Err(e) => Err(e.to_string()),
+                },
+                Err(e) => Err(e),
+            };
+            let _ = tx.send(FabricEvent::ExploreDistinct { key, table, column, result });
+            egui.request_repaint();
+        });
+        return;
+    }
     let Some(tt) = &t.tabular else { return };
     let target = tt.target.clone();
     let key = tt.model_key();
