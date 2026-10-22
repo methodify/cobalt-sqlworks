@@ -6,11 +6,81 @@
 
 /// One statement rewritten, with a note per rewrite applied.
 pub fn rewrite(statement: &str) -> (String, Vec<String>) {
+    rewrite_with(statement, &[])
+}
+
+/// `rewrite` plus case-insensitive names: a bare word that matches one of `known` (table and
+/// column names with upper-case letters, which the engine would otherwise fold to lower case)
+/// becomes that name, quoted.
+pub fn rewrite_with(statement: &str, known: &[String]) -> (String, Vec<String>) {
     let mut notes = Vec::new();
     let text = brackets(statement, &mut notes);
     let text = functions(&text, &mut notes);
     let text = top(&text, &mut notes);
+    let text = names(&text, known, &mut notes);
     (text, notes)
+}
+
+/// Words the name pass leaves alone even when a column is called the same.
+const RESERVED: &[&str] = &[
+    "select", "from", "where", "group", "by", "order", "having", "limit", "offset", "as", "and", "or", "not", "in", "is", "null", "on", "join", "left", "right", "inner", "outer", "full", "cross", "natural", "using", "distinct", "case", "when", "then", "else", "end", "cast", "try_cast", "over", "partition", "rows", "range", "between", "like", "ilike", "similar", "union", "intersect", "except", "all", "any", "some", "exists", "true", "false", "asc", "desc", "nulls", "first", "last", "with", "recursive", "values", "insert", "into", "create", "table", "external", "drop", "if", "replace", "boolean", "int", "integer", "bigint", "smallint", "tinyint", "float", "double", "real", "decimal", "numeric", "varchar", "char", "text", "string", "date", "time", "timestamp", "interval", "year", "month", "day", "hour", "minute", "second", "week", "quarter", "unsigned", "to", "extract", "filter", "within", "escape", "top", "explain", "analyze", "verbose", "show", "describe", "set",
+];
+
+fn names(text: &str, known: &[String], notes: &mut Vec<String>) -> String {
+    let known: Vec<&String> = known.iter().filter(|n| n.chars().any(|c| c.is_ascii_uppercase())).collect();
+    if known.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    for (is_code, seg) in segments(text) {
+        if !is_code {
+            out.push_str(&seg);
+            continue;
+        }
+        let b = seg.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            let c = b[i];
+            if c.is_ascii_alphabetic() || c == b'_' {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                let word = &seg[start..i];
+                let next = seg[i..].trim_start().chars().next();
+                let lower = word.to_ascii_lowercase();
+                let hit = if next == Some('(') || RESERVED.contains(&lower.as_str()) || known.iter().any(|k| *k == word) {
+                    None
+                } else {
+                    let mut m = known.iter().filter(|k| k.eq_ignore_ascii_case(word));
+                    match (m.next(), m.next()) {
+                        (Some(k), None) => Some(k),
+                        _ => None,
+                    }
+                };
+                match hit {
+                    Some(k) => {
+                        out.push('"');
+                        out.push_str(&k.replace('"', "\"\""));
+                        out.push('"');
+                        notes.push(format!("{word} → \"{k}\" (names are case-insensitive)"));
+                    }
+                    None => out.push_str(word),
+                }
+            } else if c.is_ascii_digit() {
+                // a number (digits, dots, exponents): copied through, never a name
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
+                    i += 1;
+                }
+                out.push_str(&seg[start..i]);
+            } else {
+                out.push(c as char);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Split into segments: code vs literal/comment, so rewrites touch only code.
@@ -245,6 +315,19 @@ fn find_word(lower: &str, word: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn names_are_case_insensitive() {
+        let known = vec!["countryOrRegion".to_string(), "holidayName".to_string(), "lower".to_string()];
+        let (t, n) = rewrite_with("SELECT countryorregion, COUNT(*) FROM publicholidays WHERE HolidayName = 'x' AND date > '2020-01-01' GROUP BY CountryOrRegion, countryOrRegion", &known);
+        assert_eq!(t, "SELECT \"countryOrRegion\", COUNT(*) FROM publicholidays WHERE \"holidayName\" = 'x' AND date > '2020-01-01' GROUP BY \"countryOrRegion\", countryOrRegion");
+        assert_eq!(n.len(), 3);
+        // a function call, a literal and a comment stay
+        let (t, _) = rewrite_with("SELECT holidayname('a') -- countryorregion
+, 'countryorregion', 12.5e3", &known);
+        assert_eq!(t, "SELECT holidayname('a') -- countryorregion
+, 'countryorregion', 12.5e3");
+    }
 
     #[test]
     fn brackets_become_quotes() {

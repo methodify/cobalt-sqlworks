@@ -1,6 +1,6 @@
 # Local query: SQL over results, files and the lakehouse, in-process — design (2026-10-21)
 
-*Status: approved by the founder 2026-10-21 on every decision in §6 (release held until all slices are in). Slices A–D built 2026-10-21 (`cobalt-local`, `localq.rs`, the Local tab, Local root, Query this result, T-SQL sugar; verified live against the Docker SQL Server and local files; streaming-grid performance measured unchanged; slice D's OneLake read awaits the founder's live check on the "Fabric test" workspace; a Local SQL notebook cell and Send to Spark are deferred). Originally: design for the founder's alignment. Pulls forward the V2 bet from
+*Status: approved by the founder 2026-10-21 on every decision in §6 (release held until all slices are in). Slices A–D built 2026-10-21 (`cobalt-local`, `localq.rs`, the Local tab, Local root, Query this result, T-SQL sugar; verified live against the Docker SQL Server and local files; streaming-grid performance measured unchanged; slice D's OneLake read verified live on the "Fabric test" workspace; a Local SQL notebook cell and Send to Spark are deferred). Originally: design for the founder's alignment. Pulls forward the V2 bet from
 `product_design.md` §5.1 ("the result engine is the product": local re-query, result diff,
 pivot and totals, streaming everything), §5.5 (chained notebook cells) and D006 (DataFusion as
 the planned local engine), and takes stock of what the app has become since those were written.*

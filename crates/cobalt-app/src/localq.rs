@@ -402,7 +402,20 @@ pub fn run_on(t: &mut EditorTab, cx: &Ctx, mode: RunMode) {
     let uncapped = t.local.as_mut().map(|l| std::mem::take(&mut l.uncapped_next)).unwrap_or(false);
     let plan = mode == RunMode::EstimatedPlan;
     let sugar = cx.settings.local.tsql_sugar;
-    let mut statements: Vec<(String, Vec<String>)> = crate::sparkq::split_statements(&script).into_iter().map(|s| if sugar { cobalt_local::sugar::rewrite(&s) } else { (s, Vec::new()) }).collect();
+    // names with upper-case letters (lakehouse columns are camelCase) resolve case-insensitively
+    let known: Vec<String> = if sugar {
+        let mut v: Vec<String> = Vec::new();
+        for t in cx.local.tables() {
+            v.push(t.name.rsplit('.').next().unwrap_or(&t.name).to_string());
+            v.extend(t.columns.iter().map(|c| c.name.clone()));
+        }
+        v.sort();
+        v.dedup();
+        v
+    } else {
+        Vec::new()
+    };
+    let mut statements: Vec<(String, Vec<String>)> = crate::sparkq::split_statements(&script).into_iter().map(|s| if sugar { cobalt_local::sugar::rewrite_with(&s, &known) } else { (s, Vec::new()) }).collect();
     if plan {
         if statements.len() > 1 {
             cx.toast(ToastKind::Info, "Showing the plan of the first statement; select one statement for another.");

@@ -963,9 +963,12 @@ this slice.
 (no Spark)* reads the Delta table from OneLake with your Fabric sign-in (the storage-scope
 token the exports use) in the local engine and opens a Local tab with the first 1,000 rows;
 the table is listed in the Local root with its `abfss://` URL. Read-only; Spark remains the
-way to write. Verified in the engine against local Delta folders; the live OneLake read needs
-a Fabric sign-in (a browser flow) and is for you to try on the "Fabric test" workspace, e.g.
-`publicholidays` in the `test` lakehouse.
+way to write. Verified live on the "Fabric test" workspace: `dbo/publicholidays` in the `test`
+lakehouse opened in a Local tab (1,000-row preview in 0.4 s) and a `count(*)` over the whole
+table ran from a second Local tab. Column names there are camelCase and the engine folds bare
+names to lower case, so the T-SQL sugar now resolves names case-insensitively against the
+local tables (`countryorregion` → `"countryOrRegion"`, noted in Messages); quote a name
+yourself to bypass it, or turn the sugar off in Settings › Query execution.
 
 **Tiles on the local engine.** *Pin to dashboard* is now offered on Local tabs and on Explore
 tabs over local tables; the tile runs the SQL on the local engine with no connection. Pin

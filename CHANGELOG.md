@@ -58,6 +58,9 @@
   (read-only; the Spark route is unchanged). Dashboards: **Pin to dashboard** on a Local tab or
   a local Explore tab makes a tile that runs on the local engine (scratch tables and files are
   stable across sessions; a tile over a result table shows the error until that tab runs again).
+  The T-SQL sugar now also resolves names case-insensitively: a bare `countryorregion` becomes
+  `"countryOrRegion"` when that is a column of a local table (the engine folds bare names to
+  lower case, which lakehouse and Parquet columns rarely are); each rewrite is noted in Messages.
   Agent: `local_tables {action: save_scratch, name, set?}`, `{action: remove_scratch, name}`,
   `{action: register_onelake, workspace_id, lakehouse_id, table}`; label `save locally <set>`,
   dialog `save_scratch` (`scratch name`, `scratch save`).
