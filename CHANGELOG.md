@@ -21,6 +21,18 @@
   Measured: the streaming grid is unchanged (a million rows in 4.2 s before and after, frame
   times within noise). Agent: `local_query {text, run}`, `local_tables {action: list | rename |
   query}`, `state.local_tables`. Design: `docs/design/local_query.md`.
+- **Local query, slice B: files and Delta tables.** Parquet, CSV / TSV / delimited text (header
+  and delimiter sniffed), JSON lines, Arrow IPC files and **Delta folders** (through delta-rs,
+  so deletion vectors and column mapping work) are local tables too: dropped on the window,
+  *Query as a local table* in the Files sidebar, or `CREATE EXTERNAL TABLE` in a Local tab. A
+  dropped data file now opens as a **Local tab over the file** with a 1,000-row preview already
+  run (no connection needed), a file chip on the toolbar, and *Import into a connection…* that
+  takes the file to the Import dialog on a connected tab; a Delta folder opens the same way
+  (the Spark route stays as the fallback when the local reader cannot). Files are read on every
+  scan, so a multi-gigabyte Parquet costs nothing until queried and streams through the grid
+  under the row cap. Tables made by statements (`CREATE TABLE … AS`) appear in the Local root
+  after the run. Agent: `local_tables {action: register_file, path}`; `drop` classifies data
+  files as `LocalTable`.
 
 ## 0.10.4 — 2026-10-21
 

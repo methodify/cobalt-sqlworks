@@ -2,7 +2,9 @@
 //! tabs (`provider`), files and Delta folders (slice B), scratch and lakehouse tables (slice D).
 //! Design: `docs/design/local_query.md`.
 
+pub mod diff;
 pub mod engine;
+pub mod explore;
 pub mod provider;
 pub mod sugar;
 
@@ -62,6 +64,52 @@ mod tests {
         e.deregister_tab("2");
         assert!(!e.has_table("dev"));
         assert_eq!(e.tables().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn files_and_delta_and_statements_are_tables() {
+        let dir = std::env::temp_dir().join(format!("cobalt-local-files-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let e = Engine::new(Arc::new(cobalt_results::MemoryBudget::unlimited()), 256 << 20, dir.join("spill")).unwrap();
+        // CSV with a sniffed semicolon delimiter
+        let csv = dir.join("sales.csv");
+        std::fs::write(&csv, "id;name;amount\n1;Ann;10.5\n2;Bob;20\n3;Cy;7\n").unwrap();
+        let info = e.register_file("sales", &csv).await.unwrap();
+        assert_eq!(info.columns.len(), 3);
+        assert!(!info.rows_known);
+        let n = e.sql("SELECT sum(amount) FROM sales").await.unwrap().collect().await.unwrap();
+        assert_eq!(n[0].column(0).as_any().downcast_ref::<arrow::array::Float64Array>().unwrap().value(0), 37.5);
+        // Parquet, with the footer's row count
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true), Field::new("name", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(StringArray::from(vec!["a", "b", "c", "d"]))]).unwrap();
+        let pq = dir.join("rows.parquet");
+        {
+            let f = std::fs::File::create(&pq).unwrap();
+            let mut w = datafusion::parquet::arrow::ArrowWriter::try_new(f, Arc::clone(&schema), None).unwrap();
+            w.write(&batch).unwrap();
+            w.close().unwrap();
+        }
+        let info = e.register_file("rows", &pq).await.unwrap();
+        assert!(info.rows_known && info.rows == 4);
+        assert_eq!(e.latest().as_deref(), Some("rows"));
+        // a Delta table written by delta-rs
+        let delta_dir = dir.join("dt");
+        std::fs::create_dir_all(&delta_dir).unwrap();
+        let url = url::Url::from_directory_path(&delta_dir).unwrap();
+        #[allow(deprecated)]
+        deltalake::DeltaOps::try_from_url(url).await.unwrap().write(vec![batch.clone()]).await.unwrap();
+        let info = e.register_file("dt", &delta_dir).await.unwrap();
+        assert_eq!(info.columns.len(), 2);
+        let n = e.sql("SELECT count(*) FROM dt JOIN rows USING (id)").await.unwrap().collect().await.unwrap();
+        assert_eq!(n[0].column(0).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0), 4);
+        // a table made by a statement shows up after a sync
+        e.sql("CREATE TABLE made AS SELECT id * 10 AS x FROM rows").await.unwrap().collect().await.unwrap();
+        e.sync_from_context().await;
+        let t = e.tables();
+        assert!(t.iter().any(|t| t.name == "made" && t.source == TableSource::Statement));
+        // a folder without a log is refused
+        assert!(e.register_file("nope", &dir).await.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

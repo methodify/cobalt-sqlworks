@@ -15,9 +15,12 @@ pub enum FilesAction {
     NewFile(PathBuf),
     NewNotebook(PathBuf),
     Reveal(PathBuf),
+    /// A data file or a Delta folder as a local table (a Local tab over it).
+    Query(PathBuf),
 }
 
-const SHOWN_EXTENSIONS: &[&str] = &["sql", "ipynb", "txt", "sqlplan", "csv", "tsv", "json", "md", "toml", "py"];
+const SHOWN_EXTENSIONS: &[&str] = &["sql", "ipynb", "txt", "sqlplan", "csv", "tsv", "json", "md", "toml", "py", "parquet", "pq", "arrow", "feather", "jsonl", "ndjson", "tab", "psv", "dax"];
+const DATA_EXTENSIONS: &[&str] = &["csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "jsonl", "ndjson", "tab", "psv", "json"];
 
 pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FilesAction> {
     let mut actions = Vec::new();
@@ -102,6 +105,10 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
                 }
             }
             r.response.context_menu(|ui| {
+                if path.join("_delta_log").is_dir() && ui.button(format!("{} Query the Delta table locally", icons::LIGHTNING)).clicked() {
+                    actions.push(FilesAction::Query(path.clone()));
+                    ui.close();
+                }
                 if ui.button("New .sql file here…").clicked() {
                     actions.push(FilesAction::NewFile(path.clone()));
                     ui.close();
@@ -136,6 +143,10 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
             r.response.context_menu(|ui| {
                 if ui.button("Open").clicked() {
                     actions.push(FilesAction::Open(path.clone()));
+                    ui.close();
+                }
+                if path.extension().and_then(|e| e.to_str()).map(|e| DATA_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false) && ui.button(format!("{} Query as a local table", icons::LIGHTNING)).clicked() {
+                    actions.push(FilesAction::Query(path.clone()));
                     ui.close();
                 }
                 if ui.button("Reveal in file manager").clicked() {

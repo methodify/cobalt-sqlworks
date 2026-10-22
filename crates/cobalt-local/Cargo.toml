@@ -18,3 +18,5 @@ parking_lot.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+deltalake = { workspace = true, features = ["datafusion"] }
+url = "2"

@@ -38,6 +38,8 @@ pub struct LocalTab {
     pub notes: Vec<String>,
     /// The engine's function names, for completion.
     pub functions: Arc<Vec<String>>,
+    /// A file (or Delta folder) this tab was opened on, for the toolbar's Import.
+    pub file: Option<std::path::PathBuf>,
 }
 
 /// A new Local query tab with `text`.
@@ -93,6 +95,60 @@ fn catalog(engine: &Engine) -> cobalt_core::DatabaseCatalog {
         cat.columns.insert(id, t.columns.clone());
     }
     cat
+}
+
+/// A file (Parquet, CSV, JSON lines, Arrow) or a Delta folder as a local table, with a Local
+/// tab over it (`SELECT * FROM <name> LIMIT 1000`, run). Returns the tab index.
+pub fn open_file_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path) -> Result<usize, String> {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "file".into());
+    let mut name = cobalt_local::sanitize_name(&stem);
+    if name.is_empty() {
+        name = "file".into();
+    }
+    let existing = cx.local.tables().into_iter().find(|t| matches!(&t.source, TableSource::File { path: p } if p == path)).map(|t| t.name);
+    let name = match existing {
+        Some(n) => n,
+        None => {
+            let base = name.clone();
+            let mut suffix = 2;
+            while cx.local.has_table(&name) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            name
+        }
+    };
+    let engine = Arc::clone(cx.local);
+    let p = path.to_path_buf();
+    let n = name.clone();
+    cx.session.handle().block_on(async move { engine.register_file(&n, &p).await })?;
+    let text = format!("SELECT *\nFROM {}\nLIMIT 1000", quote(&name));
+    let i = new_tab(state, cx, Some(text));
+    if let Some(l) = state.tabs[i].local.as_mut() {
+        l.file = Some(path.to_path_buf());
+    }
+    state.tabs[i].title = format!("{} · local", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(name.clone()));
+    state.tabs[i].custom_title = true;
+    state.active_tab = Some(i);
+    refresh_all_catalogs(state, cx);
+    run(state, cx, i, RunMode::All);
+    Ok(i)
+}
+
+/// Import the tab's file into a connection: the Import dialog on the active connected tab, or
+/// on a new query tab.
+pub fn import_file_into_connection(state: &mut AppState, cx: &Ctx, idx: usize) {
+    let Some(path) = state.tabs.get(idx).and_then(|t| t.local.as_ref()).and_then(|l| l.file.clone()) else { return };
+    let target = state.tabs.iter().position(|t| t.conn.is_connected() && t.notebook.is_none() && t.dashboard.is_none() && t.explore.is_none() && t.spark.is_none() && t.tabular.is_none() && t.local.is_none());
+    let target = match target {
+        Some(i) => i,
+        None => {
+            let (profile, db) = state.tabs.iter().find_map(|t| t.profile.as_ref().map(|p| (Some(p.id), t.conn.database().map(str::to_string)))).unwrap_or((None, None));
+            ops::new_query_tab(state, cx, profile, db, None, false)
+        }
+    };
+    state.active_tab = Some(target);
+    ops::open_import_dialog(state, cx, target, Some(path));
 }
 
 /// Open a Local query tab on a result set of a tab: `SELECT * FROM <its table> LIMIT 100`, run.
@@ -338,6 +394,7 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
                 break;
             }
         }
+        engine.sync_from_context().await;
         session.emit(Event::RunDone { tab, run: run_id, cancelled, failed, elapsed: started.elapsed(), total_rows });
         egui.request_repaint();
     });

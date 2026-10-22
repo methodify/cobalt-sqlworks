@@ -1086,8 +1086,10 @@ fn local_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 let src = match &t.source {
                     cobalt_local::TableSource::Result { title, .. } => format!("from {title}"),
                     cobalt_local::TableSource::File { path } => format!("file {}", path.display()),
+                    cobalt_local::TableSource::Statement => "made by a statement".to_string(),
                 };
-                let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {} rows · {} columns · {src}", icons::TABLE, t.name, crate::state::fmt_count(t.rows as u64), t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");
+                let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
+                let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {rows} · {} columns · {src}", icons::TABLE, t.name, t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local welcome table {}", t.name)));
                 if r.clicked() {
                     insert = Some(format!("SELECT *\nFROM {}\nLIMIT 100", crate::localq::quote(&t.name)));
@@ -1689,6 +1691,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let theme = f.theme;
     let mut cmds: Vec<Command> = Vec::new();
     let mut change_db: Option<String> = None;
+    let mut local_import = false;
     egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let tab = &f.state.tabs[idx];
@@ -1739,6 +1742,16 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 ui.separator();
                 if tool_button(ui, icons::TREE_STRUCTURE, "Est. plan", "The engine's logical and physical plan of the statement (Ctrl+L)", !running).clicked() {
                     cmds.push(Command::EstimatedPlan);
+                }
+                if let Some(file) = &l.file {
+                    ui.separator();
+                    let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    ui.label(RichText::new(format!("{} {name}", icons::FILE)).size(12.0).color(theme.text_muted)).on_hover_text(format!("{}\nRead on every scan; the table stays while this tab is open.", file.display()));
+                    let r = tool_button(ui, icons::UPLOAD_SIMPLE, "Import into a connection…", "Load this file into a table on a server (the Import dialog on a connected tab)", !running);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab local import"));
+                    if r.clicked() {
+                        local_import = true;
+                    }
                 }
             } else if tab.spark.is_some() {
                 // no connection, database list or plans on a Spark tab
@@ -1849,6 +1862,9 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         });
     });
     ui.painter().line_segment([ui.min_rect().left_bottom(), ui.min_rect().right_bottom()], Stroke::new(1.0, theme.border));
+    if local_import {
+        crate::localq::import_file_into_connection(f.state, f.cx, idx);
+    }
     if let Some(db) = change_db {
         ops::change_database(f.state, f.cx, idx, db);
     }

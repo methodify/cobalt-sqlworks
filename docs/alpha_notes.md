@@ -890,3 +890,25 @@ Agent: `local_query {text?, run?}`, `local_tables {action: list | rename | query
 `state.local_tables`, per-tab `local {running, notes}`; labels `query locally <set>`, `local
 table <name>`, `local column <table>.<col>`, `tab local tables`, `local table new name`,
 `settings local tsql sugar`, `local welcome table <name>`.
+
+## Local query, slice B: drop a file, query it (0.11.0)
+
+The thing you said you would have loved a year ago: drop a Parquet, CSV, TSV, JSON-lines or
+Arrow file (or a Delta folder) on the window and it is a table. The drop card now says *Open
+as a local table*; the tab that opens is a Local tab bound to the file, with `SELECT * FROM
+<name> LIMIT 1000` already run, so the grid, profiler, charts, exports and Run to File are
+there without any connection. The file is read on every scan (nothing is loaded into memory
+up front): a 5 GB Parquet costs nothing until you query it, and the row cap and fetch-more
+apply as usual. CSV delimiters and headers are sniffed, types inferred from the first 5,000
+rows; the Parquet footer gives the row count in the Local root; CSV and JSON show "—" until
+queried. The toolbar has the file chip and **Import into a connection…**, which takes the file
+to the Import dialog on a connected tab (or opens one). The Files sidebar lists data files now
+and offers *Query as a local table*; a folder with a `_delta_log` offers *Query the Delta
+table locally*. Delta reads go through delta-rs (deletion vectors, column mapping, the current
+version); when that fails the drop falls back to the Spark route as before. `CREATE EXTERNAL
+TABLE t STORED AS PARQUET LOCATION '…'` and `CREATE TABLE x AS SELECT …` work in a Local tab
+and the tables appear in the Local root after the run. Excel files and JSON arrays still go
+to the Import dialog (the engine reads neither).
+
+Agent: `local_tables {action: register_file, path}`; `drop` reports `LocalTable` and
+`DeltaFolder` for these paths. Labels: `tab local import`.

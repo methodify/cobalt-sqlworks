@@ -235,8 +235,10 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
         let src = match &t.source {
             cobalt_local::TableSource::Result { title, .. } => title.clone(),
             cobalt_local::TableSource::File { path } => path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            cobalt_local::TableSource::Statement => "made by a statement".to_string(),
         };
-        let detail = format!("{} rows · {} cols · {src}{}", crate::state::fmt_count(t.rows as u64), t.columns.len(), if t.live { " · arriving" } else { "" });
+        let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
+        let detail = format!("{rows} · {} cols · {src}{}", t.columns.len(), if t.live { " · arriving" } else { "" });
         let expanded = v.open.contains(&t.name);
         let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: true, expanded, loading: t.live, icon: icons::TABLE, icon_color: None, label: &t.name, detail: Some(&detail), selected: false, color_dot: None, kind: "table" });
         r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local table {}", t.name)));

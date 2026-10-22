@@ -13,7 +13,7 @@ use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use parking_lot::Mutex;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// The DataFusion version in the binary (for the status bar).
@@ -25,7 +25,10 @@ pub const ENGINE_VERSION: &str = "53";
 pub enum TableSource {
     /// A result set of an open tab (`tab` = the tab id, `set` = the set index in its run).
     Result { tab: String, set: usize, title: String },
+    /// A file (Parquet, CSV, JSON lines, Arrow) or a Delta folder, read on every scan.
     File { path: PathBuf },
+    /// A table a statement made (`CREATE TABLE … AS`, `CREATE EXTERNAL TABLE`).
+    Statement,
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -34,6 +37,8 @@ pub struct TableInfo {
     pub source: TableSource,
     pub columns: Vec<ColumnInfo>,
     pub rows: usize,
+    /// `false` when the count is not known without a scan (CSV, JSON, Arrow files).
+    pub rows_known: bool,
     /// `true` while the producing run is still streaming rows into it.
     pub live: bool,
 }
@@ -100,7 +105,7 @@ impl Engine {
         let _ = self.ctx.register_table(LATEST, provider);
         let mut r = self.registry.lock();
         let live = rs.state().is_live();
-        r.tables.insert(name.to_string(), Entry { info: TableInfo { name: name.to_string(), source, columns: rs.columns.clone(), rows: rs.row_count(), live }, rs: Some(rs) });
+        r.tables.insert(name.to_string(), Entry { info: TableInfo { name: name.to_string(), source, columns: rs.columns.clone(), rows: rs.row_count(), rows_known: true, live }, rs: Some(rs) });
         r.latest = Some(name.to_string());
         drop(r);
         self.bump();
@@ -161,6 +166,81 @@ impl Engine {
         Ok(())
     }
 
+    /// Register a file as a table: Parquet, CSV / TSV / delimited text (header and delimiter
+    /// sniffed), JSON lines, Arrow IPC, or a Delta folder (through delta-rs). It also becomes `_`.
+    pub async fn register_file(&self, name: &str, path: &Path) -> Result<TableInfo, String> {
+        let path_str = path.to_string_lossy().replace('\\', "/");
+        let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+        let dot_ext = format!(".{ext}");
+        let _ = self.ctx.deregister_table(name);
+        let mut rows: Option<usize> = None;
+        if path.is_dir() {
+            if !path.join("_delta_log").is_dir() {
+                return Err("a folder is a table only when it is a Delta table (it has a _delta_log)".into());
+            }
+            let url = url::Url::from_directory_path(path).map_err(|_| "the folder's path is not absolute".to_string())?;
+            let table = deltalake::open_table(url).await.map_err(|e| format!("could not open the Delta table: {e}"))?;
+            let provider = table.table_provider().await.map_err(|e| format!("Delta table provider: {e}"))?;
+            self.ctx.register_table(name, provider).map_err(|e| e.to_string())?;
+        } else {
+            match ext.as_str() {
+                "parquet" | "pq" => {
+                    self.ctx.register_parquet(name, &path_str, datafusion::prelude::ParquetReadOptions::default().file_extension(&dot_ext)).await.map_err(|e| friendly(e.to_string()))?;
+                    rows = parquet_rows(path);
+                }
+                "csv" | "tsv" | "tab" | "psv" | "txt" => {
+                    let delimiter = match ext.as_str() {
+                        "tsv" | "tab" => b'\t',
+                        "psv" => b'|',
+                        _ => sniff_delimiter(path).unwrap_or(b','),
+                    };
+                    self.ctx.register_csv(name, &path_str, datafusion::prelude::CsvReadOptions::new().has_header(true).delimiter(delimiter).file_extension(&dot_ext).schema_infer_max_records(5000)).await.map_err(|e| friendly(e.to_string()))?;
+                }
+                "jsonl" | "ndjson" | "json" => {
+                    self.ctx.register_json(name, &path_str, datafusion::prelude::JsonReadOptions::default().file_extension(&dot_ext).schema_infer_max_records(5000)).await.map_err(|e| friendly(e.to_string()))?;
+                }
+                "arrow" | "feather" | "ipc" | "arrows" => {
+                    self.ctx.register_arrow(name, &path_str, datafusion::datasource::file_format::options::ArrowReadOptions { file_extension: &dot_ext, ..Default::default() }).await.map_err(|e| friendly(e.to_string()))?;
+                }
+                _ => return Err(format!("{}: not a file the local engine reads (Parquet, CSV / TSV / delimited text, JSON lines, Arrow IPC, or a Delta folder)", path.display())),
+            }
+        }
+        let provider = self.ctx.table_provider(name).await.map_err(|e| e.to_string())?;
+        let columns = columns_for(&provider.schema());
+        let _ = self.ctx.deregister_table(LATEST);
+        let _ = self.ctx.register_table(LATEST, provider);
+        let info = TableInfo { name: name.to_string(), source: TableSource::File { path: path.to_path_buf() }, columns, rows: rows.unwrap_or(0), rows_known: rows.is_some(), live: false };
+        let mut r = self.registry.lock();
+        r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
+        r.latest = Some(name.to_string());
+        drop(r);
+        self.bump();
+        Ok(info)
+    }
+
+    /// Tables a statement created in the engine (`CREATE TABLE … AS`, `CREATE EXTERNAL TABLE`)
+    /// that the registry does not know yet; tables a statement dropped leave the registry.
+    pub async fn sync_from_context(&self) {
+        let Some(schema) = self.ctx.catalog("datafusion").and_then(|c| c.schema("public")) else { return };
+        let names = schema.table_names();
+        let known: Vec<String> = self.registry.lock().tables.keys().cloned().collect();
+        let mut changed = false;
+        for n in names.iter().filter(|n| n.as_str() != LATEST && !known.contains(n)) {
+            if let Ok(Some(p)) = schema.table(n).await {
+                let info = TableInfo { name: n.clone(), source: TableSource::Statement, columns: columns_for(&p.schema()), rows: 0, rows_known: false, live: false };
+                self.registry.lock().tables.insert(n.clone(), Entry { info, rs: None });
+                changed = true;
+            }
+        }
+        for k in known.iter().filter(|k| !names.contains(k)) {
+            self.registry.lock().tables.remove(k);
+            changed = true;
+        }
+        if changed {
+            self.bump();
+        }
+    }
+
     /// Every local table, with live row counts.
     pub fn tables(&self) -> Vec<TableInfo> {
         let r = self.registry.lock();
@@ -217,6 +297,37 @@ impl Engine {
         }
         Ok(out)
     }
+}
+
+/// The row count in a Parquet file's footer.
+fn parquet_rows(path: &Path) -> Option<usize> {
+    use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+    let f = std::fs::File::open(path).ok()?;
+    let r = SerializedFileReader::new(f).ok()?;
+    Some(r.metadata().file_metadata().num_rows().max(0) as usize)
+}
+
+/// The delimiter of a delimited text file, from its first line: the most frequent of `,` `;`
+/// `\t` `|` outside quotes.
+fn sniff_delimiter(path: &Path) -> Option<u8> {
+    use std::io::{BufRead, BufReader};
+    let f = std::fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(f).read_line(&mut line).ok()?;
+    let mut counts = [(b',', 0usize), (b';', 0), (b'\t', 0), (b'|', 0)];
+    let mut quoted = false;
+    for b in line.bytes() {
+        if b == b'"' {
+            quoted = !quoted;
+        } else if !quoted {
+            for c in counts.iter_mut() {
+                if c.0 == b {
+                    c.1 += 1;
+                }
+            }
+        }
+    }
+    counts.iter().max_by_key(|c| c.1).filter(|c| c.1 > 0).map(|c| c.0)
 }
 
 /// DataFusion's error text without the enum wrapper.

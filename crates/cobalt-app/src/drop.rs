@@ -57,6 +57,8 @@ pub enum DropAction {
     Dashboard,
     Explore,
     Import,
+    /// A data file the local engine reads: a local table with a Local tab over it.
+    LocalTable,
     Connections,
     AdsSettings,
     DeltaFolder,
@@ -77,9 +79,10 @@ impl DropAction {
             DropAction::Dashboard => "Open the dashboard".into(),
             DropAction::Explore => "Open in Explore".into(),
             DropAction::Import => "Import the data into the active connection".into(),
+            DropAction::LocalTable => "Open as a local table (query it here; Import into a connection from the tab)".into(),
             DropAction::Connections => "Import the connections".into(),
             DropAction::AdsSettings => "Import connections from Azure Data Studio settings".into(),
-            DropAction::DeltaFolder => "Query the Delta table in Spark SQL".into(),
+            DropAction::DeltaFolder => "Open the Delta table as a local table".into(),
             DropAction::Folder => "Open the folder in the Files sidebar".into(),
             DropAction::Unsupported => "Not a file Cobalt opens".into(),
         }
@@ -117,7 +120,8 @@ pub fn classify(path: &Path) -> DropAction {
         "dax" | "msdax" | "mdx" => return DropAction::Query { kind: QueryKind::Dax, sniffed: false },
         "hql" | "sparksql" => return DropAction::Query { kind: QueryKind::Spark, sniffed: false },
         "py" => return if name == "notebook-content.py" || head(path, 4096).contains("# Fabric notebook source") { DropAction::Notebook } else { DropAction::PythonNotebook },
-        e if DATA_EXTS.contains(&e) || BOOK_EXTS.contains(&e) => return DropAction::Import,
+        e if DATA_EXTS.contains(&e) => return DropAction::LocalTable,
+        e if BOOK_EXTS.contains(&e) => return DropAction::Import,
         _ => {}
     }
     let text = head(path, 64 * 1024);
@@ -129,7 +133,7 @@ pub fn classify(path: &Path) -> DropAction {
         "txt" => {
             // a query saved as text, else a delimited data file
             let kind = sniff_query(&text);
-            if kind != QueryKind::Unknown { DropAction::Query { kind, sniffed: true } } else { DropAction::Import }
+            if kind != QueryKind::Unknown { DropAction::Query { kind, sniffed: true } } else { DropAction::LocalTable }
         }
         "xml" => {
             if text.contains("<ShowPlanXML") { DropAction::Plan } else { DropAction::Unsupported }
@@ -255,6 +259,13 @@ pub fn drop_files(state: &mut AppState, cx: &Ctx, paths: &[PathBuf]) -> usize {
             },
             DropAction::Dashboard => crate::dashboard::open_path(state, cx, path.clone()),
             DropAction::Explore => crate::exploreq::open_path(state, cx, path).is_some(),
+            DropAction::LocalTable => match crate::localq::open_file_table(state, cx, path) {
+                Ok(_) => true,
+                Err(e) => {
+                    cx.toast(ToastKind::Warning, format!("{}: {e}", short(path)));
+                    false
+                }
+            },
             DropAction::Import => {
                 // the import lands in the active tab's connection; a tab is opened when there is none
                 let idx = match state.active_tab.filter(|&i| state.tabs.get(i).map(|t| !t.is_notebook() && !t.is_dashboard() && !t.is_explore() && t.spark.is_none() && t.tabular.is_none()).unwrap_or(false)) {
@@ -275,15 +286,20 @@ pub fn drop_files(state: &mut AppState, cx: &Ctx, paths: &[PathBuf]) -> usize {
                 state.dialog = crate::state::Dialog::AdsImport { path: path.to_string_lossy().to_string(), summary: None, error: None };
                 true
             }
-            DropAction::DeltaFolder => {
-                let (binding, names) = crate::sparkq::inherited_binding(state);
-                let text = format!("SELECT * FROM delta.`{}` LIMIT 100", path.display().to_string().replace('\\', "/"));
-                let idx = crate::sparkq::new_tab(state, cx, binding, names, Some(text));
-                let t = &mut state.tabs[idx];
-                t.title = format!("{} (Delta)", short(path));
-                t.custom_title = true;
-                true
-            }
+            DropAction::DeltaFolder => match crate::localq::open_file_table(state, cx, path) {
+                Ok(_) => true,
+                Err(e) => {
+                    // the local reader could not: the Spark session can
+                    cx.toast(ToastKind::Info, format!("{}: {e}; opening it in Spark SQL instead", short(path)));
+                    let (binding, names) = crate::sparkq::inherited_binding(state);
+                    let text = format!("SELECT * FROM delta.`{}` LIMIT 100", path.display().to_string().replace('\\', "/"));
+                    let idx = crate::sparkq::new_tab(state, cx, binding, names, Some(text));
+                    let t = &mut state.tabs[idx];
+                    t.title = format!("{} (Delta)", short(path));
+                    t.custom_title = true;
+                    true
+                }
+            },
             DropAction::Folder => {
                 state.files.root = Some(path.clone());
                 state.files.cache.clear();
@@ -458,12 +474,13 @@ mod tests {
         assert_eq!(classify(&w("a.sql", "SELECT 1")), DropAction::Query { kind: QueryKind::Unknown, sniffed: false });
         assert_eq!(classify(&w("b.sql", "SELECT * FROM t USING DELTA LIMIT 1 -- `x`")), DropAction::Query { kind: QueryKind::Spark, sniffed: true });
         assert_eq!(classify(&w("c.dax", "x")), DropAction::Query { kind: QueryKind::Dax, sniffed: false });
-        assert_eq!(classify(&w("d.txt", "a,b\n1,2")), DropAction::Import);
+        assert_eq!(classify(&w("d.txt", "a,b\n1,2")), DropAction::LocalTable);
         assert_eq!(classify(&w("e.txt", "EVALUATE 'T'")), DropAction::Query { kind: QueryKind::Dax, sniffed: true });
         assert_eq!(classify(&w("f.xml", "<ShowPlanXML xmlns=\"x\"/>")), DropAction::Plan);
         assert_eq!(classify(&w("g.xml", "<other/>")), DropAction::Unsupported);
-        assert_eq!(classify(&w("h.csv", "a,b")), DropAction::Import);
-        assert_eq!(classify(&w("i.parquet", "")), DropAction::Import);
+        assert_eq!(classify(&w("h.csv", "a,b")), DropAction::LocalTable);
+        assert_eq!(classify(&w("i.parquet", "")), DropAction::LocalTable);
+        assert_eq!(classify(&w("j.xlsx", "")), DropAction::Import);
         assert_eq!(classify(&w("notebook-content.py", "# Fabric notebook source\n")), DropAction::Notebook);
         assert_eq!(classify(&w("script.py", "print(1)")), DropAction::PythonNotebook);
         assert_eq!(classify(&w("p.cobalt-dash.json", "{}")), DropAction::Dashboard);

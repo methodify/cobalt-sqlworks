@@ -971,6 +971,14 @@ impl AgentApp for CobaltApp {
                         let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
                         self.with_ctx(egui, |s, cx| ops::tree_action(s, cx, crate::ui::servers::TreeAction::LocalQuery(Some(name))));
                     }
+                    // register_file: a file or Delta folder as a local table with a Local tab over it
+                    "register_file" => {
+                        let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                        let r = self.with_ctx(egui, |s, cx| crate::localq::open_file_table(s, cx, std::path::Path::new(&path)));
+                        if let Err(e) = r {
+                            return ActionResult::BadArgs(e);
+                        }
+                    }
                     _ => {}
                 }
                 egui.request_repaint();

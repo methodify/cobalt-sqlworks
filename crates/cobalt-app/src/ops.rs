@@ -2021,6 +2021,11 @@ pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAc
         }
         A::Refresh => state.files.cache.clear(),
         A::Open(p) => open_file(state, cx, Some(p)),
+        A::Query(p) => {
+            if let Err(e) = crate::localq::open_file_table(state, cx, &p) {
+                cx.toast(ToastKind::Warning, e);
+            }
+        }
         A::NewFile(dir) => {
             if let Some(p) = rfd::FileDialog::new().set_directory(&dir).add_filter("SQL", &["sql"]).set_file_name("query.sql").save_file() {
                 if !p.exists() {
