@@ -130,6 +130,8 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.label("Row cap per result set (0 = unlimited)");
                 ui.add(egui::DragValue::new(&mut draft.execution.row_cap).range(0..=100_000_000).speed(1000));
             });
+            let r = ui.checkbox(&mut draft.local.tsql_sugar, "Local queries: rewrite T-SQL habits ([brackets], TOP n, ISNULL, GETDATE(), LEN) for the local engine, noted in Messages");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "settings local tsql sugar"));
             ui.horizontal(|ui| {
                 ui.label("Command timeout (seconds, 0 = none)");
                 ui.add(egui::DragValue::new(&mut draft.execution.command_timeout_secs).range(0..=86_400));
@@ -408,7 +410,10 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     Tab::Appearance => draft.appearance = d.appearance,
                     Tab::Fonts => draft.fonts = d.fonts,
                     Tab::Editor => draft.editor = d.editor,
-                    Tab::Execution => draft.execution = d.execution,
+                    Tab::Execution => {
+                        draft.execution = d.execution;
+                        draft.local = d.local;
+                    }
                     Tab::Results => {
                         draft.results = d.results;
                         draft.export = d.export;

@@ -99,6 +99,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::NewNotebook);
                 item(ui, &mut cmds, Command::NewSparkQuery);
                 item(ui, &mut cmds, Command::NewDaxQuery);
+                item(ui, &mut cmds, Command::NewLocalQuery);
                 item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
@@ -204,6 +205,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 ui.separator();
                 item(ui, &mut cmds, Command::NewSparkQuery);
                 item(ui, &mut cmds, Command::NewDaxQuery);
+                item(ui, &mut cmds, Command::NewLocalQuery);
                 item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::ShowLakehouse);
                 ui.separator();
@@ -317,7 +319,9 @@ fn sidebar(ui: &mut Ui, f: &mut Frame<'_>) {
             let spark_active = f.state.active().map(|t| t.spark.is_some()).unwrap_or(false);
             let mut spark_expanded = f.state.spark_root_expanded;
             let tabular = servers::TabularRootView { root: &f.state.tabular, models: &f.state.model_catalogs, tree_expanded: &f.state.model_tree_expanded, show_hidden: f.state.model_show_hidden };
-            let actions = servers::show(ui, &mut f.state.library, theme, active_profile, &spark_root, &mut spark_expanded, spark_active, tabular);
+            let local_tables = f.cx.local.tables();
+            let local = servers::LocalRootView { tables: &local_tables, expanded: f.state.local_root_expanded, open: &f.state.local_expanded, active: f.state.active().map(|t| t.local.is_some()).unwrap_or(false) };
+            let actions = servers::show(ui, &mut f.state.library, theme, active_profile, &spark_root, &mut spark_expanded, spark_active, tabular, local);
             f.state.spark_root_expanded = spark_expanded;
             for a in actions {
                 ops::tree_action(f.state, f.cx, a);
@@ -397,6 +401,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     let mut new_spark = false;
     let mut new_tab_kind: Option<&str> = None;
     let mut new_dax = false;
+    let mut new_local = false;
     egui::Frame::new().fill(theme.bg_sidebar).show(ui, |ui| {
         ui.set_width(ui.available_width());
         egui::ScrollArea::horizontal().id_salt("tabs-scroll").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
@@ -491,6 +496,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 let (default_label, default_key) = match default_kind.as_str() {
                     "spark" => ("Spark SQL query", ""),
                     "dax" => ("DAX query", ""),
+                    "local" => ("local query", ""),
                     "notebook" => ("notebook", " (Ctrl+Shift+N)"),
                     _ => ("query", " (Ctrl+N)"),
                 };
@@ -501,7 +507,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 }
                 ui.painter().text(crect.center(), egui::Align2::CENTER_CENTER, icons::CARET_DOWN, egui::FontId::proportional(11.0), theme.text_faint);
                 cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab menu"));
-                let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_dax: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
+                let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_dax: &mut bool, new_local: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
                     ui.set_min_width(230.0);
                     if ui.button(format!("{} New query{}", icons::DATABASE, if default_kind == "query" { "   (default)" } else { "" })).clicked() {
                         *new_tab = true;
@@ -515,25 +521,30 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                         *new_dax = true;
                         ui.close();
                     }
+                    if ui.button(format!("{} New local query{}", icons::LIGHTNING, if default_kind == "local" { "   (default)" } else { "" })).on_hover_text("SQL over the results of open tabs (and files), in-process: join, aggregate, diff, no server round trip").clicked() {
+                        *new_local = true;
+                        ui.close();
+                    }
                     if ui.button(format!("{} New notebook{}", icons::NOTEBOOK, if default_kind == "notebook" { "   (default)" } else { "" })).clicked() {
                         *new_notebook = true;
                         ui.close();
                     }
                     ui.separator();
                     ui.label(RichText::new("A click on + opens").size(11.0).color(theme.text_muted));
-                    for (k, label) in [("query", "a query"), ("spark", "a Spark SQL query"), ("dax", "a DAX query"), ("notebook", "a notebook")] {
+                    for (k, label) in [("query", "a query"), ("spark", "a Spark SQL query"), ("dax", "a DAX query"), ("local", "a local query"), ("notebook", "a notebook")] {
                         if ui.selectable_label(default_kind == k, label).clicked() {
                             *new_tab_kind = Some(k);
                             ui.close();
                         }
                     }
                 };
-                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_notebook, &mut new_tab_kind));
-                resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_notebook, &mut new_tab_kind));
+                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
+                resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
                 if resp.on_hover_text(format!("New {default_label}{default_key} · the arrow (or a right-click) offers the other kinds")).clicked() {
                     match default_kind.as_str() {
                         "spark" => new_spark = true,
                         "dax" => new_dax = true,
+                        "local" => new_local = true,
                         "notebook" => new_notebook = true,
                         _ => new_tab = true,
                     }
@@ -579,6 +590,9 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     }
     if new_dax {
         dispatch(f, Command::NewDaxQuery);
+    }
+    if new_local {
+        dispatch(f, Command::NewLocalQuery);
     }
     if new_notebook {
         dispatch(f, Command::NewNotebook);
@@ -1051,6 +1065,79 @@ fn spark_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     }
 }
 
+/// The getting-started pane of an empty Local tab: the tables in scope, starting points, dialect notes.
+fn local_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
+    let theme = f.theme;
+    let tables = f.cx.local.tables();
+    let mut insert: Option<String> = None;
+    let mut cmd: Option<Command> = None;
+    egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+        ui.set_min_size(ui.available_size());
+        egui::ScrollArea::vertical().id_salt("local-welcome-pane").auto_shrink([false, false]).show(ui, |ui| {
+            ui.label(RichText::new("SQL over your results, locally").size(18.0).color(theme.accent));
+            ui.add_space(4.0);
+            ui.label(RichText::new("Every result set of every open tab is a table here, the moment it arrives; so is every file you drop on the window (soon). Join a production result to a development one, aggregate, diff, pivot: nothing goes back to a server.").size(12.0));
+            ui.add_space(8.0);
+            ui.label(RichText::new("Local tables").size(12.0).color(theme.text_muted));
+            if tables.is_empty() {
+                ui.label(RichText::new("None yet. Run a query in any tab and come back; its result will be listed here by the tab's name.").size(12.0).color(theme.text_faint));
+            }
+            for t in &tables {
+                let src = match &t.source {
+                    cobalt_local::TableSource::Result { title, .. } => format!("from {title}"),
+                    cobalt_local::TableSource::File { path } => format!("file {}", path.display()),
+                };
+                let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {} rows · {} columns · {src}", icons::TABLE, t.name, crate::state::fmt_count(t.rows as u64), t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local welcome table {}", t.name)));
+                if r.clicked() {
+                    insert = Some(format!("SELECT *\nFROM {}\nLIMIT 100", crate::localq::quote(&t.name)));
+                }
+            }
+            ui.add_space(12.0);
+            ui.label(RichText::new("Starting points").size(12.0).color(theme.text_muted));
+            let latest = f.cx.local.latest().unwrap_or_else(|| "_".into());
+            for (label, text) in [
+                ("The latest result", format!("SELECT *\nFROM {}\nLIMIT 100", crate::localq::quote(&latest))),
+                ("Join two results", "SELECT a.*, b.*\nFROM first_table a\nJOIN second_table b ON a.id = b.id".to_string()),
+                ("Rows in one result and not the other", "SELECT a.*\nFROM first_table a\nLEFT JOIN second_table b ON a.id = b.id\nWHERE b.id IS NULL".to_string()),
+                ("Group and count", "SELECT col, count(*) AS n\nFROM _\nGROUP BY col\nORDER BY n DESC".to_string()),
+            ] {
+                let r = ui.add(egui::Button::new(RichText::new(format!("{}  {label}", icons::CODE)).size(12.0)).frame(false)).on_hover_text(&text);
+                if r.clicked() {
+                    insert = Some(text.clone());
+                }
+            }
+            ui.add_space(12.0);
+            ui.label(RichText::new("Good to know").size(12.0).color(theme.text_muted));
+            for tip in [
+                "The dialect is DataFusion's (PostgreSQL-flavoured): LIMIT not TOP, \"quoted\" or `quoted` names not [brackets], || concatenates, ILIKE, date_trunc(), arrow_typeof(). The usual T-SQL habits are rewritten for you and noted in Messages.",
+                "_ (underscore) is always the most recent result; a tab's result is named after the tab (sqlquery_1, sqlquery_1_2 for a second set); rename it in the Servers tree under Local.",
+                "Tables live only while their tab is open and are replaced when it runs again; nothing is copied or written to disk.",
+                "Ctrl+Space completes table names, columns and the engine's functions; Est. plan shows the plan.",
+                "Every result of a Local tab is a table too, so queries chain.",
+            ] {
+                ui.label(RichText::new(format!("•  {tip}")).size(12.0));
+            }
+            ui.add_space(10.0);
+            if ui.add(egui::Button::new(format!("{}  Open the Servers tree (Local root)", icons::HARD_DRIVES)).min_size(Vec2::new(230.0, 30.0))).clicked() {
+                cmd = Some(Command::ShowServers);
+            }
+            ui.add_space(14.0);
+            if ui.add(egui::Button::new(RichText::new("Hide this pane").size(11.0)).frame(false)).on_hover_text("Settings › Appearance brings it back").clicked() {
+                f.state.settings_patch.push(SettingsPatch::ShowWelcome(false));
+            }
+        });
+    });
+    if let Some(text) = insert {
+        let t = &mut f.state.tabs[idx];
+        crate::sparkq::insert_at_cursor(t, &text);
+        t.editor.request_focus = true;
+    }
+    if let Some(c) = cmd {
+        dispatch(f, c);
+    }
+}
+
 /// The getting-started pane of an empty DAX tab: the model, how to change it, what to type.
 fn dax_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let theme = f.theme;
@@ -1180,6 +1267,9 @@ fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     if f.state.tabs[idx].tabular.is_some() {
         return dax_welcome_pane(ui, f, idx);
     }
+    if f.state.tabs[idx].local.is_some() {
+        return local_welcome_pane(ui, f, idx);
+    }
     let theme = f.theme;
     let tab_id = f.state.tabs[idx].id;
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
@@ -1258,7 +1348,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         t.text.is_empty() && t.profile.is_none() && t.run.is_none() && !t.custom_title && t.file_path.is_none() && !t.conn.is_connected()
     };
     if pristine && f.cx.settings.appearance.show_welcome {
-        if f.state.tabs[idx].spark.is_some() || f.state.tabs[idx].tabular.is_some() {
+        if f.state.tabs[idx].spark.is_some() || f.state.tabs[idx].tabular.is_some() || f.state.tabs[idx].local.is_some() {
             editor_toolbar(ui, f, idx);
         }
         let avail = ui.available_rect_before_wrap();
@@ -1626,6 +1716,30 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     cmds.push(Command::ChangeConnection);
                 }
                 ui.label(RichText::new(tt.target.host_label()).size(12.0).color(theme.text_muted));
+            } else if let Some(l) = &tab.local {
+                let tables = f.cx.local.tables();
+                ui.label(RichText::new(icons::LIGHTNING).color(theme.accent));
+                let mut hover = format!("Local query engine (DataFusion {}): SQL over the local tables, in-process.\n", cobalt_local::ENGINE_VERSION);
+                if tables.is_empty() {
+                    hover.push_str("No local tables yet: run a query in any tab and its result becomes one.");
+                } else {
+                    hover.push_str("Tables:\n");
+                    for t in tables.iter().take(20) {
+                        hover.push_str(&format!("  {}  ({} rows, {} columns)\n", t.name, t.rows, t.columns.len()));
+                    }
+                }
+                if !l.notes.is_empty() {
+                    hover.push_str(&format!("\nLast run rewrote: {}", l.notes.join("; ")));
+                }
+                let r = ui.add(egui::Button::new(RichText::new(format!("Local · {} table{}", tables.len(), if tables.len() == 1 { "" } else { "s" })).size(13.0)).frame(false)).on_hover_text(hover);
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab local tables"));
+                if r.clicked() {
+                    cmds.push(Command::ShowServers);
+                }
+                ui.separator();
+                if tool_button(ui, icons::TREE_STRUCTURE, "Est. plan", "The engine's logical and physical plan of the statement (Ctrl+L)", !running).clicked() {
+                    cmds.push(Command::EstimatedPlan);
+                }
             } else if tab.spark.is_some() {
                 // no connection, database list or plans on a Spark tab
             } else {
@@ -1768,6 +1882,9 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         r.on_hover_text(e);
                     }
                     ui.label(RichText::new(tt.transport_label(f.cx.settings)).color(theme.text_faint)).on_hover_text("The transport of the last run (Settings › Connections › Semantic models chooses: Auto, Arrow query API or XMLA)");
+                } else if t.local.is_some() {
+                    ui.label(RichText::new(icons::LIGHTNING).color(theme.accent).size(11.0));
+                    ui.label(format!("Local · DataFusion {} · {} tables", cobalt_local::ENGINE_VERSION, f.cx.local.tables().len()));
                 } else if let Some(sp) = &t.spark {
                     let (label, ready) = crate::sparkq::session_label(f.state, &f.cx.settings.spark);
                     ui.label(RichText::new(icons::CIRCLE).color(if ready { theme.success } else { theme.text_muted }).size(9.0));
@@ -1860,7 +1977,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else if t.local.is_some() { "Local SQL" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
@@ -1976,6 +2093,9 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
             if ask && state.fabric.slot.is_some() {
                 state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: None };
             }
+        }
+        Command::NewLocalQuery => {
+            crate::localq::new_tab(state, cx, None);
         }
         Command::NewDaxQuery => {
             // inherit the active tab's model, else ask
@@ -2128,6 +2248,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                     crate::tabularq::open_chooser(state, cx, Some(i), t.explore.is_some());
                     return;
                 }
+                if t.local.is_some() {
+                    cx.toast(ToastKind::Info, "A Local tab queries the local tables (results of open tabs); it has no connection.");
+                    return;
+                }
                 if t.spark.is_some() {
                     let ws = t.spark.as_ref().and_then(|s| s.binding.as_ref()).map(|b| b.workspace_id.clone());
                     state.dialog = Dialog::SparkLakehouse { tab_index: Some(i), workspace: ws };
@@ -2153,6 +2277,10 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
                 if state.tabs[i].tabular.is_some() {
                     let explore = state.tabs[i].explore.is_some();
                     crate::tabularq::open_chooser(state, cx, Some(i), explore);
+                    return;
+                }
+                if state.tabs[i].local.is_some() {
+                    cx.toast(ToastKind::Info, "A Local tab queries the local tables (results of open tabs); it has no connection.");
                     return;
                 }
                 if state.tabs[i].spark.is_some() {

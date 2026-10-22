@@ -101,6 +101,7 @@ impl CobaltApp {
                             "col_keys": p.col_keys.iter().take(12).map(|k| k.labels.clone()).collect::<Vec<_>>()})),
                         "filter_editor": e.filter_editor.as_ref().map(|f| json!({"table": f.table, "column": f.column, "op": f.op})),
                     })),
+                    "local": t.local.as_ref().map(|l| json!({"running": t.is_running(), "notes": l.notes})),
                     "tabular": t.tabular.as_ref().map(|tt| json!({"target": tt.target, "model": tt.target.model(), "host": tt.target.host_label(), "last_limit": tt.last_limit, "force_xmla": tt.force_xmla, "transport_setting": self.settings.semantic.transport.clone(), "transport": tt.transport, "profile": tt.profile.map(|p| p.to_string()), "catalog": match self.state.model_catalogs.get(&tt.model_key()) { Some(crate::state::Loadable::Loaded(c)) => json!({"tables": c.tables.len(), "measures": c.measure_count(), "columns": c.column_count(), "expressions_hidden": c.expressions_hidden}), Some(crate::state::Loadable::Loading) => json!("loading"), Some(crate::state::Loadable::Failed(e)) => json!({"error": e}), _ => Value::Null }})),
                     "spark": t.spark.as_ref().map(|s| json!({"workspace_id": s.binding.as_ref().map(|b| b.workspace_id.clone()), "lakehouse_id": s.binding.as_ref().and_then(|b| b.lakehouse_id.clone()), "write_mode": s.binding.as_ref().map(|b| b.write_mode.clone()), "workspace_name": s.workspace_name, "lakehouse_name": s.lakehouse_name, "pending_run": t.pending_run.map(|m| format!("{m:?}"))})),
                     "file_path": t.file_path.as_ref().map(|p| p.to_string_lossy().to_string()),
@@ -148,6 +149,7 @@ impl CobaltApp {
             "toasts": self.state.recent_toasts.iter().cloned().collect::<Vec<_>>(),
             "sidebar": format!("{:?}", self.state.sidebar_view),
             "font_packs": crate::fonts::requested(),
+            "local_tables": self.local.tables(),
             "theme": if self.theme.is_dark() { "dark" } else { "light" },
         })
     }
@@ -167,6 +169,7 @@ impl CobaltApp {
                 fabric_tx: &self.fabric_tx_ref(),
                 egui,
                 toasts: &toasts,
+                local: &self.local,
             };
             f(&mut self.state, &cx)
         };
@@ -212,6 +215,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         Rename { .. } => "rename",
         SparkLakehouse { .. } => "spark_lakehouse",
         ChooseModel { .. } => "choose_model",
+        RenameLocalTable { .. } => "rename_local_table",
         AdsImport { .. } => "ads_import",
         UpdateAvailable { .. } => "update_available",
     }
@@ -939,6 +943,38 @@ impl AgentApp for CobaltApp {
                 let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
                 self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
                 ActionResult::with(&json!({"tab": self.state.active_tab}))
+            }
+            // local_query: a Local query tab — {text?, run?: bool}; local_tables: {action: list | rename | query, name, to}
+            "local_query" => {
+                let text = arg_str(args, "text");
+                let run = args.and_then(|a| a.get("run")).and_then(Value::as_bool).unwrap_or(false);
+                let idx = self.with_ctx(egui, |s, cx| {
+                    let i = crate::localq::new_tab(s, cx, text);
+                    s.active_tab = Some(i);
+                    if run {
+                        crate::localq::run(s, cx, i, crate::state::RunMode::All);
+                    }
+                    i
+                });
+                ActionResult::with(&json!({"tab": idx, "title": self.state.tabs[idx].title}))
+            }
+            "local_tables" => {
+                let action = arg_str(args, "action").unwrap_or_else(|| "list".into());
+                match action.as_str() {
+                    "rename" => {
+                        let (Some(name), Some(to)) = (arg_str(args, "name"), arg_str(args, "to")) else { return ActionResult::BadArgs("name and to are required".into()) };
+                        if let Err(e) = self.local.rename(&name, &to) {
+                            return ActionResult::BadArgs(e);
+                        }
+                    }
+                    "query" => {
+                        let Some(name) = arg_str(args, "name") else { return ActionResult::BadArgs("name is required".into()) };
+                        self.with_ctx(egui, |s, cx| ops::tree_action(s, cx, crate::ui::servers::TreeAction::LocalQuery(Some(name))));
+                    }
+                    _ => {}
+                }
+                egui.request_repaint();
+                ActionResult::with(&json!({"tables": self.local.tables(), "latest": self.local.latest(), "functions": self.local.functions().len()}))
             }
             // fonts: the font manager — {action: state | download | remove | refresh | set_ui | set_mono | suggest, id?, value?}
             "fonts" => {
@@ -1950,6 +1986,7 @@ impl CobaltApp {
                 fabric_tx: &self.fabric_tx_ref(),
                 egui,
                 toasts: &toasts,
+                local: &self.local,
             };
             let mut f = crate::ui::shell::Frame { state: &mut self.state, cx: &cx, theme: &theme, keymap: &self.keymap };
             crate::ui::shell::dispatch(&mut f, c);

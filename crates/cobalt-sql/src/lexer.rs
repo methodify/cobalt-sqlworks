@@ -241,11 +241,21 @@ pub enum Dialect {
     TSql,
     /// Spark SQL on the local session: `` `name` ``, `"text"` strings, Spark keywords and functions.
     Spark,
+    /// The local engine (DataFusion): backticks and `"` quote names, Spark's keyword set, the
+    /// engine's own function names (supplied by the host).
+    Local,
     /// DAX against a semantic model: `'Table'` quoted table names ([`TokenKind::QuotedIdentifier`]),
     /// `[Column or Measure]` ([`TokenKind::BracketedIdentifier`]), `"text"` strings, `//` as well
     /// as `--` line comments, `INFO.VIEW.TABLES` dotted function names kept as one token, and any
     /// identifier followed by `(` lexed as a [`TokenKind::Function`].
     Dax,
+}
+
+impl Dialect {
+    /// Spark SQL and the local engine share quoting and keywords.
+    pub fn is_sparkish(self) -> bool {
+        matches!(self, Dialect::Spark | Dialect::Local)
+    }
 }
 
 /// DAX keywords (uppercase): the query statements and the operators spelled as words.
@@ -306,7 +316,7 @@ pub fn is_keyword(word: &str) -> bool {
 pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
     let set = match dialect {
         Dialect::TSql => &*KEYWORD_SET,
-        Dialect::Spark => &*SPARK_KEYWORD_SET,
+        Dialect::Spark | Dialect::Local => &*SPARK_KEYWORD_SET,
         Dialect::Dax => &*DAX_KEYWORD_SET,
     };
     set.contains(word.to_ascii_uppercase().as_str())
@@ -486,12 +496,12 @@ impl<'a> Lexer<'a> {
                 self.consume_delimited('"');
                 self.push(if self.dialect == Dialect::TSql { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
-            b'`' if self.dialect == Dialect::Spark => {
+            b'`' if self.dialect.is_sparkish() => {
                 self.pos += 1;
                 self.consume_delimited('`');
                 self.push(TokenKind::QuotedIdentifier, start);
             }
-            b'[' if self.dialect == Dialect::Spark => {
+            b'[' if self.dialect.is_sparkish() => {
                 self.pos += 1;
                 self.push(TokenKind::Punct, start);
             }
@@ -598,7 +608,7 @@ impl<'a> Lexer<'a> {
         }
         let (functions, keywords) = match self.dialect {
             Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
-            Dialect::Spark => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
+            Dialect::Spark | Dialect::Local => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
             Dialect::Dax => unreachable!(),
         };
         if functions.contains(upper.as_str()) && self.next_nonspace_is_paren() {

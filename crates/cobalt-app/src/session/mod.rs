@@ -65,6 +65,22 @@ pub struct SessionManager {
     next_req: Arc<AtomicU64>,
     next_run: Arc<AtomicU64>,
     driver: Arc<dyn Driver>,
+    events_tx: crossbeam_channel::Sender<Event>,
+    repaint: Arc<dyn Fn() + Send + Sync>,
+}
+
+/// Emits events the way the actors do, from any thread (app-side runs: the local engine).
+#[derive(Clone)]
+pub struct Emitter {
+    tx: crossbeam_channel::Sender<Event>,
+    repaint: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Emitter {
+    pub fn emit(&self, ev: Event) {
+        let _ = self.tx.send(ev);
+        (self.repaint)();
+    }
 }
 
 impl SessionManager {
@@ -79,6 +95,8 @@ impl SessionManager {
             .build()
             .expect("tokio runtime");
         let handle = runtime.handle().clone();
+        let events_tx = etx.clone();
+        let repaint_app = Arc::clone(&repaint);
         let shared = Shared { events: etx, repaint, driver: driver.clone(), budget, spill_dir, refresh };
         std::thread::Builder::new()
             .name("cobalt-session-main".into())
@@ -86,7 +104,7 @@ impl SessionManager {
                 runtime.block_on(dispatcher(rx, shared));
             })
             .expect("session thread");
-        Self { tx, events: erx, handle, next_req: Arc::new(AtomicU64::new(1)), next_run: Arc::new(AtomicU64::new(1)), driver }
+        Self { tx, events: erx, handle, next_req: Arc::new(AtomicU64::new(1)), next_run: Arc::new(AtomicU64::new(1)), driver, events_tx, repaint: repaint_app }
     }
 
     pub fn driver(&self) -> Arc<dyn Driver> {
@@ -110,6 +128,17 @@ impl SessionManager {
 
     pub fn new_run(&self) -> RunId {
         RunId(self.next_run.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// Emit an event the way the actors do (app-side runs: the local engine).
+    pub fn emit(&self, ev: Event) {
+        let _ = self.events_tx.send(ev);
+        (self.repaint)();
+    }
+
+    /// A cloneable emitter for a task on the runtime.
+    pub fn emitter(&self) -> Emitter {
+        Emitter { tx: self.events_tx.clone(), repaint: Arc::clone(&self.repaint) }
     }
 
     /// Run an arbitrary future on the session runtime (credential flows, exports).

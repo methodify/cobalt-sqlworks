@@ -842,3 +842,51 @@ requested packs, the chosen fonts, downloads in flight, the current suggestion),
 `{action: suggest, pack: "MiddleEast"}` (shows the card for a pack as if it had no system
 font). Labels: `settings tab Fonts`, `settings ui-font`, `settings mono-font`, `font pack
 download <id>`, `font pack remove <id>`, `font suggestion download`, `font suggestion later`.
+
+## Local query: SQL over your results, in-process (0.11.0, slice A)
+
+The V2 bet from the product design, built: a DataFusion engine inside the app. Run any query
+in any tab (SQL Server, Fabric, Spark, DAX, Explore) and its result is a **local table** named
+after the tab: `sqlquery_1`, `sqlquery_1_2` for a second result set, and `_` for whatever
+arrived last. Nothing is copied or written: the engine reads the chunks the grid already holds
+(spilled ones through the same cache), and the table disappears when the tab closes or runs
+again, so a session that never opens a Local tab pays nothing.
+
+**Local query tab**: + › New local query (or File, or "A click on + opens"). The editor knows
+the local tables, their columns and the engine's functions (Ctrl+Space). The dialect is
+DataFusion's, PostgreSQL-flavoured, with the T-SQL habits rewritten for you and reported in
+Messages: `[brackets]`, `TOP n`, `ISNULL`, `GETDATE()`, `LEN` (Settings › Query execution turns
+that off). F5 runs every statement, Ctrl+Enter the one under the caret, Cancel stops, the row
+cap pauses exactly at the cap and "fetch more" continues, Est. plan (Ctrl+L) prints the
+logical and physical plan in Messages. Results land in the normal grid with everything it
+does (sort, filter, find, totals, charts, profile, export, Run to File, pin), and each result
+is a table too, so a chain of Local tabs refines step by step.
+
+**Query this result**: the funnel button on any result set's toolbar opens a Local tab with
+`SELECT * FROM <its table> LIMIT 100` already run. **The Servers tree has a Local root** with
+the tables (rows, columns, the producing tab, "arriving" while it streams); expand one for
+its columns, double-click to query it, right-click for Query / Reveal the tab / Rename. A
+renamed table keeps its name until its tab runs again.
+
+The demo from the design: run a query on production in one tab and the same on development
+in another, then in a Local tab:
+
+```sql
+SELECT p.id, p.amount AS prod, d.amount AS dev
+FROM prod_orders p FULL OUTER JOIN dev_orders d ON p.id = d.id
+WHERE p.amount IS DISTINCT FROM d.amount
+```
+
+Performance was measured before and after on a million-row stream: 4.2 s both times, with
+streaming and scrolling frame times within noise, because registering a result is one Arc
+clone. The engine's memory pool is the app's memory budget (Settings › Advanced); its sorts,
+joins and aggregates spill to the spill directory past it. The debug binary grew by about 45
+MB with DataFusion in it; release builds will show the real number at the next tag.
+
+Not in this slice (B–D in the design): files and Delta folders as tables, Diff, Explore over
+local tables, chained notebook cells, scratch persistence, OneLake reads.
+
+Agent: `local_query {text?, run?}`, `local_tables {action: list | rename | query, name, to}`,
+`state.local_tables`, per-tab `local {running, notes}`; labels `query locally <set>`, `local
+table <name>`, `local column <table>.<col>`, `tab local tables`, `local table new name`,
+`settings local tsql sugar`, `local welcome table <name>`.

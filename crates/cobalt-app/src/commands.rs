@@ -16,6 +16,8 @@ pub enum Command {
     NewSparkQuery,
     /// A DAX query tab on a semantic model (inherits the active tab's model, else a chooser).
     NewDaxQuery,
+    /// A Local query tab: SQL over the local tables (results of open tabs, files).
+    NewLocalQuery,
     NewNotebook,
     NewDashboard,
     OpenFile,
@@ -178,6 +180,7 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::NewQuery, id: "file.new_query", label: "New Query", category: Category::File, default_key: sc(CTRL, Key::N) },
     CommandInfo { cmd: Command::NewSparkQuery, id: "file.new_spark_query", label: "New Spark SQL Query", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::NewDaxQuery, id: "file.new_dax_query", label: "New DAX Query", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::NewLocalQuery, id: "file.new_local_query", label: "New Local Query", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::NewNotebook, id: "file.new_notebook", label: "New Notebook", category: Category::File, default_key: sc(CTRL_SHIFT, Key::N) },
     CommandInfo { cmd: Command::NewDashboard, id: "file.new_dashboard", label: "New Dashboard", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::OpenFile, id: "file.open", label: "Open File…", category: Category::File, default_key: sc(CTRL, Key::O) },

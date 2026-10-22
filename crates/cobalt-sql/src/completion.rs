@@ -125,6 +125,8 @@ pub struct CompletionRequest<'a> {
     /// T-SQL (bracket quoting, T-SQL keywords) or Spark SQL (backticks, Spark keywords and
     /// functions, no `dbo` default).
     pub dialect: Dialect,
+    /// The local engine's function names (`Dialect::Local`), offered as functions.
+    pub extra_functions: &'a [String],
 }
 
 /// Result of [`complete`]: the items plus the byte range of `text` they replace.
@@ -311,6 +313,7 @@ struct Ctx<'a> {
     /// Absolute byte range of the current batch.
     batch: (usize, usize),
     cursor_paren_depth: usize,
+    extra_functions: &'a [String],
 }
 
 impl<'a> Ctx<'a> {
@@ -347,7 +350,7 @@ impl<'a> Ctx<'a> {
             }
         }
         Ctx { text,
-            dialect: req.dialect, tokens, before, catalog: req.catalog, databases: req.databases, user_snippets: req.user_snippets, stmt, batch, cursor_paren_depth: depth }
+            dialect: req.dialect, extra_functions: req.extra_functions, tokens, before, catalog: req.catalog, databases: req.databases, user_snippets: req.user_snippets, stmt, batch, cursor_paren_depth: depth }
     }
 
     fn tok(&self, i: usize) -> &Token {
@@ -564,7 +567,7 @@ impl<'a> Ctx<'a> {
 
     fn keywords(&self, with_snippets: bool) -> Vec<CompletionItem> {
         let mut v: Vec<CompletionItem> = KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)).collect();
-        if self.dialect == Dialect::Spark {
+        if self.dialect.is_sparkish() {
             v.extend(SPARK_KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)));
         }
         v.extend(self.functions());
@@ -579,6 +582,9 @@ impl<'a> Ctx<'a> {
         let mut v: Vec<CompletionItem> = FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect();
         if self.dialect == Dialect::Spark {
             v.extend(SPARK_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
+        }
+        if self.dialect == Dialect::Local {
+            v.extend(self.extra_functions.iter().map(|f| item(f.clone(), f.clone(), CompletionKind::Function, Some("Function".into()))));
         }
         v
     }
@@ -1058,7 +1064,7 @@ pub fn quote_for(name: &str, dialect: Dialect) -> String {
     match dialect {
         Dialect::TSql => quote_ident(name),
         Dialect::Dax => cobalt_core::tabular::dax_table_ref(name),
-        Dialect::Spark => {
+        Dialect::Spark | Dialect::Local => {
             let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             if simple {
                 name.to_string()
@@ -1099,7 +1105,7 @@ mod tests {
     fn run(text: &str, cursor: usize) -> Completions {
         let cat = catalog();
         let dbs = vec!["master".to_string(), "Shop".to_string()];
-        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0, user_snippets: &[], dialect: Dialect::TSql })
+        complete(&CompletionRequest { text, cursor, catalog: Some(&cat), databases: &dbs, max_items: 0, user_snippets: &[], dialect: Dialect::TSql, extra_functions: &[] })
     }
 
     /// Complete at the `|` marker.
@@ -1309,11 +1315,11 @@ mod tests {
         let text = "SELECT o.| FROM sales.Orders o";
         let cursor = text.find('|').unwrap();
         let text = text.replacen('|', "", 1);
-        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql });
+        let c = complete(&CompletionRequest { text: &text, cursor, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql, extra_functions: &[] });
         assert!(c.items.is_empty());
-        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql });
+        let c = complete(&CompletionRequest { text: "((( 'x ;; [[ /* @", cursor: 17, catalog: None, databases: &[], max_items: 5, user_snippets: &[], dialect: Dialect::TSql, extra_functions: &[] });
         assert!(c.items.len() <= 5);
-        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3, user_snippets: &[], dialect: Dialect::TSql });
+        let c = complete(&CompletionRequest { text: "sel", cursor: 99, catalog: None, databases: &[], max_items: 3, user_snippets: &[], dialect: Dialect::TSql, extra_functions: &[] });
         assert_eq!(c.items.len(), 3);
         assert_eq!((c.replace_start, c.replace_end), (0, 3));
     }
@@ -1333,7 +1339,7 @@ mod tests {
         let b = at("SELECT | FROM dbo.Customers");
         assert_eq!(a, b);
         let cat = catalog();
-        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4, user_snippets: &[], dialect: Dialect::TSql });
+        let c = complete(&CompletionRequest { text: "SELECT ", cursor: 7, catalog: Some(&cat), databases: &[], max_items: 4, user_snippets: &[], dialect: Dialect::TSql, extra_functions: &[] });
         assert_eq!(c.items.len(), 4);
     }
 

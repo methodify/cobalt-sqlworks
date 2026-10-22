@@ -44,6 +44,8 @@ pub enum ResultsAction {
     OpenInExcel { set: usize, selection_only: bool },
     /// Load the set (or selection) into a table on a connected tab's database.
     SaveAsTable { set: usize, selection_only: bool },
+    /// Open a Local query tab over this result set (`SELECT * FROM <its table> LIMIT 100`).
+    QueryLocally { set: usize },
 }
 
 pub struct ResultsArgs<'a> {
@@ -173,6 +175,11 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         }
                         if icon_button(ui, icons::TABLE, "Save as table…", true).clicked() {
                             actions.push(ResultsAction::SaveAsTable { set, selection_only: false });
+                        }
+                        let r = icon_button(ui, icons::FUNNEL_SIMPLE, "Query this result (SQL over it in a Local tab; join it with other results)", true);
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("query locally {set}")));
+                        if r.clicked() {
+                            actions.push(ResultsAction::QueryLocally { set });
                         }
                         if icon_button(ui, icons::ARROW_SQUARE_OUT, "Open result set in its own tab", true).clicked() {
                             actions.push(ResultsAction::PopOut { set });

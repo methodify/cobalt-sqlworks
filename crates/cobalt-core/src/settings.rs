@@ -17,6 +17,7 @@ pub struct Settings {
     pub spark: SparkSettings,
     pub semantic: SemanticSettings,
     pub fonts: FontSettings,
+    pub local: LocalSettings,
     /// Keyboard shortcut overrides: command id → "Ctrl+Shift+P" (empty = unbound).
     pub keybindings: std::collections::BTreeMap<String, String>,
 }
@@ -300,6 +301,20 @@ pub struct NotebookSettings {
 impl Default for NotebookSettings {
     fn default() -> Self {
         Self { max_output_rows: 1000, default_language: "sql".into(), grid_rows: 12, spark_row_limit: 10_000 }
+    }
+}
+
+/// The local query engine (DataFusion over results and files).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LocalSettings {
+    /// Rewrite T-SQL habits before the engine sees a statement: `[name]` → `"name"`, `TOP n` →
+    /// `LIMIT n`, `ISNULL` → `COALESCE`, `GETDATE()` → `now()`, `LEN` → `length` (reported in Messages).
+    pub tsql_sugar: bool,
+}
+impl Default for LocalSettings {
+    fn default() -> Self {
+        Self { tsql_sugar: true }
     }
 }
 

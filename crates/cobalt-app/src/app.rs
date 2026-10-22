@@ -2,6 +2,7 @@
 //! runs the per-frame loop: drain events → apply → shortcuts → shell → toasts → housekeeping.
 
 use crate::commands::Keymap;
+use crate::session::protocol::Event;
 use crate::ops::{self, AuthDone, Ctx, ExportDone};
 use crate::session::SessionManager;
 use crate::state::{AppState, SettingsPatch, ToastKind};
@@ -33,6 +34,7 @@ macro_rules! make_ctx {
             fabric_tx: &$app.fabric_tx,
             egui: $egui,
             toasts: $toasts,
+            local: &$app.local,
         }
     };
 }
@@ -40,6 +42,8 @@ macro_rules! make_ctx {
 pub struct CobaltApp {
     pub state: AppState,
     pub session: SessionManager,
+    /// The local query engine (DataFusion) over result sets and files.
+    pub local: Arc<cobalt_local::Engine>,
     pub store: Arc<Store>,
     pub resolver: Arc<CredentialResolver>,
     pub secrets: Arc<dyn SecretStore>,
@@ -158,6 +162,7 @@ impl CobaltApp {
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || egui_ctx.request_repaint());
         let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::mssql::MssqlDriver::new());
         let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
+        let local = Arc::new(cobalt_local::Engine::new(budget.clone(), settings.advanced.memory_budget_bytes as usize, paths.spill_dir().join("local")).expect("local query engine"));
 
         // fonts: the bundled set, the chosen UI / editor fonts, the downloaded packs (crate::fonts)
         cc.egui_ctx.set_fonts(crate::fonts::definitions(&settings, &paths));
@@ -193,6 +198,7 @@ impl CobaltApp {
             keymap: Keymap::default(),
             toasts,
             budget,
+            local,
             auth_tx,
             auth_rx,
             export_tx,
@@ -411,11 +417,31 @@ impl CobaltApp {
             crate::exploreq::tick(&mut self.state, &cx, &fmt);
             // session events
             let events = self.session.drain();
+            // every result set of every tab is a local table the moment it starts arriving
+            for ev in &events {
+                match ev {
+                    Event::RunStarted { tab, .. } => self.local.deregister_tab(&tab.to_string()),
+                    Event::ResultSetStarted { tab, rs, .. } => {
+                        if let Some(t) = self.state.tab_mut(*tab) {
+                            let title = t.title.clone();
+                            crate::localq::register_result(&self.local, *tab, &title, rs);
+                        }
+                    }
+                    _ => {}
+                }
+            }
             let mut followups = Vec::new();
             for ev in events {
                 followups.extend(self.state.apply_event(ev));
             }
             ops::handle_followups(&mut self.state, &cx, followups);
+            if self.state.local_functions.is_empty() {
+                self.state.local_functions = Arc::new(self.local.functions());
+            }
+            if self.local.generation() != self.state.local_generation {
+                self.state.local_generation = self.local.generation();
+                crate::localq::refresh_all_catalogs(&mut self.state, &cx);
+            }
             // auth completions
             while let Ok(done) = self.auth_rx.try_recv() {
                 if ops::on_test_result(&mut self.state, &done) {
@@ -718,6 +744,7 @@ impl eframe::App for CobaltApp {
                 fabric_tx: &self.fabric_tx,
                 egui: &ctx,
                 toasts: &toasts,
+                local: &self.local,
             };
             let mut f = Frame { state: &mut self.state, cx: &cx, theme: &theme, keymap };
             for c in cmds {

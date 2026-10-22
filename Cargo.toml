@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/cobalt-core",
+    "crates/cobalt-local",
     "crates/cobalt-driver",
     "crates/cobalt-auth",
     "crates/cobalt-store",
@@ -34,6 +35,7 @@ cobalt-auth = { path = "crates/cobalt-auth" }
 cobalt-store = { path = "crates/cobalt-store" }
 cobalt-sql = { path = "crates/cobalt-sql" }
 cobalt-results = { path = "crates/cobalt-results" }
+cobalt-local = { path = "crates/cobalt-local" }
 cobalt-export = { path = "crates/cobalt-export" }
 cobalt-export-delta = { path = "crates/cobalt-export-delta" }
 cobalt-import = { path = "crates/cobalt-import" }

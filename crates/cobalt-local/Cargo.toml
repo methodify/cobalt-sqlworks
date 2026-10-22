@@ -1,0 +1,20 @@
+[package]
+name = "cobalt-local"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The in-process local query engine (DataFusion) over result sets, files and Delta tables"
+
+[dependencies]
+cobalt-core = { path = "../cobalt-core" }
+cobalt-results = { path = "../cobalt-results" }
+datafusion = "53"
+arrow.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+async-trait.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

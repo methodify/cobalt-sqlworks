@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.11.0 — unreleased
+
+- **Local query, slice A: SQL over your results, in-process.** A DataFusion engine lives in the
+  app (`cobalt-local`, DataFusion 53 on the same Arrow as everything else). Every result set of
+  every open tab is a **local table** the moment it starts arriving, named after its tab
+  (`sqlquery_1`, `sqlquery_1_2` for a second set; `_` is always the latest), with no copy: the
+  engine reads the same spill-aware chunks the grid holds, and a table goes when its tab closes
+  or runs again. A **Local query** tab (the + menu, File, "A click on + opens", the Local root's
+  menu) runs SQL over them with the normal editor (completion of table names, columns and the
+  engine's 287 functions), F5 / Ctrl+Enter, Cancel, the row cap with fetch-more (paused exactly at
+  the cap), Run to File, Export, history, and **Est. plan** (the engine's logical and physical
+  plan in Messages). Results stream into the same grid and are tables themselves, so queries
+  chain. **Query this result** on any result set opens a Local tab over it. The Servers tree has
+  a **Local** root listing the tables with rows, columns and the producing tab (expand for the
+  columns; Query, Reveal the tab, Rename). **T-SQL sugar** (Settings › Query execution, on by
+  default): `[name]` → `"name"`, `SELECT TOP n` → `LIMIT n`, `ISNULL` → `COALESCE`,
+  `GETDATE()` / `SYSDATETIME()` → `now()`, `LEN` → `length`, each rewrite noted in Messages.
+  The engine's memory pool is the app's memory budget and it spills to the spill directory.
+  Measured: the streaming grid is unchanged (a million rows in 4.2 s before and after, frame
+  times within noise). Agent: `local_query {text, run}`, `local_tables {action: list | rename |
+  query}`, `state.local_tables`. Design: `docs/design/local_query.md`.
+
 ## 0.10.4 — 2026-10-21
 
 - **Stylised names and symbols render.** The mathematical alphanumerics (𝓚𝓲𝔂𝓪, 𝐬𝐚𝐫𝐚𝐡, 𝙈𝙖𝙧𝙞𝙙𝙞𝙤𝙧),

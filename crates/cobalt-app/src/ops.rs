@@ -33,6 +33,8 @@ pub struct Ctx<'a> {
     pub fabric_tx: &'a Sender<crate::fabric::FabricEvent>,
     pub egui: &'a egui::Context,
     pub toasts: &'a RefCell<Vec<(ToastKind, String)>>,
+    /// The local query engine.
+    pub local: &'a Arc<cobalt_local::Engine>,
 }
 
 impl Ctx<'_> {
@@ -816,6 +818,33 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             };
             crate::sparkq::new_tab(state, cx, binding, names, None);
         }
+        TreeAction::LocalQuery(name) => {
+            let text = name.as_ref().map(|n| format!("SELECT *\nFROM {}\nLIMIT 100", crate::localq::quote(n)));
+            let run = text.is_some();
+            let i = crate::localq::new_tab(state, cx, text);
+            state.active_tab = Some(i);
+            if run {
+                crate::localq::run(state, cx, i, RunMode::All);
+            }
+        }
+        TreeAction::LocalReveal(name) => {
+            let tab = cx.local.tables().into_iter().find(|t| t.name == name).and_then(|t| match t.source {
+                cobalt_local::TableSource::Result { tab, .. } => Some(tab),
+                _ => None,
+            });
+            if let Some(tab) = tab {
+                if let Some(i) = state.tabs.iter().position(|t| t.id.to_string() == tab) {
+                    state.active_tab = Some(i);
+                }
+            }
+        }
+        TreeAction::LocalRename(name) => state.dialog = Dialog::RenameLocalTable { to: name.clone(), name },
+        TreeAction::LocalToggleRoot => state.local_root_expanded = !state.local_root_expanded,
+        TreeAction::LocalToggle(name) => {
+            if !state.local_expanded.remove(&name) {
+                state.local_expanded.insert(name);
+            }
+        }
         TreeAction::TabularAdd => crate::tabular_root::edit_dialog(state, None),
         TreeAction::TabularEdit(id) => crate::tabular_root::edit_dialog(state, Some(id)),
         TreeAction::TabularRemove(id) => crate::tabular_root::remove_profile(state, cx, id),
@@ -944,6 +973,7 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     crate::dashboard::close(state, cx, idx);
     let mut t = state.tabs.remove(idx);
     cx.session.send(Command::Disconnect { tab: t.id });
+    crate::localq::on_tab_closed(cx, &t);
     crate::kernel::drop_context(&mut state.kernel, t.id);
     if t.spark.is_some() || t.notebook.as_deref().map(|nb| nb.kernel == NotebookKernel::Spark).unwrap_or(false) {
         crate::notebook::on_spark_notebook_closed(state, cx);
@@ -952,7 +982,7 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     let text = if t.is_notebook() { snapshot_document(&mut t, cx.settings.notebooks.max_output_rows, &state.formatter).unwrap_or_default() } else { t.text.clone() };
     let mut snap = TabSnapshot::new(t.id, t.title.clone(), text);
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
-    snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| crate::exploreq::snapshot_binding(&t)).or_else(|| crate::tabularq::snapshot_binding(&t)).or_else(|| t.conn.database().map(str::to_string));
+    snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| crate::exploreq::snapshot_binding(&t)).or_else(|| crate::tabularq::snapshot_binding(&t)).or_else(|| crate::localq::snapshot_binding(&t)).or_else(|| t.conn.database().map(str::to_string));
     snap.cursor = t.editor.cursor;
     snap.file_path = t.file_path.clone();
     let _ = cx.store.save_tab(&snap);
@@ -1004,6 +1034,10 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
     }
     t.mark_saved();
     let tab_id = t.id;
+    if let Some(l) = snap.database.as_deref().and_then(crate::localq::from_snapshot) {
+        t.local = Some(l);
+        return;
+    }
     if let Some(sp) = snap.database.as_deref().and_then(crate::sparkq::from_snapshot) {
         t.spark = Some(sp);
         return;
@@ -1081,6 +1115,9 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         if let Some(n) = t.title.strip_prefix("SQLQuery_").or_else(|| t.title.strip_prefix("SparkSQL_")).or_else(|| t.title.strip_prefix("DAX_")).or_else(|| t.title.strip_prefix("Explore_")).and_then(|r| r.split([' ', '·']).next()).and_then(|n| n.parse::<usize>().ok()) {
             t.untitled_index = n;
             state.next_untitled = state.next_untitled.max(n + 1);
+        }
+        if let Some(l) = snap.database.as_deref().and_then(crate::localq::from_snapshot) {
+            t.local = Some(l);
         }
         if let Some(sp) = snap.database.as_deref().and_then(crate::sparkq::from_snapshot) {
             t.spark = Some(sp);
@@ -1288,6 +1325,9 @@ pub fn run(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
     if t.spark.is_some() {
         return crate::sparkq::run(state, cx, idx, mode);
     }
+    if t.local.is_some() {
+        return crate::localq::run(state, cx, idx, mode);
+    }
     if t.explore.is_some() {
         return crate::exploreq::run(state, cx, idx);
     }
@@ -1370,6 +1410,9 @@ pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
     if state.tabs.get(idx).map(|t| t.spark.is_some()).unwrap_or(false) {
         return crate::sparkq::cancel(state, cx, idx);
     }
+    if state.tabs.get(idx).map(|t| t.local.is_some()).unwrap_or(false) {
+        return crate::localq::cancel(state, cx, idx);
+    }
     if state.tabs.get(idx).map(|t| t.tabular.is_some()).unwrap_or(false) {
         return crate::tabularq::cancel(state, cx, idx);
     }
@@ -1384,6 +1427,9 @@ pub fn cancel(state: &mut AppState, cx: &Ctx, idx: usize) {
 }
 
 pub fn fetch_more(state: &mut AppState, cx: &Ctx, idx: usize, rows: Option<u64>) {
+    if state.tabs.get(idx).map(|t| t.local.is_some()).unwrap_or(false) {
+        return crate::localq::fetch_more(state, cx, idx, rows);
+    }
     if let Some(t) = state.tabs.get_mut(idx) {
         if let Some(r) = &mut t.run {
             if r.state == RunViewState::Paused {
@@ -1837,6 +1883,8 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         ResultsAction::RerunUncapped => {
             if state.tabs.get(idx).map(|t| t.tabular.is_some()).unwrap_or(false) {
                 crate::tabularq::rerun_uncapped(state, cx, idx)
+            } else if state.tabs.get(idx).map(|t| t.local.is_some()).unwrap_or(false) {
+                crate::localq::rerun_uncapped(state, cx, idx)
             } else {
                 crate::sparkq::rerun_uncapped(state, cx, idx)
             }
@@ -1883,6 +1931,7 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
             }
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
+        ResultsAction::QueryLocally { set } => crate::localq::query_result(state, cx, idx, set),
         ResultsAction::PinToDashboard { set } => crate::dashboard::open_pin_dialog(state, cx, idx, set),
         ResultsAction::CaptureChart { set, purpose } => {
             let tab = state.tabs[idx].id;

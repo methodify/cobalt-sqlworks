@@ -28,6 +28,8 @@ pub enum QueryKind {
     TSql,
     Spark,
     Dax,
+    /// The local engine (only ever chosen as the "+ opens" default).
+    Local,
     /// Nothing in the text decides it.
     Unknown,
 }
@@ -38,6 +40,7 @@ impl QueryKind {
             QueryKind::TSql => "SQL query",
             QueryKind::Spark => "Spark SQL query",
             QueryKind::Dax => "DAX query",
+            QueryKind::Local => "local query",
             QueryKind::Unknown => "query",
         }
     }
@@ -87,6 +90,7 @@ fn kind_label(default_kind: &str) -> &'static str {
     match default_kind {
         "spark" => "Spark SQL query",
         "dax" => "DAX query",
+        "local" => "local query",
         _ => "SQL query",
     }
 }
@@ -308,6 +312,7 @@ fn open_query_file(state: &mut AppState, cx: &Ctx, path: &Path, kind: QueryKind,
         QueryKind::Unknown => match default_kind {
             "spark" => QueryKind::Spark,
             "dax" => QueryKind::Dax,
+            "local" => QueryKind::Local,
             _ => QueryKind::TSql,
         },
         k => k,
@@ -347,6 +352,14 @@ fn open_query_file(state: &mut AppState, cx: &Ctx, path: &Path, kind: QueryKind,
         QueryKind::Spark => {
             let (binding, names) = crate::sparkq::inherited_binding(state);
             let idx = crate::sparkq::new_tab(state, cx, binding, names, Some(text));
+            let t = &mut state.tabs[idx];
+            t.file_path = Some(path.to_path_buf());
+            t.title = title;
+            t.custom_title = true;
+            t.mark_saved();
+        }
+        QueryKind::Local => {
+            let idx = crate::localq::new_tab(state, cx, Some(text));
             let t = &mut state.tabs[idx];
             t.file_path = Some(path.to_path_buf());
             t.title = title;

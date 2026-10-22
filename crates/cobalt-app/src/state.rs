@@ -265,6 +265,8 @@ pub struct EditorTab {
     /// `Some` = a DAX query tab on a semantic model: runs go through the Arrow query API
     /// (`tabularq.rs`, `session/tabular.rs`) instead of a connection.
     pub tabular: Option<TabularTab>,
+    /// A Local query tab: SQL over the local tables through the in-process engine.
+    pub local: Option<crate::localq::LocalTab>,
     /// The model's catalog for DAX completion (a copy of `AppState::model_catalogs[key]`).
     pub model_catalog: Option<Arc<cobalt_core::tabular::ModelCatalog>>,
     /// The model's DAX function list for completion (`INFO.FUNCTIONS()`).
@@ -659,6 +661,7 @@ impl EditorTab {
             spark: None,
             dashboard: None,
             tabular: None,
+            local: None,
             model_catalog: None,
             dax_functions: None,
             explore: None,
@@ -672,9 +675,11 @@ impl EditorTab {
     /// The editor a command should act on: the selected notebook cell, or the query editor.
     pub fn active_host(&mut self) -> crate::ui::editor::EditorHost<'_> {
         let tab_id = self.id;
-        let EditorTab { notebook, catalog, databases, text, editor, spark, tabular, model_catalog, dax_functions, .. } = self;
+        let EditorTab { notebook, catalog, databases, text, editor, spark, tabular, model_catalog, dax_functions, local, .. } = self;
         let tab_syntax = if spark.is_some() {
             crate::ui::editor::Syntax::SparkSql
+        } else if local.is_some() {
+            crate::ui::editor::Syntax::Local
         } else if tabular.is_some() {
             crate::ui::editor::Syntax::Dax
         } else {
@@ -689,9 +694,9 @@ impl EditorTab {
                     (cobalt_notebook::CellKind::Code, cobalt_notebook::CellLanguage::Python) => crate::ui::editor::Syntax::Python,
                     _ => crate::ui::editor::Syntax::Plain,
                 };
-                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax , model: None, dax_functions: &[] }
+                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax , model: None, dax_functions: &[], local_functions: &[] }
             }
-            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: tab_syntax, model: model_catalog.as_deref(), dax_functions: dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]) },
+            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: tab_syntax, model: model_catalog.as_deref(), dax_functions: dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]), local_functions: local.as_ref().map(|l| l.functions.as_slice()).unwrap_or(&[]) },
         }
     }
 
@@ -1294,6 +1299,13 @@ pub struct AppState {
     pub recently_closed_count: usize,
     /// The Servers tree's Local Spark root is open.
     pub spark_root_expanded: bool,
+    /// The Local root of the Servers tree (local tables), and the tables whose columns are open.
+    pub local_root_expanded: bool,
+    pub local_expanded: HashSet<String>,
+    /// The engine's function names, for completion on Local tabs.
+    pub local_functions: Arc<Vec<String>>,
+    /// The registry generation the tabs' catalogs were built from.
+    pub local_generation: u64,
     /// Completion catalogs of lakehouses (tables, schemas, columns from the Delta logs), by
     /// lakehouse id; Spark SQL tabs bound to the lakehouse share the Arc.
     pub spark_catalogs: std::collections::HashMap<String, Arc<DatabaseCatalog>>,
@@ -1432,6 +1444,8 @@ pub enum Dialog {
     /// Pick a semantic model (a Fabric workspace's, or one of a saved Analysis Services
     /// endpoint) for a DAX or Explore tab; `tab_index` None = a new tab (`explore` = an Explore tab).
     ChooseModel { tab_index: Option<usize>, explore: bool, source: Option<ModelSource>, search: String, file: Option<PathBuf> },
+    /// Rename a local table (the engine's registry).
+    RenameLocalTable { name: String, to: String },
     AdsImport { path: String, summary: Option<String>, error: Option<String> },
     UpdateAvailable { info: crate::update::UpdateInfo },
 }
@@ -1598,6 +1612,10 @@ impl AppState {
             last_hot_exit_save: Instant::now(),
             recently_closed_count: 0,
             spark_root_expanded: true,
+            local_root_expanded: true,
+            local_expanded: HashSet::new(),
+            local_functions: Arc::new(Vec::new()),
+            local_generation: 0,
             spark_catalogs: Default::default(),
             model_catalogs: Default::default(),
             dax_functions: Default::default(),

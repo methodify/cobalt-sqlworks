@@ -969,6 +969,35 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 f.state.dialog = Dialog::ChooseModel { tab_index, explore, source, search, file };
             }
         }
+        Dialog::RenameLocalTable { name, mut to } => {
+            let mut ok = false;
+            let mut cancel = false;
+            let (_, close) = modal(ctx, theme, "rename-local-table", 380.0, |ui| {
+                ui.heading("Rename local table");
+                ui.label(RichText::new(format!("{name} → a name of letters, digits and underscores (lower-cased)")).size(12.0).color(theme.text_muted));
+                let r = ui.add(egui::TextEdit::singleline(&mut to).desired_width(f32::INFINITY));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "local table new name"));
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    ok = true;
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if primary_button(ui, theme, "Rename", true).clicked() {
+                        ok = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if ok {
+                if let Err(e) = f.cx.local.rename(&name, &to) {
+                    f.cx.toast(crate::state::ToastKind::Warning, e);
+                }
+            } else if !cancel && !close {
+                f.state.dialog = Dialog::RenameLocalTable { name, to };
+            }
+        }
         Dialog::Rename { tab_index, mut title } => {
             let mut ok = false;
             let mut cancel = false;

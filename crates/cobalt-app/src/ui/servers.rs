@@ -10,6 +10,13 @@ use egui_phosphor::regular as icons;
 
 #[derive(Debug, Clone)]
 pub enum TreeAction {
+    /// Local root (the engine's tables): a query tab (over one table, or empty), reveal the
+    /// producing tab, rename a table, open / close the root or a table's columns.
+    LocalQuery(Option<String>),
+    LocalReveal(String),
+    LocalRename(String),
+    LocalToggleRoot,
+    LocalToggle(String),
     /// Analysis Services root: add / edit / remove a saved endpoint, open its catalogs, a model.
     TabularAdd,
     TabularEdit(uuid::Uuid),
@@ -57,6 +64,13 @@ pub enum TreeAction {
 }
 
 /// What the Analysis Services root draws from.
+pub struct LocalRootView<'a> {
+    pub tables: &'a [cobalt_local::TableInfo],
+    pub expanded: bool,
+    pub open: &'a std::collections::HashSet<String>,
+    pub active: bool,
+}
+
 pub struct TabularRootView<'a> {
     pub root: &'a crate::state::TabularRoot,
     pub models: &'a std::collections::HashMap<String, Loadable<std::sync::Arc<cobalt_core::tabular::ModelCatalog>>>,
@@ -64,7 +78,8 @@ pub struct TabularRootView<'a> {
     pub show_hidden: bool,
 }
 
-pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool, tabular: TabularRootView<'_>) -> Vec<TreeAction> {
+#[allow(clippy::too_many_arguments)]
+pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool, tabular: TabularRootView<'_>, local: LocalRootView<'_>) -> Vec<TreeAction> {
     let mut actions = Vec::new();
     // toolbar
     egui::Frame::new().inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
@@ -93,6 +108,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
         let groups = lib.groups.clone();
         let profiles = lib.profiles.clone();
         spark_root(ui, theme, spark, spark_expanded, spark_active, &filter, &mut actions);
+        local_root(ui, theme, &local, &filter, &mut actions);
         tabular_root(ui, theme, &tabular, &filter, &mut actions);
         // ungrouped first, then groups
         let ungrouped: Vec<&ConnectionProfile> = profiles.iter().filter(|p| p.group.is_none() || !groups.iter().any(|g| Some(g.id) == p.group)).collect();
@@ -190,6 +206,70 @@ Double-click for a Spark SQL query tab on this lakehouse.", e.lakehouse_name, e.
 
 /// The Analysis Services root: saved XMLA endpoints (Azure AS, SSAS over HTTP, Power BI
 /// workspaces), each listing its models with the model explorer under them.
+/// The Local root: the engine's tables (results of open tabs, files), each expandable to its columns.
+fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, actions: &mut Vec<TreeAction>) {
+    let open = v.expanded || !filter.is_empty();
+    let detail = format!("{} table{} · DataFusion", v.tables.len(), if v.tables.len() == 1 { "" } else { "s" });
+    let r = tree_row(ui, theme, TreeRow { depth: 0, expandable: true, expanded: open, loading: false, icon: icons::LIGHTNING, icon_color: Some(theme.accent), label: "Local", detail: Some(&detail), selected: v.active, color_dot: None, kind: "server" });
+    if r.toggle || r.response.clicked() {
+        actions.push(TreeAction::LocalToggleRoot);
+    }
+    r.response.context_menu(|ui| {
+        if ui.button(format!("{} New local query", icons::LIGHTNING)).clicked() {
+            actions.push(TreeAction::LocalQuery(None));
+            ui.close();
+        }
+    });
+    if !open {
+        return;
+    }
+    if v.tables.is_empty() {
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::INFO, icon_color: None, label: "No local tables yet", detail: Some("run a query in any tab; its result lands here"), selected: false, color_dot: None, kind: "note" });
+        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "local table none"));
+        return;
+    }
+    for t in v.tables {
+        if !filter.is_empty() && !t.name.to_lowercase().contains(filter) {
+            continue;
+        }
+        let src = match &t.source {
+            cobalt_local::TableSource::Result { title, .. } => title.clone(),
+            cobalt_local::TableSource::File { path } => path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+        };
+        let detail = format!("{} rows · {} cols · {src}{}", crate::state::fmt_count(t.rows as u64), t.columns.len(), if t.live { " · arriving" } else { "" });
+        let expanded = v.open.contains(&t.name);
+        let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: true, expanded, loading: t.live, icon: icons::TABLE, icon_color: None, label: &t.name, detail: Some(&detail), selected: false, color_dot: None, kind: "table" });
+        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local table {}", t.name)));
+        if r.toggle || r.response.clicked() {
+            actions.push(TreeAction::LocalToggle(t.name.clone()));
+        }
+        if r.response.double_clicked() {
+            actions.push(TreeAction::LocalQuery(Some(t.name.clone())));
+        }
+        r.response.context_menu(|ui| {
+            if ui.button(format!("{} Query (SELECT * … LIMIT 100)", icons::LIGHTNING)).clicked() {
+                actions.push(TreeAction::LocalQuery(Some(t.name.clone())));
+                ui.close();
+            }
+            if matches!(t.source, cobalt_local::TableSource::Result { .. }) && ui.button(format!("{} Reveal the tab", icons::ARROW_SQUARE_OUT)).clicked() {
+                actions.push(TreeAction::LocalReveal(t.name.clone()));
+                ui.close();
+            }
+            if ui.button(format!("{} Rename…", icons::PENCIL_SIMPLE)).clicked() {
+                actions.push(TreeAction::LocalRename(t.name.clone()));
+                ui.close();
+            }
+        });
+        if expanded {
+            for c in &t.columns {
+                let ty = c.sql_type.to_string();
+                let r = tree_row(ui, theme, TreeRow { depth: 2, expandable: false, expanded: false, loading: false, icon: icons::COLUMNS, icon_color: None, label: &c.name, detail: Some(&ty), selected: false, color_dot: None, kind: "column" });
+                r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local column {}.{}", t.name, c.name)));
+            }
+        }
+    }
+}
+
 fn tabular_root(ui: &mut Ui, theme: &Theme, v: &TabularRootView<'_>, filter: &str, actions: &mut Vec<TreeAction>) {
     let root = v.root;
     let open = root.expanded || !filter.is_empty();

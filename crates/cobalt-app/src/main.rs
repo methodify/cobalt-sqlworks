@@ -25,6 +25,7 @@ mod tabular_root;
 mod dashboard;
 mod drop;
 mod fonts;
+mod localq;
 mod state;
 mod update;
 mod ui;
