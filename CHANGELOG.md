@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.4 — unreleased
+## 0.11.4 — 2026-10-23
 
 - **Alt shortcuts no longer type.** Alt+Shift+F (Format Document) formatted the query and also
   put an "F" in it: Windows delivers the letter as text alongside the keystroke, and the editor
