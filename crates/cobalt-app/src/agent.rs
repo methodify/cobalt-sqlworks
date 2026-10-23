@@ -1130,6 +1130,11 @@ impl AgentApp for CobaltApp {
                 let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_bool()).unwrap_or(false);
                 let modifiers = egui::Modifiers { alt: flag("alt"), ctrl: flag("ctrl"), shift: flag("shift"), mac_cmd: false, command: flag("ctrl") };
                 self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers });
+                // `text`: the character the platform would also deliver for this keystroke (Windows
+                // sends "F" for Alt+Shift+F); lets a script reproduce a shortcut that types
+                if let Some(t) = arg_str(args, "text") {
+                    self.state.injected_events.push(egui::Event::Text(t));
+                }
                 self.state.injected_events.push(egui::Event::Key { key, physical_key: None, pressed: false, repeat: false, modifiers });
                 // the platform turns Ctrl+C/X/V into dedicated events; mirror that for injected keys
                 if modifiers.ctrl && !modifiers.shift {

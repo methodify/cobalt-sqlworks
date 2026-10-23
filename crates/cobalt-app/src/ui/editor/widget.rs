@@ -191,6 +191,9 @@ impl<'a> CodeEditor<'a> {
                         paste_at_cursors(text, cursors, s, line);
                         relayout = true;
                     }
+                    // Alt+key is a shortcut, not typing, on Windows and Linux (AltGr arrives as
+                    // Ctrl+Alt and keeps its characters; on macOS Option types symbols)
+                    Event::Text(_) if cfg!(not(target_os = "macos")) && ui.input(|i| i.modifiers.alt && !i.modifiers.ctrl && !i.modifiers.command) => {}
                     Event::Text(s) if !s.is_empty() && s != "\n" && s != "\r" => {
                         undo.record(EditKind::Typing, text, cursors);
                         // one bracket or quote goes through the pairing rules (surround a

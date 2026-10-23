@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.11.4 — unreleased
+
+- **Alt shortcuts no longer type.** Alt+Shift+F (Format Document) formatted the query and also
+  put an "F" in it: Windows delivers the letter as text alongside the keystroke, and the editor
+  took it. A consumed shortcut now takes its text with it, so Alt+Shift+F, Alt+Shift+P (Parse),
+  Alt+Shift+A (Toggle Block Comment) and Alt+C (Cancel) do only their job; the editor also
+  ignores text that arrives with Alt held (AltGr characters still type).
+- **AltGr no longer quits or zooms.** egui's built-in Cmd+Q and Ctrl+plus / minus / 0 handlers
+  accept extra modifiers, and AltGr arrives as Ctrl+Alt: on a German, French or similar layout,
+  typing `@` (AltGr+Q) closed Cobalt and `}` (AltGr+0) reset the zoom. Both built-ins are off;
+  Cobalt's own Ctrl+Q and Ctrl+plus / minus / 0 match their modifiers exactly.
+
+## 0.11.3 — 2026-10-22
+
+- **Change connection, in every state.** A query tab's toolbar has an explicit *Change…* next
+  to the connection: when connected (beside Disconnect; clicking the server name still works and
+  says so on hover), after a failed connect, and when disconnected next to *Connect to <last
+  server>*, so a tab can be pointed at a different server or database without connecting to the
+  old one first or opening a new tab. Also in the Query menu and the command palette as Change
+  Connection….
+
 ## 0.11.2 — 2026-10-22
 
 - **Scratch tables everywhere they are named.** A scratch table's registry name is

@@ -1006,6 +1006,19 @@ comes back after a restart (it reconnects on the first run). Works on SQL Server
 Fabric Warehouse and the SQL endpoint. Not yet: Spark tables, joins across tables (one table
 per Explore, as for local tables).
 
+**Alt shortcuts (0.11.4).** Alt+Shift+F, Alt+Shift+P, Alt+Shift+A and Alt+C do their job
+without typing the letter into the editor. Ctrl shortcuts never had the problem (Windows sends
+no text for them); Alt ones did because the platform delivers the letter as text too. Agent:
+`press {key, alt?, shift?, text?}`, where `text` reproduces that platform text. Related and
+worse for European layouts: egui's built-in Cmd+Q and zoom keys matched loosely, so AltGr+Q
+(`@`) quit Cobalt and AltGr+0 (`}`) reset the zoom; both built-ins are off now and Cobalt's own
+bindings match exactly.
+
+**Change connection (0.11.3).** The toolbar's *Change…* sits next to the connection in every
+state: connected (beside Disconnect), failed, and disconnected (next to *Connect to <server>*).
+It opens the same chooser as clicking the server name while connected, which now says so on
+hover. Query menu › Change Connection… and the command palette reach it too.
+
 **Scratch tables by name (0.11.2).** The same schema-and-name rule now holds everywhere a
 table name becomes SQL: Query and Insert name from the Local sidebar or the Local root write
 `scratch.name`; Explore, Diff, the filter picker and Save as scratch table over a scratch table

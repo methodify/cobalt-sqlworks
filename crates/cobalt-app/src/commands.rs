@@ -468,5 +468,11 @@ pub fn consume_exact(i: &mut egui::InputState, sc: &KeyboardShortcut) -> bool {
         }
         _ => true,
     });
+    // A shortcut without Ctrl (Alt+Shift+F, Alt+C) is also a keystroke the platform turns into
+    // text ("F"), which would land in whatever editor has focus: the consumed shortcut takes its
+    // text with it.
+    if hit && !sc.modifiers.ctrl && !sc.modifiers.command {
+        i.events.retain(|e| !matches!(e, egui::Event::Text(_)));
+    }
     hit
 }

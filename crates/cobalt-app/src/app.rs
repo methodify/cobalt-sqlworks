@@ -180,6 +180,13 @@ impl CobaltApp {
         let theme = Theme::for_choice(settings.appearance.theme, system_dark);
         cc.egui_ctx.set_visuals(theme.visuals());
         cc.egui_ctx.set_zoom_factor(settings.appearance.ui_scale);
+        // egui's built-in Cmd+Q and Ctrl+plus / minus / 0 accept extra modifiers, and AltGr
+        // arrives as Ctrl+Alt: on a German or French layout AltGr+Q (`@`) would quit and AltGr+0
+        // (`}`) would reset the zoom. Cobalt binds Ctrl+Q and the zoom keys itself, exactly.
+        cc.egui_ctx.options_mut(|o| {
+            o.quit_shortcuts.clear();
+            o.zoom_with_keyboard = false;
+        });
         let mut style = (*cc.egui_ctx.global_style()).clone();
         style.spacing.item_spacing = egui::vec2(6.0, 4.0);
         style.spacing.button_padding = egui::vec2(8.0, 3.0);
