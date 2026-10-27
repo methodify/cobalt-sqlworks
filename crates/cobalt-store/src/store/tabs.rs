@@ -21,6 +21,9 @@ pub struct TabSnapshot {
     pub file_path: Option<PathBuf>,
     pub updated_at: DateTime<Utc>,
     pub closed_at: Option<DateTime<Utc>>,
+    /// The results pane sits beside the editor rather than under it.
+    #[serde(default)]
+    pub results_side: bool,
 }
 
 impl TabSnapshot {
@@ -35,12 +38,13 @@ impl TabSnapshot {
             file_path: None,
             updated_at: Utc::now(),
             closed_at: None,
+            results_side: false,
         }
     }
 }
 
 const COLS: &str =
-    "tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at";
+    "tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at, results_side";
 
 fn row_to_tab(row: &Row<'_>) -> rusqlite::Result<TabSnapshot> {
     Ok(TabSnapshot {
@@ -53,6 +57,7 @@ fn row_to_tab(row: &Row<'_>) -> rusqlite::Result<TabSnapshot> {
         file_path: row.get::<_, Option<String>>(6)?.map(PathBuf::from),
         updated_at: parse_ts(&row.get::<_, String>(7)?)?,
         closed_at: opt_ts(row.get(8)?)?,
+        results_side: row.get::<_, i64>(9).unwrap_or(0) != 0,
     })
 }
 
@@ -61,12 +66,12 @@ impl Store {
     pub fn save_tab(&self, t: &TabSnapshot) -> Result<()> {
         let conn = self.lock()?;
         conn.execute(
-            "INSERT INTO tab_snapshots (tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO tab_snapshots (tab_id, profile_id, database, title, text, cursor, file_path, updated_at, closed_at, results_side)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(tab_id) DO UPDATE SET
                 profile_id = excluded.profile_id, database = excluded.database, title = excluded.title,
                 text = excluded.text, cursor = excluded.cursor, file_path = excluded.file_path,
-                updated_at = excluded.updated_at, closed_at = excluded.closed_at",
+                updated_at = excluded.updated_at, closed_at = excluded.closed_at, results_side = excluded.results_side",
             params![
                 t.tab_id.to_string(),
                 t.profile_id.map(|p| p.to_string()),
@@ -77,6 +82,7 @@ impl Store {
                 t.file_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
                 fmt_ts(&t.updated_at),
                 t.closed_at.as_ref().map(fmt_ts),
+                t.results_side as i64,
             ],
         )?;
         Ok(())

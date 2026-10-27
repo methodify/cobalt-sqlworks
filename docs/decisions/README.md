@@ -15,3 +15,4 @@ than re-litigating.
 | [D007](D007_egui_agent.md) | egui_agent v0.3.0 integrated from first commit | 2026-09-16 |
 | [D008](D008_license.md) | License: MIT OR Apache-2.0 | 2026-09-16 |
 | [D009](D009_notebooks_and_local_spark.md) | Notebooks: .ipynb with SQL + Markdown + PySpark cells; PySpark on a Cobalt-managed local Spark (local-spark-mcp worker, no Jupyter) | 2026-10-05 |
+| [D010](D010_egui_037_deferred.md) | egui 0.37 evaluated for the editor-groups slate and deferred: egui-notify, egui-phosphor and egui_agent are not on it; revisit as its own iteration | 2026-10-27 |

@@ -8,10 +8,15 @@ use egui::{RichText, Ui};
 use egui_phosphor::regular as icons;
 use std::path::{Path, PathBuf};
 
+/// A file dragged out of the sidebar (dropped on an editor group, it opens there).
+#[derive(Clone, Debug)]
+pub struct DragFile(pub PathBuf);
+
 pub enum FilesAction {
     PickRoot,
     Refresh,
-    Open(PathBuf),
+    /// Open the file; `preview` = reuse / mark a preview tab (a single click).
+    Open(PathBuf, bool),
     NewFile(PathBuf),
     NewNotebook(PathBuf),
     Reveal(PathBuf),
@@ -137,12 +142,19 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
                 _ => icons::FILE_TEXT,
             };
             let r = tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon, icon_color: None, label: &name, detail: None, selected: false, color_dot: None, kind: "file" });
-            if r.response.clicked() || r.response.double_clicked() {
-                actions.push(FilesAction::Open(path.clone()));
+            if r.response.double_clicked() {
+                actions.push(FilesAction::Open(path.clone(), false));
+            } else if r.response.clicked() {
+                actions.push(FilesAction::Open(path.clone(), true));
+            }
+            // a drag takes the file to an editor group (clicks still open it here)
+            let drag = ui.interact(r.response.rect, r.response.id.with("drag"), egui::Sense::drag());
+            if drag.drag_started() {
+                egui::DragAndDrop::set_payload(ui.ctx(), DragFile(path.clone()));
             }
             r.response.context_menu(|ui| {
                 if ui.button("Open").clicked() {
-                    actions.push(FilesAction::Open(path.clone()));
+                    actions.push(FilesAction::Open(path.clone(), false));
                     ui.close();
                 }
                 if path.extension().and_then(|e| e.to_str()).map(|e| DATA_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false) && ui.button(format!("{} Query as a local table", icons::LIGHTNING)).clicked() {

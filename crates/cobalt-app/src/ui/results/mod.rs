@@ -139,6 +139,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                {
+                    let side = tab.results_side.unwrap_or(args.settings.appearance.results_side);
+                    let r = icon_button(ui, if side { icons::ROWS } else { icons::COLUMNS }, if side { "Results under the editor" } else { "Results beside the editor" }, true);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results side"));
+                    if r.clicked() {
+                        tab.results_side = Some(!side);
+                    }
+                }
                 if tab.results_tab == ResultsTab::Results {
                     if let Some(&set) = data_sets.first() {
                         let set = run.result_sets.iter().position(|s| !s.is_plan && s.grid.focused).unwrap_or(set);

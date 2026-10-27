@@ -1,6 +1,6 @@
 # Editor groups: tab reordering, split views, and what comes with them
 
-*Status: design for the founder's alignment, 2026-10-27. Requested by the team: drag tabs to
+*Status: approved 2026-10-27 (decisions 1–6 and 8 as recommended; D backlogged: second windows stay out until groups have been used). Slices A–C built 2026-10-27 (`layout.rs`, `shell.rs::editor_groups`, drop zones, results beside, preview tabs; verified by agent scripts against the Docker SQL Server). Originally: design for the founder's alignment, 2026-10-27. Requested by the team: drag tabs to
 reorder, and split the editor area side by side (A | B) or stacked (A / B), as VS Code and
 Azure Data Studio did. Decisions for the founder are in §6; slices in §5.*
 

@@ -13,6 +13,8 @@ use cobalt_core::*;
 use egui::{RichText, Sense, Stroke, Ui, Vec2};
 use egui_phosphor::regular as icons;
 
+use crate::layout::GroupId;
+
 pub struct Frame<'a> {
     pub state: &'a mut AppState,
     pub cx: &'a Ctx<'a>,
@@ -29,13 +31,9 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>) {
     if f.state.sidebar_visible {
         sidebar(ui, f);
     }
+    sync_layout(f.state, f.cx.settings.appearance.new_tab_at_end);
     egui::CentralPanel::default().frame(egui::Frame::new().fill(f.theme.bg)).show(ui, |ui| {
-        tab_strip(ui, f);
-        if f.state.active_tab.is_some() {
-            editor_area(ui, f);
-        } else {
-            welcome(ui, f);
-        }
+        editor_groups(ui, f);
     });
     drop_overlay(ctx, f);
     font_suggestion(ctx, f);
@@ -239,6 +237,12 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::ShowFabric);
                 item(ui, &mut cmds, Command::ShowLakehouse);
                 ui.separator();
+                item(ui, &mut cmds, Command::SplitRight);
+                item(ui, &mut cmds, Command::SplitDown);
+                item(ui, &mut cmds, Command::MaximizeGroup);
+                item(ui, &mut cmds, Command::EqualizeGroups);
+                item(ui, &mut cmds, Command::CloseGroup);
+                ui.separator();
                 item(ui, &mut cmds, Command::ToggleTheme);
                 item(ui, &mut cmds, Command::ZoomIn);
                 item(ui, &mut cmds, Command::ZoomOut);
@@ -395,47 +399,290 @@ fn history_action(f: &mut Frame<'_>, a: history::HistoryAction) {
     }
 }
 
-fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
+/// Keep the editor groups and `active_tab` agreeing: new tabs join the active group, closed
+/// ones leave, and an `active_tab` set anywhere in the app drives the active group.
+pub fn sync_layout(state: &mut AppState, at_end: bool) {
+    // a preview tab that was edited, run or pinned is kept
+    for t in state.tabs.iter_mut() {
+        if t.preview && (t.is_dirty() || t.run.is_some() || t.pinned) {
+            t.preview = false;
+        }
+    }
+    let ids: Vec<TabId> = state.tabs.iter().map(|t| t.id).collect();
+    state.layout.sync(&ids, at_end);
+    if let Some(id) = state.active_tab.and_then(|i| state.tabs.get(i)).map(|t| t.id) {
+        state.layout.set_active_tab(id);
+    }
+    state.active_tab = state.layout.active_tab().and_then(|id| state.tab_index(id));
+}
+
+/// A tab being dragged along a strip, to another strip, or onto an editor area.
+#[derive(Clone, Copy, Debug)]
+pub struct DragTab {
+    pub tab: TabId,
+}
+
+enum LayoutEdit {
+    Gutter { path: Vec<usize>, i: usize, delta: f32 },
+    Equalize { path: Vec<usize> },
+}
+
+/// The editor area: the tree of groups, each a strip plus its active tab's editor and results.
+fn editor_groups(ui: &mut Ui, f: &mut Frame<'_>) {
+    let avail = ui.available_rect_before_wrap();
+    let mut rects: std::collections::HashMap<GroupId, egui::Rect> = Default::default();
+    let mut edits: Vec<LayoutEdit> = Vec::new();
+    match f.state.layout.maximized() {
+        Some(g) => render_group(ui, f, g, avail, &mut rects),
+        None => {
+            let root = f.state.layout.root().clone();
+            let mut path = Vec::new();
+            render_node(ui, f, &root, &mut path, avail, &mut rects, &mut edits);
+        }
+    }
+    f.state.group_rects = rects;
+    for e in edits {
+        match e {
+            LayoutEdit::Gutter { path, i, delta } => f.state.layout.drag_gutter(&path, i, delta),
+            LayoutEdit::Equalize { path } => f.state.layout.equalize_split(&path),
+        }
+    }
+    // the dragged tab's title follows the pointer
+    if let Some(p) = egui::DragAndDrop::payload::<DragTab>(ui.ctx()) {
+        if let (Some(pos), Some(i)) = (ui.input(|i| i.pointer.interact_pos()), f.state.tab_index(p.tab)) {
+            let title = f.state.tabs[i].display_title();
+            let theme = f.theme;
+            egui::Area::new(egui::Id::new("drag-tab-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
+                egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                    ui.label(RichText::new(title).size(13.0).color(theme.text));
+                });
+            });
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+fn render_node(ui: &mut Ui, f: &mut Frame<'_>, node: &crate::layout::Node, path: &mut Vec<usize>, rect: egui::Rect, rects: &mut std::collections::HashMap<GroupId, egui::Rect>, edits: &mut Vec<LayoutEdit>) {
+    use crate::layout::{Axis, Node};
+    match node {
+        Node::Group(g) => render_group(ui, f, *g, rect, rects),
+        Node::Split { axis, children, ratios } => {
+            let theme = f.theme;
+            let n = children.len();
+            let gutter = 6.0;
+            let total = (match axis {
+                Axis::Row => rect.width(),
+                Axis::Col => rect.height(),
+            } - gutter * (n.saturating_sub(1)) as f32)
+                .max(1.0);
+            let mut offset = match axis {
+                Axis::Row => rect.left(),
+                Axis::Col => rect.top(),
+            };
+            for (i, child) in children.iter().enumerate() {
+                let len = total * ratios.get(i).copied().unwrap_or(1.0 / n as f32);
+                let crect = match axis {
+                    Axis::Row => egui::Rect::from_min_max(egui::pos2(offset, rect.top()), egui::pos2(offset + len, rect.bottom())),
+                    Axis::Col => egui::Rect::from_min_max(egui::pos2(rect.left(), offset), egui::pos2(rect.right(), offset + len)),
+                };
+                path.push(i);
+                render_node(ui, f, child, path, crect, rects, edits);
+                path.pop();
+                offset += len;
+                if i + 1 < n {
+                    let grect = match axis {
+                        Axis::Row => egui::Rect::from_min_max(egui::pos2(offset, rect.top()), egui::pos2(offset + gutter, rect.bottom())),
+                        Axis::Col => egui::Rect::from_min_max(egui::pos2(rect.left(), offset), egui::pos2(rect.right(), offset + gutter)),
+                    };
+                    let g = ui.interact(grect, egui::Id::new(("gutter", path.clone(), i)), Sense::click_and_drag());
+                    g.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("gutter {}", i + 1)));
+                    ui.painter().rect_filled(grect, 0.0, if g.hovered() || g.dragged() { theme.accent } else { theme.border });
+                    if g.hovered() || g.dragged() {
+                        ui.ctx().set_cursor_icon(match axis {
+                            Axis::Row => egui::CursorIcon::ResizeHorizontal,
+                            Axis::Col => egui::CursorIcon::ResizeVertical,
+                        });
+                    }
+                    if g.dragged() {
+                        let d = match axis {
+                            Axis::Row => g.drag_delta().x,
+                            Axis::Col => g.drag_delta().y,
+                        } / total;
+                        edits.push(LayoutEdit::Gutter { path: path.clone(), i, delta: d });
+                    }
+                    if g.double_clicked() {
+                        edits.push(LayoutEdit::Equalize { path: path.clone() });
+                    }
+                    offset += gutter;
+                }
+            }
+        }
+    }
+}
+
+fn render_group(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, rect: egui::Rect, rects: &mut std::collections::HashMap<GroupId, egui::Rect>) {
+    rects.insert(gid, rect);
+    // a press anywhere in a group makes it the active one (before its widgets see the press)
+    if f.state.layout.active_group() != gid {
+        let pressed = ui.input(|i| i.pointer.any_pressed() && i.pointer.interact_pos().map(|p| rect.contains(p)).unwrap_or(false));
+        if pressed {
+            f.state.layout.set_active_group(gid);
+            f.state.active_tab = f.state.layout.active_tab().and_then(|id| f.state.tab_index(id));
+        }
+    }
+    let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::top_down(egui::Align::Min)));
+    cui.set_clip_rect(rect);
+    // the drop zones go first: widgets inside the editor area (the results table among them)
+    // clear a drag payload on the release frame, so a drop handled after them never sees it.
+    // The area is the one below last frame's strip (its height is stable).
+    let strip_key = egui::Id::new(("strip-h", gid));
+    let strip_h: f32 = cui.data(|d| d.get_temp(strip_key)).unwrap_or(34.0);
+    drop_zones(&mut cui, f, gid, egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + strip_h), rect.max));
+    let strip_bottom = tab_strip(&mut cui, f, gid);
+    cui.data_mut(|d| d.insert_temp(strip_key, strip_bottom - rect.top()));
+    match f.state.layout.group(gid).and_then(|g| g.active).and_then(|id| f.state.tab_index(id)) {
+        Some(idx) => editor_area(&mut cui, f, idx),
+        None => welcome(&mut cui, f),
+    }
+}
+
+/// Where a dragged tab lands when released over a group's editor area: the middle joins the
+/// group, the four edges split it on that side. A file dragged from the Files sidebar opens in
+/// the group.
+fn drop_zones(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, area: egui::Rect) {
+    use crate::layout::{Side, Target};
     let theme = f.theme;
+    let Some(pos) = ui.input(|i| i.pointer.interact_pos()) else { return };
+    if !area.contains(pos) {
+        return;
+    }
+    let released = ui.input(|i| i.pointer.any_released());
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("drop-zone", gid))));
+    if let Some(p) = egui::DragAndDrop::payload::<DragTab>(ui.ctx()) {
+        let fx = (pos.x - area.left()) / area.width().max(1.0);
+        let fy = (pos.y - area.top()) / area.height().max(1.0);
+        let (zone, zrect) = if fx < 0.25 {
+            ("left", egui::Rect::from_min_max(area.min, egui::pos2(area.center().x, area.bottom())))
+        } else if fx > 0.75 {
+            ("right", egui::Rect::from_min_max(egui::pos2(area.center().x, area.top()), area.max))
+        } else if fy < 0.25 {
+            ("up", egui::Rect::from_min_max(area.min, egui::pos2(area.right(), area.center().y)))
+        } else if fy > 0.75 {
+            ("down", egui::Rect::from_min_max(egui::pos2(area.left(), area.center().y), area.max))
+        } else {
+            ("centre", area)
+        };
+        painter.rect(zrect.shrink(4.0), 6.0, theme.accent.gamma_multiply(0.18), egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+        let r = ui.interact(zrect, egui::Id::new(("drop", gid, zone)), Sense::hover());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("drop {zone} group {gid}")));
+        ui.ctx().request_repaint();
+        if released {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            let target = match Side::parse(zone) {
+                Some(side) => Target::Split { group: gid, side },
+                None => Target::Strip { group: gid, index: usize::MAX },
+            };
+            ops::move_tab(f.state, p.tab, target);
+        }
+    } else if let Some(file) = egui::DragAndDrop::payload::<crate::ui::files::DragFile>(ui.ctx()) {
+        painter.rect(area.shrink(4.0), 6.0, theme.accent.gamma_multiply(0.12), egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
+        let name = file.0.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        egui::Area::new(egui::Id::new("drag-file-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
+            egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+                ui.label(RichText::new(format!("{} {name}", icons::FILE)).size(13.0).color(theme.text));
+            });
+        });
+        ui.ctx().request_repaint();
+        if released {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            f.state.layout.set_active_group(gid);
+            f.state.active_tab = f.state.layout.active_tab().and_then(|id| f.state.tab_index(id));
+            crate::drop::drop_files(f.state, f.cx, std::slice::from_ref(&file.0));
+        }
+    }
+}
+
+fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
+    use crate::layout::{Side, Target};
+    let theme = f.theme;
+    let group = f.state.layout.group(gid).cloned().unwrap_or_default();
+    let is_active_group = f.state.layout.active_group() == gid;
+    let group_count = f.state.layout.group_count();
+    let maximized = f.state.layout.maximized() == Some(gid);
+    let others: Vec<(GroupId, String)> = f.state.layout.groups_in_order().into_iter().filter(|g| *g != gid).map(|g| (g, f.state.layout.group(g).and_then(|x| x.active).and_then(|id| f.state.tab_index(id)).map(|i| f.state.tabs[i].title.clone()).unwrap_or_else(|| "empty".into()))).collect();
     let mut activate: Option<usize> = None;
     let mut close: Option<usize> = None;
     let mut new_tab = false;
     let mut new_notebook = false;
     let mut rename: Option<usize> = None;
     let mut pin: Option<usize> = None;
-    let mut close_others: Option<usize> = None;
+    let mut close_others: Option<TabId> = None;
     let mut close_all = false;
     let mut new_spark = false;
     let mut new_tab_kind: Option<&str> = None;
     let mut new_dax = false;
     let mut new_local = false;
-    egui::Frame::new().fill(theme.bg_sidebar).show(ui, |ui| {
+    let mut split: Option<(TabId, Side)> = None;
+    let mut move_to: Option<(TabId, GroupId)> = None;
+    let mut promote: Option<usize> = None;
+    let mut drop_at: Option<(TabId, usize)> = None;
+    let mut maximize = false;
+    let mut close_group = false;
+    let mut equalize = false;
+    let payload = egui::DragAndDrop::payload::<DragTab>(ui.ctx());
+    let mut tab_rects: Vec<(TabId, egui::Rect)> = Vec::new();
+    // the same title in two groups: the group tells them apart for an agent
+    let dup = |title: &str| f.state.tabs.iter().filter(|t| t.display_title() == title).count() > 1;
+    let strip = egui::Frame::new().fill(theme.bg_sidebar).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        egui::ScrollArea::horizontal().id_salt("tabs-scroll").auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt(("tabs-scroll", gid)).auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 1.0;
-                for (i, t) in f.state.tabs.iter().enumerate() {
-                    let active = f.state.active_tab == Some(i);
+                for tid in &group.tabs {
+                    let Some(i) = f.state.tab_index(*tid) else { continue };
+                    let t = &f.state.tabs[i];
+                    let active = group.active == Some(*tid);
                     let color = t.profile.as_ref().and_then(|p| f.state.library.color_for(p)).map(Theme::color32);
                     let mut title = t.display_title();
+                    let plain_title = title.clone();
                     if f.cx.settings.appearance.spid_in_tab_title {
                         if let ConnState::Connected { spid: Some(s), .. } = &t.conn {
                             title.push_str(&format!("  ({s})"));
                         }
                     }
                     let running = t.is_running();
+                    let preview = t.preview;
                     let font = egui::FontId::proportional(13.0);
-                    let galley = ui.painter().layout_no_wrap(title.clone(), font.clone(), theme.text);
+                    let galley = {
+                        let mut job = egui::text::LayoutJob::default();
+                        job.append(&title, 0.0, egui::TextFormat { font_id: font.clone(), color: theme.text, italics: preview, ..Default::default() });
+                        job.wrap.max_width = f32::INFINITY;
+                        ui.painter().layout_job(job)
+                    };
                     let w = galley.size().x + 44.0 + if t.pinned { 14.0 } else { 0.0 };
-                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w.max(90.0), 32.0), Sense::click());
-                    let a11y_title = title.clone();
-                    resp.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, active, format!("tab {a11y_title}")));
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w.max(90.0), 32.0), Sense::click_and_drag());
+                    tab_rects.push((*tid, rect));
+                    if active {
+                        let key = egui::Id::new(("strip-last-active", gid));
+                        let last: Option<TabId> = ui.data(|d| d.get_temp(key));
+                        if last != Some(*tid) {
+                            ui.scroll_to_rect_animation(rect, Some(egui::Align::Center), egui::style::ScrollAnimation::none());
+                            ui.data_mut(|d| d.insert_temp(key, *tid));
+                        }
+                    }
+                    let a11y_title = if dup(&plain_title) { format!("tab {title} (group {gid})") } else { format!("tab {title}") };
+                    resp.widget_info(|| {
+                        let mut w = egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y_title.clone());
+                        w.selected = Some(active && is_active_group);
+                        w
+                    });
                     let bg = if active { theme.bg_panel } else if resp.hovered() { theme.bg_hover } else { theme.bg_sidebar };
                     ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, bg);
+                    let stripe = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0));
                     if let Some(c) = color {
-                        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0)), egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, c);
+                        ui.painter().rect_filled(stripe, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, c);
                     } else if active {
-                        ui.painter().rect_filled(egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 3.0)), egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, theme.accent);
+                        ui.painter().rect_filled(stripe, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, if is_active_group { theme.accent } else { theme.text_faint });
                     }
                     let mut x = rect.left() + 10.0;
                     if t.pinned {
@@ -447,7 +694,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                         x += 16.0;
                         ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
                     }
-                    let text_color = if active { theme.text } else { theme.text_muted };
+                    let text_color = if active && is_active_group { theme.text } else { theme.text_muted };
                     ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
                     // close button
                     let cr = egui::Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), Vec2::new(18.0, 18.0));
@@ -457,6 +704,14 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     }
                     if active || resp.hovered() || cresp.hovered() {
                         ui.painter().text(cr.center(), egui::Align2::CENTER_CENTER, icons::X, egui::FontId::proportional(12.0), theme.text_muted);
+                    }
+                    // the tab under a drag is dimmed where it was
+                    if payload.as_ref().map(|p| p.tab == *tid).unwrap_or(false) {
+                        ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, theme.bg_sidebar.gamma_multiply(0.6));
+                    }
+                    if resp.drag_started() {
+                        egui::DragAndDrop::set_payload(ui.ctx(), DragTab { tab: *tid });
+                        promote = Some(i);
                     }
                     if cresp.clicked() {
                         close = Some(i);
@@ -469,6 +724,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     if resp.double_clicked() {
                         rename = Some(i);
                     }
+                    let tid = *tid;
                     resp.context_menu(|ui| {
                         if ui.button("Rename…").clicked() {
                             rename = Some(i);
@@ -479,12 +735,31 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                             ui.close();
                         }
                         ui.separator();
+                        if ui.button(format!("{} Split right", icons::COLUMNS)).on_hover_text("This tab in a new group to the right (Ctrl+\\)").clicked() {
+                            split = Some((tid, Side::Right));
+                            ui.close();
+                        }
+                        if ui.button(format!("{} Split down", icons::ROWS)).on_hover_text("This tab in a new group below (Ctrl+Shift+\\)").clicked() {
+                            split = Some((tid, Side::Down));
+                            ui.close();
+                        }
+                        if !others.is_empty() {
+                            ui.menu_button("Move to group", |ui| {
+                                for (g, label) in &others {
+                                    if ui.button(format!("Group {g} · {label}")).clicked() {
+                                        move_to = Some((tid, *g));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        }
+                        ui.separator();
                         if ui.button("Close").clicked() {
                             close = Some(i);
                             ui.close();
                         }
                         if ui.button("Close others").clicked() {
-                            close_others = Some(i);
+                            close_others = Some(tid);
                             ui.close();
                         }
                         if ui.button("Close all").clicked() {
@@ -498,7 +773,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.painter().rect_filled(rect.shrink(4.0), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::PLUS, egui::FontId::proportional(16.0), theme.text_muted);
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab"));
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if is_active_group { "new tab".to_string() } else { format!("new tab (group {gid})") }));
                 let default_kind = f.cx.settings.appearance.new_tab_kind.clone();
                 let (default_label, default_key) = match default_kind.as_str() {
                     "spark" => ("Spark SQL query", ""),
@@ -545,7 +820,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                         }
                     }
                 };
-                egui::Popup::menu(&cresp).id(egui::Id::new("new-tab-menu")).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
+                egui::Popup::menu(&cresp).id(egui::Id::new(("new-tab-menu", gid))).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
                 resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
                 if resp.on_hover_text(format!("New {default_label}{default_key} · the arrow (or a right-click) offers the other kinds")).clicked() {
                     match default_kind.as_str() {
@@ -556,18 +831,84 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                         _ => new_tab = true,
                     }
                 }
+                // the group's menu: its tabs, split, maximize, close
+                let (grect, gresp) = ui.allocate_exact_size(Vec2::new(26.0, 32.0), Sense::click());
+                if gresp.hovered() {
+                    ui.painter().rect_filled(grect.shrink2(Vec2::new(2.0, 4.0)), 4.0, theme.bg_hover);
+                }
+                ui.painter().text(grect.center(), egui::Align2::CENTER_CENTER, if maximized { icons::ARROWS_IN_SIMPLE } else { icons::DOTS_THREE }, egui::FontId::proportional(14.0), theme.text_muted);
+                gresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("group menu {gid}")));
+                egui::Popup::menu(&gresp).id(egui::Id::new(("group-menu", gid))).show(|ui| {
+                    ui.set_min_width(240.0);
+                    for tid in &group.tabs {
+                        if let Some(i) = f.state.tab_index(*tid) {
+                            if ui.selectable_label(group.active == Some(*tid), f.state.tabs[i].display_title()).clicked() {
+                                activate = Some(i);
+                                ui.close();
+                            }
+                        }
+                    }
+                    if !group.tabs.is_empty() {
+                        ui.separator();
+                    }
+                    if let Some(a) = group.active {
+                        if ui.button(format!("{} Split right", icons::COLUMNS)).clicked() {
+                            split = Some((a, Side::Right));
+                            ui.close();
+                        }
+                        if ui.button(format!("{} Split down", icons::ROWS)).clicked() {
+                            split = Some((a, Side::Down));
+                            ui.close();
+                        }
+                    }
+                    if group_count > 1 {
+                        if ui.button(if maximized { format!("{} Restore group", icons::ARROWS_IN_SIMPLE) } else { format!("{} Maximize group", icons::ARROWS_OUT_SIMPLE) }).on_hover_text("Ctrl+Shift+M").clicked() {
+                            maximize = true;
+                            ui.close();
+                        }
+                        if ui.button("Equalize group sizes").clicked() {
+                            equalize = true;
+                            ui.close();
+                        }
+                        if ui.button("Close group").on_hover_text("Close every tab of this group (pinned tabs stay)").clicked() {
+                            close_group = true;
+                            ui.close();
+                        }
+                    }
+                });
             });
         });
     });
+    let strip_bottom = strip.response.rect.bottom();
+    // a tab dragged over this strip: an insertion caret; it lands on release
+    if let Some(p) = &payload {
+        let strip_rect = strip.response.rect;
+        if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+            if strip_rect.contains(pos) {
+                let index = tab_rects.iter().filter(|(_, r)| r.center().x < pos.x).count();
+                let x = tab_rects.get(index).map(|(_, r)| r.left()).or_else(|| tab_rects.last().map(|(_, r)| r.right() + 1.0)).unwrap_or(strip_rect.left() + 4.0);
+                ui.painter().rect_filled(egui::Rect::from_min_size(egui::pos2(x - 1.5, strip_rect.top() + 4.0), Vec2::new(3.0, strip_rect.height() - 8.0)), 1.5, theme.accent);
+                if ui.input(|i| i.pointer.any_released()) {
+                    drop_at = Some((p.tab, index));
+                }
+            }
+        }
+    }
     if let Some(i) = activate {
         f.state.active_tab = Some(i);
+        f.state.layout.set_active_group(gid);
         f.state.focus = Focus::Editor;
         f.state.tabs[i].editor.request_focus = true;
     }
+    if let Some(i) = promote {
+        f.state.tabs[i].preview = false;
+    }
     if let Some(i) = pin {
         f.state.tabs[i].pinned = !f.state.tabs[i].pinned;
+        f.state.tabs[i].preview = false;
     }
     if let Some(i) = rename {
+        f.state.tabs[i].preview = false;
         f.state.dialog = Dialog::Rename { tab_index: i, title: f.state.tabs[i].title.clone() };
     }
     if let Some(i) = close {
@@ -576,18 +917,36 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
         }
     }
     if close_others.is_some() || close_all {
-        // pinned tabs stay; clean tabs go at once; the dirty ones are confirmed together
-        let keep = close_others;
-        let victims: Vec<(TabId, String, bool)> = f.state.tabs.iter().enumerate().filter(|(j, t)| Some(*j) != keep && !t.pinned).map(|(_, t)| (t.id, t.title.clone(), t.is_dirty() && (t.is_notebook() || !t.text.trim().is_empty()))).collect();
-        let dirty: Vec<String> = victims.iter().filter(|(_, _, d)| *d).map(|(_, title, _)| title.clone()).collect();
-        if dirty.is_empty() {
-            ops::close_tabs(f.state, f.cx, &victims.iter().map(|(id, _, _)| *id).collect::<Vec<_>>());
-        } else {
-            f.state.dialog = Dialog::ConfirmCloseMany { tab_ids: victims.iter().map(|(id, _, _)| *id).collect(), dirty };
-        }
+        // this group's tabs; pinned tabs stay; dirty ones are confirmed together
+        let victims: Vec<TabId> = group.tabs.iter().copied().filter(|id| Some(*id) != close_others).filter(|id| f.state.tab_index(*id).map(|i| !f.state.tabs[i].pinned).unwrap_or(false)).collect();
+        ops::close_many(f.state, f.cx, victims);
+    }
+    if let Some((tab, index)) = drop_at {
+        egui::DragAndDrop::clear_payload(ui.ctx());
+        ops::move_tab(f.state, tab, Target::Strip { group: gid, index });
+    }
+    if let Some((tab, side)) = split {
+        ops::move_tab(f.state, tab, Target::Split { group: gid, side });
+    }
+    if let Some((tab, g)) = move_to {
+        ops::move_tab(f.state, tab, Target::Strip { group: g, index: usize::MAX });
+    }
+    if maximize {
+        f.state.layout.toggle_maximize(gid);
+    }
+    if equalize {
+        f.state.layout.equalize();
+    }
+    if close_group {
+        ops::close_group(f.state, f.cx, gid);
     }
     if let Some(k) = new_tab_kind {
         f.state.settings_patch.push(SettingsPatch::NewTabKind(k.to_string()));
+    }
+    if new_tab || new_spark || new_dax || new_local || new_notebook {
+        // the new tab opens in this group
+        f.state.layout.set_active_group(gid);
+        f.state.active_tab = f.state.layout.active_tab().and_then(|id| f.state.tab_index(id));
     }
     if new_tab {
         dispatch(f, Command::NewQuery);
@@ -604,6 +963,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>) {
     if new_notebook {
         dispatch(f, Command::NewNotebook);
     }
+    strip_bottom
 }
 
 /// A small card at the bottom right: text used scripts no font on this computer draws; offer
@@ -1338,9 +1698,8 @@ fn welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     });
 }
 
-fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
+fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let theme = f.theme;
-    let idx = f.state.active_tab.unwrap();
     if f.state.tabs[idx].is_dashboard() {
         crate::ui::dashboard::show(ui, f, idx);
         return;
@@ -1369,7 +1728,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         let mut pane_ui = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         pane_ui.set_clip_rect(pane_rect);
         welcome_pane(&mut pane_ui, f, idx);
-        if f.state.active_tab != Some(idx) || f.state.tabs.len() <= idx {
+        if f.state.tabs.len() <= idx {
             return;
         }
         let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
@@ -1390,8 +1749,11 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
     let maximized = results_visible && tab.run.as_ref().map(|r| r.maximized.is_some()).unwrap_or(false);
     let frac = tab.results_fraction.clamp(0.1, 0.92);
     let sep_h = 6.0;
-    let editor_h = if maximized { 0.0 } else if results_visible { (avail.height() * (1.0 - frac) - sep_h / 2.0).max(60.0) } else { avail.height() };
-    let editor_rect = egui::Rect::from_min_size(avail.min, Vec2::new(avail.width(), editor_h));
+    // results under the editor (the default) or beside it
+    let side = results_visible && tab.results_side.unwrap_or(f.cx.settings.appearance.results_side);
+    let editor_h = if maximized { 0.0 } else if results_visible && !side { (avail.height() * (1.0 - frac) - sep_h / 2.0).max(60.0) } else { avail.height() };
+    let editor_w = if maximized { 0.0 } else if side { (avail.width() * (1.0 - frac) - sep_h / 2.0).max(200.0) } else { avail.width() };
+    let editor_rect = egui::Rect::from_min_size(avail.min, Vec2::new(editor_w, editor_h));
     if !maximized {
         let mut ed_ui = ui.new_child(egui::UiBuilder::new().max_rect(editor_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         ed_ui.set_clip_rect(editor_rect);
@@ -1407,12 +1769,28 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
         }
     }
     if results_visible {
-        let sep_rect = if maximized {
-            egui::Rect::from_min_size(avail.min, Vec2::new(avail.width(), 0.0))
+        let res_rect = if maximized {
+            avail
+        } else if side {
+            // a vertical separator: results to the right
+            let sep_rect = egui::Rect::from_min_size(egui::pos2(editor_rect.right(), avail.top()), Vec2::new(sep_h, avail.height()));
+            let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
+            sep.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results separator"));
+            ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
+            if sep.hovered() || sep.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+            }
+            if sep.dragged() {
+                let dx = sep.drag_delta().x;
+                let new_editor_w = (editor_w + dx).clamp(200.0, avail.width() - 240.0);
+                tab.results_fraction = 1.0 - (new_editor_w + sep_h / 2.0) / avail.width();
+            }
+            egui::Rect::from_min_max(egui::pos2(sep_rect.right(), avail.top()), avail.max)
         } else {
-            // separator
+            // a horizontal separator: results below
             let sep_rect = egui::Rect::from_min_size(egui::pos2(avail.left(), editor_rect.bottom()), Vec2::new(avail.width(), sep_h));
             let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
+            sep.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results separator"));
             ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
             if sep.hovered() || sep.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -1422,9 +1800,8 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>) {
                 let new_editor_h = (editor_h + dy).clamp(60.0, avail.height() - 80.0);
                 tab.results_fraction = 1.0 - (new_editor_h + sep_h / 2.0) / avail.height();
             }
-            sep_rect
+            egui::Rect::from_min_max(egui::pos2(avail.left(), sep_rect.bottom()), avail.max)
         };
-        let res_rect = egui::Rect::from_min_max(egui::pos2(avail.left(), sep_rect.bottom()), avail.max);
         let mut res_ui = ui.new_child(egui::UiBuilder::new().max_rect(res_rect).layout(egui::Layout::top_down(egui::Align::Min)));
         res_ui.set_clip_rect(res_rect);
         if tab.results_tab == ResultsTab::Plan {
@@ -2286,10 +2663,95 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         Command::ReopenClosedTab => ops::reopen_closed_tab(state, cx),
         Command::NextTab | Command::PrevTab => {
             if let Some(i) = idx {
-                let n = state.tabs.len();
-                state.active_tab = Some(if cmd == Command::NextTab { (i + 1) % n } else { (i + n - 1) % n });
+                let id = state.tabs[i].id;
+                let gid = state.layout.group_of(id).unwrap_or(state.layout.active_group());
+                let tabs = state.layout.group_tabs(gid);
+                if let Some(p) = tabs.iter().position(|t| *t == id) {
+                    let n = tabs.len();
+                    let next = tabs[if cmd == Command::NextTab { (p + 1) % n } else { (p + n - 1) % n }];
+                    state.active_tab = state.tab_index(next);
+                }
             }
         }
+        Command::MoveTabLeft | Command::MoveTabRight => {
+            if let Some(i) = idx {
+                let id = state.tabs[i].id;
+                if let Some(gid) = state.layout.group_of(id) {
+                    let tabs = state.layout.group_tabs(gid);
+                    if let Some(p) = tabs.iter().position(|t| *t == id) {
+                        let index = if cmd == Command::MoveTabLeft { p.saturating_sub(1) } else { p + 1 };
+                        ops::move_tab(state, id, crate::layout::Target::Strip { group: gid, index });
+                    }
+                }
+            }
+        }
+        Command::SplitRight | Command::SplitDown => {
+            if let Some(i) = idx {
+                let id = state.tabs[i].id;
+                if let Some(gid) = state.layout.group_of(id) {
+                    let side = if cmd == Command::SplitRight { crate::layout::Side::Right } else { crate::layout::Side::Down };
+                    ops::move_tab(state, id, crate::layout::Target::Split { group: gid, side });
+                }
+            }
+        }
+        Command::MoveTabGroupLeft | Command::MoveTabGroupRight | Command::MoveTabGroupUp | Command::MoveTabGroupDown => {
+            if let Some(i) = idx {
+                let id = state.tabs[i].id;
+                if let Some(gid) = state.layout.group_of(id) {
+                    let side = match cmd {
+                        Command::MoveTabGroupLeft => crate::layout::Side::Left,
+                        Command::MoveTabGroupRight => crate::layout::Side::Right,
+                        Command::MoveTabGroupUp => crate::layout::Side::Up,
+                        _ => crate::layout::Side::Down,
+                    };
+                    match state.layout.neighbour(gid, side, &state.group_rects) {
+                        Some(n) => ops::move_tab(state, id, crate::layout::Target::Strip { group: n, index: usize::MAX }),
+                        None => ops::move_tab(state, id, crate::layout::Target::Split { group: gid, side }),
+                    }
+                }
+            }
+        }
+        Command::FocusGroup1 | Command::FocusGroup2 | Command::FocusGroup3 => {
+            let n = match cmd {
+                Command::FocusGroup1 => 0,
+                Command::FocusGroup2 => 1,
+                _ => 2,
+            };
+            if let Some(g) = state.layout.groups_in_order().get(n).copied() {
+                state.layout.set_active_group(g);
+                state.active_tab = state.layout.active_tab().and_then(|id| state.tab_index(id));
+                state.focus = Focus::Editor;
+                if let Some(i) = state.active_tab {
+                    state.tabs[i].editor.request_focus = true;
+                }
+            }
+        }
+        Command::Tab1 | Command::Tab2 | Command::Tab3 | Command::Tab4 | Command::Tab5 | Command::Tab6 | Command::Tab7 | Command::Tab8 | Command::Tab9 => {
+            let n = match cmd {
+                Command::Tab1 => 0,
+                Command::Tab2 => 1,
+                Command::Tab3 => 2,
+                Command::Tab4 => 3,
+                Command::Tab5 => 4,
+                Command::Tab6 => 5,
+                Command::Tab7 => 6,
+                Command::Tab8 => 7,
+                _ => 8,
+            };
+            let tabs = state.layout.group_tabs(state.layout.active_group());
+            if let Some(t) = tabs.get(n) {
+                state.active_tab = state.tab_index(*t);
+            }
+        }
+        Command::MaximizeGroup => {
+            let g = state.layout.active_group();
+            state.layout.toggle_maximize(g);
+        }
+        Command::CloseGroup => {
+            let g = state.layout.active_group();
+            ops::close_group(state, cx, g);
+        }
+        Command::EqualizeGroups => state.layout.equalize(),
         Command::ImportAdsSettings => {
             let path = cobalt_store::default_ads_settings_path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
             state.dialog = Dialog::AdsImport { path, summary: None, error: None };

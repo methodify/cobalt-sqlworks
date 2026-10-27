@@ -43,12 +43,22 @@ pub struct Appearance {
     pub spid_in_tab_title: bool,
     /// Show the getting-started pane next to a fresh, empty query tab.
     pub show_welcome: bool,
+    /// New tabs open at the end of their strip; otherwise right of the active tab.
+    #[serde(default)]
+    pub new_tab_at_end: bool,
+    /// New tabs show their results beside the editor rather than under it.
+    #[serde(default)]
+    pub results_side: bool,
+    /// A single click in the Files sidebar opens a preview tab that the next single click
+    /// reuses; editing, running, pinning or a double-click keeps it.
+    #[serde(default = "default_true")]
+    pub preview_tabs: bool,
     /// What the + on the tab strip opens: `query`, `spark` or `notebook`.
     pub new_tab_kind: String,
 }
 impl Default for Appearance {
     fn default() -> Self {
-        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0, spid_in_tab_title: false, show_welcome: true, new_tab_kind: "query".into() }
+        Self { theme: ThemeChoice::System, ui_scale: 1.0, editor_font_size: 14.0, grid_font_size: 13.0, ui_font_size: 13.0, spid_in_tab_title: false, show_welcome: true, new_tab_at_end: false, results_side: false, preview_tabs: true, new_tab_kind: "query".into() }
     }
 }
 
@@ -422,4 +432,8 @@ impl Default for AdvancedSettings {
     fn default() -> Self {
         Self { memory_budget_bytes: 1024 * 1024 * 1024, temp_dir: None, log_level: "info".into(), renderer: "auto".into() }
     }
+}
+
+fn default_true() -> bool {
+    true
 }

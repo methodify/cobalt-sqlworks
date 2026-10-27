@@ -1040,15 +1040,50 @@ pub fn close_tab(state: &mut AppState, cx: &Ctx, idx: usize, force: bool) {
     snap.profile_id = t.profile.as_ref().map(|p| p.id);
     snap.database = crate::sparkq::snapshot_binding(&t).or_else(|| crate::exploreq::snapshot_binding(&t)).or_else(|| crate::tabularq::snapshot_binding(&t)).or_else(|| crate::localq::snapshot_binding(&t)).or_else(|| t.conn.database().map(str::to_string));
     snap.cursor = t.editor.cursor;
+    snap.results_side = t.results_side.unwrap_or(false);
     snap.file_path = t.file_path.clone();
     let _ = cx.store.save_tab(&snap);
     let _ = cx.store.close_tab(t.id);
     state.recently_closed_count += 1;
-    if state.tabs.is_empty() {
-        state.active_tab = None;
+    // the group hands over to the neighbouring tab; an emptied group goes
+    state.layout.remove_tab(t.id);
+    state.active_tab = state.layout.active_tab().and_then(|id| state.tab_index(id));
+}
+
+/// Move a tab within or between strips, or into a new group (`Target::Split`). An index of
+/// `usize::MAX` means the end of the strip.
+pub fn move_tab(state: &mut AppState, tab: TabId, target: crate::layout::Target) {
+    use crate::layout::Target;
+    let pins: std::collections::HashSet<TabId> = state.tabs.iter().filter(|t| t.pinned).map(|t| t.id).collect();
+    let target = match target {
+        Target::Strip { group, index } if index == usize::MAX => Target::Strip { group, index: state.layout.group_tabs(group).len() },
+        t => t,
+    };
+    if state.layout.move_tab(tab, target, &|t| pins.contains(&t)) {
+        state.active_tab = state.layout.active_tab().and_then(|id| state.tab_index(id));
+        state.focus = Focus::Editor;
+        if let Some(i) = state.active_tab {
+            state.tabs[i].editor.request_focus = true;
+        }
+    }
+}
+
+/// Close every unpinned tab of a group (the dirty ones are confirmed together).
+pub fn close_group(state: &mut AppState, cx: &Ctx, gid: crate::layout::GroupId) {
+    let victims: Vec<TabId> = state.layout.group_tabs(gid).into_iter().filter(|id| state.tab_index(*id).map(|i| !state.tabs[i].pinned).unwrap_or(false)).collect();
+    close_many(state, cx, victims);
+}
+
+/// Close these tabs: clean ones at once, dirty ones after one confirmation for all of them.
+pub fn close_many(state: &mut AppState, cx: &Ctx, victims: Vec<TabId>) {
+    let dirty: Vec<String> = victims.iter().filter_map(|id| state.tab_index(*id).map(|i| &state.tabs[i])).filter(|t| t.is_dirty() && (t.is_notebook() || t.is_dashboard() || !t.text.trim().is_empty())).map(|t| t.title.clone()).collect();
+    if victims.is_empty() {
+        return;
+    }
+    if dirty.is_empty() {
+        close_tabs(state, cx, &victims);
     } else {
-        let a = state.active_tab.unwrap_or(0);
-        state.active_tab = Some(if a >= state.tabs.len() { state.tabs.len() - 1 } else if a > idx { a - 1 } else { a });
+        state.dialog = Dialog::ConfirmCloseMany { tab_ids: victims, dirty };
     }
 }
 
@@ -1075,6 +1110,7 @@ pub fn reopen_closed_tab(state: &mut AppState, cx: &Ctx) {
     t.text = snap.text;
     t.file_path = snap.file_path;
     t.editor.pending_edit = Some(PendingEdit::SetCursor(snap.cursor));
+    t.results_side = if snap.results_side { Some(true) } else { None };
     let is_nb = t.file_path.as_ref().map(|p| crate::notebook::is_notebook_path(p)).unwrap_or(false) || cobalt_notebook::Notebook::looks_like_ipynb(&t.text);
     if is_nb && crate::notebook::restore_from_snapshot(t) {
         if let Some(nb) = t.notebook.as_deref_mut() {
@@ -1159,11 +1195,17 @@ pub fn snapshot_tabs(state: &mut AppState, cx: &Ctx, force: bool) {
             snap.profile_id = t.profile.as_ref().map(|p| p.id);
             snap.database = crate::sparkq::snapshot_binding(t).or_else(|| crate::exploreq::snapshot_binding(t)).or_else(|| crate::tabularq::snapshot_binding(t)).or_else(|| t.conn.database().map(str::to_string));
             snap.cursor = t.editor.cursor;
+            snap.results_side = t.results_side.unwrap_or(false);
+    snap.results_side = t.results_side.unwrap_or(false);
             snap.file_path = t.file_path.clone();
             if cx.store.save_tab(&snap).is_ok() {
                 t.snapshot_hash = h;
             }
         }
+    }
+    // the editor groups (which tabs sit where, the splits) go with the tabs
+    if (force || state.layout.generation() != state.layout_saved_generation) && cx.store.set_kv("layout", &state.layout.to_json()).is_ok() {
+        state.layout_saved_generation = state.layout.generation();
     }
     state.last_hot_exit_save = Instant::now();
 }
@@ -1200,6 +1242,7 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         t.text = snap.text;
         t.file_path = snap.file_path.clone();
         t.editor.cursor = snap.cursor;
+        t.results_side = if snap.results_side { Some(true) } else { None };
         t.snapshot_hash = hash_text(&t.text);
         let is_nb = snap.file_path.as_ref().map(|p| crate::notebook::is_notebook_path(p)).unwrap_or(false) || cobalt_notebook::Notebook::looks_like_ipynb(&t.text);
         if is_nb && crate::notebook::restore_from_snapshot(t) {
@@ -1222,11 +1265,52 @@ pub fn restore_tabs(state: &mut AppState, cx: &Ctx) {
         }
         let _ = snap.database;
     }
-    if !state.tabs.is_empty() {
-        state.active_tab = Some(0);
+    // the saved editor groups; tabs the layout does not name join the active group at the end
+    let ids: Vec<TabId> = state.tabs.iter().map(|t| t.id).collect();
+    if let Ok(Some(json)) = cx.store.get_kv::<String>("layout") {
+        if let Some(l) = crate::layout::Layout::from_json(&json, &ids) {
+            state.layout = l;
+        }
     }
+    state.layout.sync(&ids, true);
+    state.active_tab = state.layout.active_tab().and_then(|id| state.tab_index(id)).or(if state.tabs.is_empty() { None } else { Some(0) });
+    state.layout_saved_generation = 0;
     for target in restored_models {
         crate::tabularq::ensure_catalog(state, cx, &target);
+    }
+}
+
+/// Open a file; a preview (a single click in the Files sidebar) reuses the active group's
+/// preview tab, when there is one that was not edited or run, and marks the tab as a preview.
+pub fn open_file_as(state: &mut AppState, cx: &Ctx, path: PathBuf, preview: bool) {
+    if let Some(i) = state.tabs.iter().position(|t| t.file_path.as_ref() == Some(&path)) {
+        state.active_tab = Some(i);
+        if !preview {
+            state.tabs[i].preview = false; // a double-click keeps it
+        }
+        return;
+    }
+    let plain = !cobalt_core::DashboardFile::is_dashboard_path(&path) && !cobalt_core::explore::ExploreSpec::is_explore_path(&path) && !crate::notebook::is_notebook_path(&path) && !path.extension().map(|e| e.eq_ignore_ascii_case("sqlplan")).unwrap_or(false);
+    if !(preview && plain && cx.settings.appearance.preview_tabs) {
+        return open_file(state, cx, Some(path));
+    }
+    let gid = state.layout.active_group();
+    let reuse = state.layout.group_tabs(gid).into_iter().filter_map(|id| state.tab_index(id)).find(|i| state.tabs[*i].preview && !state.tabs[*i].is_dirty() && state.tabs[*i].run.is_none());
+    match reuse {
+        Some(i) => {
+            crate::drop::load_into_tab(state, cx, i, &path);
+            state.tabs[i].preview = true;
+            state.active_tab = Some(i);
+        }
+        None => {
+            let before = state.tabs.len();
+            open_file(state, cx, Some(path));
+            if state.tabs.len() > before {
+                if let Some(i) = state.active_tab {
+                    state.tabs[i].preview = true;
+                }
+            }
+        }
     }
 }
 
@@ -2105,7 +2189,7 @@ pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAc
             }
         }
         A::Refresh => state.files.cache.clear(),
-        A::Open(p) => open_file(state, cx, Some(p)),
+        A::Open(p, preview) => open_file_as(state, cx, p, preview),
         A::Query(p) => {
             if let Err(e) = crate::localq::open_file_table(state, cx, &p) {
                 cx.toast(ToastKind::Warning, e);

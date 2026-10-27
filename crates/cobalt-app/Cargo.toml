@@ -44,7 +44,6 @@ eframe.workspace = true
 egui_extras.workspace = true
 egui_table.workspace = true
 egui_plot.workspace = true
-egui_dock.workspace = true
 egui-notify.workspace = true
 egui-phosphor.workspace = true
 egui_agent = { workspace = true, optional = true }

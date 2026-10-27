@@ -98,6 +98,9 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
             });
 
             ui.checkbox(&mut draft.appearance.spid_in_tab_title, "Show the connection's SPID in tab titles");
+            ui.checkbox(&mut draft.appearance.new_tab_at_end, "New tabs open at the end of the strip (otherwise right of the active tab)");
+            ui.checkbox(&mut draft.appearance.results_side, "Results beside the editor in new tabs (each tab's toolbar can switch it)");
+            ui.checkbox(&mut draft.appearance.preview_tabs, "Preview tabs: a single click in the Files sidebar opens a tab the next click reuses (double-click keeps it)");
             ui.checkbox(&mut draft.appearance.show_welcome, "Show the getting-started pane next to a new empty query tab");
                             }
                             Tab::Editor => {

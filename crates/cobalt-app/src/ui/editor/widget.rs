@@ -263,7 +263,10 @@ impl<'a> CodeEditor<'a> {
                 drop_caret = Some(galley.cursor_from_pos(pos - origin).index.0);
             }
         }
-        if let Some(payload) = response.dnd_release_payload::<String>() {
+        // only a text payload is ours to take: `dnd_release_payload` removes whatever payload
+        // exists, and a tab or a file being dragged over the editor belongs to the editor groups
+        let text_payload = if egui::DragAndDrop::has_payload_of_type::<String>(ui.ctx()) { response.dnd_release_payload::<String>() } else { None };
+        if let Some(payload) = text_payload {
             if let Some(pos) = ui.input(|i| i.pointer.interact_pos().or(i.pointer.hover_pos())) {
                 let at = galley.cursor_from_pos(pos - origin).index.0;
                 undo.record(EditKind::Other, text, cursors);

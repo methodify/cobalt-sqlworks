@@ -981,6 +981,49 @@ table: "schema/name" | "name"}`; the results toolbar label `save locally <set>`;
 `save_scratch` with `scratch name` and `scratch save`; `dashboard {action: pin}` on a Local
 tab.
 
+## Editor groups: split views, tab order, results beside, preview tabs (0.12.0)
+
+**Groups.** Drag a tab onto any editor area and five zones appear: the middle puts the tab in
+that group's strip, the edges split the group on that side (A | B, A / B, and nests of those).
+Dropping on another strip inserts there. The tab's right-click menu has *Split right*, *Split
+down* and *Move to group ›*; so does the `…` at the right of every strip, together with the
+group's tab list, *Maximize group*, *Equalize group sizes* and *Close group*. Keys: Ctrl+\ and
+Ctrl+Shift+\ split, Ctrl+Alt+← → ↑ ↓ move the tab to the neighbouring group, Ctrl+1 / 2 / 3
+focus a group, Alt+1 … 9 pick a tab, Ctrl+Shift+M maximizes. The group with the accent
+underline is the active one: Run, Format, Save, Change connection and the rest act on its
+active tab; a click anywhere in a group activates it. Each group's active tab shows its own
+results, so two queries, or a query and its Explore, or a dashboard and a query, sit side by
+side. A group with no tabs left closes itself; the last one shows the welcome pane. The layout
+is restored after a restart.
+
+**Order.** Drag a tab along its strip; the caret shows where it lands; pinned tabs stay left.
+Ctrl+Shift+PageUp / PageDown move the active tab. New tabs open right of the active tab now
+(Settings › Appearance has "at the end" for the old behaviour).
+
+**Results beside.** On a result pane's toolbar, the columns icon puts the results to the right
+of the editor (the rows icon puts them back); the separator drags either way. Per tab, kept
+across restarts; the default for new tabs is in Settings › Appearance.
+
+**Preview tabs.** A single click on a .sql file in the Files sidebar opens it in a preview tab
+(italic title) that the next single click reuses, so browsing does not pile up tabs. Edit it,
+run it, pin it, rename it, drag it, or double-click the file, and it is a normal tab. Off in
+Settings › Appearance if you prefer every click to open a tab. Notebooks, dashboards, Explore
+files and plans always open as normal tabs. History stays as it was: double-click opens.
+
+**Files onto groups.** Drag a file from the Files sidebar onto a group and it opens there, the
+same way a drop on the window opens it (data files become local tables).
+
+**Cost.** Each visible group paints its own grid. Measured with two groups each holding a
+million-row result: a run still streams in 3.9 s, the frame's CPU time is 4.6 ms against 2.9 ms
+with one grid, and while scrolling the display rate settles around 30 frames a second against 60
+or more with one grid. Two heavy grids on screen at once is the stress case; a query beside a
+small result, an Explore or a dashboard costs nothing you will notice. Maximize (Ctrl+Shift+M)
+is the quick way to give one group the whole area while a big result streams.
+
+Agent: `state.layout`, `tab {action: split, side: right}`, `tab {action: move, group, index}`,
+`group {action: focus|maximize|close|equalize}`, `open_path {path, preview: true}`; drags are
+stepped pointer moves onto `drop <zone> group n`, a strip, or `gutter n`.
+
 ## Local tables sidebar, Explore any table, completion quoting (0.11.1)
 
 **The Local sidebar.** The lightning bolt on the rail (Ctrl+Shift+L) lists everything the

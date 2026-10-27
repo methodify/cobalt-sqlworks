@@ -236,6 +236,9 @@ pub struct EditorTab {
     pub title: String,
     pub custom_title: bool,
     pub pinned: bool,
+    /// A preview tab (Files sidebar single click): reused by the next preview, kept once it
+    /// is edited, run, pinned, renamed or dragged.
+    pub preview: bool,
     pub text: String,
     pub file_path: Option<PathBuf>,
     pub saved_text_hash: u64,
@@ -248,6 +251,8 @@ pub struct EditorTab {
     pub run: Option<RunView>,
     pub results_visible: bool,
     pub results_fraction: f32,
+    /// Results beside the editor (`Some`) or the Settings default (`None`).
+    pub results_side: Option<bool>,
     pub results_tab: ResultsTab,
     pub editor: EditorState,
     pub catalog: Option<Arc<DatabaseCatalog>>,
@@ -648,6 +653,7 @@ impl EditorTab {
             title: format!("SQLQuery_{untitled_index}"),
             custom_title: false,
             pinned: false,
+            preview: false,
             text: String::new(),
             file_path: None,
             saved_text_hash: hash_text(""),
@@ -660,6 +666,7 @@ impl EditorTab {
             run: None,
             results_visible: true,
             results_fraction: 0.45,
+            results_side: None,
             results_tab: ResultsTab::Results,
             editor: EditorState::default(),
             catalog: None,
@@ -1321,6 +1328,12 @@ pub struct AppState {
     pub local_expanded: HashSet<String>,
     /// The Local sidebar's filter text.
     pub local_filter: String,
+    /// The editor groups (`layout.rs`): which tabs are in which group, how the area is split.
+    pub layout: crate::layout::Layout,
+    /// Where each group was drawn last frame (for "move to the group on the left").
+    pub group_rects: std::collections::HashMap<crate::layout::GroupId, egui::Rect>,
+    /// The layout generation the snapshot store holds.
+    pub layout_saved_generation: u64,
     /// The engine's function names, for completion on Local tabs.
     pub local_functions: Arc<Vec<String>>,
     /// The registry generation the tabs' catalogs were built from.
@@ -1640,6 +1653,9 @@ impl AppState {
             local_root_expanded: true,
             local_expanded: HashSet::new(),
             local_filter: String::new(),
+            layout: crate::layout::Layout::new(),
+            group_rects: Default::default(),
+            layout_saved_generation: 0,
             local_functions: Arc::new(Vec::new()),
             local_generation: 0,
             spark_catalogs: Default::default(),

@@ -86,7 +86,7 @@ impl CobaltApp {
                 json!({
                     "index": i,
                     "id": t.id.to_string(),
-                    "title": t.title,
+                    "title": t.title, "preview": t.preview, "results_side": t.results_side,
                     "kind": if t.is_notebook() { "notebook" } else if t.is_dashboard() { "dashboard" } else if t.spark.is_some() { "spark" } else if t.is_explore() { "explore" } else if t.is_tabular() { "dax" } else { "query" },
                     "explore": t.explore.as_deref().map(|e| json!({
                         "spec": e.spec,
@@ -142,6 +142,7 @@ impl CobaltApp {
             .collect();
         json!({
             "tabs": tabs,
+            "layout": layout_json(&self.state),
             "active_tab": self.state.active_tab,
             "profiles": self.state.library.profiles.iter().map(|p| json!({"id": p.id.to_string(), "name": p.display_name(), "server": p.server, "auth": p.auth.label(), "database": p.database})).collect::<Vec<_>>(),
             "groups": self.state.library.groups.iter().map(|g| json!({"id": g.id.to_string(), "name": g.name})).collect::<Vec<_>>(),
@@ -769,6 +770,61 @@ impl AgentApp for CobaltApp {
                     None => ActionResult::BadArgs("no active tab".into()),
                 }
             }
+            // tab {action: move|split|activate, tab?: index (default the active tab), group?, index?, side?: left|right|up|down}
+            "tab" => {
+                let Some(action) = arg_str(args, "action") else { return ActionResult::BadArgs("action is required".into()) };
+                let i = arg_usize(args, "tab").or(self.state.active_tab);
+                let Some(i) = i.filter(|i| *i < self.state.tabs.len()) else { return ActionResult::BadArgs("no such tab".into()) };
+                let id = self.state.tabs[i].id;
+                match action.as_str() {
+                    "activate" => {
+                        self.state.active_tab = Some(i);
+                        crate::ui::shell::sync_layout(&mut self.state, false);
+                    }
+                    "move" => {
+                        let Some(g) = arg_usize(args, "group") else { return ActionResult::BadArgs("group is required".into()) };
+                        let group = crate::layout::GroupId(g as u32);
+                        if self.state.layout.group(group).is_none() {
+                            return ActionResult::BadArgs("no such group".into());
+                        }
+                        let index = arg_usize(args, "index").unwrap_or(usize::MAX);
+                        ops::move_tab(&mut self.state, id, crate::layout::Target::Strip { group, index });
+                    }
+                    "results_side" => {
+                        let on = args.and_then(|a| a.get("on")).and_then(|v| v.as_bool()).unwrap_or(true);
+                        self.state.tabs[i].results_side = Some(on);
+                    }
+                    "split" => {
+                        let Some(side) = arg_str(args, "side").and_then(|s| crate::layout::Side::parse(&s)) else { return ActionResult::BadArgs("side is required: left|right|up|down".into()) };
+                        let Some(gid) = self.state.layout.group_of(id) else { return ActionResult::BadArgs("the tab is in no group".into()) };
+                        ops::move_tab(&mut self.state, id, crate::layout::Target::Split { group: gid, side });
+                    }
+                    _ => return ActionResult::BadArgs("unknown action".into()),
+                }
+                egui.request_repaint();
+                ActionResult::with(&layout_json(&self.state))
+            }
+            // group {action: focus|close|maximize|equalize|list, group?: id (default the active group)}
+            "group" => {
+                let Some(action) = arg_str(args, "action") else { return ActionResult::BadArgs("action is required".into()) };
+                let gid = arg_usize(args, "group").map(|g| crate::layout::GroupId(g as u32)).unwrap_or(self.state.layout.active_group());
+                if self.state.layout.group(gid).is_none() {
+                    return ActionResult::BadArgs("no such group".into());
+                }
+                match action.as_str() {
+                    "list" => {}
+                    "focus" => {
+                        self.state.layout.set_active_group(gid);
+                        self.state.active_tab = self.state.layout.active_tab().and_then(|id| self.state.tab_index(id));
+                    }
+                    "close" => self.with_ctx(egui, |s, cx| ops::close_group(s, cx, gid)),
+                    "maximize" => self.state.layout.toggle_maximize(gid),
+                    "equalize" => self.state.layout.equalize(),
+                    _ => return ActionResult::BadArgs("unknown action".into()),
+                }
+                egui.request_repaint();
+                ActionResult::with(&layout_json(&self.state))
+            }
             "activate_tab" => {
                 let i = arg_usize(args, "tab").unwrap_or(0);
                 if i < self.state.tabs.len() {
@@ -969,7 +1025,8 @@ impl AgentApp for CobaltApp {
             }
             "open_path" => {
                 let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
-                self.with_ctx(egui, |s, cx| ops::open_file(s, cx, Some(std::path::PathBuf::from(path))));
+                let preview = args.and_then(|a| a.get("preview")).and_then(|v| v.as_bool()).unwrap_or(false);
+                self.with_ctx(egui, |s, cx| ops::open_file_as(s, cx, std::path::PathBuf::from(path), preview));
                 ActionResult::with(&json!({"tab": self.state.active_tab}))
             }
             // diff: a Diff tab over two local tables — {a, b, keys?: [..], compare?: [..]} (keys guessed when absent)
@@ -2083,4 +2140,26 @@ impl CobaltApp {
             self.toasts.info(m);
         }
     }
+}
+
+/// The editor groups for `state.layout`: the split tree and each group's tabs as indices.
+fn layout_json(state: &crate::state::AppState) -> Value {
+    use crate::layout::{Axis, Node};
+    fn node(n: &Node) -> Value {
+        match n {
+            Node::Group(g) => json!({"group": g.0}),
+            Node::Split { axis, children, ratios } => json!({"split": match axis { Axis::Row => "row", Axis::Col => "col" }, "children": children.iter().map(node).collect::<Vec<_>>(), "ratios": ratios}),
+        }
+    }
+    let groups: Vec<Value> = state
+        .layout
+        .groups_in_order()
+        .into_iter()
+        .map(|g| {
+            let grp = state.layout.group(g).cloned().unwrap_or_default();
+            let rect = state.group_rects.get(&g).map(|r| vec![r.left(), r.top(), r.right(), r.bottom()]);
+            json!({"id": g.0, "tabs": grp.tabs.iter().filter_map(|t| state.tab_index(*t)).collect::<Vec<_>>(), "active": grp.active.and_then(|t| state.tab_index(t)), "maximized": state.layout.maximized() == Some(g), "rect": rect})
+        })
+        .collect();
+    json!({"root": node(state.layout.root()), "groups": groups, "active_group": state.layout.active_group().0})
 }

@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.12.0 — unreleased
+
+- **Editor groups: split views.** The editor area is a tree of groups, each a strip of tabs
+  with its own editor and results, split side by side or stacked to any depth. Make one by
+  dragging a tab onto an editor area (five drop zones: the middle joins that group, the four
+  edges split it on that side), onto another group's strip, from a tab's menu (*Split right*,
+  *Split down*, *Move to group*), from the strip's `…` menu, or with Ctrl+\ and Ctrl+Shift+\.
+  Ctrl+Alt+arrows move the active tab to the neighbouring group (making one at the edge);
+  Ctrl+1, 2, 3 focus a group; Alt+1 … 9 pick a tab in it; Ctrl+Tab cycles within the group.
+  Gutters drag; double-click one to equalize; *Maximize group* (Ctrl+Shift+M, the strip's `…`
+  menu) gives one group the whole area and restores it. An emptied group closes on its own and
+  the tree collapses back; the last group shows the welcome pane; *Close group* closes its tabs
+  with one confirmation. Every command that acts on "the active tab" keeps doing so; a click in
+  a group makes it the active one. The layout, which tab sits where and the gutter ratios, is
+  saved with the hot-exit snapshots and restored on the next start.
+- **Tab reordering.** Drag a tab along its strip (an insertion caret shows where it lands);
+  pinned tabs stay at the left. Ctrl+Shift+PageUp / PageDown move the active tab left / right.
+  New tabs open to the right of the active tab (Settings › Appearance: at the end instead).
+- **Results beside the editor.** The results toolbar's new toggle lays the editor and the
+  results side by side, with the same draggable separator; per tab, remembered across restarts;
+  Settings › Appearance sets the default for new tabs.
+- **Preview tabs.** A single click on a file in the Files sidebar opens a preview tab (italic
+  title) that the next single click reuses; editing, running, pinning, renaming, dragging or a
+  double-click keeps it. Settings › Appearance turns previews off.
+- **Files onto groups.** Drag a file out of the Files sidebar onto an editor group: it opens
+  there (query files, notebooks, plans, data files as local tables, as a drop on the window).
+- **Strip polish.** The strip scrolls to a tab activated by key; each strip's `…` menu lists its
+  tabs and has the group commands; a tab's accessibility label carries its group when two
+  groups show the same title.
+- Dependencies: egui 0.37 was evaluated and deferred (see `docs/decisions/D010`); the unused
+  egui_dock dependency is gone.
+- Agent: `state.layout` (the split tree, groups with tab indices, rects, the active group),
+  `tab {action: move|split|activate|results_side, tab?, group?, index?, side?, on?}`, `group
+  {action: focus|close|maximize|equalize|list, group?}`, `open_path {path, preview?}`; tabs carry
+  `preview` and `results_side`; labels `gutter n`, `group menu n`, `drop <zone> group n`,
+  `results side`, `results separator`, `new tab (group n)`, `tab <title> (group n)`.
+
 ## 0.11.4 — 2026-10-23
 
 - **Alt shortcuts no longer type.** Alt+Shift+F (Format Document) formatted the query and also
