@@ -1810,7 +1810,8 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         let actions = results::show(&mut res_ui, results::ResultsArgs { tab, theme, settings: f.cx.settings, fmt: &f.state.formatter });
         if f.state.tabs[idx].results_tab == ResultsTab::Plan {
             let tab = &mut f.state.tabs[idx];
-            let body = egui::Rect::from_min_max(egui::pos2(res_rect.left(), res_rect.top() + 30.0), res_rect.max);
+            let toolbar_h: f32 = ui.data(|d| d.get_temp(egui::Id::new(("results-toolbar-h", tab.id)))).unwrap_or(30.0);
+            let body = egui::Rect::from_min_max(egui::pos2(res_rect.left(), res_rect.top() + toolbar_h), res_rect.max);
             let mut plan_ui = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
             plan_ui.set_clip_rect(body);
             if tab.run.as_ref().map(|r| r.text_plan.is_some()).unwrap_or(false) {
@@ -2080,8 +2081,15 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let mut local_import = false;
     let mut diff_class: Option<Option<String>> = None;
     crate::localq::update_diff_counts(f.state, idx);
-    egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
-        ui.horizontal(|ui| {
+    // a narrow pane (a group beside another): the buttons drop their labels first, and wrap
+    // onto a second line if even that does not fit; labels come back once the pane is wide again.
+    // Wrapping also keeps the row from overflowing, which would widen the whole pane.
+    let compact_key = egui::Id::new(("toolbar-compact", f.state.tabs[idx].id));
+    let avail_w = ui.available_width();
+    let compact: bool = ui.data(|d| d.get_temp(compact_key)).unwrap_or(false);
+    ui.data_mut(|d| d.insert_temp(egui::Id::new("tool-button-compact"), compact));
+    let toolbar = egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
             let tab = &f.state.tabs[idx];
             let running = tab.is_running();
             let connected = tab.conn.is_connected();
@@ -2289,6 +2297,19 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             });
         });
     });
+    ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("tool-button-compact")));
+    let wrapped = toolbar.response.rect.height() > 38.0;
+    if !compact && wrapped {
+        ui.data_mut(|d| {
+            d.insert_temp(compact_key, true);
+            d.insert_temp(compact_key.with("at"), avail_w);
+        });
+    } else if compact {
+        let at: f32 = ui.data(|d| d.get_temp(compact_key.with("at"))).unwrap_or(0.0);
+        if avail_w > at + 48.0 {
+            ui.data_mut(|d| d.insert_temp(compact_key, false));
+        }
+    }
     ui.painter().line_segment([ui.min_rect().left_bottom(), ui.min_rect().right_bottom()], Stroke::new(1.0, theme.border));
     if local_import {
         crate::localq::import_file_into_connection(f.state, f.cx, idx);

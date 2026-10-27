@@ -1013,6 +1013,10 @@ files and plans always open as normal tabs. History stays as it was: double-clic
 **Files onto groups.** Drag a file from the Files sidebar onto a group and it opens there, the
 same way a drop on the window opens it (data files become local tables).
 
+**Narrow groups (0.12.1).** Side by side, a query's toolbar drops its labels (hover for them)
+and wraps if it must; the results toolbar's tools take a second row rather than running under
+the neighbouring group. Both come back to one row when the group is wide enough again.
+
 **Cost.** Each visible group paints its own grid. Measured with two groups each holding a
 million-row result: a run still streams in 3.9 s, the frame's CPU time is 4.6 ms against 2.9 ms
 with one grid, and while scrolling the display rate settles around 30 frames a second against 60

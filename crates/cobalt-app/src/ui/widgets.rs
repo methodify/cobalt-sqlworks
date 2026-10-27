@@ -11,14 +11,22 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str, enabled: bool) -> Res
 
 /// Icon + label toolbar button.
 pub fn tool_button(ui: &mut Ui, icon: &str, label: &str, tooltip: &str, enabled: bool) -> Response {
-    let r = ui.add_enabled(enabled, egui::Button::new(format!("{icon} {label}")).frame(false).min_size(Vec2::new(0.0, 24.0)));
+    // a toolbar that does not fit its pane sets this: the icon alone, the label in the tooltip
+    let compact = ui.data(|d| d.get_temp::<bool>(egui::Id::new("tool-button-compact"))).unwrap_or(false);
+    let shown = if compact { icon.to_string() } else { format!("{icon} {label}") };
+    let r = ui.add_enabled(enabled, egui::Button::new(shown).frame(false).min_size(Vec2::new(0.0, 24.0)));
     // the accessibility label is the text alone (agents click "Open in query tab", not the glyph)
     let text = label.to_string();
     r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
-    if tooltip.is_empty() {
+    let tip = if compact {
+        if tooltip.is_empty() { label.to_string() } else { format!("{label}\n{tooltip}") }
+    } else {
+        tooltip.to_string()
+    };
+    if tip.is_empty() {
         r
     } else {
-        r.on_hover_text(tooltip)
+        r.on_hover_text(tip)
     }
 }
 

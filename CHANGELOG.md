@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 — unreleased
+
+- **Toolbars fit their group.** With two groups side by side, a query's toolbar ran past its
+  group and, worse, widened the pane under it, so the results toolbar's buttons were drawn under
+  the neighbouring group. The editor toolbar now drops its button labels when the pane is
+  narrow (the labels stay in the tooltips and in the accessibility names) and wraps onto a
+  second line if even that does not fit; the results toolbar moves its tools to a second row
+  when they would collide with the Results / Messages tabs. Both return to one row when the
+  pane is wide enough again.
+
 ## 0.12.0 — 2026-10-27
 
 - **Editor groups: split views.** The editor area is a tree of groups, each a strip of tabs

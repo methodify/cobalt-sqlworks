@@ -78,67 +78,18 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
     let data_sets: Vec<usize> = run.result_sets.iter().enumerate().filter(|(_, s)| !s.is_plan).map(|(i, _)| i).collect();
     let has_plan = !run.plans.is_empty() || run.text_plan.is_some();
 
-    // tab strip
-    egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            for (t, label) in [(ResultsTab::Results, "Results"), (ResultsTab::Messages, "Messages"), (ResultsTab::Plan, "Plan")] {
-                if t == ResultsTab::Plan && !has_plan {
-                    continue;
-                }
-                let selected = tab.results_tab == t;
-                let mut text = RichText::new(label).size(13.0);
-                if selected {
-                    text = text.color(theme.accent).strong();
-                }
-                let count = match t {
-                    ResultsTab::Results => data_sets.len(),
-                    ResultsTab::Messages => run.messages.iter().filter(|m| m.is_error).count(),
-                    ResultsTab::Plan => run.plans.len().max(usize::from(run.text_plan.is_some())),
-                };
-                let plan_flags: usize = if t == ResultsTab::Plan {
-                    run.plans.iter().filter_map(|p| p.parsed.as_ref()).map(|p| p.all_statements().iter().map(|s| s.warnings.len() + s.missing_indexes.len() + s.nodes.iter().map(|n| n.warnings.len()).sum::<usize>()).sum::<usize>()).sum()
-                } else {
-                    0
-                };
-                let mut label_text = if t == ResultsTab::Messages && count > 0 { format!("{label} ({count} error{})", if count == 1 { "" } else { "s" }) } else if t == ResultsTab::Results && count > 1 { format!("{label} ({count})") } else { label.to_string() };
-                if plan_flags > 0 {
-                    label_text.push_str(&format!("  {} {plan_flags}", icons::WARNING));
-                }
-                let _ = text;
-                let mut text = RichText::new(label_text).size(13.0);
-                if selected {
-                    text = text.color(theme.accent).strong();
-                }
-                let r = ui.add(egui::Button::new(text).frame(false));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("results tab {label}")));
-                if selected {
-                    let rect = r.rect;
-                    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, theme.accent));
-                }
-                if r.clicked() {
-                    tab.results_tab = t;
-                }
-            }
-            ui.separator();
-            // status
-            let status = match run.state {
-                RunViewState::Running => format!("{} Executing…", icons::CIRCLE_NOTCH),
-                RunViewState::Paused => "Paused at row cap".to_string(),
-                RunViewState::Cancelling => "Cancelling…".to_string(),
-                RunViewState::Done => "Completed".to_string(),
-                RunViewState::Failed => "Completed with errors".to_string(),
-                RunViewState::Cancelled => "Cancelled".to_string(),
-            };
-            let color = match run.state {
-                RunViewState::Failed => theme.error,
-                RunViewState::Done => theme.success,
-                _ => theme.text_muted,
-            };
-            ui.label(RichText::new(status).size(12.0).color(color));
-            if run.is_live() {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-            }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // what the tab strip shows, read before the tools borrow the tab
+    let err_count = run.messages.iter().filter(|m| m.is_error).count();
+    let plan_count = run.plans.len().max(usize::from(run.text_plan.is_some()));
+    let plan_flags_all: usize = run.plans.iter().filter_map(|p| p.parsed.as_ref()).map(|p| p.all_statements().iter().map(|s| s.warnings.len() + s.missing_indexes.len() + s.nodes.iter().map(|n| n.warnings.len()).sum::<usize>()).sum::<usize>()).sum();
+    let run_state = run.state;
+    let run_live = run.is_live();
+    let tab_id = tab.id;
+    let rows_key = egui::Id::new(("results-toolbar-rows", tab_id));
+    let two_rows: bool = ui.data(|d| d.get_temp(rows_key)).unwrap_or(false);
+    // the result-set tools; on a narrow pane (a group beside another) they take their own row
+    let icons = |ui: &mut Ui, tab: &mut EditorTab, actions: &mut Vec<ResultsAction>| {
+        let run = tab.run.as_mut().unwrap();
                 {
                     let side = tab.results_side.unwrap_or(args.settings.appearance.results_side);
                     let r = icon_button(ui, if side { icons::ROWS } else { icons::COLUMNS }, if side { "Results under the editor" } else { "Results beside the editor" }, true);
@@ -221,9 +172,89 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         }
                     }
                 }
-            });
+    };
+
+    // tab strip
+    let toolbar = egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            for (t, label) in [(ResultsTab::Results, "Results"), (ResultsTab::Messages, "Messages"), (ResultsTab::Plan, "Plan")] {
+                if t == ResultsTab::Plan && !has_plan {
+                    continue;
+                }
+                let selected = tab.results_tab == t;
+                let mut text = RichText::new(label).size(13.0);
+                if selected {
+                    text = text.color(theme.accent).strong();
+                }
+                let count = match t {
+                    ResultsTab::Results => data_sets.len(),
+                    ResultsTab::Messages => err_count,
+                    ResultsTab::Plan => plan_count,
+                };
+                let plan_flags: usize = if t == ResultsTab::Plan { plan_flags_all } else { 0 };
+                let mut label_text = if t == ResultsTab::Messages && count > 0 { format!("{label} ({count} error{})", if count == 1 { "" } else { "s" }) } else if t == ResultsTab::Results && count > 1 { format!("{label} ({count})") } else { label.to_string() };
+                if plan_flags > 0 {
+                    label_text.push_str(&format!("  {} {plan_flags}", icons::WARNING));
+                }
+                let _ = text;
+                let mut text = RichText::new(label_text).size(13.0);
+                if selected {
+                    text = text.color(theme.accent).strong();
+                }
+                let r = ui.add(egui::Button::new(text).frame(false));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("results tab {label}")));
+                if selected {
+                    let rect = r.rect;
+                    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, theme.accent));
+                }
+                if r.clicked() {
+                    tab.results_tab = t;
+                }
+            }
+            ui.separator();
+            // status
+            let status = match run_state {
+                RunViewState::Running => format!("{} Executing…", icons::CIRCLE_NOTCH),
+                RunViewState::Paused => "Paused at row cap".to_string(),
+                RunViewState::Cancelling => "Cancelling…".to_string(),
+                RunViewState::Done => "Completed".to_string(),
+                RunViewState::Failed => "Completed with errors".to_string(),
+                RunViewState::Cancelled => "Cancelled".to_string(),
+            };
+            let color = match run_state {
+                RunViewState::Failed => theme.error,
+                RunViewState::Done => theme.success,
+                _ => theme.text_muted,
+            };
+            ui.label(RichText::new(status).size(12.0).color(color));
+            if run_live {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            // one row while the tools fit beside the tabs; they move to a second row when they
+            // collide, and come back once the pane is wide enough for both
+            let tabs_end = ui.cursor().min.x;
+            if !two_rows {
+                let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| icons(ui, tab, &mut actions));
+                ui.data_mut(|d| d.insert_temp(rows_key.with("w"), r.response.rect.width()));
+                if r.response.rect.left() < tabs_end + 6.0 {
+                    ui.data_mut(|d| d.insert_temp(rows_key, true));
+                }
+            } else {
+                let need: f32 = ui.data(|d| d.get_temp(rows_key.with("w"))).unwrap_or(400.0);
+                if ui.max_rect().right() - tabs_end > need + 24.0 {
+                    ui.data_mut(|d| d.insert_temp(rows_key, false));
+                }
+            }
         });
+        if two_rows {
+            ui.horizontal(|ui| {
+                let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| icons(ui, tab, &mut actions));
+                ui.data_mut(|d| d.insert_temp(rows_key.with("w"), r.response.rect.width()));
+            });
+        }
     });
+    ui.data_mut(|d| d.insert_temp(egui::Id::new(("results-toolbar-h", tab_id)), toolbar.response.rect.height()));
+    let run = tab.run.as_mut().unwrap();
 
     match tab.results_tab {
         ResultsTab::Results => {
