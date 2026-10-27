@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.1 — unreleased
+## 0.12.1 — 2026-10-27
 
 - **Toolbars fit their group.** With two groups side by side, a query's toolbar ran past its
   group and, worse, widened the pane under it, so the results toolbar's buttons were drawn under
