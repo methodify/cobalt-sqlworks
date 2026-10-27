@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.12.0 — unreleased
+## 0.12.0 — 2026-10-27
 
 - **Editor groups: split views.** The editor area is a tree of groups, each a strip of tabs
   with its own editor and results, split side by side or stacked to any depth. Make one by
