@@ -811,6 +811,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             max_col_width: settings.results.max_column_width,
                                             sample_rows: settings.results.auto_size_sample_rows,
                                             row_tint: None,
+                                            edits: None,
                                         },
                                     )
                                     };

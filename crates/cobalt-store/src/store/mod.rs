@@ -17,12 +17,17 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 /// Schema version this build expects (= `MIGRATIONS.len()`).
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Ordered migrations; `MIGRATIONS[n]` brings the schema to version `n + 1`. Each runs in
 /// its own transaction and is recorded in `schema_version`. Never edit a shipped entry;
 /// append a new one.
-pub const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4];
+pub const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5];
+
+/// The driver family of a profile (`tds`, `sqlite`).
+const SCHEMA_V5: &str = r#"
+ALTER TABLE profiles ADD COLUMN engine TEXT NOT NULL DEFAULT 'tds';
+"#;
 
 /// Results beside the editor, per tab.
 const SCHEMA_V4: &str = r#"

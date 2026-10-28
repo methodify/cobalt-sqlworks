@@ -19,7 +19,8 @@ founder-facing test notes in `docs/alpha_notes.md`.
 
 ```
 crates/cobalt-core      shared types (profiles, engines, SqlType<->Arrow, catalog, settings)
-crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003)
+crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003); sqlite impl over rusqlite
+crates/cobalt-sqlite    shared SQLite plumbing (rusqlite): declared types, Arrow rows into inserts, file writer, affinity reading
 crates/cobalt-results   Arrow chunk store: spill, display cache, sort/filter views, summaries
 crates/cobalt-sql       T-SQL lexer, batches/statements, completion, format, snippets
 crates/cobalt-plan      showplan XML -> model, layout, icons (fixtures from real SQL Server)

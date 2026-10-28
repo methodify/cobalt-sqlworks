@@ -146,6 +146,8 @@ pub enum Format {
     Excel,
     Parquet,
     ArrowIpc,
+    /// A table in a SQLite database file (`opts.sqlite` names the table and the mode).
+    Sqlite,
 }
 
 impl Format {
@@ -160,6 +162,7 @@ impl Format {
             Format::Excel => "xlsx",
             Format::Parquet => "parquet",
             Format::ArrowIpc => "arrow",
+            Format::Sqlite => "sqlite",
         }
     }
 
@@ -174,6 +177,7 @@ impl Format {
             Format::Excel => "Excel workbook",
             Format::Parquet => "Parquet",
             Format::ArrowIpc => "Arrow IPC (Feather v2)",
+            Format::Sqlite => "SQLite database",
         }
     }
 
@@ -188,6 +192,7 @@ impl Format {
             Format::Markdown,
             Format::Parquet,
             Format::ArrowIpc,
+            Format::Sqlite,
         ]
     }
 
@@ -204,6 +209,7 @@ impl Format {
             "xlsx" => Format::Excel,
             "parquet" | "pq" => Format::Parquet,
             "arrow" | "feather" | "ipc" => Format::ArrowIpc,
+            "sqlite" | "sqlite3" | "db" => Format::Sqlite,
             _ => return None,
         })
     }
@@ -387,6 +393,24 @@ pub struct ExportOptions {
     pub excel: ExcelOptions,
     pub parquet: ParquetOptions,
     pub arrow: ArrowOptions,
+    pub sqlite: SqliteOptions,
+}
+
+/// [`Format::Sqlite`]: the table the rows land in and what to do when it is already there.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SqliteOptions {
+    /// Empty = named after the file.
+    pub table: String,
+    pub mode: SqliteMode,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqliteMode {
+    /// Fail when the table exists.
+    #[default]
+    Create,
+    Replace,
+    Append,
 }
 
 impl ExportOptions {
@@ -423,6 +447,7 @@ impl ExportOptions {
                 statistics: true,
             },
             arrow: ArrowOptions::default(),
+            sqlite: SqliteOptions::default(),
         }
     }
 }
@@ -507,6 +532,21 @@ pub fn export_source_to_file(
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<ExportStats> {
     let started = Instant::now();
+    if format == Format::Sqlite {
+        // a table inside a database file: written in place (the file may already hold other tables)
+        let table = if opts.sqlite.table.trim().is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "export".into()) } else { opts.sqlite.table.trim().to_string() };
+        let mode = match opts.sqlite.mode {
+            SqliteMode::Create => cobalt_sqlite::WriteMode::Create,
+            SqliteMode::Replace => cobalt_sqlite::WriteMode::Replace,
+            SqliteMode::Append => cobalt_sqlite::WriteMode::Append,
+        };
+        let total = source.total_rows().unwrap_or(0);
+        let mut report = |rows: u64| progress(Progress { rows_done: rows as usize, rows_total: total, bytes_written: 0 });
+        let rows = cobalt_sqlite::write_table(path, &table, mode, source.columns(), source.batches(EXPORT_BATCH_ROWS).map(|b| b.map_err(|e| e.to_string())), &mut report).map_err(|e| if e == "cancelled" { ExportError::Cancelled } else { ExportError::Unsupported(e) })?;
+        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(?path, rows, table, "sqlite export complete");
+        return Ok(ExportStats { rows: rows as usize, bytes, elapsed: started.elapsed(), path: path.to_path_buf(), warnings: Vec::new() });
+    }
     if format == Format::Excel {
         if let Some(rows) = source.total_rows() {
             let limit = opts.excel.max_rows_warn.min(EXCEL_MAX_ROWS - 1);
@@ -573,8 +613,8 @@ pub fn export_source_to_writer<W: Write + Send>(
     fmt: &CellFormatter,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<ExportStats> {
-    if format == Format::Excel {
-        return Err(ExportError::Unsupported("Excel export needs a seekable file; use export_to_file".into()));
+    if matches!(format, Format::Excel | Format::Sqlite) {
+        return Err(ExportError::Unsupported(format!("{format} export needs a file; use export_to_file")));
     }
     let started = Instant::now();
     let counter = Arc::new(AtomicU64::new(0));
@@ -602,6 +642,7 @@ fn write_any<W: Write + Send>(ctx: &Ctx<'_, '_>, format: Format, sink: &mut Coun
         Format::Parquet => parquet_file::write(ctx, sink, progress),
         Format::ArrowIpc => arrow_file::write(ctx, sink, progress),
         Format::Excel => Err(ExportError::Unsupported("Excel export needs a seekable file; use export_to_file".into())),
+        Format::Sqlite => Err(ExportError::Unsupported("SQLite export writes a database file; use export_to_file".into())),
     }
 }
 

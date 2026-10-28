@@ -50,6 +50,11 @@ pub enum ResultsAction {
     ExploreLocally { set: usize },
     /// The Diff setup with this result set's table as A.
     DiffLocally { set: usize },
+    /// Edit Data on the set (a single-table SELECT on a file connection).
+    EditBegin { set: usize },
+    EditSave { set: usize },
+    /// Drop the staged changes; `off` also leaves Edit Data.
+    EditDiscard { set: usize, off: bool },
     /// Persist this result set as `scratch.<name>` (back next session).
     SaveLocally { set: usize },
 }
@@ -63,6 +68,7 @@ pub struct ResultsArgs<'a> {
 
 pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
     let diff_tab = args.tab.local.as_ref().map(|l| l.diff.is_some()).unwrap_or(false);
+    let file_conn = args.tab.profile.as_ref().map(|p| p.is_file()).unwrap_or(false);
     let mut actions = Vec::new();
     let theme = args.theme;
     let tab = args.tab;
@@ -141,6 +147,14 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         }
                         if icon_button(ui, icons::TABLE, "Save as table…", true).clicked() {
                             actions.push(ResultsAction::SaveAsTable { set, selection_only: false });
+                        }
+                        if file_conn {
+                            let on = run.result_sets[set].edits.is_some();
+                            let r = icon_button(ui, icons::PENCIL_SIMPLE, if on { "Leave Edit Data (drops pending changes)" } else { "Edit Data: change cells, add and delete rows in this grid; Save writes them in one transaction (single-table SELECT with the key)" }, !run_live);
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("edit data {set}")));
+                            if r.clicked() {
+                                actions.push(if on { ResultsAction::EditDiscard { set, off: true } } else { ResultsAction::EditBegin { set } });
+                            }
                         }
                         let r = icon_button(ui, icons::FUNNEL_SIMPLE, "Query this result (SQL over it in a Local tab; join it with other results)", true);
                         r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("query locally {set}")));
@@ -343,6 +357,9 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             }
                             Vec::new()
                         } else {
+                            if view.edits.is_some() {
+                                edit_strip(&mut child, view, theme, args.fmt, set, &mut actions);
+                            }
                             grid::show(
                                 &mut child,
                                 grid::GridArgs {
@@ -356,6 +373,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     max_col_width: args.settings.results.max_column_width,
                                     sample_rows: args.settings.results.auto_size_sample_rows,
                                     row_tint: if diff_tab { grid::DiffTint::from_columns(&view.rs.columns) } else { None },
+                                    edits: view.edits.as_mut(),
                                 },
                             )
                         };
@@ -834,4 +852,88 @@ fn filter_to_selection(grid: &crate::state::GridState, rs: &std::sync::Arc<cobal
         spec.filters.push(ColumnFilter { column: c, op: FilterOp::In(set) });
     }
     Some(spec)
+}
+
+/// The Pending changes strip over an editable grid: count, add / delete rows, Save, Discard,
+/// the statements, the last error.
+fn edit_strip(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, fmt: &CellFormatter, set: usize, actions: &mut Vec<ResultsAction>) {
+    let n = view.edits.as_ref().map(|e| e.pending_count()).unwrap_or(0);
+    let saving = view.edits.as_ref().map(|e| e.saving).unwrap_or(false);
+    let err = view.edits.as_ref().and_then(|e| e.error.clone());
+    let show_sql = view.edits.as_ref().map(|e| e.show_sql).unwrap_or(false);
+    let table = view.edits.as_ref().map(|e| e.table.clone()).unwrap_or_default();
+    let stmts = if show_sql { crate::editq::statements(view, fmt) } else { Vec::new() };
+    let cols_n = view.rs.column_count();
+    let data_rows = view.rs.visible_count();
+    let sel_rows: Vec<usize> = match view.grid.selection {
+        Selection::Rows { r0, r1 } | Selection::Cells { r0, r1, .. } => (r0.min(r1)..=r0.max(r1)).collect(),
+        _ => view.grid.anchor.map(|(r, _)| vec![r]).unwrap_or_default(),
+    };
+    egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new(format!("{} Edit Data · {table}", icons::PENCIL_SIMPLE)).strong().color(theme.accent)).on_hover_text("Double-click or F2 edits a cell, Tab moves on, Delete marks the selected rows. Nothing is written until Save.");
+            let r = ui.label(RichText::new(if n == 0 { "no pending changes".to_string() } else { format!("{n} pending change{}", if n == 1 { "" } else { "s" }) }).color(if n == 0 { theme.text_muted } else { theme.warning }));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("edit pending {n}")));
+            ui.add_space(8.0);
+            let r = ui.add_enabled(!saving, egui::Button::new(format!("{} Row", icons::PLUS))).on_hover_text("A new row at the bottom; fill its cells, Save inserts it");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit add row"));
+            if r.clicked() {
+                if let Some(e) = view.edits.as_mut() {
+                    e.inserted.push(vec![None; cols_n]);
+                }
+                view.grid.scroll_to = Some((data_rows + view.edits.as_ref().map(|e| e.inserted.len()).unwrap_or(1) - 1, 0));
+            }
+            let r = ui.add_enabled(!saving && !sel_rows.is_empty(), egui::Button::new(format!("{} Delete row{}", icons::TRASH, if sel_rows.len() == 1 { "" } else { "s" }))).on_hover_text("Mark the selected rows for deletion (again to unmark); a new row is removed");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit delete rows"));
+            if r.clicked() {
+                if let Some(e) = view.edits.as_mut() {
+                    for &row in sel_rows.iter().rev() {
+                        if row >= data_rows {
+                            if row - data_rows < e.inserted.len() {
+                                e.inserted.remove(row - data_rows);
+                            }
+                        } else if !e.deleted.remove(&row) {
+                            e.deleted.insert(row);
+                        }
+                    }
+                    e.editing = None;
+                }
+            }
+            ui.separator();
+            let r = ui.add_enabled(n > 0 && !saving, egui::Button::new(RichText::new(format!("{} Save", icons::CHECK)).color(theme.success))).on_hover_text("Run the statements in one transaction, then run the query again");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit save"));
+            if r.clicked() {
+                actions.push(ResultsAction::EditSave { set });
+            }
+            let r = ui.add_enabled(!saving, egui::Button::new(format!("{} Discard", icons::ARROW_COUNTER_CLOCKWISE))).on_hover_text("Drop every pending change");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit discard"));
+            if r.clicked() {
+                actions.push(ResultsAction::EditDiscard { set, off: false });
+            }
+            let r = ui.add(egui::Button::selectable(show_sql, "SQL")).on_hover_text("The statements Save will run");
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit show sql"));
+            if r.clicked() {
+                if let Some(e) = view.edits.as_mut() {
+                    e.show_sql = !e.show_sql;
+                }
+            }
+            if saving {
+                ui.spinner();
+                ui.label(RichText::new("Saving…").color(theme.text_muted));
+            }
+            if let Some(e) = err {
+                ui.label(RichText::new(e).color(theme.error));
+            }
+        });
+        if show_sql {
+            egui::ScrollArea::vertical().id_salt(("edit-sql", set)).max_height(120.0).show(ui, |ui| {
+                if stmts.is_empty() {
+                    ui.label(RichText::new("No statements yet.").color(theme.text_muted));
+                }
+                for st in &stmts {
+                    ui.label(RichText::new(st).monospace().size(12.0));
+                }
+            });
+        }
+    });
 }

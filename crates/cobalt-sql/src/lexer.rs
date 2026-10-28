@@ -244,6 +244,8 @@ pub enum Dialect {
     /// The local engine (DataFusion): backticks and `"` quote names, Spark's keyword set, the
     /// engine's own function names (supplied by the host).
     Local,
+    /// SQLite: `"name"`, `[name]` and `` `name` `` all quote, its own keywords and functions.
+    Sqlite,
     /// DAX against a semantic model: `'Table'` quoted table names ([`TokenKind::QuotedIdentifier`]),
     /// `[Column or Measure]` ([`TokenKind::BracketedIdentifier`]), `"text"` strings, `//` as well
     /// as `--` line comments, `INFO.VIEW.TABLES` dotted function names kept as one token, and any
@@ -304,6 +306,34 @@ static DAX_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| DAX_KEYWORDS.
 static DAX_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| crate::dax_functions::DAX_FUNCTIONS.iter().copied().collect());
 static SPARK_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SPARK_KEYWORDS.iter()).copied().collect());
 static SPARK_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().chain(SPARK_FUNCTIONS.iter()).copied().collect());
+static SQLITE_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SQLITE_KEYWORDS.iter()).copied().collect());
+static SQLITE_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| SQLITE_FUNCTIONS.iter().copied().collect());
+
+/// SQLite keywords on top of the shared ones.
+pub static SQLITE_KEYWORDS: &[&str] = &[
+    "PRAGMA", "ATTACH", "DETACH", "VACUUM", "REINDEX", "ANALYZE", "GLOB", "REGEXP", "MATCH", "ISNULL", "NOTNULL", "WITHOUT",
+    "ROWID", "STRICT", "RETURNING", "CONFLICT", "ABORT", "FAIL", "IGNORE", "REPLACE", "INDEXED", "AUTOINCREMENT", "TEMP",
+    "TEMPORARY", "VIRTUAL", "USING", "RECURSIVE", "WINDOW", "FILTER", "OVER", "PARTITION", "EXCLUDE", "GROUPS", "TIES", "RANGE",
+    "ROWS", "PRECEDING", "FOLLOWING", "UNBOUNDED", "CURRENT", "GENERATED", "ALWAYS", "STORED", "DEFERRED", "IMMEDIATE",
+    "EXCLUSIVE", "SAVEPOINT", "RELEASE", "COLLATE", "NOCASE", "RTRIM", "BINARY", "LIMIT", "OFFSET", "IF", "EXISTS", "CAST",
+    "EXPLAIN", "QUERY", "PLAN", "RAISE", "INSTEAD", "EACH", "ROW", "BEFORE", "AFTER", "TRIGGER", "BEGIN", "END", "DO", "NOTHING",
+];
+
+/// SQLite's built-in functions (core, date and time, JSON, math, aggregates, window).
+pub static SQLITE_FUNCTIONS: &[&str] = &[
+    "ABS", "CHANGES", "CHAR", "COALESCE", "CONCAT", "CONCAT_WS", "FORMAT", "GLOB", "HEX", "IFNULL", "IIF", "INSTR", "LAST_INSERT_ROWID",
+    "LENGTH", "LIKE", "LIKELIHOOD", "LIKELY", "LOWER", "LTRIM", "MAX", "MIN", "NULLIF", "OCTET_LENGTH", "PRINTF", "QUOTE", "RANDOM",
+    "RANDOMBLOB", "REPLACE", "ROUND", "RTRIM", "SIGN", "SOUNDEX", "SQLITE_VERSION", "SQLITE_SOURCE_ID", "SUBSTR", "SUBSTRING",
+    "TOTAL_CHANGES", "TRIM", "TYPEOF", "UNICODE", "UNHEX", "UNLIKELY", "UPPER", "ZEROBLOB",
+    "DATE", "TIME", "DATETIME", "JULIANDAY", "UNIXEPOCH", "STRFTIME", "TIMEDIFF",
+    "JSON", "JSONB", "JSON_ARRAY", "JSON_ARRAY_LENGTH", "JSON_EXTRACT", "JSON_INSERT", "JSON_OBJECT", "JSON_PATCH", "JSON_REMOVE",
+    "JSON_REPLACE", "JSON_SET", "JSON_TYPE", "JSON_VALID", "JSON_QUOTE", "JSON_GROUP_ARRAY", "JSON_GROUP_OBJECT", "JSON_EACH", "JSON_TREE",
+    "AVG", "COUNT", "GROUP_CONCAT", "STRING_AGG", "SUM", "TOTAL",
+    "ROW_NUMBER", "RANK", "DENSE_RANK", "PERCENT_RANK", "CUME_DIST", "NTILE", "LAG", "LEAD", "FIRST_VALUE", "LAST_VALUE", "NTH_VALUE",
+    "ACOS", "ACOSH", "ASIN", "ASINH", "ATAN", "ATAN2", "ATANH", "CEIL", "CEILING", "COS", "COSH", "DEGREES", "EXP", "FLOOR", "LN", "LOG",
+    "LOG10", "LOG2", "MOD", "PI", "POW", "POWER", "RADIANS", "SIN", "SINH", "SQRT", "TAN", "TANH", "TRUNC",
+    "PRAGMA_TABLE_INFO", "PRAGMA_TABLE_XINFO", "PRAGMA_INDEX_LIST", "PRAGMA_FOREIGN_KEY_LIST", "PRAGMA_DATABASE_LIST",
+];
 static FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().copied().collect());
 static TYPE_SET: Lazy<HashSet<String>> = Lazy::new(|| TYPES.iter().map(|t| t.to_ascii_uppercase()).collect());
 
@@ -316,6 +346,7 @@ pub fn is_keyword(word: &str) -> bool {
 pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
     let set = match dialect {
         Dialect::TSql => &*KEYWORD_SET,
+        Dialect::Sqlite => &*SQLITE_KEYWORD_SET,
         Dialect::Spark | Dialect::Local => &*SPARK_KEYWORD_SET,
         Dialect::Dax => &*DAX_KEYWORD_SET,
     };
@@ -423,7 +454,8 @@ impl<'a> Lexer<'a> {
             let kind = match q {
                 '\'' if self.dialect == Dialect::Dax => TokenKind::QuotedIdentifier,
                 '\'' => TokenKind::String,
-                '"' if self.dialect != Dialect::TSql => TokenKind::String,
+                // SQLite (like SQL Server with QUOTED_IDENTIFIER on) reads "double quotes" as an identifier
+                '"' if !matches!(self.dialect, Dialect::TSql | Dialect::Sqlite) => TokenKind::String,
                 '"' | '`' => TokenKind::QuotedIdentifier,
                 _ => TokenKind::BracketedIdentifier,
             };
@@ -494,7 +526,7 @@ impl<'a> Lexer<'a> {
             b'"' => {
                 self.pos += 1;
                 self.consume_delimited('"');
-                self.push(if self.dialect == Dialect::TSql { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
+                self.push(if matches!(self.dialect, Dialect::TSql | Dialect::Sqlite) { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
             b'`' if self.dialect.is_sparkish() => {
                 self.pos += 1;
@@ -608,6 +640,7 @@ impl<'a> Lexer<'a> {
         }
         let (functions, keywords) = match self.dialect {
             Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
+            Dialect::Sqlite => (&*SQLITE_FUNCTION_SET, &*SQLITE_KEYWORD_SET),
             Dialect::Spark | Dialect::Local => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
             Dialect::Dax => unreachable!(),
         };

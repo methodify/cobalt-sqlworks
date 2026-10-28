@@ -268,6 +268,7 @@ pub fn parse_ads_settings_detailed(json: &str) -> Result<AdsImport> {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty()),
             auth,
+            engine: Default::default(),
             group,
             color: None,
             options: opts,

@@ -331,7 +331,7 @@ pub fn on_sql_batch(state: &mut AppState, idx: usize, statement: usize, bytes: &
                 let _ = sink.tx.send(SinkMsg::SetStart { index: i, columns: rs.columns.clone(), schema: rs.schema.clone() });
                 sql.sink_open = Some(statement);
             }
-            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
+            run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None, edits: None });
             sql.sets.insert(statement, i);
             i
         }
@@ -505,7 +505,7 @@ pub fn on_done(state: &mut AppState, idx: usize, result: &Result<Value, String>,
     let mut sets = Vec::new();
     for rs in o.result_sets {
         sets.push(rs.clone());
-        run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
+        run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None, edits: None });
     }
     run.total_rows = run.result_sets.iter().map(|s| s.rs.row_count() as u64).sum();
     run.messages.extend(o.messages);

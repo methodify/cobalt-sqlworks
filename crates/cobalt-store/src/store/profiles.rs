@@ -8,7 +8,7 @@ use rusqlite::{params, OptionalExtension, Row};
 
 const COLS: &str =
     "p.id, p.group_id, p.name, p.server, p.port, p.database, p.auth_json, p.options_json, \
-                    p.color, p.read_only_guard, p.last_used";
+                    p.color, p.read_only_guard, p.last_used, p.engine";
 
 fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<ConnectionProfile> {
     let auth: AuthMethod = serde_json::from_str(&row.get::<_, String>(6)?).map_err(conv)?;
@@ -30,6 +30,10 @@ fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<ConnectionProfile> {
             .and_then(Color::parse),
         read_only_guard: row.get::<_, i64>(9)? != 0,
         last_used: opt_ts(row.get(10)?)?,
+        engine: match row.get::<_, String>(11).unwrap_or_default().as_str() {
+            "sqlite" => cobalt_core::EngineFamily::Sqlite,
+            _ => cobalt_core::EngineFamily::Tds,
+        },
     })
 }
 
@@ -75,11 +79,11 @@ impl Store {
         let conn = self.lock()?;
         conn.execute(
             "INSERT INTO profiles (id, group_id, name, server, port, database, auth_json, options_json,
-                                   color, read_only_guard, created_at, last_used, sort_order)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                                   color, read_only_guard, created_at, last_used, engine, sort_order)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
                      (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM profiles WHERE group_id IS ?2))
              ON CONFLICT(id) DO UPDATE SET
-                group_id = excluded.group_id, name = excluded.name, server = excluded.server,
+                group_id = excluded.group_id, name = excluded.name, server = excluded.server, engine = excluded.engine,
                 port = excluded.port, database = excluded.database, auth_json = excluded.auth_json,
                 options_json = excluded.options_json, color = excluded.color,
                 read_only_guard = excluded.read_only_guard,
@@ -99,6 +103,10 @@ impl Store {
                 p.read_only_guard as i64,
                 fmt_ts(&Utc::now()),
                 p.last_used.as_ref().map(fmt_ts),
+                match p.engine {
+                    cobalt_core::EngineFamily::Sqlite => "sqlite",
+                    cobalt_core::EngineFamily::Tds => "tds",
+                },
             ],
         )?;
         // MAX('' , '') yields '' rather than NULL; normalise.

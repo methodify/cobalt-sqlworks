@@ -76,15 +76,25 @@ pub struct ObjectRef {
 
 impl ObjectRef {
     pub fn bracketed(&self) -> String {
+        if self.schema.is_empty() {
+            // a file database: objects have no schema
+            return format!("[{}]", bracket(&self.name));
+        }
         format!("[{}].[{}]", bracket(&self.schema), bracket(&self.name))
     }
     pub fn qualified(&self) -> String {
+        if self.schema.is_empty() {
+            return self.name.clone();
+        }
         format!("{}.{}", self.schema, self.name)
     }
 }
 
 impl fmt::Display for ObjectRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.schema.is_empty() {
+            return write!(f, "{}", self.name);
+        }
         write!(f, "{}.{}", self.schema, self.name)
     }
 }

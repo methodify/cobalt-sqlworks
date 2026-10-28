@@ -22,6 +22,7 @@ mod session;
 mod sparkq;
 mod tabularq;
 mod exploreq;
+mod editq;
 mod tabular_root;
 mod dashboard;
 mod drop;

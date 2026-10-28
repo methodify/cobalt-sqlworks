@@ -9,7 +9,8 @@ sqlworks/
 ├─ Cargo.toml                 workspace; shared [workspace.dependencies]; profiles
 ├─ crates/
 │  ├─ cobalt-core/            plain types shared by everything (no egui, no tokio)
-│  ├─ cobalt-driver/          Driver/Connection/QueryStream traits + TDS→Arrow mapping; feature "mssql" = tiberius-ng impl
+│  ├─ cobalt-driver/          Driver/Connection/QueryStream traits + TDS→Arrow mapping; feature "mssql" = tiberius-ng impl; sqlite impl (rusqlite on a thread per connection)
+│  ├─ cobalt-sqlite/          shared SQLite plumbing: declared types from SqlType, Arrow rows into prepared inserts, .sqlite file writer, affinity reading (driver, export and local engine)
 │  ├─ cobalt-auth/            Entra PKCE + device code + az CLI; keyring storage
 │  ├─ cobalt-store/           rusqlite: profiles, groups, history, tab snapshots, catalog cache, settings migration
 │  ├─ cobalt-sql/             T-SQL lexer, batch/statement splitter, completion engine, formatter wrapper

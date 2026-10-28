@@ -34,6 +34,8 @@ pub enum TableSource {
     Scratch { path: PathBuf },
     /// A Delta table in a Fabric lakehouse, read from OneLake with the signed-in token.
     OneLake { url: String },
+    /// A table or view in a SQLite database file, read from the file on every scan.
+    Sqlite { path: PathBuf, table: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -333,6 +335,36 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Register a table (or view) of a SQLite database file as a local table, read from the
+    /// file on every scan (projected columns only). It also becomes `_`.
+    pub async fn register_sqlite(&self, name: &str, path: &Path, table: &str) -> Result<TableInfo, String> {
+        let p = path.to_path_buf();
+        let t = table.to_string();
+        let (columns, rows) = tokio::task::spawn_blocking(move || -> Result<(Vec<ColumnInfo>, u64), String> {
+            let conn = cobalt_sqlite::open_read_only(&p)?;
+            let cols = cobalt_sqlite::table_columns(&conn, &t).map_err(|e| e.to_string())?;
+            if cols.is_empty() {
+                return Err(format!("{t}: no such table in {}", p.display()));
+            }
+            let rows = cobalt_sqlite::table_row_count(&conn, &t).map_err(|e| e.to_string())?;
+            Ok((cols, rows))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let _ = self.ctx.deregister_table(name);
+        let provider = Arc::new(crate::sqlite_provider::SqliteTableProvider::new(path.to_path_buf(), table.to_string(), columns.clone()));
+        self.ctx.register_table(name, provider.clone()).map_err(|e| e.to_string())?;
+        let _ = self.ctx.deregister_table(LATEST);
+        let _ = self.ctx.register_table(LATEST, provider);
+        let info = TableInfo { name: name.to_string(), source: TableSource::Sqlite { path: path.to_path_buf(), table: table.to_string() }, columns, rows: rows as usize, rows_known: true, live: false, memory_bytes: None, file_bytes: std::fs::metadata(path).ok().map(|m| m.len()) };
+        let mut r = self.registry.lock();
+        r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
+        r.latest = Some(name.to_string());
+        drop(r);
+        self.bump();
+        Ok(info)
     }
 
     /// Register a file as a table: Parquet, CSV / TSV / delimited text (header and delimiter

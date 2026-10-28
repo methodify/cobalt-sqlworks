@@ -570,6 +570,9 @@ impl<'a> Ctx<'a> {
         if self.dialect.is_sparkish() {
             v.extend(SPARK_KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)));
         }
+        if self.dialect == Dialect::Sqlite {
+            v.extend(crate::lexer::SQLITE_KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)));
+        }
         v.extend(self.functions());
         if with_snippets {
             v.extend(SNIPPETS.iter().map(|s| item(s.prefix, s.body, CompletionKind::Snippet, Some(s.label.to_string()))));
@@ -579,9 +582,13 @@ impl<'a> Ctx<'a> {
     }
 
     fn functions(&self) -> Vec<CompletionItem> {
-        let mut v: Vec<CompletionItem> = FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect();
+        // SQLite has its own function list; the shared one is T-SQL's
+        let mut v: Vec<CompletionItem> = if self.dialect == Dialect::Sqlite { Vec::new() } else { FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect() };
         if self.dialect == Dialect::Spark {
             v.extend(SPARK_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
+        }
+        if self.dialect == Dialect::Sqlite {
+            v.extend(crate::lexer::SQLITE_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
         }
         if self.dialect == Dialect::Local {
             v.extend(self.extra_functions.iter().map(|f| item(f.clone(), f.clone(), CompletionKind::Function, Some("Function".into()))));
@@ -1070,6 +1077,14 @@ pub fn quote_for(name: &str, dialect: Dialect) -> String {
                 name.to_string()
             } else {
                 format!("`{}`", name.replace('`', "``"))
+            }
+        }
+        Dialect::Sqlite => {
+            let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if simple {
+                name.to_string()
+            } else {
+                format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
         Dialect::Local => {

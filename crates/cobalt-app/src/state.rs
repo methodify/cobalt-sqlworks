@@ -270,6 +270,12 @@ pub struct EditorTab {
     pub pending_export: Option<Box<crate::ops::ExportJob>>,
     /// Open the Import Data dialog once this tab's connection is up (tree: "Import data from file…").
     pub pending_import: bool,
+    /// Run this text instead of the editor's on the next run (Edit Data's save script, then the query again).
+    pub script_override: Option<String>,
+    /// An Edit Data save is running: the results it came from, to restore on failure.
+    pub edit_resume: Option<EditResume>,
+    /// Turn Edit Data on for this result set when the next run completes.
+    pub edit_reopen: Option<usize>,
     pub snapshot_hash: u64,
     /// `Some` = this tab is a notebook: cells instead of `text`, per-cell runs instead of `run`.
     pub notebook: Option<Box<NotebookState>>,
@@ -677,6 +683,9 @@ impl EditorTab {
             last_run_mode: None,
             pending_export: None,
             pending_import: false,
+            script_override: None,
+            edit_resume: None,
+            edit_reopen: None,
             snapshot_hash: hash_text(""),
             notebook: None,
             fabric_item: None,
@@ -697,13 +706,15 @@ impl EditorTab {
     /// The editor a command should act on: the selected notebook cell, or the query editor.
     pub fn active_host(&mut self) -> crate::ui::editor::EditorHost<'_> {
         let tab_id = self.id;
-        let EditorTab { notebook, catalog, databases, text, editor, spark, tabular, model_catalog, dax_functions, local, .. } = self;
+        let EditorTab { notebook, catalog, databases, text, editor, spark, tabular, model_catalog, dax_functions, local, profile, .. } = self;
         let tab_syntax = if spark.is_some() {
             crate::ui::editor::Syntax::SparkSql
         } else if local.is_some() {
             crate::ui::editor::Syntax::Local
         } else if tabular.is_some() {
             crate::ui::editor::Syntax::Dax
+        } else if profile.as_ref().map(|p| p.is_file()).unwrap_or(false) {
+            crate::ui::editor::Syntax::Sqlite
         } else {
             crate::ui::editor::Syntax::Sql
         };
@@ -881,6 +892,8 @@ pub struct RunView {
     pub text_plan: Option<Vec<(String, String)>>,
     /// A Spark result hit the row cap (a one-click uncapped re-run is offered).
     pub capped: bool,
+    /// The script this run executed (Edit Data reads the table from it).
+    pub script: String,
 }
 
 impl RunView {
@@ -905,6 +918,7 @@ impl RunView {
             script_hash: 0,
             text_plan: None,
             capped: false,
+            script: String::new(),
         }
     }
     pub fn is_live(&self) -> bool {
@@ -924,6 +938,8 @@ pub struct ResultSetView {
     pub profile: Option<crate::ui::results::profile::ColumnProfiles>,
     /// The chart shown instead of the grid (the Chart toggle); follows the view.
     pub chart: Option<ChartView>,
+    /// Edit Data: staged changes (Some while Edit Data is on).
+    pub edits: Option<GridEdits>,
 }
 
 /// A result set's chart: the spec the strip edits and the data built from the current view.
@@ -1020,6 +1036,105 @@ impl PlanView {
 }
 
 /// Per-grid interactive state.
+/// Edit Data: the staged changes to a result set that is one table (see `editq`).
+#[derive(Clone, Debug, Default)]
+pub struct GridEdits {
+    pub table: String,
+    /// Key columns (name, index in the result): `rowid` or the primary key.
+    pub key: Vec<(String, usize)>,
+    /// Result columns that are columns of the table (writable); `rowid` is not.
+    pub editable: Vec<usize>,
+    /// (visible row, column) → the staged value (`None` = NULL).
+    pub cells: std::collections::BTreeMap<(usize, usize), Option<String>>,
+    pub deleted: std::collections::BTreeSet<usize>,
+    /// New rows, shown after the data; one value per result column.
+    pub inserted: Vec<Vec<Option<String>>>,
+    pub editing: Option<CellEdit>,
+    pub error: Option<String>,
+    pub saving: bool,
+    pub show_sql: bool,
+}
+
+/// The cell being typed into.
+#[derive(Clone, Debug, Default)]
+pub struct CellEdit {
+    pub row: usize,
+    pub col: usize,
+    pub text: String,
+    pub focused: bool,
+    /// The editor lost focus to a click elsewhere: commit on the next frame.
+    pub blur: bool,
+}
+
+impl GridEdits {
+    /// Rows with staged cell changes (not deleted) + deleted rows + inserted rows.
+    pub fn pending_count(&self) -> usize {
+        let rows: std::collections::BTreeSet<usize> = self.cells.keys().filter(|(r, _)| !self.deleted.contains(r)).map(|(r, _)| *r).collect();
+        rows.len() + self.deleted.len() + self.inserted.len()
+    }
+    /// The cell's text as the grid shows it now (`None` = NULL); rows past the data are inserted rows.
+    pub fn current(&self, rs: &cobalt_results::ResultSet, plain: &cobalt_results::CellFormatter, row: usize, col: usize) -> Option<String> {
+        let data_rows = rs.visible_count();
+        if row >= data_rows {
+            return self.inserted.get(row - data_rows).and_then(|r| r.get(col).cloned()).flatten();
+        }
+        if let Some(v) = self.cells.get(&(row, col)) {
+            return v.clone();
+        }
+        if rs.is_null(row, col) { None } else { Some(rs.cell_text(row, col, plain).to_string()) }
+    }
+    /// Stage a value (`None` = NULL); a value equal to the original un-stages the cell.
+    pub fn set_cell(&mut self, rs: &cobalt_results::ResultSet, plain: &cobalt_results::CellFormatter, row: usize, col: usize, value: Option<String>) {
+        let data_rows = rs.visible_count();
+        if row >= data_rows {
+            if let Some(slot) = self.inserted.get_mut(row - data_rows).and_then(|r| r.get_mut(col)) {
+                *slot = value;
+            }
+            return;
+        }
+        if !self.editable.contains(&col) {
+            return;
+        }
+        let original = if rs.is_null(row, col) { None } else { Some(rs.cell_text(row, col, plain).to_string()) };
+        if original == value {
+            self.cells.remove(&(row, col));
+        } else {
+            self.cells.insert((row, col), value);
+        }
+    }
+    /// Begin typing into a cell: `text` replaces the current value as the starting text.
+    pub fn start_edit(&mut self, rs: &cobalt_results::ResultSet, plain: &cobalt_results::CellFormatter, row: usize, col: usize, text: Option<String>) -> bool {
+        let data_rows = rs.visible_count();
+        if self.saving || !self.editable.contains(&col) || row >= data_rows + self.inserted.len() || self.deleted.contains(&row) {
+            return false;
+        }
+        let current = text.or_else(|| self.current(rs, plain, row, col)).unwrap_or_default();
+        self.editing = Some(CellEdit { row, col, text: current, focused: false, blur: false });
+        true
+    }
+    /// The next editable cell after (row, col): to the right, then the next row's first.
+    pub fn next_cell(&self, total_rows: usize, row: usize, col: usize, back: bool) -> Option<(usize, usize)> {
+        if back {
+            if let Some(c) = self.editable.iter().rev().find(|&&c| c < col) {
+                return Some((row, *c));
+            }
+            return if row > 0 { self.editable.last().map(|&c| (row - 1, c)) } else { None };
+        }
+        if let Some(c) = self.editable.iter().find(|&&c| c > col) {
+            return Some((row, *c));
+        }
+        if row + 1 < total_rows { self.editable.first().map(|&c| (row + 1, c)) } else { None }
+    }
+}
+
+/// A save in flight: the results (with their staged edits) kept aside, the query to run again.
+pub struct EditResume {
+    pub set: usize,
+    pub script: String,
+    pub run: Box<RunView>,
+    pub count: usize,
+}
+
 #[derive(Default)]
 pub struct GridState {
     pub selection: Selection,
@@ -1464,6 +1579,8 @@ pub enum Dialog {
     /// Pin a result set of a query tab onto a dashboard (`target` = an open dashboard's tab index, None = a new one).
     PinTile { tab_index: usize, set: usize, title: String, target: Option<usize>, interval_secs: u64, kind: cobalt_core::TileKind },
     ConfirmDeleteProfile { profile: ProfileId },
+    /// Empty the built-in scratch database (its file is deleted and made again).
+    ConfirmEmptyScratch,
     ConfirmDeleteGroup { group: GroupId },
     ConfirmWrite { tab_index: usize, statement_preview: String, script: String, opts: ExecOptions, start_line: u32 },
     Export(Box<ExportDialog>),
@@ -1527,6 +1644,8 @@ pub struct ConnectionDialog {
     /// "From connection string" box: pasted text, applied on demand.
     pub conn_string: String,
     pub conn_string_note: Option<String>,
+    /// 0 = SQL Server (TDS), 1 = SQLite file.
+    pub engine_index: usize,
     /// The Server field took focus once when the dialog opened.
     pub focus_done: bool,
     pub error: Option<(String, Option<String>)>,
@@ -1611,6 +1730,10 @@ pub struct ExportDialog {
     pub run_mode: Option<RunMode>,
     /// `Some` = "Import to file/lakehouse": rows come from a file (the Import dialog's spec), not a query.
     pub import: Option<crate::ops::ImportSpec>,
+    /// SQLite format: the table inside the file (empty = the file's stem) and what to do when it exists
+    /// (0 = create, 1 = replace, 2 = append).
+    pub sqlite_table: String,
+    pub sqlite_mode: usize,
 }
 
 impl AppState {
@@ -1858,7 +1981,7 @@ impl AppState {
             Event::ResultSetStarted { tab, run, rs } => {
                 if let Some(r) = self.run_mut(tab, run) {
                     let is_plan = cobalt_driver::is_showplan_result(&rs.columns);
-                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan, profile: None, chart: None });
+                    r.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan, profile: None, chart: None, edits: None });
                 }
             }
             Event::ResultSetDone { tab, run, index, rows } => {
@@ -1960,6 +2083,17 @@ impl AppState {
                 if self.tab_mut(tab).map(|t| t.is_notebook()).unwrap_or(false) {
                     out.push(Followup::NotebookPump(tab, failed || cancelled));
                 }
+                // Edit Data: a save script finished, or the query ran again after one
+                let run_ok = !failed && !cancelled && !self.run_mut(tab, run).map(|r| r.has_error()).unwrap_or(true);
+                if let Some(t) = self.tab_mut(tab) {
+                    if t.edit_resume.is_some() {
+                        out.push(Followup::EditSaved { tab, ok: run_ok });
+                    } else if let Some(set) = t.edit_reopen.take() {
+                        if run_ok {
+                            out.push(Followup::EditReopen { tab, set });
+                        }
+                    }
+                }
             }
             Event::DatabaseChanged { tab, database } => {
                 if let Some(t) = self.tab_mut(tab) {
@@ -1970,6 +2104,8 @@ impl AppState {
                     if !t.custom_title {
                         if t.explore.is_some() {
                             crate::exploreq::retitle(t);
+                        } else if let Some(p) = t.profile.as_ref().filter(|p| p.is_file()) {
+                            t.title = format!("SQLQuery_{} · {}", t.untitled_index, p.display_name());
                         } else {
                             t.title = format!("SQLQuery_{} · {}", t.untitled_index, database);
                         }
@@ -1994,7 +2130,8 @@ impl AppState {
                 }
             }
             Event::ImportDone { tab, result } => {
-                let target = if let Dialog::Import(d) = &self.dialog { Some(format!("[{}].[{}]", d.schema_name, d.table_name)) } else { None };
+                let file = self.tabs.iter().find(|t| t.id == tab).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
+                let target = if let Dialog::Import(d) = &self.dialog { Some(if file { format!("\"{}\"", d.table_name) } else { format!("[{}].[{}]", d.schema_name, d.table_name) }) } else { None };
                 let msg = match &result {
                     Ok((rows, el)) => Ok(format!("Imported {} rows into {} in {:.1}s", fmt_count(*rows), target.clone().unwrap_or_default(), el.as_secs_f32())),
                     Err(e) if e == "cancelled" => Err("Import cancelled; the transaction was rolled back.".to_string()),
@@ -2168,6 +2305,10 @@ pub enum Followup {
     ReconnectDefault(TabId),
     /// A notebook cell finished: start the next queued cell (or drop the queue after a failure).
     NotebookPump(TabId, bool),
+    /// Edit Data's save script finished (ok = committed): run the query again, or restore the grid with the error.
+    EditSaved { tab: TabId, ok: bool },
+    /// The query ran again after a save (or the tree's Edit Data): Edit Data back on for the set.
+    EditReopen { tab: TabId, set: usize },
 }
 
 /// A login rejected because the requested database does not exist (or is not visible): SQL

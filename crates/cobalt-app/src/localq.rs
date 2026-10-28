@@ -225,6 +225,41 @@ fn catalog(engine: &Engine) -> cobalt_core::DatabaseCatalog {
     cat
 }
 
+/// A table of a SQLite database file as a local table (read from the file on every scan),
+/// with a Local tab over it. Returns the tab index.
+pub fn open_sqlite_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path, table: &str) -> Result<usize, String> {
+    let mut name = cobalt_local::sanitize_name(table);
+    if name.is_empty() {
+        name = "table".into();
+    }
+    let existing = cx.local.tables().into_iter().find(|t| matches!(&t.source, TableSource::Sqlite { path: p, table: t } if p == path && t == table)).map(|t| t.name);
+    let name = match existing {
+        Some(n) => n,
+        None => {
+            let base = name.clone();
+            let mut suffix = 2;
+            while cx.local.has_table(&name) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            name
+        }
+    };
+    let engine = Arc::clone(cx.local);
+    let p = path.to_path_buf();
+    let n = name.clone();
+    let t = table.to_string();
+    cx.session.handle().block_on(async move { engine.register_sqlite(&n, &p, &t).await })?;
+    let text = format!("SELECT *\nFROM {}\nLIMIT 1000", quote(&name));
+    let i = new_tab(state, cx, Some(text));
+    state.tabs[i].title = format!("{table} · local");
+    state.tabs[i].custom_title = true;
+    state.active_tab = Some(i);
+    refresh_all_catalogs(state, cx);
+    run(state, cx, i, RunMode::All);
+    Ok(i)
+}
+
 /// A file (Parquet, CSV, JSON lines, Arrow) or a Delta folder as a local table, with a Local
 /// tab over it (`SELECT * FROM <name> LIMIT 1000`, run). Returns the tab index.
 pub fn open_file_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path) -> Result<usize, String> {

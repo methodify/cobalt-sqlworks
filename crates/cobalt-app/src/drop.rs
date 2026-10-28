@@ -59,6 +59,8 @@ pub enum DropAction {
     Import,
     /// A data file the local engine reads: a local table with a Local tab over it.
     LocalTable,
+    /// A SQLite database file (by its header): a file connection with a query tab.
+    SqliteDb,
     Connections,
     AdsSettings,
     DeltaFolder,
@@ -80,6 +82,7 @@ impl DropAction {
             DropAction::Explore => "Open in Explore".into(),
             DropAction::Import => "Import the data into the active connection".into(),
             DropAction::LocalTable => "Open as a local table (query it here; Import into a connection from the tab)".into(),
+            DropAction::SqliteDb => "Open as a SQLite database (a connection in the Servers tree)".into(),
             DropAction::Connections => "Import the connections".into(),
             DropAction::AdsSettings => "Import connections from Azure Data Studio settings".into(),
             DropAction::DeltaFolder => "Open the Delta table as a local table".into(),
@@ -112,6 +115,9 @@ pub fn classify(path: &Path) -> DropAction {
     }
     if cobalt_core::explore::ExploreSpec::is_explore_path(path) {
         return DropAction::Explore;
+    }
+    if cobalt_driver::sqlite::is_sqlite_file(path) {
+        return DropAction::SqliteDb;
     }
     let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
     match ext.as_str() {
@@ -259,6 +265,7 @@ pub fn drop_files(state: &mut AppState, cx: &Ctx, paths: &[PathBuf]) -> usize {
             },
             DropAction::Dashboard => crate::dashboard::open_path(state, cx, path.clone()),
             DropAction::Explore => crate::exploreq::open_path(state, cx, path).is_some(),
+            DropAction::SqliteDb => crate::ops::open_sqlite_database(state, cx, path, false).is_some(),
             DropAction::LocalTable => match crate::localq::open_file_table(state, cx, path) {
                 Ok(_) => true,
                 Err(e) => {

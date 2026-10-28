@@ -6,6 +6,7 @@
 pub mod error;
 #[cfg(feature = "mssql")]
 pub mod mssql;
+pub mod sqlite;
 
 pub use error::DriverError;
 
@@ -234,5 +235,25 @@ mod tests {
     fn no_go() {
         let b = split_batches("select 1;\nselect 2;");
         assert_eq!(b.len(), 1);
+    }
+}
+
+/// The driver the app hands the session runtime: picks the engine by the profile's family.
+pub struct MultiDriver {
+    pub tds: std::sync::Arc<dyn Driver>,
+    pub sqlite: std::sync::Arc<dyn Driver>,
+}
+
+#[async_trait]
+impl Driver for MultiDriver {
+    fn name(&self) -> &'static str {
+        "Cobalt"
+    }
+
+    async fn connect(&self, profile: &ConnectionProfile, creds: &ResolvedCredentials, role: ConnectionRole) -> Result<Box<dyn Connection>> {
+        match profile.engine {
+            cobalt_core::EngineFamily::Tds => self.tds.connect(profile, creds, role).await,
+            cobalt_core::EngineFamily::Sqlite => self.sqlite.connect(profile, creds, role).await,
+        }
     }
 }

@@ -530,6 +530,32 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 }
             }
         }
+        Dialog::ConfirmEmptyScratch => {
+            let (choice, close) = modal(ctx, theme, "empty-scratch", 420.0, |ui| {
+                ui.heading("Empty scratch database");
+                ui.label("Delete every table in the scratch database? Tabs connected to it are disconnected; the file is made again on the next connection.");
+                ui.add_space(10.0);
+                let mut c = 0;
+                ui.horizontal(|ui| {
+                    if mnemonic_button(ui, theme, "&Empty", ButtonStyle::Danger, true, None) {
+                        c = 1;
+                    }
+                    if mnemonic_button(ui, theme, "&Cancel", ButtonStyle::Normal, true, Some(Key::Escape)) {
+                        c = 2;
+                    }
+                });
+                c
+            });
+            match choice {
+                1 => ops::empty_scratch(f.state, f.cx),
+                2 => {}
+                _ => {
+                    if !close {
+                        f.state.dialog = Dialog::ConfirmEmptyScratch;
+                    }
+                }
+            }
+        }
         Dialog::ConfirmDeleteGroup { group } => {
             let name = f.state.library.group(group).map(|g| g.name.clone()).unwrap_or_default();
             let (choice, close) = modal(ctx, theme, "del-group", 380.0, |ui| {
@@ -976,6 +1002,8 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 Some(cobalt_local::TableSource::Result { title, .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the tab {title} keeps its results and the table comes back the next time that tab runs.")),
                 Some(cobalt_local::TableSource::File { path }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the file stays:\n{}", path.display())),
                 Some(cobalt_local::TableSource::OneLake { .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; nothing changes in the lakehouse.")),
+                Some(cobalt_local::TableSource::Sqlite { path, table }) => ("Forget the table?".to_string(), format!("{name} is forgotten; {table} stays in
+{}", path.display())),
                 Some(cobalt_local::TableSource::Statement) => ("Drop the table?".to_string(), format!("{name} was made by a statement and is dropped.")),
                 None => ("Forget the table?".to_string(), format!("{name} is no longer listed.")),
             };
@@ -1400,6 +1428,41 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
             ui.vertical(|ui| {
                 ui.set_width(440.0);
                 egui::Grid::new("conn-grid").num_columns(2).spacing([10.0, 7.0]).min_col_width(120.0).show(ui, |ui| {
+                    ui.label("Engine");
+                    let engine_labels = ["SQL Server, Azure SQL, Fabric", "SQLite database file"];
+                    egui::ComboBox::from_id_salt("engine").width(300.0).selected_text(engine_labels[d.engine_index.min(1)]).show_ui(ui, |ui| {
+                        for (i, l) in engine_labels.iter().enumerate() {
+                            if ui.selectable_value(&mut d.engine_index, i, *l).clicked() && i == 1 {
+                                d.auth_index = 7;
+                            }
+                        }
+                    });
+                    ui.end_row();
+                    if d.engine_index == 1 {
+                        ui.label("Database file");
+                        ui.horizontal(|ui| {
+                            let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text("C:\\path\\to\\file.sqlite").desired_width(230.0));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "database file"));
+                            if ui.button("Browse…").clicked() {
+                                if let Some(p) = rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]).add_filter("All files", &["*"]).pick_file() {
+                                    d.profile.server = p.to_string_lossy().to_string();
+                                }
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut d.profile.options.read_only, "Read-only");
+                            ui.checkbox(&mut d.profile.options.create_if_missing, "Create if missing");
+                        });
+                        ui.end_row();
+                    }
+                    if d.engine_index == 1 {
+                        ui.label("");
+                        ui.label(RichText::new("No server, port or sign-in: the file is the database. Attached databases show in the tree.").size(11.0).color(theme.text_muted));
+                        ui.end_row();
+                    }
+                    if d.engine_index == 0 {
                     ui.label("Server");
                     let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text("host, host,port, host\\instance, or Fabric endpoint").desired_width(300.0));
                     // focus Server once when a new dialog opens (not every frame: that would keep
@@ -1523,6 +1586,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                         d.profile.database = if db.trim().is_empty() { None } else { Some(db) };
                     }
                     ui.end_row();
+                    }
                     ui.label("Name");
                     let mut name = d.profile.name.clone().unwrap_or_default();
                     if ui.add(egui::TextEdit::singleline(&mut name).hint_text("optional friendly name").desired_width(300.0)).changed() {
@@ -1708,6 +1772,8 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
     let mut reinspect = false;
     let running = d.running;
     let (connected, db_name) = f.state.tabs.get(d.tab_index).map(|t| (t.conn.is_connected(), t.conn.database().unwrap_or("").to_string())).unwrap_or((false, String::new()));
+    let file_target = f.state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
+    let mut open_scratch = false;
     if !connected && d.destination == 0 && matches!(d.source, ImportSource::File) {
         d.destination = 1;
     }
@@ -1777,9 +1843,15 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                     for (i, label) in &connected_tabs {
                         ui.selectable_value(&mut d.tab_index, *i, label);
                     }
+                    if ui.selectable_label(false, format!("{} Scratch database (opens a tab)", icons::FILE_SQL)).on_hover_text("The built-in SQLite file in the app data folder: a place for tables you will index, edit and come back to.").clicked() {
+                        open_scratch = true;
+                    }
                 });
                 if d.tab_index != before && d.existing {
                     d.want_existing_columns = true;
+                }
+                if !connected {
+                    ui.label(RichText::new("connecting…").size(11.0).color(theme.text_faint));
                 }
                 ui.end_row();
             }
@@ -1806,9 +1878,14 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             if to_table {
             ui.label("Target table");
             ui.horizontal(|ui| {
-                let r1 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.schema_name).desired_width(90.0).hint_text("dbo"));
+                let r1 = ui.add_enabled(!running && !file_target, egui::TextEdit::singleline(&mut d.schema_name).desired_width(if file_target { 0.0 } else { 90.0 }).hint_text("dbo"));
                 r1.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import schema"));
-                ui.label(".");
+                if file_target {
+                    // a file database has no schemas: the field stays (for the agent) but takes no room
+                    r1.surrender_focus();
+                } else {
+                    ui.label(".");
+                }
                 let r2 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.table_name).desired_width(220.0).hint_text("table"));
                 r2.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import table"));
                 ui.add_space(10.0);
@@ -1946,7 +2023,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let can = !running && (d.inspection.is_some() || is_results) && !matches!(d.result, Some(Ok(_)));
+            let can = !running && (d.inspection.is_some() || is_results) && !matches!(d.result, Some(Ok(_))) && (connected || !to_table);
             let b = primary_button(ui, theme, if is_results { "Save rows" } else if to_table { "Import" } else { "Choose target…" }, can);
             if b.clicked() {
                 start = true;
@@ -1960,6 +2037,12 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             }
         });
     });
+    if open_scratch {
+        if let Some(i) = ops::open_scratch_tab(f.state, f.cx) {
+            d.tab_index = i;
+            d.want_existing_columns = d.existing;
+        }
+    }
     if start {
         f.state.dialog = Dialog::Import(d);
         ops::start_import(f.state, f.cx);
@@ -2111,6 +2194,22 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                 "json" => {
                     ui.label("");
                     ui.checkbox(&mut d.json_lines, "One object per line (JSON Lines)");
+                    ui.end_row();
+                }
+                "sqlite" => {
+                    ui.label("Table");
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut d.sqlite_table).hint_text("named after the file").desired_width(220.0));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "sqlite table"));
+                        ui.label(RichText::new("a second result set gets _2, a third _3…").size(11.0).color(theme.text_faint));
+                    });
+                    ui.end_row();
+                    ui.label("If it exists");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut d.sqlite_mode, 0, "Fail");
+                        ui.selectable_value(&mut d.sqlite_mode, 1, "Replace table");
+                        ui.selectable_value(&mut d.sqlite_mode, 2, "Append rows");
+                    });
                     ui.end_row();
                 }
                 "delta" => {

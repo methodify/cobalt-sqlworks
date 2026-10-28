@@ -150,6 +150,8 @@ pub struct ExportJob {
     pub path: String,
     pub delta_mode: usize,
     pub delta_partition: Vec<String>,
+    pub sqlite_table: String,
+    pub sqlite_mode: usize,
     pub settings: ExportSettings,
     pub fmt: cobalt_results::CellFormatter,
     pub onelake: Option<OneLakeJob>,
@@ -178,6 +180,15 @@ pub struct OneLakeJob {
 }
 
 impl ExportJob {
+    /// The exporter options for result set `index` (the SQLite table name varies by set).
+    pub fn export_options(&self, index: usize) -> cobalt_export::ExportOptions {
+        let mut o = cobalt_export::ExportOptions::from_settings(&self.settings);
+        if self.ext == "sqlite" {
+            o.sqlite = sqlite_options(&self.sqlite_table, self.sqlite_mode, index);
+        }
+        o
+    }
+
     /// Human-readable target for the results header and messages.
     pub fn display_target(&self) -> String {
         match &self.onelake {
@@ -193,7 +204,8 @@ impl ExportJob {
     /// Local path for result set `index`: the second set and on get a `_2`, `_3`… suffix.
     fn local_path(&self, index: usize) -> PathBuf {
         let p = PathBuf::from(&self.path);
-        if index == 0 {
+        if index == 0 || self.ext == "sqlite" {
+            // every result set of a SQLite export lands in the one file, as its own table
             return p;
         }
         let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -300,6 +312,7 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
     let recent = cx.store.recent_profiles(8).unwrap_or_default();
     let group_index = profile.group.and_then(|g| state.library.groups.iter().position(|x| x.id == g)).map(|i| i + 1).unwrap_or(0);
     let color_index = profile.color.and_then(|c| Color::PALETTE.iter().position(|p| *p == c));
+    let engine_index = if profile.engine == cobalt_core::EngineFamily::Sqlite { 1 } else { 0 };
     state.dialog = Dialog::Connection(Box::new(ConnectionDialog {
         port_text: profile.port.map(|p| p.to_string()).unwrap_or_default(),
         profile,
@@ -315,6 +328,7 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
         show_advanced: false,
         conn_string: String::new(),
         conn_string_note: None,
+        engine_index,
         focus_done: false,
         error: None,
         testing: false,
@@ -337,6 +351,7 @@ pub fn auth_index_of(a: &AuthMethod) -> usize {
         AuthMethod::WindowsIntegrated => 4,
         AuthMethod::EntraServicePrincipal { .. } => 5,
         AuthMethod::ManagedIdentity { .. } => 6,
+        AuthMethod::None => 7,
     }
 }
 
@@ -350,6 +365,7 @@ pub fn auth_from_dialog(d: &ConnectionDialog) -> AuthMethod {
         3 => AuthMethod::AzureCli { tenant: opt(&d.tenant) },
         4 => AuthMethod::WindowsIntegrated,
         6 => AuthMethod::ManagedIdentity { client_id: opt(&d.sp_client_id) },
+        7 => AuthMethod::None,
         _ => AuthMethod::EntraServicePrincipal { tenant: d.tenant.trim().to_string(), client_id: d.sp_client_id.trim().to_string(), secret: None, certificate: opt(&d.sp_cert) },
     }
 }
@@ -363,7 +379,18 @@ pub fn save_connection_dialog(state: &mut AppState, cx: &Ctx) -> Option<Connecti
     }
     let mut p = d.profile.clone();
     p.server = p.server.trim().to_string();
-    p.port = d.port_text.trim().parse().ok();
+    p.engine = if d.engine_index == 1 { cobalt_core::EngineFamily::Sqlite } else { cobalt_core::EngineFamily::Tds };
+    if p.is_file() {
+        // a file connection: no port, no credentials, the path is the server
+        d.auth_index = 7;
+        p.port = None;
+        p.database = None;
+        if !p.options.create_if_missing && !std::path::Path::new(&p.server).exists() {
+            d.error = Some((format!("{} does not exist (tick Create if missing to make a new database).", p.server), None));
+            return None;
+        }
+    }
+    p.port = if p.is_file() { None } else { d.port_text.trim().parse().ok() };
     p.database = p.database.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     p.name = p.name.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     p.group = if d.group_index == 0 { None } else { state.library.groups.get(d.group_index - 1).map(|g| g.id) };
@@ -424,6 +451,143 @@ pub fn save_connection_dialog(state: &mut AppState, cx: &Ctx) -> Option<Connecti
     Some(p)
 }
 
+/// Open a SQLite database file as a connection: the profile that already points at it, or a
+/// new file connection saved to the library; then a query tab on it.
+/// The built-in scratch database's fixed profile id.
+pub const SCRATCH_PROFILE_ID: &str = "c0ba1700-5c7a-4c00-8000-000000000001";
+
+pub fn scratch_profile_id() -> ProfileId {
+    ProfileId::parse(SCRATCH_PROFILE_ID).unwrap_or_else(ProfileId::nil)
+}
+
+/// `scratch.sqlite` in the app data folder.
+pub fn scratch_db_path(cx: &Ctx) -> PathBuf {
+    cx.paths.data_dir.join("scratch.sqlite")
+}
+
+/// The scratch database is a file connection like any other, saved once under its fixed id
+/// (so it is in the library after a restart, a library import or a wiped file).
+pub fn ensure_scratch_profile(state: &mut AppState, cx: &Ctx) {
+    let id = scratch_profile_id();
+    let path = scratch_db_path(cx).to_string_lossy().to_string();
+    match state.library.profile(id) {
+        Some(p) if p.server == path => return,
+        _ => {}
+    }
+    let mut p = ConnectionProfile::sqlite(path);
+    p.id = id;
+    p.name = Some("Scratch".into());
+    p.options.create_if_missing = true;
+    if let Err(e) = cx.store.upsert_profile(&p) {
+        tracing::warn!(error = %e, "could not save the scratch database profile");
+        return;
+    }
+    load_library(state, cx);
+}
+
+/// A query tab on the scratch database (made on first use).
+pub fn open_scratch_tab(state: &mut AppState, cx: &Ctx) -> Option<usize> {
+    ensure_scratch_profile(state, cx);
+    let id = scratch_profile_id();
+    state.library.profile(id)?;
+    Some(new_query_tab(state, cx, Some(id), None, None, false))
+}
+
+/// Empty the scratch database: every tab on it is disconnected, the file (and its journal) is
+/// deleted; the next connection makes it again.
+pub fn empty_scratch(state: &mut AppState, cx: &Ctx) {
+    let id = scratch_profile_id();
+    let path = scratch_db_path(cx);
+    let tabs: Vec<usize> = state.tabs.iter().enumerate().filter(|(_, t)| t.profile.as_ref().map(|p| p.id == id).unwrap_or(false)).map(|(i, _)| i).collect();
+    for i in tabs {
+        disconnect_tab(state, cx, i);
+    }
+    cx.session.send(Command::CloseMetadata { profile: id });
+    state.library.servers.remove(&id);
+    // the connections close on their own threads: give them a moment before the file goes
+    let egui = cx.egui.clone();
+    let toast_path = path.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let mut err = None;
+        for suffix in ["", "-journal", "-wal", "-shm"] {
+            let p = PathBuf::from(format!("{}{suffix}", toast_path.display()));
+            if p.exists() {
+                if let Err(e) = std::fs::remove_file(&p) {
+                    err = Some(format!("{}: {e}", p.display()));
+                }
+            }
+        }
+        if let Some(e) = err {
+            tracing::warn!(error = %e, "emptying the scratch database");
+        }
+        egui.request_repaint();
+    });
+    cx.toast(ToastKind::Success, "Scratch database emptied.");
+}
+
+/// "Copy to SQLite file…" on a server table: a tab selecting the table, run straight to a
+/// SQLite file through the Run to File dialog (the table name is the target table).
+pub fn table_to_sqlite(state: &mut AppState, cx: &Ctx, profile: ProfileId, obj: &ObjectRef) {
+    let target = quoted_object(state.library.profile(profile), obj);
+    let sql = format!("SELECT *\nFROM {target}");
+    let idx = new_query_tab(state, cx, Some(profile), Some(obj.database.clone()), Some((format!("{} → SQLite", obj.name), sql)), false);
+    open_run_to_file(state, cx, idx, RunMode::All);
+    if let Dialog::Export(d) = &mut state.dialog {
+        d.format_index = sqlite_format_index();
+        let dir = std::path::Path::new(&d.path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let db = if obj.database.is_empty() { "export".to_string() } else { obj.database.clone() };
+        d.path = dir.join(format!("{}.sqlite", db.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_"))).to_string_lossy().to_string();
+        d.sqlite_table = obj.name.clone();
+    }
+}
+
+pub fn open_sqlite_database(state: &mut AppState, cx: &Ctx, path: &std::path::Path, create: bool) -> Option<usize> {
+    let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path_text = canon.to_string_lossy().trim_start_matches(r"\\?\").to_string();
+    if !create && !canon.exists() {
+        cx.toast(ToastKind::Error, format!("{} does not exist", path.display()));
+        return None;
+    }
+    if !create && !cobalt_driver::sqlite::is_sqlite_file(&canon) {
+        cx.toast(ToastKind::Error, format!("{} is not a SQLite database", path.display()));
+        return None;
+    }
+    let existing = state.library.profiles.iter().find(|p| p.is_file() && std::fs::canonicalize(&p.server).map(|c| c == canon).unwrap_or(p.server == path_text)).map(|p| p.id);
+    let id = match existing {
+        Some(id) => id,
+        None => {
+            let mut p = ConnectionProfile::sqlite(path_text);
+            p.options.create_if_missing = create;
+            if let Err(e) = cx.store.upsert_profile(&p) {
+                cx.toast(ToastKind::Error, format!("Could not save the connection: {e}"));
+                return None;
+            }
+            load_library(state, cx);
+            p.id
+        }
+    };
+    Some(new_query_tab(state, cx, Some(id), None, None, false))
+}
+
+/// *Open SQLite database…* / *New SQLite database…*: the file picker, then `open_sqlite_database`.
+pub fn pick_sqlite_database(state: &mut AppState, cx: &Ctx, create: bool) {
+    let dialog = rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]).add_filter("All files", &["*"]);
+    let path = if create { dialog.set_file_name("new.sqlite").save_file() } else { dialog.pick_file() };
+    if let Some(p) = path {
+        open_sqlite_database(state, cx, &p, create);
+    }
+}
+
+/// `[schema].[name]` for T-SQL, `"name"` for a file database.
+pub fn quoted_object(profile: Option<&ConnectionProfile>, obj: &cobalt_core::ObjectRef) -> String {
+    if profile.map(|p| p.is_file()).unwrap_or(false) {
+        format!("\"{}\"", obj.name.replace('"', "\"\""))
+    } else {
+        obj.bracketed()
+    }
+}
+
 pub fn delete_profile(state: &mut AppState, cx: &Ctx, id: ProfileId) {
     let _ = cx.secrets.delete(&SecretRef::for_profile(&id, "password"));
     let _ = cx.resolver.forget(&id);
@@ -471,6 +635,7 @@ pub fn begin_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile,
         }
     }
     match &profile.auth {
+        AuthMethod::None => finish_connect(state, cx, profile.clone(), ResolvedCredentials::None, purpose),
         AuthMethod::SqlLogin { user, password } => {
             let stored = password.as_ref().and_then(|r| cx.secrets.get(r).ok().flatten());
             match stored {
@@ -626,6 +791,11 @@ pub fn finish_connect(state: &mut AppState, cx: &Ctx, profile: ConnectionProfile
             if req.is_some() {
                 state.library.server(pid).databases = Loadable::Loading;
             }
+            // an Import dialog waiting on this connection for its target table's columns
+            let waiting = matches!(&state.dialog, Dialog::Import(d) if d.existing && d.existing_columns.is_loading() && state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.id == pid).unwrap_or(false));
+            if waiting {
+                import_request_existing_columns(state, cx);
+            }
         }
         ConnectPurpose::TestOnly => {
             let driver = cx.session.driver();
@@ -769,6 +939,7 @@ pub fn forget_local_table(state: &mut AppState, cx: &Ctx, name: &str) {
 pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
     match action {
         TreeAction::NewConnection { group } => open_connection_dialog(state, cx, None, group, None),
+        TreeAction::OpenSqlite => pick_sqlite_database(state, cx, false),
         TreeAction::NewGroup => {
             let next = Color::PALETTE[state.library.groups.len() % Color::PALETTE.len()];
             state.dialog = Dialog::Group { group: ServerGroup::new("", next), is_new: true };
@@ -781,6 +952,16 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         TreeAction::DeleteGroup(id) => state.dialog = Dialog::ConfirmDeleteGroup { group: id },
         TreeAction::EditProfile(id) => open_connection_dialog(state, cx, Some(id), None, None),
         TreeAction::DeleteProfile(id) => state.dialog = Dialog::ConfirmDeleteProfile { profile: id },
+        TreeAction::EmptyScratch => state.dialog = Dialog::ConfirmEmptyScratch,
+        TreeAction::CopyToSqlite { profile, obj } => table_to_sqlite(state, cx, profile, &obj),
+        TreeAction::EditData { profile, obj } => crate::editq::open_table(state, cx, profile, &obj),
+        TreeAction::LocalQuerySqlite { profile, obj } => {
+            if let Some(path) = state.library.profile(profile).map(|p| PathBuf::from(&p.server)) {
+                if let Err(e) = crate::localq::open_sqlite_table(state, cx, &path, &obj.name) {
+                    cx.toast(ToastKind::Error, e);
+                }
+            }
+        }
         TreeAction::ConnectServer(id) => {
             if let Some(p) = state.library.profile(id).cloned() {
                 begin_connect(state, cx, p, ConnectPurpose::Tree { profile: id });
@@ -950,11 +1131,21 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         TreeAction::SelectTop { profile, obj } => {
             let n = cx.settings.execution.select_top_n;
             let cols = state.library.servers.get(&profile).and_then(|s| s.db_nodes.get(&obj.database)).and_then(|d| d.columns.get(&obj.object_id.unwrap_or(0))).and_then(|l| l.get()).cloned();
-            let sql = match cols {
-                Some(cols) if !cols.is_empty() => format!("SELECT TOP ({n})\n    {}\nFROM {}", cols.iter().map(|c| quote_ident(&c.name)).collect::<Vec<_>>().join(",\n    "), obj.bracketed()),
-                _ => format!("SELECT TOP ({n}) *\nFROM {}", obj.bracketed()),
+            let file = state.library.profile(profile).map(|p| p.is_file()).unwrap_or(false);
+            let target = quoted_object(state.library.profile(profile), &obj);
+            let sql = if file {
+                let qc = |c: &str| format!("\"{}\"", c.replace('"', "\"\""));
+                match cols {
+                    Some(cols) if !cols.is_empty() => format!("SELECT\n    {}\nFROM {target}\nLIMIT {n}", cols.iter().map(|c| qc(&c.name)).collect::<Vec<_>>().join(",\n    ")),
+                    _ => format!("SELECT *\nFROM {target}\nLIMIT {n}"),
+                }
+            } else {
+                match cols {
+                    Some(cols) if !cols.is_empty() => format!("SELECT TOP ({n})\n    {}\nFROM {target}", cols.iter().map(|c| quote_ident(&c.name)).collect::<Vec<_>>().join(",\n    ")),
+                    _ => format!("SELECT TOP ({n}) *\nFROM {target}"),
+                }
             };
-            let title = format!("{}.{} (top {n})", obj.schema, obj.name);
+            let title = if obj.schema.is_empty() { format!("{} (top {n})", obj.name) } else { format!("{}.{} (top {n})", obj.schema, obj.name) };
             new_query_tab(state, cx, Some(profile), Some(obj.database.clone()), Some((title, sql)), true);
         }
         TreeAction::Script { profile, obj, kind } => {
@@ -1496,11 +1687,16 @@ pub fn run_sql(state: &mut AppState, cx: &Ctx, idx: usize, mode: RunMode) {
         return;
     }
     t.last_run_mode = Some(mode);
-    let Some((script, start_line)) = script_for(t, mode) else { return };
+    // Edit Data runs its own text (the save script, then the query again) in place of the editor's
+    let Some((script, start_line)) = t.script_override.take().map(|s| (s, 1)).or_else(|| script_for(t, mode)) else { return };
     let tab_id = t.id;
     // need a connection?
     if !t.conn.is_connected() {
         t.pending_run = Some(mode);
+        if matches!(t.conn, ConnState::Connecting) {
+            // already on its way (a tab opened from the tree, a reconnect): the run follows the connection
+            return;
+        }
         match t.profile.clone() {
             Some(p) => {
                 let db = t.reconnect_database();
@@ -1543,6 +1739,7 @@ pub fn execute(state: &mut AppState, cx: &Ctx, idx: usize, script: String, mut o
     let mut view = RunView::new(run_id);
     view.export_target = job.as_ref().map(|j| j.display_target());
     view.script_hash = hash_text(&t.text);
+    view.script = script.clone();
     // history
     if cx.settings.history.capture {
         let mut e = NewHistoryEntry::new(t.profile.as_ref().map(|p| p.display_name()).unwrap_or_default(), script.clone());
@@ -1636,6 +1833,8 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                         if !t.custom_title {
                             if t.explore.is_some() {
                                 crate::exploreq::retitle(t);
+                            } else if let Some(p) = t.profile.as_ref().filter(|p| p.is_file()) {
+                                t.title = format!("SQLQuery_{} · {}", t.untitled_index, p.display_name());
                             } else if let Some(db) = t.conn.database() {
                                 t.title = format!("SQLQuery_{} · {}", t.untitled_index, db);
                             }
@@ -1702,6 +1901,8 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                 }
             }
             Followup::NotebookPump(tab, failed) => crate::notebook::pump(state, cx, tab, failed),
+            Followup::EditSaved { tab, ok } => crate::editq::after_save(state, cx, tab, ok),
+            Followup::EditReopen { tab, set } => crate::editq::reopen(state, cx, tab, set),
             Followup::ReconnectDefault(tab) => {
                 if let Some(p) = state.tab_mut(tab).and_then(|t| t.profile.clone()) {
                     begin_connect(state, cx, p, ConnectPurpose::Tab { tab, database: None });
@@ -1805,8 +2006,9 @@ pub fn import_request_existing_columns(state: &mut AppState, cx: &Ctx) {
             }
         }
         None => {
+            // the tree connection is being opened: the request goes out again when it is (finish_connect)
             if let Dialog::Import(d) = &mut state.dialog {
-                d.existing_columns = Loadable::Failed("the tree connection for this server is not open; expand it in Servers and try again".into());
+                d.existing_columns = Loadable::Loading;
             }
         }
     }
@@ -1859,7 +2061,8 @@ pub fn open_import_export(state: &mut AppState, cx: &Ctx) {
         let ext = FORMAT_LABELS[e.format_index].1;
         let dir = std::path::Path::new(&e.path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
         e.path = dir.join(if ext == "delta" { stem.clone() } else { format!("{stem}.{ext}") }).to_string_lossy().to_string();
-        e.onelake_name = stem;
+        e.onelake_name = stem.clone();
+        e.sqlite_table = stem;
         e.import = Some(spec);
     }
 }
@@ -1970,8 +2173,9 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
     };
     let schema_name = d.schema_name.trim().to_string();
     let table_name = d.table_name.trim().to_string();
-    if schema_name.is_empty() || table_name.is_empty() {
-        d.result = Some(Err("Give the target table a schema and a name.".into()));
+    let file_target = state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
+    if table_name.is_empty() || (schema_name.is_empty() && !file_target) {
+        d.result = Some(Err(if file_target { "Give the target table a name." } else { "Give the target table a schema and a name." }.into()));
         return;
     }
     let (columns, indexes) = match import_columns(d) {
@@ -1987,8 +2191,15 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
         return;
     }
     let tab_id = t.id;
-    let create_sql = if d.existing { None } else { Some(cobalt_import::create_table_sql(&schema_name, &table_name, &columns.iter().map(|c| (c.name.clone(), c.sql_type.clone(), c.nullable)).collect::<Vec<_>>())) };
-    let table = format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]"));
+    let col_defs: Vec<(String, SqlType, bool)> = columns.iter().map(|c| (c.name.clone(), c.sql_type.clone(), c.nullable)).collect();
+    let create_sql = if d.existing {
+        None
+    } else if file_target {
+        Some(cobalt_sqlite::create_table_sql(&table_name, &col_defs))
+    } else {
+        Some(cobalt_import::create_table_sql(&schema_name, &table_name, &col_defs))
+    };
+    let table = if file_target { cobalt_sqlite::quote(&table_name) } else { format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]")) };
     let format = import_format(d);
     let path = PathBuf::from(d.path.trim());
     let schema = ins.map(|i| i.schema.clone());
@@ -2052,7 +2263,15 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         ResultsAction::Cancel => cancel(state, cx, idx),
         ResultsAction::Copy { set, kind } => copy_cells(state, cx, idx, set, kind),
         ResultsAction::Export { set, selection_only } => open_export_dialog(state, cx, idx, set, selection_only),
-        ResultsAction::ApplyView { set, spec } => apply_view(state, cx, idx, set, spec),
+        ResultsAction::ApplyView { set, spec } => {
+            // the staged edits are keyed by visible row: the view stays put until they are saved or dropped
+            let pending = state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set)).and_then(|v| v.edits.as_ref()).map(|e| e.pending_count() > 0).unwrap_or(false);
+            if pending {
+                cx.toast(ToastKind::Warning, "Save or discard the pending changes before sorting or filtering the grid.");
+            } else {
+                apply_view(state, cx, idx, set, spec);
+            }
+        }
         ResultsAction::OpenViewer { set, row, col } => {
             if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
                 v.grid.viewer = Some((row, col));
@@ -2091,6 +2310,13 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
             }
         }
         ResultsAction::SaveAsTable { set, selection_only } => open_results_to_table(state, cx, idx, set, selection_only),
+        ResultsAction::EditBegin { set } => {
+            if let Err(e) = crate::editq::begin(state, cx, idx, set) {
+                cx.toast(ToastKind::Warning, e);
+            }
+        }
+        ResultsAction::EditSave { set } => crate::editq::save(state, cx, idx, set),
+        ResultsAction::EditDiscard { set, off } => crate::editq::discard(state, idx, set, off),
         ResultsAction::QueryLocally { set } => crate::localq::query_result(state, cx, idx, set),
         ResultsAction::ExploreLocally { set } => crate::exploreq::explore_result(state, cx, idx, set),
         ResultsAction::SaveLocally { set } => {
@@ -2133,12 +2359,16 @@ pub fn open_results_to_table(state: &mut AppState, cx: &Ctx, idx: usize, set: us
     } else {
         v.rs.clone()
     };
-    let target = if t.conn.is_connected() { Some(idx) } else { state.tabs.iter().position(|t| t.conn.is_connected()) };
-    let Some(target) = target else {
-        cx.toast(ToastKind::Warning, "Connect a tab first: the rows are loaded through a tab's connection.");
-        return;
-    };
     let title = t.title.split(" · ").next().unwrap_or("results").to_string();
+    let target = if t.conn.is_connected() { Some(idx) } else { state.tabs.iter().position(|t| t.conn.is_connected()) };
+    let target = match target {
+        Some(t) => t,
+        None => {
+            // nothing connected: the built-in scratch database takes the rows
+            let Some(t) = open_scratch_tab(state, cx) else { return };
+            t
+        }
+    };
     let label = format!("{title} · result set {} · {} rows", set + 1, fmt_count(rs.visible_count() as u64));
     let table_name = format!("{}_{}", title.replace(|c: char| !c.is_alphanumeric() && c != '_', "_"), set + 1);
     let columns: Vec<ImportColumnEdit> = rs
@@ -2396,7 +2626,7 @@ pub fn pop_out_result(state: &mut AppState, idx: usize, set: usize) {
     nt.text = String::new();
     let mut run = RunView::new(RunId(0));
     run.state = RunViewState::Done;
-    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None });
+    run.result_sets.push(ResultSetView { rs, grid: GridState::default(), is_plan: false, profile: None, chart: None, edits: None });
     nt.run = Some(run);
     nt.results_fraction = 0.95;
     nt.mark_saved();
@@ -2417,7 +2647,26 @@ pub const FORMAT_LABELS: &[(&str, &str)] = &[
     ("Parquet", "parquet"),
     ("Arrow IPC (Feather)", "arrow"),
     ("Delta Lake table (folder)", "delta"),
+    ("SQLite database (table)", "sqlite"),
 ];
+
+/// [`FORMAT_LABELS`] index of the SQLite format.
+pub fn sqlite_format_index() -> usize {
+    FORMAT_LABELS.iter().position(|(_, e)| *e == "sqlite").unwrap_or(0)
+}
+
+/// The export options for the SQLite format: table `index` 0 keeps the name, later result sets
+/// get `_2`, `_3`…; mode 0 = create, 1 = replace, 2 = append.
+pub fn sqlite_options(table: &str, mode: usize, index: usize) -> cobalt_export::SqliteOptions {
+    let table = table.trim();
+    let table = if index == 0 || table.is_empty() { table.to_string() } else { format!("{table}_{}", index + 1) };
+    let mode = match mode {
+        1 => cobalt_export::SqliteMode::Replace,
+        2 => cobalt_export::SqliteMode::Append,
+        _ => cobalt_export::SqliteMode::Create,
+    };
+    cobalt_export::SqliteOptions { table, mode }
+}
 
 pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize, selection_only: bool) {
     let Some(t) = state.tabs.get(idx) else { return };
@@ -2447,6 +2696,8 @@ pub fn open_export_dialog(state: &mut AppState, cx: &Ctx, idx: usize, set: usize
         cancel: Arc::new(AtomicBool::new(false)),
         run_mode: None,
         import: None,
+        sqlite_table: base,
+        sqlite_mode: 0,
     }));
 }
 
@@ -2510,6 +2761,8 @@ fn build_export_job(state: &mut AppState, cx: &Ctx, d: &mut ExportDialog) -> Opt
         path: d.path.trim().to_string(),
         delta_mode: d.delta_mode,
         delta_partition: d.delta_partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        sqlite_table: d.sqlite_table.clone(),
+        sqlite_mode: d.sqlite_mode,
         settings,
         fmt: state.formatter.clone().with_max_chars(0),
         onelake,
@@ -2722,9 +2975,10 @@ fn run_export_set(
                     .map_err(|e| e.to_string())
             } else {
                 let format = cobalt_export::Format::from_extension(ext).unwrap_or(cobalt_export::Format::Csv);
-                let opts = cobalt_export::ExportOptions::from_settings(&job.settings);
+                let opts = job.export_options(index);
+                let shown = if ext == "sqlite" { format!("table {} in {}", if opts.sqlite.table.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { opts.sqlite.table.clone() }, path.display()) } else { path.display().to_string() };
                 cobalt_export::export_source_to_file(&source, format, &path, &opts, &job.fmt, progress)
-                    .map(|s| format!("Wrote {} rows ({}) to {} in {:.1}s", fmt_count(s.rows as u64), size(s.bytes), path.display(), started.elapsed().as_secs_f32()))
+                    .map(|s| format!("Wrote {} rows ({}) to {shown} in {:.1}s", fmt_count(s.rows as u64), size(s.bytes), started.elapsed().as_secs_f32()))
                     .map_err(|e| e.to_string())
             }
         }
@@ -2749,7 +3003,7 @@ fn run_export_set(
                 let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
                 let path = std::env::temp_dir().join(format!("cobalt-onelake-{}-{nanos}.{ext}", std::process::id()));
                 let format = cobalt_export::Format::from_extension(ext).unwrap_or(cobalt_export::Format::Csv);
-                let opts = cobalt_export::ExportOptions::from_settings(&job.settings);
+                let opts = job.export_options(index);
                 let r = cobalt_export::export_source_to_file(&source, format, &path, &opts, &job.fmt, progress).map_err(|e| e.to_string()).and_then(|s| {
                     cobalt_export_delta::upload_file_blocking(&target, &path).map(|bytes| (s.rows, bytes)).map_err(|e| e.to_string())
                 });
@@ -2819,6 +3073,8 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
     settings.json_lines = d.json_lines;
     let delta_mode = d.delta_mode;
     let delta_partition: Vec<String> = d.delta_partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+    let sqlite = sqlite_options(&d.sqlite_table, d.sqlite_mode, 0);
+    let sqlite2 = sqlite.clone();
     let fmt = state.formatter.clone().with_max_chars(0);
     let tx = cx.export_tx.clone();
     let egui = cx.egui.clone();
@@ -2913,7 +3169,8 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                         .map_err(|e| e.to_string())
                 } else {
                     let format = cobalt_export::Format::from_extension(&ext2).unwrap_or(cobalt_export::Format::Csv);
-                    let opts = cobalt_export::ExportOptions::from_settings(&settings2);
+                    let mut opts = cobalt_export::ExportOptions::from_settings(&settings2);
+                    opts.sqlite = sqlite2;
                     let r = cobalt_export::export_to_file(&rs2, format, &path, &opts, &fmt2, &mut progress).map_err(|e| e.to_string()).and_then(|s| {
                         cobalt_export_delta::upload_file_blocking(&target, &path).map(|bytes| (s.rows, bytes)).map_err(|e| e.to_string())
                     });
@@ -2947,8 +3204,10 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 cobalt_export_delta::write_delta_blocking(&rs, &path, &opts, &mut progress).map(|s| format!("Wrote {} rows to Delta table {} in {:.1}s", fmt_count(s.rows as u64), path.display(), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
             } else {
                 let format = cobalt_export::Format::from_extension(&ext).unwrap_or(cobalt_export::Format::Csv);
-                let opts = cobalt_export::ExportOptions::from_settings(&settings);
-                cobalt_export::export_to_file(&rs, format, &path, &opts, &fmt, &mut progress).map(|s| format!("Wrote {} rows ({}) to {} in {:.1}s", fmt_count(s.rows as u64), humansize::format_size(s.bytes, humansize::DECIMAL), path.display(), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
+                let mut opts = cobalt_export::ExportOptions::from_settings(&settings);
+                opts.sqlite = sqlite;
+                let shown = if ext == "sqlite" { format!("table {} in {}", if opts.sqlite.table.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { opts.sqlite.table.clone() }, path.display()) } else { path.display().to_string() };
+                cobalt_export::export_to_file(&rs, format, &path, &opts, &fmt, &mut progress).map(|s| format!("Wrote {} rows ({}) to {shown} in {:.1}s", fmt_count(s.rows as u64), humansize::format_size(s.bytes, humansize::DECIMAL), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
             };
             let _ = tx.send(ExportDone { result, tab: None, path: None });
             egui.request_repaint();

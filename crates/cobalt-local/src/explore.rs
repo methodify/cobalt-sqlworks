@@ -26,6 +26,9 @@ pub enum SqlDialect {
     DataFusion,
     /// SQL Server, Azure SQL, Fabric: `[quoted]`, `TOP`, `LIKE`, `DATEADD`.
     TSql,
+    /// SQLite: `"quoted"`, `LIMIT`, `LIKE … ESCAPE`, `datetime('now', '-30 days')`, no
+    /// `ROLLUP` (subtotals are a `UNION ALL` of the grouping levels).
+    Sqlite,
 }
 
 fn q(name: &str) -> String {
@@ -34,7 +37,7 @@ fn q(name: &str) -> String {
 
 fn qd(name: &str, d: SqlDialect) -> String {
     match d {
-        SqlDialect::DataFusion => q(name),
+        SqlDialect::DataFusion | SqlDialect::Sqlite => q(name),
         SqlDialect::TSql => format!("[{}]", name.replace(']', "]]")),
     }
 }
@@ -46,7 +49,8 @@ fn lit(s: &str) -> String {
 /// A literal typed by the column: numbers raw, dates as `DATE '…'`, text quoted.
 fn typed(dt: TabularDataType, raw: &str, d: SqlDialect) -> Result<String, String> {
     let t = raw.trim();
-    let tsql = d == SqlDialect::TSql;
+    // SQL Server and SQLite take 1/0 and plain date text; the local engine wants typed literals
+    let tsql = matches!(d, SqlDialect::TSql | SqlDialect::Sqlite);
     match dt {
         TabularDataType::Int64 | TabularDataType::Double | TabularDataType::Decimal => {
             if t.parse::<f64>().is_ok() { Ok(t.to_string()) } else { Err(format!("{raw:?} is not a number")) }
@@ -82,9 +86,15 @@ fn filter_sql(f: &FilterSpec, catalog: &ModelCatalog, d: SqlDialect) -> Result<S
     let col = qd(&f.column, d);
     let dt = column_type(catalog, &f.table, &f.column);
     let tsql = d == SqlDialect::TSql;
-    let text_col = if tsql { format!("CAST({col} AS NVARCHAR(4000))") } else { format!("CAST({col} AS VARCHAR)") };
-    let like = if tsql { "LIKE" } else { "ILIKE" };
-    let escape = if tsql { " ESCAPE '\\'" } else { "" };
+    let sqlite = d == SqlDialect::Sqlite;
+    let text_col = match d {
+        SqlDialect::TSql => format!("CAST({col} AS NVARCHAR(4000))"),
+        SqlDialect::Sqlite => format!("CAST({col} AS TEXT)"),
+        SqlDialect::DataFusion => format!("CAST({col} AS VARCHAR)"),
+    };
+    // SQLite's LIKE ignores ASCII case already
+    let like = if d == SqlDialect::DataFusion { "ILIKE" } else { "LIKE" };
+    let escape = if tsql || sqlite { " ESCAPE '\\'" } else { "" };
     Ok(match &f.op {
         FilterOp::In { values } => {
             if values.is_empty() {
@@ -122,6 +132,13 @@ fn filter_sql(f: &FilterSpec, catalog: &ModelCatalog, d: SqlDialect) -> Result<S
                     DateUnit::Years => "year",
                 };
                 format!("{col} >= DATEADD({part}, -{last}, SYSDATETIME())")
+            } else if sqlite {
+                let unit = match unit {
+                    DateUnit::Days => "days",
+                    DateUnit::Months => "months",
+                    DateUnit::Years => "years",
+                };
+                format!("{col} >= datetime('now', '-{last} {unit}')")
             } else {
                 let interval = match unit {
                     DateUnit::Days => format!("{last} days"),
@@ -183,6 +200,7 @@ pub fn to_sql_in(spec: &ExploreSpec, catalog: &ModelCatalog, d: SqlDialect, from
         group_columns.push(column.clone());
     }
     let mut value_columns = Vec::new();
+    let mut value_select: Vec<String> = Vec::new();
     for v in &spec.values {
         if let FieldRef::Column { table: t, .. } = &v.field {
             if let Some(prev) = &table {
@@ -194,15 +212,20 @@ pub fn to_sql_in(spec: &ExploreSpec, catalog: &ModelCatalog, d: SqlDialect, from
             }
         }
         let name = v.name();
-        select.push(format!("{} AS {}", value_sql(v, d)?, q(&name)));
+        let vs = format!("{} AS {}", value_sql(v, d)?, q(&name));
+        value_select.push(vs.clone());
+        select.push(vs);
         value_columns.push(name);
     }
     let Some(table) = table else { return Err("add a column to Rows, Columns or Values".into()) };
     let mut subtotal_columns = Vec::new();
+    let union_subtotals = d == SqlDialect::Sqlite && spec.subtotals && !groups.is_empty();
     if spec.subtotals && !groups.is_empty() {
         for (i, gcol) in group_by.iter().enumerate() {
             let flag = format!("IsSubtotal {}", i + 1);
-            select.push(format!("GROUPING({gcol}) AS {}", q(&flag)));
+            if !union_subtotals {
+                select.push(format!("GROUPING({gcol}) AS {}", q(&flag)));
+            }
             subtotal_columns.push(flag);
         }
     }
@@ -211,17 +234,33 @@ pub fn to_sql_in(spec: &ExploreSpec, catalog: &ModelCatalog, d: SqlDialect, from
         _ => String::new(),
     };
     let from_sql = from.map(str::to_string).unwrap_or_else(|| crate::engine::quote_table(&table));
-    let mut text = format!("SELECT {top}{}\nFROM {from_sql}", select.join(",\n       "));
     let wheres: Result<Vec<String>, String> = spec.filters.iter().map(|f| filter_sql(f, catalog, d)).collect();
     let wheres: Vec<String> = wheres?.into_iter().filter(|w| !w.is_empty()).collect();
-    if !wheres.is_empty() {
-        text.push_str(&format!("\nWHERE {}", wheres.join("\n  AND ")));
-    }
-    if !group_by.is_empty() {
-        if spec.subtotals {
-            text.push_str(&format!("\nGROUP BY ROLLUP ({})", group_by.join(", ")));
-        } else {
-            text.push_str(&format!("\nGROUP BY {}", group_by.join(", ")));
+    let where_sql = if wheres.is_empty() { String::new() } else { format!("\nWHERE {}", wheres.join("\n  AND ")) };
+    let mut text;
+    if union_subtotals {
+        // no ROLLUP in SQLite: one SELECT per grouping level (all groups … none), unioned
+        let n = group_by.len();
+        let mut parts = Vec::with_capacity(n + 1);
+        for k in (0..=n).rev() {
+            let mut sel: Vec<String> = group_by.iter().enumerate().map(|(i, g)| if i < k { format!("{g} AS {g}") } else { format!("NULL AS {g}") }).collect();
+            sel.extend(value_select.iter().cloned());
+            sel.extend(subtotal_columns.iter().enumerate().map(|(i, flag)| format!("{} AS {}", if i < k { 0 } else { 1 }, q(flag))));
+            let mut part = format!("SELECT {}\nFROM {from_sql}{where_sql}", sel.join(",\n       "));
+            if k > 0 {
+                part.push_str(&format!("\nGROUP BY {}", group_by[..k].join(", ")));
+            }
+            parts.push(part);
+        }
+        text = format!("SELECT *\nFROM (\n{}\n)", parts.join("\nUNION ALL\n"));
+    } else {
+        text = format!("SELECT {top}{}\nFROM {from_sql}{where_sql}", select.join(",\n       "));
+        if !group_by.is_empty() {
+            if spec.subtotals {
+                text.push_str(&format!("\nGROUP BY ROLLUP ({})", group_by.join(", ")));
+            } else {
+                text.push_str(&format!("\nGROUP BY {}", group_by.join(", ")));
+            }
         }
     }
     // order: the explicit sort, else the groups in order (subtotal rows after their group)
@@ -260,7 +299,7 @@ pub fn to_sql_in(spec: &ExploreSpec, catalog: &ModelCatalog, d: SqlDialect, from
     if !order.is_empty() {
         text.push_str(&format!("\nORDER BY {}", order.join(", ")));
     }
-    if let (SqlDialect::DataFusion, Some(n)) = (d, spec.top_n) {
+    if let (SqlDialect::DataFusion | SqlDialect::Sqlite, Some(n)) = (d, spec.top_n) {
         text.push_str(&format!("\nLIMIT {n}"));
     }
     Ok(SqlQuery { text, group_columns, value_columns, subtotal_columns })
@@ -282,6 +321,29 @@ mod tests {
         s.rows.push(FieldRef::Column { table: "orders".into(), column: "customer".into() });
         s.values.push(ValueRef { field: FieldRef::Column { table: "orders".into(), column: "amount".into() }, agg: Agg::Sum, label: None });
         s
+    }
+
+    #[test]
+    fn sqlite_dialect() {
+        let mut s = spec();
+        s.filters.push(FilterSpec { table: "orders".into(), column: "customer".into(), op: FilterOp::Contains { text: "an".into() } });
+        s.filters.push(FilterSpec { table: "orders".into(), column: "ordered_on".into(), op: FilterOp::RelativeDate { unit: DateUnit::Months, last: 3 } });
+        s.filters.push(FilterSpec { table: "orders".into(), column: "ordered_on".into(), op: FilterOp::Between { lo: Some("2024-01-01".into()), hi: None } });
+        s.top_n = Some(5);
+        s.sort = Some(SortSpec { by: SortBy::Value { index: 0 }, desc: true });
+        let q = to_sql_in(&s, &catalog(), SqlDialect::Sqlite, Some("\"orders\"")).unwrap();
+        assert_eq!(q.text, "SELECT \"customer\" AS \"customer\",\n       sum(\"amount\") AS \"Sum of amount\"\nFROM \"orders\"\nWHERE CAST(\"customer\" AS TEXT) LIKE '%an%' ESCAPE '\\'\n  AND \"ordered_on\" >= datetime('now', '-3 months')\n  AND \"ordered_on\" >= '2024-01-01'\nGROUP BY \"customer\"\nORDER BY \"Sum of amount\" DESC NULLS LAST\nLIMIT 5");
+        s.subtotals = true;
+        s.columns.push(FieldRef::Column { table: "orders".into(), column: "ordered_on".into() });
+        s.sort = None;
+        s.top_n = None;
+        let q = to_sql_in(&s, &catalog(), SqlDialect::Sqlite, Some("\"orders\"")).unwrap();
+        assert_eq!(q.subtotal_columns, vec!["IsSubtotal 1", "IsSubtotal 2"]);
+        assert_eq!(q.text.matches("UNION ALL").count(), 2, "{}", q.text);
+        assert!(q.text.contains("NULL AS \"ordered_on\",\n       sum(\"amount\") AS \"Sum of amount\",\n       0 AS \"IsSubtotal 1\",\n       1 AS \"IsSubtotal 2\""), "{}", q.text);
+        assert!(q.text.contains("\nGROUP BY \"customer\"\nUNION ALL"), "{}", q.text);
+        assert!(q.text.ends_with(")\nORDER BY \"IsSubtotal 1\" ASC, \"customer\" ASC NULLS LAST, \"IsSubtotal 2\" ASC, \"ordered_on\" ASC NULLS LAST"), "{}", q.text);
+        assert!(!q.text.contains("GROUPING("));
     }
 
     #[test]

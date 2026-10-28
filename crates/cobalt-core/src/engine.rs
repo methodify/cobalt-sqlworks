@@ -14,6 +14,8 @@ pub enum EngineKind {
     FabricSqlEndpoint,
     FabricSqlDb,
     SqlEdge,
+    /// A SQLite database file (rusqlite in process).
+    Sqlite,
     Unknown,
 }
 
@@ -58,6 +60,7 @@ impl EngineKind {
             EngineKind::FabricSqlEndpoint => "Fabric SQL analytics endpoint",
             EngineKind::FabricSqlDb => "Fabric SQL database",
             EngineKind::SqlEdge => "Azure SQL Edge",
+            EngineKind::Sqlite => "SQLite",
             EngineKind::Unknown => "SQL Server (unknown edition)",
         }
     }
@@ -77,6 +80,7 @@ impl EngineKind {
             synonyms: true,
             table_types: true,
             triggers: true,
+            schemas: true,
             transactions: true,
             read_only: false,
             multiple_databases: true,
@@ -94,6 +98,7 @@ impl EngineKind {
             FabricWarehouse => Capabilities { actual_plans: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: true, sql_login: false, system_databases: false, set_xact_abort: false, set_statistics: false, ..full },
             FabricSqlEndpoint => Capabilities { actual_plans: false, procedures: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: false, read_only: true, sql_login: false, system_databases: false, set_xact_abort: false, set_statistics: false, ..full },
             FabricSqlDb => Capabilities { sql_login: false, multiple_databases: false, system_databases: false, ..full },
+            Sqlite => Capabilities { actual_plans: false, estimated_plans: true, procedures: false, functions: false, sequences: false, synonyms: false, table_types: false, triggers: true, schemas: false, transactions: true, read_only: false, multiple_databases: false, sql_login: false, temp_tables: true, system_databases: false, set_xact_abort: false, set_statistics: false },
         }
     }
 }
@@ -108,6 +113,8 @@ pub struct Capabilities {
     pub synonyms: bool,
     pub table_types: bool,
     pub triggers: bool,
+    /// Objects live in schemas (the tree offers a Schemas folder and groups by schema).
+    pub schemas: bool,
     pub transactions: bool,
     pub read_only: bool,
     pub multiple_databases: bool,

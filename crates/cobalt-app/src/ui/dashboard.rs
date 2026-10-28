@@ -291,6 +291,7 @@ fn tile_card(ui: &mut Ui, tile: &mut Tile, k: usize, theme: &Theme, fmt: &cobalt
                         max_col_width: settings.results.max_column_width,
                         sample_rows: settings.results.auto_size_sample_rows,
                         row_tint: None,
+                        edits: None,
                     },
                 );
             }

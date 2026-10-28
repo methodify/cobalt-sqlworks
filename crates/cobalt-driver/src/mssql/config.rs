@@ -140,6 +140,7 @@ pub fn build_config(profile: &ConnectionProfile, creds: &ResolvedCredentials) ->
 
 fn auth_method(profile: &ConnectionProfile, creds: &ResolvedCredentials) -> Result<TdsAuth> {
     match creds {
+        ResolvedCredentials::None => Err(DriverError::Login("this profile has no credentials; it is a file database".into())),
         ResolvedCredentials::SqlLogin { user, password } => Ok(TdsAuth::sql_server(user, password.expose())),
         ResolvedCredentials::EntraToken { token, .. } => {
             if token.is_empty() {

@@ -121,6 +121,7 @@ impl CredentialResolver {
         prompt: &dyn Prompter,
     ) -> Result<ResolvedCredentials> {
         match &profile.auth {
+            AuthMethod::None => Ok(ResolvedCredentials::None),
             AuthMethod::SqlLogin { user, password } => {
                 let stored = match password {
                     Some(r) => self.secrets.get(r)?,

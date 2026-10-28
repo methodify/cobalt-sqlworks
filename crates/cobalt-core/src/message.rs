@@ -23,6 +23,17 @@ impl ServerMessage {
     }
     /// SSMS-style prefix: `Msg 8134, Level 16, State 1, Line 3`.
     pub fn headline(&self) -> Option<String> {
+        if self.class == 0 && self.state == 0 {
+            // an engine without severity levels (SQLite): the code and the line, when known
+            if !self.is_error {
+                return None;
+            }
+            let mut h = if self.number > 0 { format!("Error {}", self.number) } else { "Error".to_string() };
+            if self.line > 0 {
+                h.push_str(&format!(", Line {}", self.line));
+            }
+            return Some(h);
+        }
         if self.is_error || self.number > 0 {
             Some(format!(
                 "Msg {}, Level {}, State {}{}, Line {}",

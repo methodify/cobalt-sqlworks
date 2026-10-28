@@ -3,6 +3,9 @@
 //! Verbs (all take/return JSON):
 //! - `state` → tabs, connections, run states
 //! - `add_profile {name?, server, user, password, database?, trust_server_certificate?}` → profile id (SQL login; the password is stored in the OS keychain)
+//! - `remove_profile {profile: <name or id>}` → deletes the connection from the library (every profile with that name)
+//! - `edit {action: begin|off|set|insert|delete|undelete|save|discard|pending, set?, row?, col?, value?}` → Edit Data on the active tab's grid (the pending summary comes back)
+//! - `local_sqlite {path, table}` → a SQLite file's table as a local table (Local tab); `open_scratch` → a tab on the scratch database; `table_to_sqlite {profile, database, table, schema?, path, mode?}` → Copy to SQLite file
 //! - `connect {profile: <name or id>, database?}` → opens a new tab connected to that profile
 //! - `open_query {text, connect?: <profile name>}` → new tab with text
 //! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
@@ -14,7 +17,7 @@
 //! - `break_connection` → the active tab treats its connection as dead at the next run (exercises idle reconnect)
 //! - `wait_run {timeout_ms?}` → blocks the agent until the active tab's run finishes (polls via the app loop)
 //! - `results {set?, offset?, limit?}` → rows of the active tab as JSON, `messages`
-//! - `export {format, path, set?}`; `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
+//! - `export {format, path, set?, table?, mode?: create|replace|append}` (table and mode for the sqlite format); `plan` → summary JSON; `copy {kind}`; `close_tab`; `command {id}` (any palette command id)
 //! - `run_to_export {format, path | lakehouse, name, schema?, delta_mode?}` → runs the active tab's script straight into the target
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
@@ -208,6 +211,7 @@ fn dialog_name(d: &crate::state::Dialog) -> &'static str {
         TabularProfile { .. } => "tabular_profile",
         PinTile { .. } => "pin_tile",
         ConfirmDeleteProfile { .. } => "confirm_delete_profile",
+        ConfirmEmptyScratch => "confirm_empty_scratch",
         ConfirmDeleteGroup { .. } => "confirm_delete_group",
         ConfirmWrite { .. } => "confirm_write",
         Export(_) => "export",
@@ -393,7 +397,34 @@ impl AgentApp for CobaltApp {
                     "software": crate::gpu::is_software(),
                 }))
             }
+            "remove_profile" => {
+                let Some(key) = arg_str(args, "profile").or_else(|| arg_str(args, "name")) else { return ActionResult::BadArgs("profile is required".into()) };
+                let ids: Vec<_> = self.state.library.profiles.iter().filter(|p| p.id.to_string() == key || p.display_name().eq_ignore_ascii_case(&key)).map(|p| p.id).collect();
+                if ids.is_empty() {
+                    return ActionResult::BadArgs(format!("no profile named {key}"));
+                }
+                let n = ids.len();
+                self.with_ctx(egui, |s, cx| {
+                    for id in ids {
+                        ops::delete_profile(s, cx, id);
+                    }
+                });
+                ActionResult::with(&json!({"removed": n}))
+            }
             "add_profile" => {
+                // engine: "sqlite" with a `path` makes a file connection (read_only?, create?)
+                if arg_str(args, "engine").as_deref() == Some("sqlite") {
+                    let Some(path) = arg_str(args, "path").or_else(|| arg_str(args, "server")) else { return ActionResult::BadArgs("path is required".into()) };
+                    let mut p = ConnectionProfile::sqlite(path);
+                    p.name = arg_str(args, "name");
+                    p.options.read_only = args.and_then(|a| a.get("read_only")).and_then(|v| v.as_bool()).unwrap_or(false);
+                    p.options.create_if_missing = args.and_then(|a| a.get("create")).and_then(|v| v.as_bool()).unwrap_or(false);
+                    if let Err(e) = self.store.upsert_profile(&p) {
+                        return ActionResult::BadArgs(format!("could not save the profile: {e}"));
+                    }
+                    self.with_ctx(egui, ops::load_library);
+                    return ActionResult::with(&json!({"id": p.id.to_string()}));
+                }
                 let Some(server) = arg_str(args, "server") else { return ActionResult::BadArgs("server is required".into()) };
                 let user = arg_str(args, "user").unwrap_or_default();
                 let password = arg_str(args, "password").unwrap_or_default();
@@ -954,6 +985,16 @@ impl AgentApp for CobaltApp {
                                 _ => 0,
                             };
                         }
+                        if let Some(t) = arg_str(args, "table") {
+                            d.sqlite_table = t;
+                        }
+                        if let Some(m) = arg_str(args, "mode") {
+                            d.sqlite_mode = match m.as_str() {
+                                "replace" => 1,
+                                "append" => 2,
+                                _ => 0,
+                            };
+                        }
                         if run_to_file {
                             d.run_mode = Some(RunMode::All);
                         }
@@ -1022,6 +1063,16 @@ impl AgentApp for CobaltApp {
                 v.grid.selection = crate::state::Selection::Cells { r0: row.min(row2), c0: col.min(col2), r1: row.max(row2), c1: col.max(col2) };
                 v.grid.scroll_to = Some((row, col));
                 ActionResult::ok()
+            }
+            // open_database {path, create?} → a file connection (saved) and a query tab on it
+            "open_database" => {
+                let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
+                let create = args.and_then(|a| a.get("create")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let idx = self.with_ctx(egui, |s, cx| ops::open_sqlite_database(s, cx, std::path::Path::new(&path), create));
+                match idx {
+                    Some(i) => ActionResult::with(&json!({"tab": i})),
+                    None => ActionResult::BadArgs("could not open the database".into()),
+                }
             }
             "open_path" => {
                 let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
@@ -1494,21 +1545,30 @@ impl AgentApp for CobaltApp {
                 ActionResult::ok()
             }
             "results_to_table" => {
-                // {table, schema?, existing?: bool, set?, target?: tab index, selection_only?: bool}: Save results as table
+                // {table, schema?, existing?: bool, set?, target?: tab index | "scratch", selection_only?: bool, start?: bool (default true)}: Save results as table
                 let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
                 let set = arg_usize(args, "set").unwrap_or(0);
                 let table = arg_str(args, "table");
                 let schema = arg_str(args, "schema");
                 let existing = args.and_then(|a| a.get("existing")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let scratch = arg_str(args, "target").map(|t| t == "scratch").unwrap_or(false);
                 let target = arg_usize(args, "target");
                 let selection_only = args.and_then(|a| a.get("selection_only")).and_then(|v| v.as_bool()).unwrap_or(false);
+                let start_now = args.and_then(|a| a.get("start")).and_then(|v| v.as_bool()).unwrap_or(true);
+                let mut target_tab = None;
                 self.with_ctx(egui, |s, cx| {
                     ops::open_results_to_table(s, cx, i, set, selection_only);
+                    let scratch_tab = if scratch { ops::open_scratch_tab(s, cx) } else { None };
                     if let crate::state::Dialog::Import(d) = &mut s.dialog {
                         if let Some(t) = table { d.table_name = t; }
                         if let Some(sc) = schema { d.schema_name = sc; }
                         if let Some(t) = target { d.tab_index = t; }
+                        if let Some(t) = scratch_tab { d.tab_index = t; }
                         d.existing = existing;
+                        target_tab = Some(d.tab_index);
+                    }
+                    if !start_now {
+                        return;
                     }
                     if existing {
                         ops::import_request_existing_columns(s, cx);
@@ -1516,7 +1576,117 @@ impl AgentApp for CobaltApp {
                         ops::start_import(s, cx);
                     }
                 });
-                ActionResult::ok()
+                ActionResult::with(&json!({"target": target_tab}))
+            }
+            "local_sqlite" => {
+                // {path, table} → a table of a SQLite file as a local table with a Local tab → {tab, name}
+                let (Some(path), Some(table)) = (arg_str(args, "path"), arg_str(args, "table")) else { return ActionResult::BadArgs("path and table are required".into()) };
+                let r = self.with_ctx(egui, |s, cx| crate::localq::open_sqlite_table(s, cx, std::path::Path::new(&path), &table));
+                match r {
+                    Ok(i) => ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title, "local_tables": self.local.tables().iter().map(|t| t.name.clone()).collect::<Vec<_>>()})),
+                    Err(e) => ActionResult::BadArgs(e),
+                }
+            }
+            "edit" => {
+                // Edit Data on the active tab's result set: {action: begin|off|set|insert|delete|undelete|save|discard|pending, set?, row?, col? (index or name), value? (null = NULL)} → the pending summary
+                let Some(idx) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
+                let action = arg_str(args, "action").unwrap_or_else(|| "pending".into());
+                let set = arg_usize(args, "set").unwrap_or(0);
+                let fmt = self.state.formatter.clone();
+                match action.as_str() {
+                    "begin" => {
+                        if let Err(e) = self.with_ctx(egui, |s, cx| crate::editq::begin(s, cx, idx, set)) {
+                            return ActionResult::Rejected(e);
+                        }
+                    }
+                    "off" => self.with_ctx(egui, |s, _| crate::editq::discard(s, idx, set, true)),
+                    "discard" => self.with_ctx(egui, |s, _| crate::editq::discard(s, idx, set, false)),
+                    "save" => self.with_ctx(egui, |s, cx| crate::editq::save(s, cx, idx, set)),
+                    "set" | "insert" | "delete" | "undelete" => {
+                        let Some(v) = self.state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) else { return ActionResult::BadArgs("no result set".into()) };
+                        if v.edits.is_none() {
+                            return ActionResult::Rejected("Edit Data is off: edit {action: begin} first".into());
+                        }
+                        let col = args.and_then(|a| a.get("col")).and_then(|c| c.as_u64().map(|n| n as usize).or_else(|| c.as_str().and_then(|n| v.rs.columns.iter().position(|x| x.name.eq_ignore_ascii_case(n)))));
+                        match action.as_str() {
+                            "insert" => {
+                                let n = v.rs.column_count();
+                                if let Some(e) = v.edits.as_mut() {
+                                    e.inserted.push(vec![None; n]);
+                                }
+                            }
+                            "delete" | "undelete" => {
+                                let Some(row) = arg_usize(args, "row") else { return ActionResult::BadArgs("row is required".into()) };
+                                if let Some(e) = v.edits.as_mut() {
+                                    if action == "delete" {
+                                        e.deleted.insert(row);
+                                    } else {
+                                        e.deleted.remove(&row);
+                                    }
+                                }
+                            }
+                            _ => {
+                                let (Some(row), Some(col)) = (arg_usize(args, "row"), col) else { return ActionResult::BadArgs("row and col are required".into()) };
+                                let value = match args.and_then(|a| a.get("value")) {
+                                    None | Some(Value::Null) => None,
+                                    Some(Value::String(s)) => Some(s.clone()),
+                                    Some(o) => Some(o.to_string()),
+                                };
+                                let plain = cobalt_export::export_formatter(&fmt);
+                                let rs = v.rs.clone();
+                                if let Some(e) = v.edits.as_mut() {
+                                    e.set_cell(&rs, &plain, row, col, value);
+                                }
+                            }
+                        }
+                    }
+                    "pending" => {}
+                    other => return ActionResult::BadArgs(format!("unknown edit action {other}")),
+                }
+                let v = self.state.tabs.get(idx).and_then(|t| t.run.as_ref()).and_then(|r| r.result_sets.get(set));
+                let summary = match v {
+                    Some(v) => match v.edits.as_ref() {
+                        Some(e) => json!({"on": true, "table": e.table, "key": e.key.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(), "pending": e.pending_count(), "statements": crate::editq::statements(v, &fmt), "error": e.error, "saving": e.saving, "data_rows": v.rs.visible_count(), "inserted": e.inserted.len(), "deleted": e.deleted.iter().collect::<Vec<_>>(), "editable": e.editable}),
+                        None => json!({"on": false, "data_rows": v.rs.visible_count()}),
+                    },
+                    None => json!({"on": false}),
+                };
+                ActionResult::with(&summary)
+            }
+            "edit_table" => {
+                // the tree's Edit Data: {profile, table} → a tab selecting the table with its key, Edit Data on once it has run
+                let (Some(profile), Some(table)) = (arg_str(args, "profile"), arg_str(args, "table")) else { return ActionResult::BadArgs("profile and table are required".into()) };
+                let Some(p) = self.find_profile(&profile) else { return ActionResult::BadArgs(format!("no profile {profile}")) };
+                let obj = cobalt_core::ObjectRef { database: "main".into(), schema: String::new(), name: table, kind: cobalt_core::ObjectKind::Table, object_id: None };
+                self.with_ctx(egui, |s, cx| crate::editq::open_table(s, cx, p.id, &obj));
+                ActionResult::with(&json!({"tab": self.state.active_tab}))
+            }
+            "open_scratch" => {
+                // a query tab on the built-in scratch database → {tab}
+                let mut idx = None;
+                self.with_ctx(egui, |s, cx| idx = ops::open_scratch_tab(s, cx));
+                ActionResult::with(&json!({"tab": idx, "path": self.state.library.profile(ops::scratch_profile_id()).map(|p| p.server.clone())}))
+            }
+            "table_to_sqlite" => {
+                // {profile, database, table, schema?, path, mode?: create|replace|append}: Copy to SQLite file… from the tree, started
+                let (Some(profile), Some(database), Some(table), Some(path)) = (arg_str(args, "profile"), arg_str(args, "database"), arg_str(args, "table"), arg_str(args, "path")) else { return ActionResult::BadArgs("profile, database, table and path are required".into()) };
+                let Some(p) = self.find_profile(&profile) else { return ActionResult::BadArgs(format!("no profile {profile}")) };
+                let schema = arg_str(args, "schema").unwrap_or_else(|| "dbo".into());
+                let mode = match arg_str(args, "mode").as_deref() {
+                    Some("replace") => 1,
+                    Some("append") => 2,
+                    _ => 0,
+                };
+                let obj = cobalt_core::ObjectRef { database, schema, name: table, kind: cobalt_core::ObjectKind::Table, object_id: None };
+                self.with_ctx(egui, |s, cx| {
+                    ops::table_to_sqlite(s, cx, p.id, &obj);
+                    if let crate::state::Dialog::Export(d) = &mut s.dialog {
+                        d.path = path;
+                        d.sqlite_mode = mode;
+                    }
+                    ops::start_run_export(s, cx);
+                });
+                ActionResult::with(&json!({"tab": self.state.active_tab}))
             }
             "import_start" => {
                 self.with_ctx(egui, ops::start_import);
@@ -1524,8 +1694,8 @@ impl AgentApp for CobaltApp {
             }
             "import_state" => {
                 let v = match &self.state.dialog {
-                    crate::state::Dialog::Export(d) if d.import.is_some() => json!({
-                        "open": true, "export": true, "running": d.running, "path": d.path,
+                    crate::state::Dialog::Export(d) => json!({
+                        "open": true, "export": true, "import": d.import.is_some(), "running": d.running, "path": d.path,
                         "rows_done": self.state.export_progress.as_ref().map(|p| p.lock().0).unwrap_or(0),
                         "result": d.result.as_ref().map(|r| match r { Ok(m) => json!({"ok": m}), Err(e) => json!({"error": e}) }),
                     }),

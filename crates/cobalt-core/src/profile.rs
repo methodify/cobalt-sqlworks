@@ -2,6 +2,17 @@ use crate::{GroupId, ProfileId, Secret, SecretRef};
 use serde::{Deserialize, Serialize};
 
 /// A saved connection. Lives in the connection library (SQLite); secrets live in the keychain.
+/// Which driver a profile connects with.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineFamily {
+    /// SQL Server, Azure SQL, Fabric: TDS over the network.
+    #[default]
+    Tds,
+    /// A SQLite database file; `server` is the path.
+    Sqlite,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionProfile {
     pub id: ProfileId,
@@ -12,6 +23,9 @@ pub struct ConnectionProfile {
     pub port: Option<u16>,
     pub database: Option<String>,
     pub auth: AuthMethod,
+    /// The driver family; old libraries have no field and mean TDS.
+    #[serde(default)]
+    pub engine: EngineFamily,
     pub group: Option<GroupId>,
     /// Overrides the group color when set.
     pub color: Option<Color>,
@@ -31,6 +45,7 @@ impl ConnectionProfile {
             port: None,
             database: None,
             auth,
+            engine: EngineFamily::Tds,
             group: None,
             color: None,
             options: ConnectionOptions::default(),
@@ -43,8 +58,20 @@ impl ConnectionProfile {
     pub fn display_name(&self) -> String {
         match &self.name {
             Some(n) if !n.trim().is_empty() => n.clone(),
+            _ if self.engine == EngineFamily::Sqlite => std::path::Path::new(&self.server).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.server.clone()),
             _ => self.server.clone(),
         }
+    }
+
+    /// A file connection to a SQLite database.
+    pub fn sqlite(path: impl Into<String>) -> Self {
+        let mut p = Self::new(path, AuthMethod::None);
+        p.engine = EngineFamily::Sqlite;
+        p
+    }
+
+    pub fn is_file(&self) -> bool {
+        self.engine == EngineFamily::Sqlite
     }
 
     /// Fabric hosts look like `xxx.datawarehouse.fabric.microsoft.com` or `*.pbidedicated.windows.net`.
@@ -96,6 +123,8 @@ pub enum AuthMethod {
         #[serde(default)]
         client_id: Option<String>,
     },
+    /// No credentials: a file database.
+    None,
 }
 
 /// Secrets found in a pasted connection string (never stored on the profile).
@@ -253,6 +282,7 @@ impl AuthMethod {
             AuthMethod::WindowsIntegrated => "Windows Authentication",
             AuthMethod::EntraServicePrincipal { .. } => "Entra service principal",
             AuthMethod::ManagedIdentity { .. } => "Managed identity",
+            AuthMethod::None => "None (file database)",
         }
     }
     pub fn is_entra(&self) -> bool {
@@ -277,6 +307,8 @@ impl AuthMethod {
 /// Credentials resolved just before connecting (secrets pulled from the keychain, tokens acquired).
 #[derive(Clone, Debug)]
 pub enum ResolvedCredentials {
+    /// A file database: nothing to present.
+    None,
     SqlLogin { user: String, password: Secret },
     /// A bearer access token for `https://database.windows.net/`.
     EntraToken { token: Secret, expires_at: Option<chrono::DateTime<chrono::Utc>> },
@@ -317,6 +349,12 @@ pub struct ConnectionOptions {
     pub mars: bool,
     pub packet_size: Option<u32>,
     pub multi_subnet_failover: bool,
+    /// File databases: open read-only.
+    #[serde(default)]
+    pub read_only: bool,
+    /// File databases: create the file when it does not exist.
+    #[serde(default)]
+    pub create_if_missing: bool,
 }
 
 impl Default for ConnectionOptions {
@@ -331,8 +369,7 @@ impl Default for ConnectionOptions {
             application_intent: ApplicationIntent::ReadWrite,
             mars: false,
             packet_size: None,
-            multi_subnet_failover: false,
-        }
+            multi_subnet_failover: false, read_only: false, create_if_missing: false }
     }
 }
 

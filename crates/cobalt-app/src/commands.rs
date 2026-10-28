@@ -129,6 +129,8 @@ pub enum Command {
     ClearFilters,
     // plan
     OpenPlanFile,
+    OpenSqliteDatabase,
+    NewSqliteDatabase,
     SavePlanFile,
     ShowPlanXml,
     PlanZoomIn,
@@ -310,6 +312,8 @@ pub static COMMANDS: &[CommandInfo] = &[
     CommandInfo { cmd: Command::OpenCellViewer, id: "results.cell_viewer", label: "Open Cell in Viewer", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::ClearFilters, id: "results.clear_filters", label: "Clear All Filters and Sorts", category: Category::Results, default_key: None },
     CommandInfo { cmd: Command::OpenPlanFile, id: "plan.open", label: "Open Execution Plan File…", category: Category::Plan, default_key: None },
+    CommandInfo { cmd: Command::OpenSqliteDatabase, id: "file.open_sqlite", label: "Open SQLite Database…", category: Category::File, default_key: None },
+    CommandInfo { cmd: Command::NewSqliteDatabase, id: "file.new_sqlite", label: "New SQLite Database…", category: Category::File, default_key: None },
     CommandInfo { cmd: Command::SavePlanFile, id: "plan.save", label: "Save Execution Plan As…", category: Category::Plan, default_key: None },
     CommandInfo { cmd: Command::ShowPlanXml, id: "plan.show_xml", label: "Show Plan XML", category: Category::Plan, default_key: None },
     CommandInfo { cmd: Command::PlanZoomIn, id: "plan.zoom_in", label: "Plan: Zoom In", category: Category::Plan, default_key: None },

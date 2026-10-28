@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.13.0 — 2026-10-28
+
+- **SQLite databases are connections.** Open a `.sqlite` / `.db` file (File › Open SQLite
+  database…, New SQLite database…, the Servers rail's database button, a drop on the window,
+  or a connection whose engine is *SQLite database file*; files are recognised by their header,
+  not their extension) and it sits in the Servers tree like a server: one database, `main`,
+  with its Tables and Views, columns with their declared types, indexes, keys, scripts
+  (CREATE verbatim from `sqlite_schema`, DROP, SELECT). Query tabs on it run SQLite SQL with
+  the usual grid, Messages, history, hot-exit snapshots and *Change…*; the editor highlights and
+  completes SQLite's keywords and functions, quotes names SQLite's way (`"Mixed Case"`), and
+  *Select Top* writes `LIMIT`. Result columns are typed by the column's declared affinity
+  (`INTEGER` → bigint, `REAL` → float, `TEXT`, `BLOB`), expressions by the first value seen; a
+  value of another storage class is coerced when it parses and otherwise shows as NULL with a
+  count in Messages. *Estimated plan* shows `EXPLAIN QUERY PLAN` as a tree. Errors carry
+  SQLite's code and line, not a T-SQL severity line. Read-only and create-if-missing are
+  connection options.
+- **Writing into SQLite.** *Save results as table* and *Import data from file* target a SQLite
+  tab like any other (the table is created with SQLite affinities from the columns, the rows go
+  in as one transaction; *Append to existing* reads the table's columns). *Save results as…*
+  has a **SQLite database** format: a table (named after the file unless you say otherwise)
+  in a new or existing file, with *Fail / Replace table / Append rows* when it exists; *Run to
+  File* writes every result set of the run into the one file as `name`, `name_2`, …; dates
+  become ISO text, decimals numbers. A table in the Servers tree has **Copy to SQLite file…**:
+  take a SQL Server, Azure SQL or Fabric table with you as a local database (2 million rows in
+  about four seconds).
+- **The scratch database.** Cobalt keeps `scratch.sqlite` in its data folder and lists it in
+  the Servers tree as *Scratch*: a file connection like any other, for tables you will write
+  to, index and come back to. *Save results as table* goes there when no tab is connected;
+  the Import dialog's target list offers it; its menu has *Empty scratch database…* instead of
+  Delete.
+- **SQLite tables in the local engine.** *Query locally* on a table of a file connection (or
+  the agent's `local_sqlite`) registers it with the local engine, read from the file on every
+  scan with only the columns a query asks for, and opens a Local tab over it: join it with
+  results, files, scratch and lakehouse tables, Diff it against anything. The Local sidebar
+  lists them under **Databases**.
+- **Explore over SQLite tables.** The pivot builder on a table of a file connection writes
+  SQLite: `"quoted"` names, `LIMIT`, `LIKE … ESCAPE`, `datetime('now', '-30 days')`, and
+  subtotals as a `UNION ALL` of the grouping levels (SQLite has no `ROLLUP`).
+- **Edit Data.** On a SQLite tab, a grid that came from a single-table `SELECT` carrying the
+  table's key (its primary key columns, or `rowid AS "rowid"`) can be edited: the results
+  toolbar's pencil turns it on, the tree's *Edit Data* opens a table ready to edit.
+  Double-click or F2 edits a cell (typing into a selected cell starts it with what you typed),
+  Enter keeps the value, Tab moves on, Escape cancels, *+ Row* adds a row at the bottom, Delete
+  (or *Delete rows*) marks the selected rows; edited cells, deleted and new rows are tinted.
+  Nothing is written as you type: the *Pending changes* strip counts the changes, *SQL* shows
+  the statements (`UPDATE … WHERE "id" = …`, `DELETE`, `INSERT`), **Save** runs them in one
+  transaction and runs the query again, **Discard** drops them. A failed save rolls back, keeps
+  the staged changes and shows the error. Sorting and filtering wait until the changes are
+  saved or dropped. SQL Server gets the same grid with keys from the catalog later.
+- **Agent.** `add_profile {engine: "sqlite", path, read_only?, create?}`, `open_database
+  {path, create?}`, `remove_profile`, `open_scratch`, `results_to_table {target: "scratch"}`,
+  `export {format: "sqlite", table?, mode?}`, `table_to_sqlite`, `local_sqlite {path, table}`,
+  `edit {action: begin|set|insert|delete|save|discard|pending, …}`, `edit_table`; the tab's
+  status bar chip reads *SQLite*.
+- Under the hood: a `cobalt-sqlite` crate shared by the driver, the exporter and the local
+  engine (declared types from SQL types, Arrow rows into prepared inserts, affinity reading);
+  the driver runs SQLite on a thread per connection with `sqlite3_interrupt` for cancel and
+  rolls back a transaction a failing batch opened; `"double quotes"` lex as identifiers in the
+  SQLite dialect; a `schemas` engine capability drives the tree.
+
 ## 0.12.1 — 2026-10-27
 
 - **Toolbars fit their group.** With two groups side by side, a query's toolbar ran past its

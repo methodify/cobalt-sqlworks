@@ -1308,7 +1308,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "cobalt-app"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -1328,6 +1328,7 @@ dependencies = [
  "cobalt-results",
  "cobalt-runtime",
  "cobalt-sql",
+ "cobalt-sqlite",
  "cobalt-store",
  "cobalt-tabular",
  "crossbeam-channel",
@@ -1372,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-auth"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "azure_core",
  "azure_identity",
@@ -1401,7 +1402,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-core"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow-schema",
  "chrono",
@@ -1413,15 +1414,17 @@ dependencies = [
 
 [[package]]
 name = "cobalt-driver"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "async-trait",
  "chrono",
  "cobalt-core",
+ "cobalt-sqlite",
  "futures-util",
  "native-tls",
  "parking_lot",
+ "rusqlite",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -1437,7 +1440,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1445,6 +1448,7 @@ dependencies = [
  "chrono",
  "cobalt-core",
  "cobalt-results",
+ "cobalt-sqlite",
  "csv",
  "parquet",
  "quick-xml 0.42.0",
@@ -1457,7 +1461,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-export-delta"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "chrono",
@@ -1476,7 +1480,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-fabric"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",
@@ -1489,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-import"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "cobalt-core",
@@ -1501,12 +1505,13 @@ dependencies = [
 
 [[package]]
 name = "cobalt-local"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "async-trait",
  "cobalt-core",
  "cobalt-results",
+ "cobalt-sqlite",
  "datafusion",
  "deltalake",
  "futures-util",
@@ -1520,7 +1525,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-notebook"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "base64 0.22.1",
  "pulldown-cmark",
@@ -1532,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-plan"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "cobalt-core",
  "quick-xml 0.42.0",
@@ -1543,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-results"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -1562,7 +1567,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-runtime"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "flate2",
  "reqwest 0.12.28",
@@ -1577,7 +1582,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-sql"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "cobalt-core",
  "once_cell",
@@ -1588,8 +1593,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobalt-sqlite"
+version = "0.13.0"
+dependencies = [
+ "arrow",
+ "cobalt-core",
+ "rusqlite",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
 name = "cobalt-store"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "chrono",
  "cobalt-core",
@@ -1606,7 +1622,7 @@ dependencies = [
 
 [[package]]
 name = "cobalt-tabular"
-version = "0.12.1"
+version = "0.13.0"
 dependencies = [
  "arrow",
  "arrow-ipc",
@@ -7529,7 +7545,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.5",
  "windows-sys 0.61.2",

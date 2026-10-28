@@ -6,6 +6,7 @@ pub mod diff;
 pub mod engine;
 pub mod explore;
 pub mod provider;
+pub mod sqlite_provider;
 pub mod sugar;
 
 pub use engine::{columns_for, conform, quote_ident, quote_table, sanitize_name, sql_type_for, table_ref, Engine, TableInfo, TableSource, ENGINE_VERSION, LATEST, SCRATCH_PREFIX, SCRATCH_SCHEMA};

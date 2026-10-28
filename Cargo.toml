@@ -4,6 +4,7 @@ members = [
     "crates/cobalt-core",
     "crates/cobalt-local",
     "crates/cobalt-driver",
+    "crates/cobalt-sqlite",
     "crates/cobalt-auth",
     "crates/cobalt-store",
     "crates/cobalt-sql",
@@ -20,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.12.1"
+version = "0.13.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -31,6 +32,7 @@ authors = ["Bryon Williams", "Cobalt SQL Works contributors"]
 # --- internal ---
 cobalt-core = { path = "crates/cobalt-core" }
 cobalt-driver = { path = "crates/cobalt-driver" }
+cobalt-sqlite = { path = "crates/cobalt-sqlite" }
 cobalt-auth = { path = "crates/cobalt-auth" }
 cobalt-store = { path = "crates/cobalt-store" }
 cobalt-sql = { path = "crates/cobalt-sql" }
@@ -74,7 +76,7 @@ rsa = { version = "0.9", features = ["sha2", "pem"] }
 sha1 = "0.10"
 futures-util = "0.3"
 async-trait = "0.1"
-rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json", "column_decltype"] }
 
 # --- auth ---
 oauth2 = { version = "5", default-features = false, features = ["reqwest", "native-tls"] }

@@ -1,7 +1,7 @@
 //! The results grid: `egui_table` over a `ResultSet`, with a row-number gutter, selection,
 //! sorting, header filters, and keyboard navigation.
 
-use crate::state::{FilterPopup, GridState, Selection};
+use crate::state::{FilterPopup, GridEdits, GridState, Selection};
 use crate::ui::theme::Theme;
 use cobalt_results::{CellFormatter, ColumnFilter, FilterOp, ResultSet, SortKey, ViewSpec};
 use egui::{Align2, Color32, FontId, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2};
@@ -56,6 +56,8 @@ pub struct GridArgs<'a> {
     pub sample_rows: usize,
     /// A Diff result: tint rows by their class.
     pub row_tint: Option<DiffTint>,
+    /// Edit Data: staged changes drawn over the cells, inserted rows after the data, inline editing.
+    pub edits: Option<&'a mut GridEdits>,
 }
 
 struct Delegate<'a> {
@@ -82,6 +84,9 @@ struct Delegate<'a> {
     /// Totals row values (one per data column) and its label.
     totals: Option<(String, Vec<String>)>,
     tint: Option<DiffTint>,
+    edits: Option<&'a mut GridEdits>,
+    /// Rows of the result set; rows from here on are inserted rows.
+    data_rows: usize,
 }
 
 impl Delegate<'_> {
@@ -206,7 +211,8 @@ impl TableDelegate for Delegate<'_> {
             let selected_row = self.grid.selection.contains(row, 0) && matches!(self.grid.selection, Selection::Rows { .. } | Selection::All);
             painter.rect_filled(rect, 0.0, if selected_row { self.theme.bg_selection } else { self.theme.bg_grid_header });
             painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
-            painter.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, (row + 1).to_string(), FontId::proportional((self.font.size - 1.0).max(9.0)), self.theme.text_muted);
+            let label = if row >= self.data_rows { "+".to_string() } else { (row + 1).to_string() };
+            painter.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, label, FontId::proportional((self.font.size - 1.0).max(9.0)), self.theme.text_muted);
             let resp = ui.interact(rect, ui.id().with(("gutter", row)), Sense::click());
             if resp.clicked() {
                 self.gutter_click = Some((row, ui.input(|i| i.modifiers.shift)));
@@ -223,6 +229,17 @@ impl TableDelegate for Delegate<'_> {
         let selected = self.grid.selection.contains(row, col);
         let is_anchor = self.grid.anchor == Some((row, col));
         let is_match = !self.find_set.is_empty() && self.find_set.contains(&(row, col));
+        // Edit Data: the staged value and a tint (changed, deleted, inserted)
+        let tint_of = |c: Color32, a: u8| Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        let (edit_text, edit_tint): (Option<Option<String>>, Option<Color32>) = match &self.edits {
+            Some(e) if row >= self.data_rows => (Some(e.inserted.get(row - self.data_rows).and_then(|r| r.get(col).cloned()).flatten()), Some(tint_of(self.theme.success, 40))),
+            Some(e) if e.deleted.contains(&row) => (None, Some(tint_of(self.theme.error, 44))),
+            Some(e) => match e.cells.get(&(row, col)) {
+                Some(v) => (Some(v.clone()), Some(tint_of(self.theme.warning, 90))),
+                None => (None, None),
+            },
+            None => (None, None),
+        };
         let bg = if selected {
             if self.grid.focused { self.theme.bg_selection } else { self.theme.bg_selection_inactive }
         } else if is_match {
@@ -246,6 +263,10 @@ impl TableDelegate for Delegate<'_> {
         } else {
             self.theme.bg_grid
         };
+        let bg = match (selected, edit_tint) {
+            (false, Some(c)) => c,
+            _ => bg,
+        };
         painter.rect_filled(rect, 0.0, bg);
         if self.find_current == Some((row, col)) {
             painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.5, self.theme.warning), egui::StrokeKind::Inside);
@@ -255,8 +276,35 @@ impl TableDelegate for Delegate<'_> {
         if is_anchor && self.grid.focused {
             painter.rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.5, self.theme.accent), egui::StrokeKind::Inside);
         }
-        let is_null = self.rs.is_null(row, col);
-        let text = self.rs.cell_text(row, col, self.fmt);
+        // the inline editor takes the cell while a value is being typed
+        if let Some(e) = self.edits.as_mut() {
+            if let Some(ce) = e.editing.as_mut() {
+                if ce.row == row && ce.col == col && ui.clip_rect().intersects(rect) {
+                    let id = ui.id().with(("cell-edit", row, col));
+                    let r = ui.put(rect.shrink2(Vec2::new(2.0, 1.0)), egui::TextEdit::singleline(&mut ce.text).id(id).font(self.font.clone()).frame(egui::Frame::new()).margin(egui::Margin::symmetric(4, 2)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("edit cell {row} {col}")));
+                    if !ce.focused {
+                        r.request_focus();
+                        let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+                        let n = ce.text.chars().count();
+                        st.cursor.set_char_range(Some(egui::text::CCursorRange::two(egui::text::CCursor::new(0), egui::text::CCursor::new(n))));
+                        st.store(ui.ctx(), id);
+                        ce.focused = true;
+                    } else if r.lost_focus() {
+                        ce.blur = true;
+                    }
+                    ui.painter().rect_stroke(rect.shrink(1.0), 0.0, Stroke::new(1.5, self.theme.accent), egui::StrokeKind::Inside);
+                    return;
+                }
+            }
+        }
+        let (is_null, text): (bool, Arc<str>) = match edit_text {
+            Some(None) => (true, Arc::from("")),
+            Some(Some(v)) => (false, Arc::from(v.as_str())),
+            None if row >= self.data_rows => (true, Arc::from("")),
+            None => (self.rs.is_null(row, col), self.rs.cell_text(row, col, self.fmt)),
+        };
+        let deleted_row = self.edits.as_ref().map(|e| e.deleted.contains(&row)).unwrap_or(false);
         let color = if is_null { self.theme.null_text } else { self.theme.text };
         let right = self.rs.columns[col].sql_type.right_align();
         let text_rect = rect.shrink2(Vec2::new(6.0, 0.0));
@@ -269,7 +317,12 @@ impl TableDelegate for Delegate<'_> {
         let galley = clip.layout_no_wrap(single_line, font, color);
         let y = rect.center().y - galley.size().y / 2.0;
         let x = if right { text_rect.right() - galley.size().x } else { text_rect.left() };
+        let w = galley.size().x;
         clip.galley(Pos2::new(x.max(text_rect.left()), y), galley, color);
+        if deleted_row && w > 0.0 {
+            let x0 = x.max(text_rect.left());
+            clip.line_segment([Pos2::new(x0, rect.center().y), Pos2::new((x0 + w).min(text_rect.right()), rect.center().y)], Stroke::new(1.0, self.theme.error));
+        }
 
         if !ui.clip_rect().intersects(rect) {
             return; // clipped duplicate visit (see header_cell_ui)
@@ -338,8 +391,18 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     let font = FontId::monospace(args.font_size);
     let header_font = FontId::proportional(args.font_size);
     let rs = args.rs.clone();
-    let rows = rs.visible_count();
+    let data_rows = rs.visible_count();
+    let inserted_rows = args.edits.as_ref().map(|e| e.inserted.len()).unwrap_or(0);
+    let rows = data_rows + inserted_rows;
     let cols = rs.column_count();
+    let plain = cobalt_export::export_formatter(args.fmt);
+    let editing_now = args.edits.as_ref().map(|e| e.editing.is_some()).unwrap_or(false);
+    // keys the inline editor answers to, read before the table draws it (so the text box does not)
+    let (edit_enter, edit_tab, edit_back_tab, edit_escape) = if editing_now {
+        ui.input_mut(|i| (i.consume_key(Modifiers::NONE, Key::Enter), i.consume_key(Modifiers::NONE, Key::Tab), i.consume_key(Modifiers::SHIFT, Key::Tab), i.key_pressed(Key::Escape)))
+    } else {
+        (false, false, false, false)
+    };
     let mut seed_state = false;
     if !args.grid.widths_initialized && (rows > 0 || !rs.state().is_live()) {
         init_widths(ui, &mut args, &font, &header_font);
@@ -363,7 +426,42 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
     if kb_focus && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy))) {
         actions.push(GridAction::Copy);
     }
-    if args.grid.focused && rows > 0 && cols > 0 {
+    // Edit Data keys while the grid (not a text box) has the keyboard: F2 edits, typing edits with
+    // the typed text, Delete marks the selected rows
+    if args.grid.focused && !editing_now && rows > 0 && cols > 0 {
+        if let Some(e) = args.edits.as_mut() {
+            let (f2, del, typed) = ui.input_mut(|i| {
+                let f2 = i.consume_key(Modifiers::NONE, Key::F2);
+                let del = i.consume_key(Modifiers::NONE, Key::Delete);
+                let typed: String = i.events.iter().filter_map(|ev| if let egui::Event::Text(t) = ev { Some(t.clone()) } else { None }).collect();
+                (f2, del, typed)
+            });
+            if let Some((r, c)) = args.grid.anchor {
+                if f2 {
+                    e.start_edit(&rs, &plain, r, c, None);
+                } else if !typed.is_empty() && !ui.input(|i| i.modifiers.command || i.modifiers.alt) {
+                    e.start_edit(&rs, &plain, r, c, Some(typed));
+                }
+            }
+            if del && !e.saving {
+                let sel: Vec<usize> = match args.grid.selection {
+                    Selection::Rows { r0, r1 } | Selection::Cells { r0, r1, .. } => (r0.min(r1)..=r0.max(r1)).collect(),
+                    Selection::All => (0..rows).collect(),
+                    _ => args.grid.anchor.map(|(r, _)| vec![r]).unwrap_or_default(),
+                };
+                for row in sel.into_iter().rev() {
+                    if row >= data_rows {
+                        if row - data_rows < e.inserted.len() {
+                            e.inserted.remove(row - data_rows);
+                        }
+                    } else if !e.deleted.remove(&row) {
+                        e.deleted.insert(row);
+                    }
+                }
+            }
+        }
+    }
+    if args.grid.focused && !editing_now && rows > 0 && cols > 0 {
         let (anchor_r, anchor_c) = args.grid.anchor.unwrap_or((0, 0));
         let mut mv: Option<(isize, isize)> = None;
         let mut shift = false;
@@ -441,6 +539,8 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
 
     let mut delegate = Delegate {
         tint: args.row_tint.clone(),
+        edits: args.edits.as_deref_mut(),
+        data_rows,
         rs: &rs,
         grid: args.grid,
         theme: args.theme,
@@ -559,7 +659,41 @@ pub fn show(ui: &mut Ui, mut args: GridArgs<'_>) -> Vec<GridAction> {
         delegate.grid.focused = true;
     }
     if let Some((r, c)) = delegate.double_click {
-        delegate.actions.push(GridAction::OpenViewer(r, c));
+        let started = delegate.edits.as_deref_mut().map(|e| e.start_edit(&rs, &plain, r, c, None)).unwrap_or(false);
+        if started {
+            delegate.grid.selection = Selection::Cells { r0: r, c0: c, r1: r, c1: c };
+            delegate.grid.anchor = Some((r, c));
+        } else {
+            delegate.actions.push(GridAction::OpenViewer(r, c));
+        }
+    }
+    // the inline editor: Enter commits, Tab commits and moves on, Escape cancels, a click away commits
+    if let Some(e) = delegate.edits.as_deref_mut() {
+        let blur = e.editing.as_ref().map(|c| c.blur).unwrap_or(false);
+        if edit_escape {
+            e.editing = None;
+            delegate.grid.focused = true;
+            ui.memory_mut(|m| m.request_focus(focus_id));
+        } else if edit_enter || edit_tab || edit_back_tab || blur {
+            if let Some(ce) = e.editing.take() {
+                e.set_cell(&rs, &plain, ce.row, ce.col, Some(ce.text));
+                let next = if edit_tab || edit_back_tab { e.next_cell(rows, ce.row, ce.col, edit_back_tab) } else { None };
+                match next {
+                    Some((nr, nc)) => {
+                        e.start_edit(&rs, &plain, nr, nc, None);
+                        delegate.grid.selection = Selection::Cells { r0: nr, c0: nc, r1: nr, c1: nc };
+                        delegate.grid.anchor = Some((nr, nc));
+                        delegate.grid.scroll_to = Some((nr, nc));
+                    }
+                    None => {
+                        if !blur {
+                            delegate.grid.focused = true;
+                            ui.memory_mut(|m| m.request_focus(focus_id));
+                        }
+                    }
+                }
+            }
+        }
     }
     if let Some(pos) = delegate.secondary {
         delegate.actions.push(GridAction::ContextMenu(pos));

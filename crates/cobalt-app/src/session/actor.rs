@@ -219,8 +219,11 @@ async fn run_import(
             Err(e) => {
                 if matches!(e, DriverError::Disconnected(_)) {
                     lost = true;
-                } else if let Err(rb) = run_simple(conn, "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION").await {
-                    tracing::warn!(error = %rb, "rollback after failed import");
+                } else {
+                    let rollback = if conn.engine().kind == cobalt_core::EngineKind::Sqlite { "ROLLBACK" } else { "IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION" };
+                    if let Err(rb) = run_simple(conn, rollback).await {
+                        tracing::warn!(error = %rb, "rollback after failed import");
+                    }
                 }
                 Err(match e {
                     DriverError::Cancelled => "cancelled".to_string(),

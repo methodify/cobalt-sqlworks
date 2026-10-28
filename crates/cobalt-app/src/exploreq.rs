@@ -227,6 +227,8 @@ fn catalog_of(state: &AppState, idx: usize) -> Option<Arc<ModelCatalog>> {
 /// Rebuild the DAX from the spec (needs the catalog); the tab's text becomes the query.
 pub fn regenerate(state: &mut AppState, idx: usize) {
     let cat = catalog_of(state, idx);
+    // a SQL source on a file connection speaks SQLite
+    let file = state.tabs.get(idx).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
     let Some(t) = state.tabs.get_mut(idx) else { return };
     let Some(ex) = t.explore.as_deref_mut() else { return };
     if ex.spec.is_empty() {
@@ -240,10 +242,11 @@ pub fn regenerate(state: &mut AppState, idx: usize) {
         ex.dax_error = None; // not an error: the catalog is on its way
         return;
     };
-    let sql_from = ex.spec.source.as_ref().and_then(|s| s.sql_table()).map(|(_, db, schema, table)| format!("{}.{}.{}", bracket(db), bracket(schema), bracket(table)));
+    let sql_from = ex.spec.source.as_ref().and_then(|s| s.sql_table()).map(|(_, db, schema, table)| if file { cobalt_sqlite::quote(table) } else { format!("{}.{}.{}", bracket(db), bracket(schema), bracket(table)) });
+    let dialect = if file { cobalt_local::explore::SqlDialect::Sqlite } else { cobalt_local::explore::SqlDialect::TSql };
     let generated = match (ex.spec.source.as_ref().and_then(|s| s.local_table()), sql_from) {
         (Some(_), _) => cobalt_local::explore::to_sql(&ex.spec, &cat).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
-        (None, Some(from)) => cobalt_local::explore::to_sql_in(&ex.spec, &cat, cobalt_local::explore::SqlDialect::TSql, Some(&from)).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
+        (None, Some(from)) => cobalt_local::explore::to_sql_in(&ex.spec, &cat, dialect, Some(&from)).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
         (None, None) => cobalt_tabular::explore::to_dax(&ex.spec, &cat),
     };
     match generated {

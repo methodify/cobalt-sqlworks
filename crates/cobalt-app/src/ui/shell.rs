@@ -101,6 +101,8 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                 item(ui, &mut cmds, Command::NewDashboard);
                 item(ui, &mut cmds, Command::OpenFile);
                 item(ui, &mut cmds, Command::OpenPlanFile);
+                item(ui, &mut cmds, Command::OpenSqliteDatabase);
+                item(ui, &mut cmds, Command::NewSqliteDatabase);
                 ui.separator();
                 item(ui, &mut cmds, Command::SaveFile);
                 item(ui, &mut cmds, Command::SaveFileAs);
@@ -1456,6 +1458,7 @@ fn local_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     cobalt_local::TableSource::Statement => "made by a statement".to_string(),
                     cobalt_local::TableSource::Scratch { .. } => "scratch, kept across sessions".to_string(),
                     cobalt_local::TableSource::OneLake { url } => format!("OneLake {url}"),
+                    cobalt_local::TableSource::Sqlite { path, table } => format!("{table} in {}", path.display()),
                 };
                 let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
                 let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {rows} · {} columns · {src}", icons::TABLE, t.name, t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");
@@ -2445,7 +2448,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else if t.local.is_some() { "Local SQL" } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else if t.local.is_some() { "Local SQL" } else if t.profile.as_ref().map(|p| p.is_file()).unwrap_or(false) { "SQLite" } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));
@@ -2794,6 +2797,8 @@ pub fn dispatch(f: &mut Frame<'_>, cmd: Command) {
         }
         Command::Quit => cx.egui.send_viewport_cmd(egui::ViewportCommand::Close),
         Command::NewConnection => ops::open_connection_dialog(state, cx, None, None, None),
+        Command::OpenSqliteDatabase => ops::pick_sqlite_database(state, cx, false),
+        Command::NewSqliteDatabase => ops::pick_sqlite_database(state, cx, true),
         Command::ConnectTab => {
             if let Some(i) = idx {
                 let t = &state.tabs[i];

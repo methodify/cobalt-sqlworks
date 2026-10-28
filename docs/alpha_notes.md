@@ -1082,3 +1082,53 @@ Agent: `explore {action: new, profile: "idletest", table: "dbo.big", database: "
 `local_tables {action: save_scratch, name: "x", from: "orders"}`, `{action: forget, name}`;
 `click` on `sidebar Local`, `local table: <name>`, `local filter`, `local new query`, `local
 register`; `forget local go` in the confirmation.
+
+## File databases: SQLite as a connection, writes, the bridge, Edit Data (0.13.0)
+
+**Open one.** File › *Open SQLite database…* (or *New SQLite database…*), the database button
+at the top of the Servers rail, or drop a `.sqlite` / `.db` file on the window: it opens as a
+connection named after the file, with a query tab on it. The Servers tree shows one database
+(`main`) with Tables and Views; expand a table for columns, indexes and keys; *Select Top 1000*
+writes `LIMIT`; *Script as* gives the CREATE text SQLite stored. A connection whose engine is
+*SQLite database file* (New connection › Engine) takes a path, *Read-only* and *Create if
+missing*. Files are recognised by their header: a `.db` that is not SQLite is left alone.
+
+**Query it.** The editor speaks SQLite (keywords, `json_*` and `strftime` in completion, names
+quoted `"like this"`); results are typed by the declared column type, and a cell that does not
+fit (text in a `REAL` column) shows as NULL with a note in Messages saying how many. *Estimated
+plan* (Ctrl+L) shows `EXPLAIN QUERY PLAN` as a tree. Errors say `Error 1` and the line, not a
+T-SQL severity.
+
+**Write into it.** *Save results as table* and *Import data from file* on a SQLite tab make a
+table with SQLite affinities (`INTEGER`, `REAL`, `TEXT`, `BLOB`, `DATETIME`, `DECIMAL(p,s)`);
+*Append to existing* reads the table's columns first. *Save results as…* › **SQLite database**
+writes a table into a new or existing file (Table name; Fail / Replace table / Append rows);
+*Run to File* with that format writes every result set into the one file. On a SQL Server
+table in the tree, **Copy to SQLite file…** runs `SELECT *` straight into a file.
+
+**Scratch.** *Scratch* in the Servers tree is `scratch.sqlite` in the app data folder. Save
+results as table lands there when nothing is connected; the Import dialog's target list has
+*Scratch database (opens a tab)*; its menu has *Empty scratch database…*.
+
+**Query locally / Explore / Diff.** On a table of a file connection: *Query locally* registers
+it with the local engine (the Local sidebar's **Databases** group) and opens a Local tab, so it
+joins results, files, scratch and lakehouse tables and Diffs against anything; *Explore* writes
+SQLite (`LIMIT`, `LIKE … ESCAPE`, `datetime('now', …)`, subtotals as `UNION ALL`).
+
+**Edit Data.** On a table of a file connection, *Edit Data* opens `SELECT * FROM "t" LIMIT
+1000` with the grid editable; on any SQLite tab whose grid came from a one-table SELECT with
+the key columns (or `rowid AS "rowid"`), the results toolbar's pencil turns it on. Double-click
+or F2 a cell (or just type), Enter keeps, Tab moves right, Escape cancels; *+ Row* adds a row,
+Delete marks rows (again to unmark). The strip under the toolbar counts pending changes; *SQL*
+lists the statements; **Save** runs them in one transaction and re-runs the query; **Discard**
+drops them. Try a failing save (type `abc` into an `INTEGER PRIMARY KEY`): the error shows, the
+grid and your changes stay, nothing was written. Sorting and filtering wait until you save or
+discard.
+
+Agent: `open_database {path, create?}`, `add_profile {engine: "sqlite", path, read_only?}`,
+`export {format: "sqlite", path, table, mode: replace|append}`, `table_to_sqlite {profile,
+database, schema, table, path}`, `results_to_table {table, target: "scratch"}`, `local_sqlite
+{path, table}`, `edit {action: begin}`, `edit {action: set, row, col: "city", value}`, `edit
+{action: insert|delete, row}`, `edit {action: save|discard|pending}`, `edit_table {profile,
+table}`; labels `edit data 0`, `edit save`, `edit add row`, `edit pending N`, `edit cell R C`,
+`server: Scratch`, `Table: name`, `sqlite table` (export dialog).

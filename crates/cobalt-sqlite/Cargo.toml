@@ -1,0 +1,16 @@
+[package]
+name = "cobalt-sqlite"
+description = "Shared SQLite plumbing: declared types from SqlType, CREATE TABLE text, Arrow batches bound into INSERTs, writing a result set into a .sqlite file"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+arrow.workspace = true
+rusqlite.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

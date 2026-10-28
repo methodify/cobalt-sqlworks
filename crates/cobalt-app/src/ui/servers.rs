@@ -33,6 +33,8 @@ pub enum TreeAction {
     /// A model explorer row under an Analysis Services model.
     Model(crate::ui::model_tree::ModelAction),
     NewConnection { group: Option<GroupId> },
+    /// Open a SQLite database file as a connection (a file picker).
+    OpenSqlite,
     NewGroup,
     EditGroup(GroupId),
     /// The server's dashboard (home page of tiles).
@@ -50,6 +52,14 @@ pub enum TreeAction {
     SelectTop { profile: ProfileId, obj: ObjectRef },
     /// The pivot builder over a table or view (T-SQL generated and run on the connection).
     Explore { profile: ProfileId, obj: ObjectRef },
+    /// A server table into a SQLite file (Run to File with the SQLite format).
+    CopyToSqlite { profile: ProfileId, obj: ObjectRef },
+    /// A table of a SQLite file connection as a local table, with a Local tab over it.
+    LocalQuerySqlite { profile: ProfileId, obj: ObjectRef },
+    /// Edit Data: a query over the table with its key, the grid editable.
+    EditData { profile: ProfileId, obj: ObjectRef },
+    /// Delete and recreate the built-in scratch database.
+    EmptyScratch,
     Script { profile: ProfileId, obj: ObjectRef, kind: ScriptKind },
     CopyText(String),
     InsertIntoEditor(String),
@@ -93,6 +103,11 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if crate::ui::widgets::icon_button(ui, icons::PLUS, "New connection (Ctrl+Shift+N)", true).clicked() {
                     actions.push(TreeAction::NewConnection { group: None });
+                }
+                let r = crate::ui::widgets::icon_button(ui, icons::FILE_SQL, "Open a SQLite database file as a connection…", true);
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "open sqlite database"));
+                if r.clicked() {
+                    actions.push(TreeAction::OpenSqlite);
                 }
                 if crate::ui::widgets::icon_button(ui, icons::FOLDER_PLUS, "New server group", true).clicked() {
                     actions.push(TreeAction::NewGroup);
@@ -243,6 +258,7 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
             cobalt_local::TableSource::Statement => "made by a statement".to_string(),
             cobalt_local::TableSource::Scratch { .. } => "scratch (kept across sessions)".to_string(),
             cobalt_local::TableSource::OneLake { .. } => "OneLake".to_string(),
+            cobalt_local::TableSource::Sqlite { path, table } => format!("{table} in {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
         };
         let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
         let detail = format!("{rows} · {} cols · {src}{}", t.columns.len(), if t.live { " · arriving" } else { "" });
@@ -459,7 +475,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
             (false, e) => e,
         }
     };
-    let icon = if p.looks_like_fabric() || p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
+    let icon = if p.is_file() { icons::FILE_SQL } else if p.looks_like_fabric() || p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
     let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, kind: "server" });
@@ -501,7 +517,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
                 actions.push(TreeAction::ToggleSystemDbs(p.id));
                 ui.close();
             }
-            if ui.button(format!("{} Group objects by schema", if node.group_by_schema { icons::CHECK_SQUARE } else { icons::SQUARE })).clicked() {
+            if !p.is_file() && ui.button(format!("{} Group objects by schema", if node.group_by_schema { icons::CHECK_SQUARE } else { icons::SQUARE })).clicked() {
                 actions.push(TreeAction::ToggleGroupBySchema(p.id));
                 ui.close();
             }
@@ -531,7 +547,12 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
             }
         });
         ui.separator();
-        if ui.button(RichText::new("Delete connection").color(theme.error)).clicked() {
+        if p.id == crate::ops::scratch_profile_id() {
+            if ui.button(RichText::new("Empty scratch database…").color(theme.error)).on_hover_text("Deletes every table in the built-in scratch database.").clicked() {
+                actions.push(TreeAction::EmptyScratch);
+                ui.close();
+            }
+        } else if ui.button(RichText::new("Delete connection").color(theme.error)).clicked() {
             actions.push(TreeAction::DeleteProfile(p.id));
             ui.close();
         }
@@ -614,20 +635,23 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
 /// Fabric panel, where an item *is* a database on the workspace endpoint and gets no extra row.
 pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, engine: Option<&EngineInfo>, depth: usize, actions: &mut Vec<TreeAction>) {
     let node = lib.servers.entry(p.id).or_default();
-    let group_by_schema = node.group_by_schema;
+    // a file database has no schemas: the engine's capabilities (or the family's, before the probe answers) decide
+    let caps = engine.map(|e| e.capabilities).unwrap_or_else(|| if p.is_file() { EngineKind::Sqlite.capabilities() } else { EngineKind::SqlServer.capabilities() });
+    let group_by_schema = node.group_by_schema && caps.schemas;
     let dbn = node.db_nodes.entry(db.name.clone()).or_default();
     if let Loadable::Failed(e) = &dbn.objects {
         let msg = e.lines().next().unwrap_or("").to_string();
         tree_row(ui, theme, TreeRow { depth, expandable: false, expanded: false, loading: false, icon: icons::WARNING, icon_color: Some(theme.error), label: &msg, detail: None, selected: false, color_dot: None, kind: "error" });
         return;
     }
-    let caps = engine.map(|e| e.capabilities).unwrap_or(EngineKind::SqlServer.capabilities());
     let folders: Vec<Folder> = {
         let mut f = vec![Folder::Tables, Folder::Views];
         if caps.procedures || caps.functions {
             f.push(Folder::Programmability);
         }
-        f.push(Folder::Schemas);
+        if caps.schemas {
+            f.push(Folder::Schemas);
+        }
         if caps.synonyms {
             f.push(Folder::Synonyms);
         }
@@ -879,6 +903,18 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             actions.push(TreeAction::NewQuery { profile: p.id, database: Some(obj.database.clone()) });
             ui.close();
         }
+        if !p.is_file() && matches!(obj.kind, ObjectKind::Table | ObjectKind::View) && ui.button(format!("{} Copy to SQLite file…", icons::FILE_SQL)).on_hover_text("Take this table with you: every row into a table of a SQLite database file.").clicked() {
+            actions.push(TreeAction::CopyToSqlite { profile: p.id, obj: obj.clone() });
+            ui.close();
+        }
+        if p.is_file() && obj.kind == ObjectKind::Table && ui.button(format!("{} Edit Data", icons::PENCIL_SIMPLE)).on_hover_text("The table in an editable grid: change cells, add and delete rows; nothing is written until Save.").clicked() {
+            actions.push(TreeAction::EditData { profile: p.id, obj: obj.clone() });
+            ui.close();
+        }
+        if p.is_file() && matches!(obj.kind, ObjectKind::Table | ObjectKind::View) && ui.button(format!("{} Query locally", icons::LIGHTNING)).on_hover_text("Register the table with the local engine (read from the file on every scan) and open a Local tab: join it with results, files, scratch and lakehouse tables; Diff it against anything.").clicked() {
+            actions.push(TreeAction::LocalQuerySqlite { profile: p.id, obj: obj.clone() });
+            ui.close();
+        }
         ui.separator();
         ui.menu_button("Script as", |ui| {
             let kinds: &[(ScriptKind, &str)] = match obj.kind {
@@ -897,11 +933,11 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         });
         ui.separator();
         if ui.button("Copy name").clicked() {
-            actions.push(TreeAction::CopyText(obj.bracketed()));
+            actions.push(TreeAction::CopyText(crate::ops::quoted_object(Some(p), obj)));
             ui.close();
         }
         if ui.button("Insert name into editor").clicked() {
-            actions.push(TreeAction::InsertIntoEditor(obj.bracketed()));
+            actions.push(TreeAction::InsertIntoEditor(crate::ops::quoted_object(Some(p), obj)));
             ui.close();
         }
     });

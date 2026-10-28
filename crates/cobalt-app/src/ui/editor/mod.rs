@@ -44,6 +44,8 @@ pub enum Syntax {
     Dax,
     /// The local engine's SQL (DataFusion): backticks and `"` quote names.
     Local,
+    /// SQLite: its keywords, functions and pragmas; `"name"`, `[name]`, `` `name` `` quote.
+    Sqlite,
     Python,
     /// Markdown and anything else: no highlighting.
     Plain,
@@ -52,12 +54,13 @@ pub enum Syntax {
 impl Syntax {
     /// SQL of either dialect: statements, completion, the current-statement highlight.
     pub fn is_sql(self) -> bool {
-        matches!(self, Syntax::Sql | Syntax::SparkSql | Syntax::Local)
+        matches!(self, Syntax::Sql | Syntax::SparkSql | Syntax::Local | Syntax::Sqlite)
     }
     pub fn dialect(self) -> cobalt_sql::Dialect {
         match self {
             Syntax::SparkSql => cobalt_sql::Dialect::Spark,
             Syntax::Local => cobalt_sql::Dialect::Local,
+            Syntax::Sqlite => cobalt_sql::Dialect::Sqlite,
             Syntax::Dax => cobalt_sql::Dialect::Dax,
             _ => cobalt_sql::Dialect::TSql,
         }
@@ -70,6 +73,7 @@ pub fn layout_job_for(syntax: Syntax, text: &str, colors: &TokenColors, font: Fo
         Syntax::Sql => layout_job(text, colors, font, wrap_width),
         Syntax::SparkSql => layout_job_dialect(text, cobalt_sql::Dialect::Spark, colors, font, wrap_width),
         Syntax::Local => layout_job_dialect(text, cobalt_sql::Dialect::Local, colors, font, wrap_width),
+        Syntax::Sqlite => layout_job_dialect(text, cobalt_sql::Dialect::Sqlite, colors, font, wrap_width),
         Syntax::Dax => layout_job_dialect(text, cobalt_sql::Dialect::Dax, colors, font, wrap_width),
         Syntax::Python => python_layout_job(text, colors, font, wrap_width),
         Syntax::Plain => {
@@ -358,8 +362,12 @@ impl EditorTab {
     pub fn host(&mut self) -> EditorHost<'_> {
         let syntax = if self.spark.is_some() {
             Syntax::SparkSql
+        } else if self.local.is_some() {
+            Syntax::Local
         } else if self.tabular.is_some() {
             Syntax::Dax
+        } else if self.profile.as_ref().map(|p| p.is_file()).unwrap_or(false) {
+            Syntax::Sqlite
         } else {
             Syntax::Sql
         };
