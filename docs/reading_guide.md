@@ -45,3 +45,4 @@ brief plus four parallel research passes (web + source-code reading), ~25k words
 3. `docs/research/03_rust_egui_stack.md` §8 "Recommended stack" (5 min)
 4. `docs/research/04_competitors_and_beyond.md` §5 "Top 30" (10 min)
 5. Everything else on demand.
+- `design/files_tab.md` — the Files sidebar: every row does what a dropped file does (kinds, verbs, what stays out).

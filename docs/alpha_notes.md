@@ -1211,3 +1211,19 @@ the lakehouse's schema (`dbo`) between the two parts. `dataverse.dbo.dirpartytab
 works. If a table alias happens to share a lakehouse's name (`FROM x AS dataverse …
 dataverse.col`), the rewrite would qualify that column reference; pick another alias. The
 LakeSail worker is now refreshed from the Cobalt build at every engine start.
+
+## Next release: arranging servers, Fabric folders, a Files tab that does things
+
+**Servers.** Drag connections to reorder them or drop them on a group; drag groups to reorder
+them. A thin accent line shows where a row will land, an outline shows the group it will join.
+
+**Fabric.** Workspaces show their folders (the ones you organise items into on Fabric) with the
+items inside; the count after a folder's name is everything under it. Typing in the search box
+opens the folders that hold a match.
+
+**Files.** Open a folder and every file Cobalt can open is listed with its kind after the name.
+Click a CSV and you get a Local tab over it; click a `.sqlite` or `.duckdb` and you get a
+connection; click a notebook and you are in the notebook editor; a plan opens in the plan
+viewer; an Excel workbook opens the import dialog on your active connection. Right-click for the
+rest (*Import into a table…* on a data file, *Open as text* on anything, *Open as the root* on a
+folder); the eye button lists files of other kinds too. Ctrl+O now opens files the same way.

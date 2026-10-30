@@ -1371,9 +1371,11 @@ impl LakehousePane {
 pub struct FilesState {
     pub root: Option<PathBuf>,
     pub expanded: HashSet<PathBuf>,
-    /// Directory listings, cleared by Refresh.
-    pub cache: HashMap<PathBuf, Vec<(PathBuf, bool)>>,
+    /// Directory listings (path, is a folder, kind), cleared by Refresh.
+    pub cache: HashMap<PathBuf, Vec<(PathBuf, bool, crate::ui::files::FileKind)>>,
     pub filter: String,
+    /// List every file, not only the kinds Cobalt opens.
+    pub show_all: bool,
 }
 
 /// Downloads, suggestions and pending actions of the font manager (Settings › Fonts).

@@ -110,6 +110,19 @@ impl SqlItemKind {
     }
 }
 
+/// A folder of a workspace (Fabric's item organisation: items carry a `folderId`, folders nest
+/// through `parentFolderId`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: String,
+    #[serde(rename = "workspaceId", default)]
+    pub workspace_id: String,
+    #[serde(rename = "parentFolderId", default)]
+    pub parent_folder_id: Option<String>,
+}
+
 /// A SQL-capable item as listed in a workspace (no connection details yet).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SqlItem {

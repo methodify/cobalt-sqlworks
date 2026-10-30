@@ -66,6 +66,10 @@ pub enum TreeAction {
     CopyText(String),
     InsertIntoEditor(String),
     MoveProfile { profile: ProfileId, group: Option<GroupId> },
+    /// Drag and drop: the profile lands just before `before` (its group and its place in it).
+    PlaceProfile { profile: ProfileId, before: ProfileId },
+    /// Drag and drop: the group lands just before `before` among that group's siblings.
+    PlaceGroup { group: GroupId, before: GroupId },
     ToggleSystemDbs(ProfileId),
     ToggleGroupBySchema(ProfileId),
     /// Row count and size for the Describe hover.
@@ -96,6 +100,17 @@ pub struct TabularRootView<'a> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// A server row being dragged (reorder, or into a group).
+pub struct DragServer(pub ProfileId);
+/// A group row being dragged (reorder among its siblings).
+pub struct DragGroup(pub GroupId);
+
+/// A 2 px insertion line along the top of `rect`: "the dragged row lands here".
+fn insertion_line(ui: &Ui, theme: &Theme, rect: egui::Rect) {
+    let y = rect.top() + 1.0;
+    ui.painter().line_segment([egui::pos2(rect.left() + 4.0, y), egui::pos2(rect.right() - 4.0, y)], egui::Stroke::new(2.0, theme.accent));
+}
+
 pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Option<ProfileId>, spark: &crate::sparkq::SparkRoot, spark_expanded: &mut bool, spark_active: bool, tabular: TabularRootView<'_>, local: LocalRootView<'_>) -> Vec<TreeAction> {
     let mut actions = Vec::new();
     // toolbar
@@ -436,6 +451,28 @@ fn group_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, g: &ServerGroup, gr
             lib.expanded_groups.insert(g.id);
         }
     }
+    r.response.dnd_set_drag_payload(DragGroup(g.id));
+    // a server dropped on a group joins it; a group dropped on a group lands before it
+    if let Some(d) = r.response.dnd_hover_payload::<DragServer>() {
+        if profiles.iter().find(|p| p.id == d.0).map(|p| p.group != Some(g.id)).unwrap_or(false) {
+            ui.painter().rect_stroke(r.response.rect, 3.0, egui::Stroke::new(1.5, theme.accent), egui::StrokeKind::Inside);
+        }
+    }
+    if let Some(d) = r.response.dnd_release_payload::<DragServer>() {
+        if profiles.iter().find(|p| p.id == d.0).map(|p| p.group != Some(g.id)).unwrap_or(false) {
+            actions.push(TreeAction::MoveProfile { profile: d.0, group: Some(g.id) });
+        }
+    }
+    if let Some(d) = r.response.dnd_hover_payload::<DragGroup>() {
+        if d.0 != g.id {
+            insertion_line(ui, theme, r.response.rect);
+        }
+    }
+    if let Some(d) = r.response.dnd_release_payload::<DragGroup>() {
+        if d.0 != g.id {
+            actions.push(TreeAction::PlaceGroup { group: d.0, before: g.id });
+        }
+    }
     r.response.context_menu(|ui| {
         if ui.button("New connection in this group").clicked() {
             actions.push(TreeAction::NewConnection { group: Some(g.id) });
@@ -481,6 +518,17 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
     let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, kind: "server" });
+    r.response.dnd_set_drag_payload(DragServer(p.id));
+    if let Some(d) = r.response.dnd_hover_payload::<DragServer>() {
+        if d.0 != p.id {
+            insertion_line(ui, theme, r.response.rect);
+        }
+    }
+    if let Some(d) = r.response.dnd_release_payload::<DragServer>() {
+        if d.0 != p.id {
+            actions.push(TreeAction::PlaceProfile { profile: d.0, before: p.id });
+        }
+    }
     if r.toggle || r.response.clicked() {
         if expanded {
             node.expanded = false;

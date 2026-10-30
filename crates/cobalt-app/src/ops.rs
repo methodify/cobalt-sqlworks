@@ -684,6 +684,57 @@ pub fn move_profile(state: &mut AppState, cx: &Ctx, id: ProfileId, group: Option
     }
 }
 
+/// Drag and drop in the Servers tree: `id` lands just before `before`, in `before`'s group
+/// (ungrouped when `before` is), the rest of that group keeping its order.
+pub fn place_profile(state: &mut AppState, cx: &Ctx, id: ProfileId, before: ProfileId) {
+    if id == before {
+        return;
+    }
+    let Some(target) = state.library.profile(before).cloned() else { return };
+    // a group that no longer exists shows as ungrouped
+    let group = target.group.filter(|g| state.library.group(*g).is_some());
+    let in_group = |p: &ConnectionProfile| p.group.filter(|g| state.library.group(*g).is_some()) == group;
+    let mut ids: Vec<ProfileId> = state.library.profiles.iter().filter(|p| in_group(p) && p.id != id).map(|p| p.id).collect();
+    let at = ids.iter().position(|x| *x == before).unwrap_or(ids.len());
+    ids.insert(at, id);
+    if let Err(e) = cx.store.reorder_profiles(group, &ids) {
+        cx.toast(ToastKind::Error, format!("Could not move the connection: {e}"));
+    }
+    load_library(state, cx);
+}
+
+/// Drag and drop in the Servers tree: group `id` lands just before `before`, among `before`'s
+/// siblings (moving under `before`'s parent when they differ). A group never moves under
+/// itself.
+pub fn place_group(state: &mut AppState, cx: &Ctx, id: GroupId, before: GroupId) {
+    if id == before {
+        return;
+    }
+    let Some(target) = state.library.group(before).cloned() else { return };
+    // `before` inside `id` would make `id` its own descendant
+    let mut cur = target.parent;
+    while let Some(g) = cur {
+        if g == id {
+            return;
+        }
+        cur = state.library.group(g).and_then(|x| x.parent);
+    }
+    let moving = state.library.group(id).cloned();
+    if moving.as_ref().map(|g| g.parent != target.parent).unwrap_or(false) {
+        if let Err(e) = cx.store.move_group(id, target.parent) {
+            cx.toast(ToastKind::Error, format!("Could not move the group: {e}"));
+            return;
+        }
+    }
+    let mut ids: Vec<GroupId> = state.library.groups.iter().filter(|g| g.parent == target.parent && g.id != id).map(|g| g.id).collect();
+    let at = ids.iter().position(|x| *x == before).unwrap_or(ids.len());
+    ids.insert(at, id);
+    if let Err(e) = cx.store.reorder_groups(&ids) {
+        cx.toast(ToastKind::Error, format!("Could not reorder the groups: {e}"));
+    }
+    load_library(state, cx);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Connecting
 // ---------------------------------------------------------------------------------------------
@@ -1233,6 +1284,8 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
             }
         }
         TreeAction::MoveProfile { profile, group } => move_profile(state, cx, profile, group),
+        TreeAction::PlaceProfile { profile, before } => place_profile(state, cx, profile, before),
+        TreeAction::PlaceGroup { group, before } => place_group(state, cx, group, before),
     }
 }
 
@@ -1545,6 +1598,16 @@ pub fn open_file_as(state: &mut AppState, cx: &Ctx, path: PathBuf, preview: bool
         }
         return;
     }
+    // everything that is not text opens the way a drop does: a data file as a local table, a
+    // database file as a connection, a workbook in the import dialog, a Spark / DAX query in
+    // its own tab kind
+    match crate::drop::classify(&path) {
+        crate::drop::DropAction::Query { kind: crate::drop::QueryKind::Unknown | crate::drop::QueryKind::TSql, .. } | crate::drop::DropAction::Unsupported | crate::drop::DropAction::Folder => {}
+        _ => {
+            crate::drop::drop_files(state, cx, std::slice::from_ref(&path));
+            return;
+        }
+    }
     let plain = !cobalt_core::DashboardFile::is_dashboard_path(&path) && !cobalt_core::explore::ExploreSpec::is_explore_path(&path) && !crate::notebook::is_notebook_path(&path) && !path.extension().map(|e| e.eq_ignore_ascii_case("sqlplan")).unwrap_or(false);
     if !(preview && plain && cx.settings.appearance.preview_tabs) {
         return open_file(state, cx, Some(path));
@@ -1572,8 +1635,18 @@ pub fn open_file_as(state: &mut AppState, cx: &Ctx, path: PathBuf, preview: bool
 pub fn open_file(state: &mut AppState, cx: &Ctx, path: Option<PathBuf>) {
     let path = match path {
         Some(p) => p,
-        None => match rfd::FileDialog::new().add_filter("SQL and notebooks", &["sql", "ipynb"]).add_filter("SQL", &["sql"]).add_filter("Notebook", &["ipynb", "py"]).add_filter("Execution plan", &["sqlplan"]).add_filter("All files", &["*"]).pick_file() {
-            Some(p) => p,
+        None => match rfd::FileDialog::new()
+            .add_filter("Everything Cobalt opens", &["sql", "ipynb", "py", "sqlplan", "csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "ipc", "jsonl", "ndjson", "json", "xlsx", "xlsm", "xls", "sqlite", "db", "duckdb", "dax", "hql"])
+            .add_filter("SQL and notebooks", &["sql", "ipynb", "py"])
+            .add_filter("Data files", &["csv", "tsv", "txt", "parquet", "pq", "arrow", "feather", "ipc", "jsonl", "ndjson", "xlsx", "xlsm", "xls"])
+            .add_filter("Database files", &["sqlite", "db", "sqlite3", "db3", "duckdb", "ddb"])
+            .add_filter("Execution plan", &["sqlplan"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+        {
+            // picked by hand: the file opens as what it is (a CSV as a local table, a database
+            // file as a connection), the way a drop or the Files sidebar would open it
+            Some(p) => return open_file_as(state, cx, p, false),
             None => return,
         },
     };
@@ -2501,8 +2574,17 @@ pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAc
                 state.files.expanded.clear();
             }
         }
+        A::SetRoot(dir) => {
+            let _ = cx.store.fabric_cache_put(FILES_ROOT_KEY, &dir.to_string_lossy());
+            state.files.root = Some(dir);
+            state.files.cache.clear();
+            state.files.expanded.clear();
+            state.files.filter.clear();
+        }
         A::Refresh => state.files.cache.clear(),
         A::Open(p, preview) => open_file_as(state, cx, p, preview),
+        A::OpenText(p) => open_file(state, cx, Some(p)),
+        A::Import(p) => crate::drop::import_into_active(state, cx, &p),
         A::Query(p) => {
             if let Err(e) = crate::localq::open_file_table(state, cx, &p) {
                 cx.toast(ToastKind::Warning, e);

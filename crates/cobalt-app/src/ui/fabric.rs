@@ -216,17 +216,12 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                     if expanded {
                         match items {
                             Some(Loadable::Loaded(_)) => {
-                                for it in matching_items {
-                                    let pinned = state.fabric.is_pinned(&it.id);
-                                    item_row(ui, state, theme, &it.id, &it.display_name, Some(it.kind), None, pinned, true, &mut actions, 1, true);
-                                    // a SQL database's analytics endpoint lives under it (shown with its contents)
-                                    if it.kind == SqlItemKind::SqlDatabase && state.fabric.expanded_items.contains(&it.id) {
-                                        if let Some(ep) = state.fabric.endpoint_child(&it).cloned() {
-                                            let ep_pinned = state.fabric.is_pinned(&ep.id);
-                                            item_row(ui, state, theme, &ep.id, "SQL analytics endpoint", Some(SqlItemKind::SqlEndpoint), None, ep_pinned, true, &mut actions, 2, true);
-                                        }
-                                    }
-                                }
+                                // the workspace's folders, then its items: each under the folder Fabric keeps it in
+                                let notebooks: Vec<cobalt_fabric::FabricItem> = state.fabric.notebooks.get(&w.id).and_then(|l| l.get()).map(|v| v.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)).cloned().collect()).unwrap_or_default();
+                                let models: Vec<cobalt_fabric::FabricItem> = state.fabric.semantic_models.get(&w.id).and_then(|l| l.get()).map(|v| v.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)).cloned().collect()).unwrap_or_default();
+                                let folders = state.fabric.folders.get(&w.id).cloned().unwrap_or_default();
+                                let contents = FolderContents { folders: &folders, items: &matching_items, notebooks: &notebooks, models: &models, filtering: !filter.is_empty() && !matches_ws };
+                                folder_children(ui, state, theme, &contents, None, 1, &mut actions);
                             }
                             Some(Loadable::Failed(e)) => {
                                 ui.horizontal_wrapped(|ui| {
@@ -239,19 +234,6 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                                     ui.add_space(28.0);
                                     ui.spinner();
                                 });
-                            }
-                        }
-                        // notebooks (open in a notebook tab; run on the local Spark session)
-                        if let Some(Loadable::Loaded(nbs)) = state.fabric.notebooks.get(&w.id) {
-                            for nb in nbs.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)) {
-                                let opening = state.fabric.opening.contains(&nb.id);
-                                notebook_row(ui, theme, nb, opening, &mut actions);
-                            }
-                        }
-                        // semantic models (DAX query tabs; the model explorer under the row)
-                        if let Some(Loadable::Loaded(models)) = state.fabric.semantic_models.get(&w.id) {
-                            for m in models.iter().filter(|n| matches_ws || n.display_name.to_lowercase().contains(&filter)) {
-                                semantic_model_row(ui, state, theme, m, &mut actions);
                             }
                         }
                     }
@@ -271,7 +253,76 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
     actions
 }
 
-fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_fabric::FabricItem, actions: &mut Vec<FabricAction>) {
+/// A workspace's folders and the items that belong in them (already filtered by the search box).
+struct FolderContents<'a> {
+    folders: &'a [cobalt_fabric::Folder],
+    items: &'a [SqlItem],
+    notebooks: &'a [cobalt_fabric::FabricItem],
+    models: &'a [cobalt_fabric::FabricItem],
+    /// A search is on: folders holding a match open by themselves.
+    filtering: bool,
+}
+
+impl FolderContents<'_> {
+    /// The folder an item hangs under: its `folder_id` when that folder is known, else the root.
+    fn place<'b>(&self, folder_id: &'b Option<String>) -> Option<&'b str> {
+        folder_id.as_deref().filter(|id| self.folders.iter().any(|f| f.id == *id))
+    }
+    fn has_items(&self, folder: Option<&str>) -> bool {
+        self.items.iter().any(|i| self.place(&i.folder_id) == folder) || self.notebooks.iter().any(|i| self.place(&i.folder_id) == folder) || self.models.iter().any(|i| self.place(&i.folder_id) == folder)
+    }
+    /// Anything at all under `folder`, at any depth.
+    fn has_descendants(&self, folder: &str) -> bool {
+        self.has_items(Some(folder)) || self.folders.iter().filter(|f| f.parent_folder_id.as_deref() == Some(folder)).any(|f| self.has_descendants(&f.id))
+    }
+    fn count(&self, folder: &str) -> usize {
+        let here = self.items.iter().filter(|i| self.place(&i.folder_id) == Some(folder)).count() + self.notebooks.iter().filter(|i| self.place(&i.folder_id) == Some(folder)).count() + self.models.iter().filter(|i| self.place(&i.folder_id) == Some(folder)).count();
+        here + self.folders.iter().filter(|f| f.parent_folder_id.as_deref() == Some(folder)).map(|f| self.count(&f.id)).sum::<usize>()
+    }
+}
+
+/// The rows under `folder` (`None` = the workspace root): subfolders first, then SQL items,
+/// notebooks and semantic models, each at `depth`.
+fn folder_children(ui: &mut Ui, state: &mut AppState, theme: &Theme, c: &FolderContents<'_>, folder: Option<&str>, depth: usize, actions: &mut Vec<FabricAction>) {
+    for f in c.folders.iter().filter(|f| f.parent_folder_id.as_deref() == folder) {
+        // a folder with nothing of ours in it (other item types) is not worth a row while searching
+        if c.filtering && !c.has_descendants(&f.id) {
+            continue;
+        }
+        let expanded = state.fabric.expanded_folders.contains(&f.id) || (c.filtering && c.has_descendants(&f.id));
+        let n = c.count(&f.id);
+        let sub = if n == 0 { "empty".to_string() } else { format!("{n}") };
+        let r = tree_row(ui, theme, depth, expanded, icons::FOLDER, &f.display_name, &sub, &format!("fabric folder {}", f.display_name));
+        if r.clicked() {
+            actions.push(FabricAction::ToggleFolder(f.id.clone()));
+        }
+        if expanded {
+            folder_children(ui, state, theme, c, Some(&f.id), depth + 1, actions);
+        }
+    }
+    for it in c.items.iter().filter(|i| c.place(&i.folder_id) == folder) {
+        let pinned = state.fabric.is_pinned(&it.id);
+        item_row(ui, state, theme, &it.id, &it.display_name, Some(it.kind), None, pinned, true, actions, depth, true);
+        // a SQL database's analytics endpoint lives under it (shown with its contents)
+        if it.kind == SqlItemKind::SqlDatabase && state.fabric.expanded_items.contains(&it.id) {
+            if let Some(ep) = state.fabric.endpoint_child(it).cloned() {
+                let ep_pinned = state.fabric.is_pinned(&ep.id);
+                item_row(ui, state, theme, &ep.id, "SQL analytics endpoint", Some(SqlItemKind::SqlEndpoint), None, ep_pinned, true, actions, depth + 1, true);
+            }
+        }
+    }
+    // notebooks (open in a notebook tab; run on the local Spark session)
+    for nb in c.notebooks.iter().filter(|i| c.place(&i.folder_id) == folder) {
+        let opening = state.fabric.opening.contains(&nb.id);
+        notebook_row(ui, theme, nb, opening, depth, actions);
+    }
+    // semantic models (DAX query tabs; the model explorer under the row)
+    for m in c.models.iter().filter(|i| c.place(&i.folder_id) == folder) {
+        semantic_model_row(ui, state, theme, m, depth, actions);
+    }
+}
+
+fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_fabric::FabricItem, depth: usize, actions: &mut Vec<FabricAction>) {
     let expanded = state.fabric.expanded_models.contains(&m.id);
     let target = state.fabric.model_target(m);
     let sub = match state.model_catalogs.get(&target.key()) {
@@ -279,7 +330,7 @@ fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_f
         Some(Loadable::Loading) => "semantic model · loading…".to_string(),
         _ => "semantic model".to_string(),
     };
-    let r = tree_row(ui, theme, 1, expanded, icons::CUBE, &m.display_name, &sub, &format!("fabric semantic model {}", m.display_name));
+    let r = tree_row(ui, theme, depth, expanded, icons::CUBE, &m.display_name, &sub, &format!("fabric semantic model {}", m.display_name));
     if r.clicked() {
         actions.push(FabricAction::ToggleModel { item_id: m.id.clone() });
     }
@@ -312,17 +363,17 @@ fn semantic_model_row(ui: &mut Ui, state: &AppState, theme: &Theme, m: &cobalt_f
     r.on_hover_text("Click: the model explorer. Double-click: a DAX query tab (runs through the Power BI Arrow query API as the signed-in account)");
     if expanded {
         let mut model_actions = Vec::new();
-        super::model_tree::show(ui, theme, &target, state.model_catalogs.get(&target.key()), &state.model_tree_expanded, state.model_show_hidden, 2, &mut model_actions);
+        super::model_tree::show(ui, theme, &target, state.model_catalogs.get(&target.key()), &state.model_tree_expanded, state.model_show_hidden, depth + 1, &mut model_actions);
         actions.extend(model_actions.into_iter().map(FabricAction::Model));
     }
 }
 
-fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, opening: bool, actions: &mut Vec<FabricAction>) {
+fn notebook_row(ui: &mut Ui, theme: &Theme, nb: &cobalt_fabric::FabricItem, opening: bool, depth: usize, actions: &mut Vec<FabricAction>) {
     let (icon, sub) = if opening { (icons::CIRCLE_NOTCH, "notebook · opening…") } else { (icons::NOTEBOOK, "notebook") };
     if opening {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(150));
     }
-    let r = tree_row(ui, theme, 1, false, icon, &nb.display_name, sub, &format!("fabric notebook {}", nb.display_name));
+    let r = tree_row(ui, theme, depth, false, icon, &nb.display_name, sub, &format!("fabric notebook {}", nb.display_name));
     if r.double_clicked() {
         actions.push(FabricAction::OpenNotebook { item_id: nb.id.clone(), copy: false });
     }
@@ -523,5 +574,30 @@ fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, nam
                 });
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod folder_tests {
+    use super::*;
+
+    fn folder(id: &str, name: &str, parent: Option<&str>) -> cobalt_fabric::Folder {
+        cobalt_fabric::Folder { id: id.into(), display_name: name.into(), workspace_id: "w".into(), parent_folder_id: parent.map(str::to_string) }
+    }
+    fn item(name: &str, folder: Option<&str>) -> cobalt_fabric::FabricItem {
+        cobalt_fabric::FabricItem { id: name.into(), workspace_id: "w".into(), display_name: name.into(), description: String::new(), item_type: "Notebook".into(), folder_id: folder.map(str::to_string) }
+    }
+
+    #[test]
+    fn items_hang_under_known_folders_and_fall_back_to_the_root() {
+        let folders = vec![folder("f1", "Finance", None), folder("f2", "Monthly", Some("f1")), folder("f3", "Empty", None)];
+        let notebooks = vec![item("nb_root", None), item("nb_fin", Some("f1")), item("nb_month", Some("f2")), item("nb_gone", Some("deleted-folder"))];
+        let c = FolderContents { folders: &folders, items: &[], notebooks: &notebooks, models: &[], filtering: false };
+        assert_eq!(c.place(&notebooks[1].folder_id), Some("f1"));
+        assert_eq!(c.place(&notebooks[3].folder_id), None, "an unknown folder id means the root");
+        assert!(c.has_items(None) && c.has_items(Some("f1")) && c.has_items(Some("f2")) && !c.has_items(Some("f3")));
+        assert!(c.has_descendants("f1") && !c.has_descendants("f3"));
+        assert_eq!(c.count("f1"), 2, "Finance holds its own notebook and Monthly's");
+        assert_eq!(c.count("f3"), 0);
     }
 }

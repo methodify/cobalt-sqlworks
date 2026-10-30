@@ -107,6 +107,71 @@ fn kind_label(default_kind: &str) -> &'static str {
 const DATA_EXTS: [&str; 12] = ["csv", "tsv", "tab", "psv", "parquet", "pq", "arrow", "feather", "ipc", "arrows", "jsonl", "ndjson"];
 const BOOK_EXTS: [&str; 3] = ["xlsx", "xlsm", "xls"];
 
+/// The kind a data file's extension names, for a row's detail text.
+pub fn data_label(ext: &str) -> &'static str {
+    match ext {
+        "csv" => "CSV",
+        "tsv" | "tab" => "TSV",
+        "psv" => "PSV",
+        "parquet" | "pq" => "Parquet",
+        "arrow" | "feather" | "ipc" | "arrows" => "Arrow",
+        "jsonl" | "ndjson" => "JSON lines",
+        "json" => "JSON",
+        "txt" => "text",
+        _ => "data",
+    }
+}
+
+/// [`classify`] without reading the file's content (the Files sidebar lists hundreds of rows
+/// from this): folders, names, the 16-byte database headers and extensions decide; `.sql`
+/// is a query of the default dialect, `.txt` text, `.json` and `.xml` unsupported until
+/// opened, when [`classify`] looks inside.
+pub fn classify_shallow(path: &Path) -> DropAction {
+    if path.is_dir() {
+        return if path.join("_delta_log").is_dir() { DropAction::DeltaFolder } else { DropAction::Folder };
+    }
+    if cobalt_core::DashboardFile::is_dashboard_path(path) {
+        return DropAction::Dashboard;
+    }
+    if cobalt_core::explore::ExploreSpec::is_explore_path(path) {
+        return DropAction::Explore;
+    }
+    let ext = path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "sqlplan" => return DropAction::Plan,
+        "ipynb" => return DropAction::Notebook,
+        "sql" => return DropAction::Query { kind: QueryKind::Unknown, sniffed: false },
+        "txt" => return DropAction::Query { kind: QueryKind::Unknown, sniffed: false },
+        "dax" | "msdax" | "mdx" => return DropAction::Query { kind: QueryKind::Dax, sniffed: false },
+        "hql" | "sparksql" => return DropAction::Query { kind: QueryKind::Spark, sniffed: false },
+        "py" => return if path.file_name().map(|n| n.eq_ignore_ascii_case("notebook-content.py")).unwrap_or(false) { DropAction::Notebook } else { DropAction::PythonNotebook },
+        e if DATA_EXTS.contains(&e) => return DropAction::LocalTable,
+        e if BOOK_EXTS.contains(&e) => return DropAction::Import,
+        "sqlite" | "sqlite3" | "db" | "db3" | "duckdb" | "ddb" => {}
+        _ => return DropAction::Unsupported,
+    }
+    if cobalt_driver::duckdb::is_duckdb_file(path) {
+        DropAction::DuckDb
+    } else if cobalt_driver::sqlite::is_sqlite_file(path) {
+        DropAction::SqliteDb
+    } else {
+        DropAction::Unsupported
+    }
+}
+
+/// The import dialog with `path` on the active tab's connection; a query tab on the active
+/// profile is opened when the active tab is not one (a notebook, a dashboard, nothing).
+pub fn import_into_active(state: &mut AppState, cx: &Ctx, path: &Path) {
+    let idx = match state.active_tab.filter(|&i| state.tabs.get(i).map(|t| !t.is_notebook() && !t.is_dashboard() && !t.is_explore() && t.spark.is_none() && t.tabular.is_none()).unwrap_or(false)) {
+        Some(i) => i,
+        None => {
+            let (profile, db) = state.active().map(|t| (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string))).unwrap_or((None, None));
+            crate::ops::new_query_tab(state, cx, profile, db, None, false)
+        }
+    };
+    crate::ops::open_import_dialog(state, cx, idx, Some(path.to_path_buf()));
+}
+
 /// Classify a path: the extension first, the content when the extension leaves it open.
 pub fn classify(path: &Path) -> DropAction {
     if path.is_dir() {
@@ -282,14 +347,7 @@ pub fn drop_files(state: &mut AppState, cx: &Ctx, paths: &[PathBuf]) -> usize {
             },
             DropAction::Import => {
                 // the import lands in the active tab's connection; a tab is opened when there is none
-                let idx = match state.active_tab.filter(|&i| state.tabs.get(i).map(|t| !t.is_notebook() && !t.is_dashboard() && !t.is_explore() && t.spark.is_none() && t.tabular.is_none()).unwrap_or(false)) {
-                    Some(i) => i,
-                    None => {
-                        let (profile, db) = state.active().map(|t| (t.profile.as_ref().map(|p| p.id), t.conn.database().map(str::to_string))).unwrap_or((None, None));
-                        crate::ops::new_query_tab(state, cx, profile, db, None, false)
-                    }
-                };
-                crate::ops::open_import_dialog(state, cx, idx, Some(path.clone()));
+                import_into_active(state, cx, path);
                 true
             }
             DropAction::Connections => {

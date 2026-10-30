@@ -118,6 +118,13 @@ impl FabricClient {
         Ok(out)
     }
 
+    /// The folders of a workspace (every page), parents before children is not guaranteed.
+    pub async fn list_folders(&self, workspace_id: &str) -> Result<Vec<Folder>> {
+        let mut out: Vec<Folder> = self.get_all_pages(&format!("{}/workspaces/{workspace_id}/folders", self.base)).await?;
+        out.sort_by_key(|f| f.display_name.to_lowercase());
+        Ok(out)
+    }
+
     /// Every item in a workspace, optionally one `type` (`Notebook`, `Lakehouse`…).
     pub async fn list_items(&self, workspace_id: &str, item_type: Option<&str>) -> Result<Vec<FabricItem>> {
         let url = match item_type {

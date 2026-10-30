@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+- **Servers tree: drag to arrange.** Drag a connection onto another to put it just before it
+  (in that connection's group, or ungrouped), onto a group to move it in; drag a group onto a
+  group to put it before it among its siblings. *Move to group* on the connection's menu is
+  still there. The order is kept in the connection library.
+- **Fabric explorer: folders.** A workspace's items show under the folders they are kept in
+  on Fabric (nested folders too), with the folder's item count; the search box opens the
+  folders holding a match. Folders come from the Fabric folders API alongside the item list;
+  a workspace without folders looks as before.
+- **Files sidebar: every row does what a drop does** (`docs/design/files_tab.md`). The list
+  shows what Cobalt sees each file as (SQL, Spark SQL, DAX, notebook, Python, plan, dashboard,
+  Explore, CSV / TSV / Parquet / Arrow / JSON lines, Excel, SQLite database, DuckDB database,
+  Delta table, text) and lists database files, workbooks and every Arrow spelling it used to
+  hide; an eye toggle lists every other file too. Click opens the file as that kind: a data
+  file as a local table in a Local tab, a database file as a connection, a notebook in the
+  notebook editor, a plan in the plan viewer, a workbook in the import dialog; queries keep the
+  preview-tab behaviour. The context menu offers the kind's verbs (*Query as a local table*,
+  *Import into a table…*, *Open as a connection*, *Open the notebook*, *Open as text*, …) and
+  folders get *Open as the root*; an *Up* button walks to the parent. *Open* (Ctrl+O) goes
+  through the same door, so a CSV picked there is a local table too.
+
 ## 0.15.2 — 2026-10-30
 
 - **LakeSail: `lakehouse.table` names on a plain lakehouse.** Fabric Spark reads a lakehouse

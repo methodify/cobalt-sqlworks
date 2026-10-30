@@ -42,6 +42,10 @@ pub struct FabricState {
     pub semantic_models: HashMap<String, Loadable<Vec<cobalt_fabric::FabricItem>>>,
     /// Semantic model items whose model explorer is open under their row.
     pub expanded_models: HashSet<String>,
+    /// The workspace's folders (loaded with the items); items hang under them by `folder_id`.
+    pub folders: HashMap<String, Vec<cobalt_fabric::Folder>>,
+    /// Folder ids open in the tree.
+    pub expanded_folders: HashSet<String>,
     pub details: HashMap<String, Loadable<SqlTarget>>,
     pub expanded: HashSet<String>,
     pub pins: Vec<FabricPin>,
@@ -127,6 +131,8 @@ pub enum FabricEvent {
     Capacities(Vec<Capacity>),
     Notebooks { workspace_id: String, result: Result<Vec<cobalt_fabric::FabricItem>, String> },
     SemanticModels { workspace_id: String, result: Result<Vec<cobalt_fabric::FabricItem>, String> },
+    /// The workspace's folders (an empty list when the listing failed: items show at the root).
+    Folders { workspace_id: String, folders: Vec<cobalt_fabric::Folder> },
     /// A semantic model's catalog (tables, columns, measures, relationships) by target key.
     ModelCatalog { key: String, result: Result<std::sync::Arc<cobalt_core::tabular::ModelCatalog>, String> },
     /// The DAX functions a model reports (`INFO.FUNCTIONS()`).
@@ -162,6 +168,8 @@ pub enum FabricAction {
     SignOut,
     Refresh,
     ToggleWorkspace(String),
+    /// A folder row in a workspace: open or close it.
+    ToggleFolder(String),
     Open { item_id: String },
     TogglePin { item_id: String },
     SaveToServers { item_id: String },
@@ -271,6 +279,11 @@ pub fn action(state: &mut AppState, cx: &Ctx, a: FabricAction) {
             state.fabric.items.clear();
             state.fabric.details.clear();
             load_workspaces(state, cx);
+        }
+        FabricAction::ToggleFolder(id) => {
+            if !state.fabric.expanded_folders.remove(&id) {
+                state.fabric.expanded_folders.insert(id);
+            }
         }
         FabricAction::ToggleWorkspace(id) => {
             if !state.fabric.expanded.remove(&id) {
@@ -654,7 +667,7 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
     state.fabric.notebooks.insert(workspace_id.to_string(), Loadable::Loading);
     state.fabric.semantic_models.insert(workspace_id.to_string(), Loadable::Loading);
     cx.session.spawn(async move {
-        let (result, notebooks, models) = match token(&resolver, slot, tenant.as_deref()).await {
+        let (result, notebooks, models, folders) = match token(&resolver, slot, tenant.as_deref()).await {
             Ok((tok, _)) => {
                 let client = FabricClient::new(tok);
                 // one listing serves all three: SQL items, notebooks and semantic models
@@ -663,11 +676,19 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
                         let nbs: Vec<cobalt_fabric::FabricItem> = all.iter().filter(|i| i.is_notebook()).cloned().collect();
                         let models: Vec<cobalt_fabric::FabricItem> = all.iter().filter(|i| i.is_semantic_model()).cloned().collect();
                         let sql = client.list_sql_items(&ws).await.map_err(|e| fabric_error_text(&e));
-                        (sql, Ok(nbs), Ok(models))
+                        // the folders the items sit in; a failed listing means a flat workspace
+                        let folders = match client.list_folders(&ws).await {
+                            Ok(f) => f,
+                            Err(e) => {
+                                tracing::info!(workspace = %ws, error = %e, "fabric folders not listed");
+                                Vec::new()
+                            }
+                        };
+                        (sql, Ok(nbs), Ok(models), folders)
                     }
                     Err(e) => {
                         let t = fabric_error_text(&e);
-                        (Err(t.clone()), Err(t.clone()), Err(t))
+                        (Err(t.clone()), Err(t.clone()), Err(t), Vec::new())
                     }
                 }
             }
@@ -675,10 +696,11 @@ pub fn load_items(state: &mut AppState, cx: &Ctx, workspace_id: &str) {
                 // the stored sign-in no longer refreshes: the panel asks for a sign-in instead of
                 // showing cached rows that fail one by one
                 let _ = tx.send(FabricEvent::NeedSignIn);
-                (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()))
+                (Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Err("Sign in to Fabric first.".into()), Vec::new())
             }
-            Err(Some(e)) => (Err(e.clone()), Err(e.clone()), Err(e)),
+            Err(Some(e)) => (Err(e.clone()), Err(e.clone()), Err(e), Vec::new()),
         };
+        let _ = tx.send(FabricEvent::Folders { workspace_id: ws.clone(), folders });
         let _ = tx.send(FabricEvent::Items { workspace_id: ws.clone(), result });
         let _ = tx.send(FabricEvent::Notebooks { workspace_id: ws.clone(), result: notebooks });
         let _ = tx.send(FabricEvent::SemanticModels { workspace_id: ws, result: models });
@@ -1087,6 +1109,9 @@ pub fn on_event(state: &mut AppState, cx: &Ctx, ev: FabricEvent) {
                 Ok(v) => Loadable::Loaded(v),
                 Err(e) => Loadable::Failed(e),
             });
+        }
+        FabricEvent::Folders { workspace_id, folders } => {
+            state.fabric.folders.insert(workspace_id, folders);
         }
         FabricEvent::ModelCatalog { key, result } => {
             if let Ok(c) = &result {
