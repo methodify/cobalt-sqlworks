@@ -11,6 +11,22 @@ pub enum EngineFamily {
     Tds,
     /// A SQLite database file; `server` is the path.
     Sqlite,
+    /// A DuckDB database file; `server` is the path.
+    DuckDb,
+}
+
+impl EngineFamily {
+    /// The engine lives in a file (`server` is its path).
+    pub fn is_file(self) -> bool {
+        matches!(self, EngineFamily::Sqlite | EngineFamily::DuckDb)
+    }
+    pub fn label(self) -> &'static str {
+        match self {
+            EngineFamily::Tds => "SQL Server",
+            EngineFamily::Sqlite => "SQLite",
+            EngineFamily::DuckDb => "DuckDB",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -58,7 +74,7 @@ impl ConnectionProfile {
     pub fn display_name(&self) -> String {
         match &self.name {
             Some(n) if !n.trim().is_empty() => n.clone(),
-            _ if self.engine == EngineFamily::Sqlite => std::path::Path::new(&self.server).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.server.clone()),
+            _ if self.engine.is_file() => std::path::Path::new(&self.server).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| self.server.clone()),
             _ => self.server.clone(),
         }
     }
@@ -70,8 +86,15 @@ impl ConnectionProfile {
         p
     }
 
+    /// A file connection to a DuckDB database.
+    pub fn duckdb(path: impl Into<String>) -> Self {
+        let mut p = Self::new(path, AuthMethod::None);
+        p.engine = EngineFamily::DuckDb;
+        p
+    }
+
     pub fn is_file(&self) -> bool {
-        self.engine == EngineFamily::Sqlite
+        self.engine.is_file()
     }
 
     /// Fabric hosts look like `xxx.datawarehouse.fabric.microsoft.com` or `*.pbidedicated.windows.net`.

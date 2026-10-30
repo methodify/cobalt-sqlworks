@@ -148,6 +148,9 @@ pub enum Format {
     ArrowIpc,
     /// A table in a SQLite database file (`opts.sqlite` names the table and the mode).
     Sqlite,
+    /// A table in a DuckDB database file (`opts.duckdb` names the table, the mode and where the
+    /// DuckDB library lives).
+    DuckDb,
 }
 
 impl Format {
@@ -163,6 +166,7 @@ impl Format {
             Format::Parquet => "parquet",
             Format::ArrowIpc => "arrow",
             Format::Sqlite => "sqlite",
+            Format::DuckDb => "duckdb",
         }
     }
 
@@ -178,6 +182,7 @@ impl Format {
             Format::Parquet => "Parquet",
             Format::ArrowIpc => "Arrow IPC (Feather v2)",
             Format::Sqlite => "SQLite database",
+            Format::DuckDb => "DuckDB database",
         }
     }
 
@@ -193,6 +198,7 @@ impl Format {
             Format::Parquet,
             Format::ArrowIpc,
             Format::Sqlite,
+            Format::DuckDb,
         ]
     }
 
@@ -210,6 +216,7 @@ impl Format {
             "parquet" | "pq" => Format::Parquet,
             "arrow" | "feather" | "ipc" => Format::ArrowIpc,
             "sqlite" | "sqlite3" | "db" => Format::Sqlite,
+            "duckdb" | "ddb" => Format::DuckDb,
             _ => return None,
         })
     }
@@ -394,6 +401,16 @@ pub struct ExportOptions {
     pub parquet: ParquetOptions,
     pub arrow: ArrowOptions,
     pub sqlite: SqliteOptions,
+    pub duckdb: DuckDbOptions,
+}
+
+/// [`Format::DuckDb`]: the table, what to do when it exists, and the folder the DuckDB library
+/// is installed in (the app's local data folder; empty = not available).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DuckDbOptions {
+    pub table: String,
+    pub mode: SqliteMode,
+    pub lib_root: std::path::PathBuf,
 }
 
 /// [`Format::Sqlite`]: the table the rows land in and what to do when it is already there.
@@ -448,6 +465,7 @@ impl ExportOptions {
             },
             arrow: ArrowOptions::default(),
             sqlite: SqliteOptions::default(),
+            duckdb: DuckDbOptions::default(),
         }
     }
 }
@@ -547,6 +565,28 @@ pub fn export_source_to_file(
         tracing::info!(?path, rows, table, "sqlite export complete");
         return Ok(ExportStats { rows: rows as usize, bytes, elapsed: started.elapsed(), path: path.to_path_buf(), warnings: Vec::new() });
     }
+    if format == Format::DuckDb {
+        let table = if opts.duckdb.table.trim().is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "export".into()) } else { opts.duckdb.table.trim().to_string() };
+        let mode = match opts.duckdb.mode {
+            SqliteMode::Create => cobalt_duckdb::WriteMode::Create,
+            SqliteMode::Replace => cobalt_duckdb::WriteMode::Replace,
+            SqliteMode::Append => cobalt_duckdb::WriteMode::Append,
+        };
+        if opts.duckdb.lib_root.as_os_str().is_empty() {
+            return Err(ExportError::Unsupported("the DuckDB engine's folder is not set".into()));
+        }
+        if !cobalt_duckdb::is_installed(&opts.duckdb.lib_root) {
+            cobalt_duckdb::install(&opts.duckdb.lib_root, &mut |_, _| {}).map_err(|e| ExportError::Unsupported(format!("the DuckDB engine could not be installed: {e}")))?;
+        }
+        let total = source.total_rows().unwrap_or(0);
+        let mut report = |rows: u64| progress(Progress { rows_done: rows as usize, rows_total: total, bytes_written: 0 });
+        // the Arrow view pulls the batches on DuckDB's thread: materialise them first
+        let batches: Vec<std::result::Result<RecordBatch, String>> = source.batches(EXPORT_BATCH_ROWS).map(|b| b.map_err(|e| e.to_string())).collect();
+        let rows = cobalt_duckdb::write_table(&opts.duckdb.lib_root, path, &table, mode, source.columns(), batches.into_iter(), &mut report).map_err(|e| if e == "cancelled" { ExportError::Cancelled } else { ExportError::Unsupported(e) })?;
+        let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        tracing::info!(?path, rows, table, "duckdb export complete");
+        return Ok(ExportStats { rows: rows as usize, bytes, elapsed: started.elapsed(), path: path.to_path_buf(), warnings: Vec::new() });
+    }
     if format == Format::Excel {
         if let Some(rows) = source.total_rows() {
             let limit = opts.excel.max_rows_warn.min(EXCEL_MAX_ROWS - 1);
@@ -613,7 +653,7 @@ pub fn export_source_to_writer<W: Write + Send>(
     fmt: &CellFormatter,
     progress: &mut dyn FnMut(Progress) -> bool,
 ) -> Result<ExportStats> {
-    if matches!(format, Format::Excel | Format::Sqlite) {
+    if matches!(format, Format::Excel | Format::Sqlite | Format::DuckDb) {
         return Err(ExportError::Unsupported(format!("{format} export needs a file; use export_to_file")));
     }
     let started = Instant::now();
@@ -643,6 +683,7 @@ fn write_any<W: Write + Send>(ctx: &Ctx<'_, '_>, format: Format, sink: &mut Coun
         Format::ArrowIpc => arrow_file::write(ctx, sink, progress),
         Format::Excel => Err(ExportError::Unsupported("Excel export needs a seekable file; use export_to_file".into())),
         Format::Sqlite => Err(ExportError::Unsupported("SQLite export writes a database file; use export_to_file".into())),
+        Format::DuckDb => Err(ExportError::Unsupported("DuckDB export writes a database file; use export_to_file".into())),
     }
 }
 

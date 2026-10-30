@@ -152,6 +152,8 @@ pub struct ExportJob {
     pub delta_partition: Vec<String>,
     pub sqlite_table: String,
     pub sqlite_mode: usize,
+    /// Where the DuckDB library lives (the DuckDB format).
+    pub duckdb_root: PathBuf,
     pub settings: ExportSettings,
     pub fmt: cobalt_results::CellFormatter,
     pub onelake: Option<OneLakeJob>,
@@ -186,6 +188,10 @@ impl ExportJob {
         if self.ext == "sqlite" {
             o.sqlite = sqlite_options(&self.sqlite_table, self.sqlite_mode, index);
         }
+        if self.ext == "duckdb" {
+            let so = sqlite_options(&self.sqlite_table, self.sqlite_mode, index);
+            o.duckdb = cobalt_export::DuckDbOptions { table: so.table, mode: so.mode, lib_root: self.duckdb_root.clone() };
+        }
         o
     }
 
@@ -204,7 +210,7 @@ impl ExportJob {
     /// Local path for result set `index`: the second set and on get a `_2`, `_3`… suffix.
     fn local_path(&self, index: usize) -> PathBuf {
         let p = PathBuf::from(&self.path);
-        if index == 0 || self.ext == "sqlite" {
+        if index == 0 || self.ext == "sqlite" || self.ext == "duckdb" {
             // every result set of a SQLite export lands in the one file, as its own table
             return p;
         }
@@ -312,7 +318,11 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
     let recent = cx.store.recent_profiles(8).unwrap_or_default();
     let group_index = profile.group.and_then(|g| state.library.groups.iter().position(|x| x.id == g)).map(|i| i + 1).unwrap_or(0);
     let color_index = profile.color.and_then(|c| Color::PALETTE.iter().position(|p| *p == c));
-    let engine_index = if profile.engine == cobalt_core::EngineFamily::Sqlite { 1 } else { 0 };
+    let engine_index = match profile.engine {
+        cobalt_core::EngineFamily::Sqlite => 1,
+        cobalt_core::EngineFamily::DuckDb => 2,
+        cobalt_core::EngineFamily::Tds => 0,
+    };
     state.dialog = Dialog::Connection(Box::new(ConnectionDialog {
         port_text: profile.port.map(|p| p.to_string()).unwrap_or_default(),
         profile,
@@ -379,7 +389,11 @@ pub fn save_connection_dialog(state: &mut AppState, cx: &Ctx) -> Option<Connecti
     }
     let mut p = d.profile.clone();
     p.server = p.server.trim().to_string();
-    p.engine = if d.engine_index == 1 { cobalt_core::EngineFamily::Sqlite } else { cobalt_core::EngineFamily::Tds };
+    p.engine = match d.engine_index {
+        1 => cobalt_core::EngineFamily::Sqlite,
+        2 => cobalt_core::EngineFamily::DuckDb,
+        _ => cobalt_core::EngineFamily::Tds,
+    };
     if p.is_file() {
         // a file connection: no port, no credentials, the path is the server
         d.auth_index = 7;
@@ -529,35 +543,56 @@ pub fn empty_scratch(state: &mut AppState, cx: &Ctx) {
 /// "Copy to SQLite file…" on a server table: a tab selecting the table, run straight to a
 /// SQLite file through the Run to File dialog (the table name is the target table).
 pub fn table_to_sqlite(state: &mut AppState, cx: &Ctx, profile: ProfileId, obj: &ObjectRef) {
+    table_to_file(state, cx, profile, obj, "sqlite");
+}
+
+/// "Copy to … file…": the table into a SQLite (`sqlite`) or DuckDB (`duckdb`) file.
+pub fn table_to_file(state: &mut AppState, cx: &Ctx, profile: ProfileId, obj: &ObjectRef, ext: &str) {
     let target = quoted_object(state.library.profile(profile), obj);
     let sql = format!("SELECT *\nFROM {target}");
-    let idx = new_query_tab(state, cx, Some(profile), Some(obj.database.clone()), Some((format!("{} → SQLite", obj.name), sql)), false);
+    let label = if ext == "duckdb" { "DuckDB" } else { "SQLite" };
+    let idx = new_query_tab(state, cx, Some(profile), Some(obj.database.clone()), Some((format!("{} to {label}", obj.name), sql)), false);
     open_run_to_file(state, cx, idx, RunMode::All);
     if let Dialog::Export(d) = &mut state.dialog {
-        d.format_index = sqlite_format_index();
+        d.format_index = format_index(ext);
         let dir = std::path::Path::new(&d.path).parent().map(|p| p.to_path_buf()).unwrap_or_default();
         let db = if obj.database.is_empty() { "export".to_string() } else { obj.database.clone() };
-        d.path = dir.join(format!("{}.sqlite", db.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_"))).to_string_lossy().to_string();
+        d.path = dir.join(format!("{}.{ext}", db.replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "_"))).to_string_lossy().to_string();
         d.sqlite_table = obj.name.clone();
     }
 }
 
 pub fn open_sqlite_database(state: &mut AppState, cx: &Ctx, path: &std::path::Path, create: bool) -> Option<usize> {
+    open_file_database(state, cx, path, create, Some(cobalt_core::EngineFamily::Sqlite))
+}
+
+/// Open a database file as a connection (made when missing with `create`): a SQLite or DuckDB
+/// file, told apart by its header; `engine` decides for a new file (SQLite when not given).
+pub fn open_file_database(state: &mut AppState, cx: &Ctx, path: &std::path::Path, create: bool, engine: Option<cobalt_core::EngineFamily>) -> Option<usize> {
     let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path_text = canon.to_string_lossy().trim_start_matches(r"\\?\").to_string();
-    if !create && !canon.exists() {
+    let exists = canon.exists();
+    if !create && !exists {
         cx.toast(ToastKind::Error, format!("{} does not exist", path.display()));
         return None;
     }
-    if !create && !cobalt_driver::sqlite::is_sqlite_file(&canon) {
-        cx.toast(ToastKind::Error, format!("{} is not a SQLite database", path.display()));
-        return None;
-    }
+    let engine = if exists && std::fs::metadata(&canon).map(|m| m.len() > 0).unwrap_or(false) {
+        if cobalt_driver::duckdb::is_duckdb_file(&canon) {
+            cobalt_core::EngineFamily::DuckDb
+        } else if cobalt_driver::sqlite::is_sqlite_file(&canon) {
+            cobalt_core::EngineFamily::Sqlite
+        } else {
+            cx.toast(ToastKind::Error, format!("{} is not a SQLite or DuckDB database", path.display()));
+            return None;
+        }
+    } else {
+        engine.unwrap_or(cobalt_core::EngineFamily::Sqlite)
+    };
     let existing = state.library.profiles.iter().find(|p| p.is_file() && std::fs::canonicalize(&p.server).map(|c| c == canon).unwrap_or(p.server == path_text)).map(|p| p.id);
     let id = match existing {
         Some(id) => id,
         None => {
-            let mut p = ConnectionProfile::sqlite(path_text);
+            let mut p = if engine == cobalt_core::EngineFamily::DuckDb { ConnectionProfile::duckdb(path_text) } else { ConnectionProfile::sqlite(path_text) };
             p.options.create_if_missing = create;
             if let Err(e) = cx.store.upsert_profile(&p) {
                 cx.toast(ToastKind::Error, format!("Could not save the connection: {e}"));
@@ -571,18 +606,38 @@ pub fn open_sqlite_database(state: &mut AppState, cx: &Ctx, path: &std::path::Pa
 }
 
 /// *Open SQLite database…* / *New SQLite database…*: the file picker, then `open_sqlite_database`.
-pub fn pick_sqlite_database(state: &mut AppState, cx: &Ctx, create: bool) {
-    let dialog = rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]).add_filter("All files", &["*"]);
-    let path = if create { dialog.set_file_name("new.sqlite").save_file() } else { dialog.pick_file() };
+/// The file picker for a database file: any SQLite or DuckDB file to open, or a new file of
+/// `engine` to create.
+pub fn pick_file_database(state: &mut AppState, cx: &Ctx, create: bool, engine: Option<cobalt_core::EngineFamily>) {
+    let duck = engine == Some(cobalt_core::EngineFamily::DuckDb);
+    let dialog = if create && duck {
+        rfd::FileDialog::new().add_filter("DuckDB databases", &["duckdb", "ddb", "db"]).add_filter("All files", &["*"])
+    } else if create {
+        rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]).add_filter("All files", &["*"])
+    } else {
+        rfd::FileDialog::new().add_filter("Database files (SQLite, DuckDB)", &["sqlite", "db", "sqlite3", "db3", "duckdb", "ddb"]).add_filter("All files", &["*"])
+    };
+    let path = if create { dialog.set_file_name(if duck { "new.duckdb" } else { "new.sqlite" }).save_file() } else { dialog.pick_file() };
     if let Some(p) = path {
-        open_sqlite_database(state, cx, &p, create);
+        open_file_database(state, cx, &p, create, engine);
     }
 }
 
-/// `[schema].[name]` for T-SQL, `"name"` for a file database.
+/// Where the DuckDB library is installed (the app's local data folder).
+pub fn duckdb_root(cx: &Ctx) -> PathBuf {
+    cx.paths.local_data_dir.clone()
+}
+
+/// `[schema].[name]` for T-SQL, `"name"` for a file database (`"schema"."name"` when a DuckDB
+/// object sits outside `main`).
 pub fn quoted_object(profile: Option<&ConnectionProfile>, obj: &cobalt_core::ObjectRef) -> String {
     if profile.map(|p| p.is_file()).unwrap_or(false) {
-        format!("\"{}\"", obj.name.replace('"', "\"\""))
+        let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+        if obj.schema.is_empty() || obj.schema == "main" || profile.map(|p| p.engine != cobalt_core::EngineFamily::DuckDb).unwrap_or(true) {
+            q(&obj.name)
+        } else {
+            format!("{}.{}", q(&obj.schema), q(&obj.name))
+        }
     } else {
         obj.bracketed()
     }
@@ -939,7 +994,7 @@ pub fn forget_local_table(state: &mut AppState, cx: &Ctx, name: &str) {
 pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
     match action {
         TreeAction::NewConnection { group } => open_connection_dialog(state, cx, None, group, None),
-        TreeAction::OpenSqlite => pick_sqlite_database(state, cx, false),
+        TreeAction::OpenSqlite => pick_file_database(state, cx, false, None),
         TreeAction::NewGroup => {
             let next = Color::PALETTE[state.library.groups.len() % Color::PALETTE.len()];
             state.dialog = Dialog::Group { group: ServerGroup::new("", next), is_new: true };
@@ -954,10 +1009,12 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         TreeAction::DeleteProfile(id) => state.dialog = Dialog::ConfirmDeleteProfile { profile: id },
         TreeAction::EmptyScratch => state.dialog = Dialog::ConfirmEmptyScratch,
         TreeAction::CopyToSqlite { profile, obj } => table_to_sqlite(state, cx, profile, &obj),
+        TreeAction::CopyToDuckDb { profile, obj } => table_to_file(state, cx, profile, &obj, "duckdb"),
         TreeAction::EditData { profile, obj } => crate::editq::open_table(state, cx, profile, &obj),
         TreeAction::LocalQuerySqlite { profile, obj } => {
-            if let Some(path) = state.library.profile(profile).map(|p| PathBuf::from(&p.server)) {
-                if let Err(e) = crate::localq::open_sqlite_table(state, cx, &path, &obj.name) {
+            if let Some((path, duck)) = state.library.profile(profile).map(|p| (PathBuf::from(&p.server), p.engine == cobalt_core::EngineFamily::DuckDb)) {
+                let r = if duck { crate::localq::open_duckdb_table(state, cx, &path, &obj) } else { crate::localq::open_sqlite_table(state, cx, &path, &obj.name) };
+                if let Err(e) = r {
                     cx.toast(ToastKind::Error, e);
                 }
             }
@@ -1865,6 +1922,10 @@ pub fn handle_followups(state: &mut AppState, cx: &Ctx, followups: Vec<Followup>
                 }
                 request_meta(state, cx, p.id, MetadataRequest::LoadCatalog { database: database.clone() }, MetaPurpose::Catalog { tab, database });
             }
+            Followup::ReloadCatalog(tab, database) => {
+                let Some(p) = state.tab_mut(tab).and_then(|t| t.profile.clone()) else { continue };
+                request_meta(state, cx, p.id, MetadataRequest::LoadCatalog { database: database.clone() }, MetaPurpose::Catalog { tab, database });
+            }
             Followup::FinishHistory { history_id, elapsed, rows, cancelled, failed, error } => {
                 if let Some(id) = history_id {
                     let status = if cancelled {
@@ -2192,8 +2253,11 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
     }
     let tab_id = t.id;
     let col_defs: Vec<(String, SqlType, bool)> = columns.iter().map(|c| (c.name.clone(), c.sql_type.clone(), c.nullable)).collect();
+    let duck_target = state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.engine == cobalt_core::EngineFamily::DuckDb).unwrap_or(false);
     let create_sql = if d.existing {
         None
+    } else if duck_target {
+        Some(cobalt_duckdb::create_table_sql(&cobalt_duckdb::quote(&table_name), &col_defs))
     } else if file_target {
         Some(cobalt_sqlite::create_table_sql(&table_name, &col_defs))
     } else {
@@ -2648,12 +2712,15 @@ pub const FORMAT_LABELS: &[(&str, &str)] = &[
     ("Arrow IPC (Feather)", "arrow"),
     ("Delta Lake table (folder)", "delta"),
     ("SQLite database (table)", "sqlite"),
+    ("DuckDB database (table)", "duckdb"),
 ];
 
-/// [`FORMAT_LABELS`] index of the SQLite format.
-pub fn sqlite_format_index() -> usize {
-    FORMAT_LABELS.iter().position(|(_, e)| *e == "sqlite").unwrap_or(0)
+/// [`FORMAT_LABELS`] index of a format by extension.
+pub fn format_index(ext: &str) -> usize {
+    FORMAT_LABELS.iter().position(|(_, e)| *e == ext).unwrap_or(0)
 }
+
+
 
 /// The export options for the SQLite format: table `index` 0 keeps the name, later result sets
 /// get `_2`, `_3`…; mode 0 = create, 1 = replace, 2 = append.
@@ -2763,6 +2830,7 @@ fn build_export_job(state: &mut AppState, cx: &Ctx, d: &mut ExportDialog) -> Opt
         delta_partition: d.delta_partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         sqlite_table: d.sqlite_table.clone(),
         sqlite_mode: d.sqlite_mode,
+        duckdb_root: duckdb_root(cx),
         settings,
         fmt: state.formatter.clone().with_max_chars(0),
         onelake,
@@ -2976,7 +3044,7 @@ fn run_export_set(
             } else {
                 let format = cobalt_export::Format::from_extension(ext).unwrap_or(cobalt_export::Format::Csv);
                 let opts = job.export_options(index);
-                let shown = if ext == "sqlite" { format!("table {} in {}", if opts.sqlite.table.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { opts.sqlite.table.clone() }, path.display()) } else { path.display().to_string() };
+                let shown = if ext == "sqlite" || ext == "duckdb" { let t = if ext == "duckdb" { opts.duckdb.table.clone() } else { opts.sqlite.table.clone() }; format!("table {} in {}", if t.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { t }, path.display()) } else { path.display().to_string() };
                 cobalt_export::export_source_to_file(&source, format, &path, &opts, &job.fmt, progress)
                     .map(|s| format!("Wrote {} rows ({}) to {shown} in {:.1}s", fmt_count(s.rows as u64), size(s.bytes), started.elapsed().as_secs_f32()))
                     .map_err(|e| e.to_string())
@@ -3075,6 +3143,8 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
     let delta_partition: Vec<String> = d.delta_partition.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
     let sqlite = sqlite_options(&d.sqlite_table, d.sqlite_mode, 0);
     let sqlite2 = sqlite.clone();
+    let duck = cobalt_export::DuckDbOptions { table: sqlite.table.clone(), mode: sqlite.mode, lib_root: duckdb_root(cx) };
+    let duck2 = duck.clone();
     let fmt = state.formatter.clone().with_max_chars(0);
     let tx = cx.export_tx.clone();
     let egui = cx.egui.clone();
@@ -3171,6 +3241,7 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                     let format = cobalt_export::Format::from_extension(&ext2).unwrap_or(cobalt_export::Format::Csv);
                     let mut opts = cobalt_export::ExportOptions::from_settings(&settings2);
                     opts.sqlite = sqlite2;
+                    opts.duckdb = duck2;
                     let r = cobalt_export::export_to_file(&rs2, format, &path, &opts, &fmt2, &mut progress).map_err(|e| e.to_string()).and_then(|s| {
                         cobalt_export_delta::upload_file_blocking(&target, &path).map(|bytes| (s.rows, bytes)).map_err(|e| e.to_string())
                     });
@@ -3206,7 +3277,8 @@ pub fn start_export(state: &mut AppState, cx: &Ctx) {
                 let format = cobalt_export::Format::from_extension(&ext).unwrap_or(cobalt_export::Format::Csv);
                 let mut opts = cobalt_export::ExportOptions::from_settings(&settings);
                 opts.sqlite = sqlite;
-                let shown = if ext == "sqlite" { format!("table {} in {}", if opts.sqlite.table.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { opts.sqlite.table.clone() }, path.display()) } else { path.display().to_string() };
+                opts.duckdb = duck;
+                let shown = if ext == "sqlite" || ext == "duckdb" { let t = if ext == "duckdb" { opts.duckdb.table.clone() } else { opts.sqlite.table.clone() }; format!("table {} in {}", if t.is_empty() { path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default() } else { t }, path.display()) } else { path.display().to_string() };
                 cobalt_export::export_to_file(&rs, format, &path, &opts, &fmt, &mut progress).map(|s| format!("Wrote {} rows ({}) to {shown} in {:.1}s", fmt_count(s.rows as u64), humansize::format_size(s.bytes, humansize::DECIMAL), started.elapsed().as_secs_f32())).map_err(|e| e.to_string())
             };
             let _ = tx.send(ExportDone { result, tab: None, path: None });

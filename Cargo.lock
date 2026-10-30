@@ -1318,6 +1318,7 @@ dependencies = [
  "cobalt-auth",
  "cobalt-core",
  "cobalt-driver",
+ "cobalt-duckdb",
  "cobalt-export",
  "cobalt-export-delta",
  "cobalt-fabric",
@@ -1420,6 +1421,8 @@ dependencies = [
  "async-trait",
  "chrono",
  "cobalt-core",
+ "cobalt-duckdb",
+ "cobalt-sql",
  "cobalt-sqlite",
  "futures-util",
  "native-tls",
@@ -1439,6 +1442,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "cobalt-duckdb"
+version = "0.13.0"
+dependencies = [
+ "arrow",
+ "cobalt-core",
+ "libloading",
+ "parking_lot",
+ "reqwest 0.12.28",
+ "tempfile",
+ "tracing",
+ "zip",
+]
+
+[[package]]
 name = "cobalt-export"
 version = "0.13.0"
 dependencies = [
@@ -1447,6 +1464,7 @@ dependencies = [
  "calamine",
  "chrono",
  "cobalt-core",
+ "cobalt-duckdb",
  "cobalt-results",
  "cobalt-sqlite",
  "csv",
@@ -1510,6 +1528,7 @@ dependencies = [
  "arrow",
  "async-trait",
  "cobalt-core",
+ "cobalt-duckdb",
  "cobalt-results",
  "cobalt-sqlite",
  "datafusion",

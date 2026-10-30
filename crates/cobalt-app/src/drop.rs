@@ -61,6 +61,8 @@ pub enum DropAction {
     LocalTable,
     /// A SQLite database file (by its header): a file connection with a query tab.
     SqliteDb,
+    /// A DuckDB database file (by header): a connection.
+    DuckDb,
     Connections,
     AdsSettings,
     DeltaFolder,
@@ -83,6 +85,7 @@ impl DropAction {
             DropAction::Import => "Import the data into the active connection".into(),
             DropAction::LocalTable => "Open as a local table (query it here; Import into a connection from the tab)".into(),
             DropAction::SqliteDb => "Open as a SQLite database (a connection in the Servers tree)".into(),
+            DropAction::DuckDb => "Open as a DuckDB database (a connection in the Servers tree)".into(),
             DropAction::Connections => "Import the connections".into(),
             DropAction::AdsSettings => "Import connections from Azure Data Studio settings".into(),
             DropAction::DeltaFolder => "Open the Delta table as a local table".into(),
@@ -115,6 +118,9 @@ pub fn classify(path: &Path) -> DropAction {
     }
     if cobalt_core::explore::ExploreSpec::is_explore_path(path) {
         return DropAction::Explore;
+    }
+    if cobalt_driver::duckdb::is_duckdb_file(path) {
+        return DropAction::DuckDb;
     }
     if cobalt_driver::sqlite::is_sqlite_file(path) {
         return DropAction::SqliteDb;
@@ -266,6 +272,7 @@ pub fn drop_files(state: &mut AppState, cx: &Ctx, paths: &[PathBuf]) -> usize {
             DropAction::Dashboard => crate::dashboard::open_path(state, cx, path.clone()),
             DropAction::Explore => crate::exploreq::open_path(state, cx, path).is_some(),
             DropAction::SqliteDb => crate::ops::open_sqlite_database(state, cx, path, false).is_some(),
+            DropAction::DuckDb => crate::ops::open_file_database(state, cx, path, false, Some(cobalt_core::EngineFamily::DuckDb)).is_some(),
             DropAction::LocalTable => match crate::localq::open_file_table(state, cx, path) {
                 Ok(_) => true,
                 Err(e) => {

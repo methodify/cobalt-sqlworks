@@ -5,7 +5,7 @@
 //! - `add_profile {name?, server, user, password, database?, trust_server_certificate?}` → profile id (SQL login; the password is stored in the OS keychain)
 //! - `remove_profile {profile: <name or id>}` → deletes the connection from the library (every profile with that name)
 //! - `edit {action: begin|off|set|insert|delete|undelete|save|discard|pending, set?, row?, col?, value?}` → Edit Data on the active tab's grid (the pending summary comes back)
-//! - `local_sqlite {path, table}` → a SQLite file's table as a local table (Local tab); `open_scratch` → a tab on the scratch database; `table_to_sqlite {profile, database, table, schema?, path, mode?}` → Copy to SQLite file
+//! - `table_to_sqlite {…, format?: sqlite|duckdb}` also writes DuckDB files; `local_sqlite {path, table}` / `local_duckdb {path, table, schema?}` → a database file's table as a local table (Local tab); `duckdb {action: status|install|remove}` → the DuckDB engine library; `open_scratch` → a tab on the scratch database; `table_to_sqlite {profile, database, table, schema?, path, mode?}` → Copy to SQLite file
 //! - `connect {profile: <name or id>, database?}` → opens a new tab connected to that profile
 //! - `open_query {text, connect?: <profile name>}` → new tab with text
 //! - `spark_query {workspace?, lakehouse?, write_mode?, text?}` → a Spark SQL query tab (plain local Spark without a workspace)
@@ -412,10 +412,11 @@ impl AgentApp for CobaltApp {
                 ActionResult::with(&json!({"removed": n}))
             }
             "add_profile" => {
-                // engine: "sqlite" with a `path` makes a file connection (read_only?, create?)
-                if arg_str(args, "engine").as_deref() == Some("sqlite") {
+                // engine: "sqlite" | "duckdb" with a `path` makes a file connection (read_only?, create?)
+                let engine = arg_str(args, "engine");
+                if matches!(engine.as_deref(), Some("sqlite") | Some("duckdb")) {
                     let Some(path) = arg_str(args, "path").or_else(|| arg_str(args, "server")) else { return ActionResult::BadArgs("path is required".into()) };
-                    let mut p = ConnectionProfile::sqlite(path);
+                    let mut p = if engine.as_deref() == Some("duckdb") { ConnectionProfile::duckdb(path) } else { ConnectionProfile::sqlite(path) };
                     p.name = arg_str(args, "name");
                     p.options.read_only = args.and_then(|a| a.get("read_only")).and_then(|v| v.as_bool()).unwrap_or(false);
                     p.options.create_if_missing = args.and_then(|a| a.get("create")).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -495,7 +496,8 @@ impl AgentApp for CobaltApp {
                     if let (Some(p), Some(table)) = (arg_str(args, "profile").and_then(|p| self.find_profile(&p)), arg_str(args, "table")) {
                         let (schema, name) = match table.split_once('.') {
                             Some((s, n)) => (s.to_string(), n.to_string()),
-                            None => ("dbo".to_string(), table.clone()),
+                            // a file database's tables have no schema (SQLite) or sit in main (DuckDB)
+                            None => (if p.is_file() { String::new() } else { "dbo".to_string() }, table.clone()),
                         };
                         let database = arg_str(args, "database").or_else(|| p.database.clone()).unwrap_or_else(|| "master".into());
                         let pid = p.id;
@@ -1068,7 +1070,12 @@ impl AgentApp for CobaltApp {
             "open_database" => {
                 let Some(path) = arg_str(args, "path") else { return ActionResult::BadArgs("path is required".into()) };
                 let create = args.and_then(|a| a.get("create")).and_then(|v| v.as_bool()).unwrap_or(false);
-                let idx = self.with_ctx(egui, |s, cx| ops::open_sqlite_database(s, cx, std::path::Path::new(&path), create));
+                // engine: "sqlite" (default) | "duckdb" for a new file; an existing file is told by its header
+                let engine = match arg_str(args, "engine").as_deref() {
+                    Some("duckdb") => Some(cobalt_core::EngineFamily::DuckDb),
+                    _ => Some(cobalt_core::EngineFamily::Sqlite),
+                };
+                let idx = self.with_ctx(egui, |s, cx| ops::open_file_database(s, cx, std::path::Path::new(&path), create, engine));
                 match idx {
                     Some(i) => ActionResult::with(&json!({"tab": i})),
                     None => ActionResult::BadArgs("could not open the database".into()),
@@ -1578,6 +1585,35 @@ impl AgentApp for CobaltApp {
                 });
                 ActionResult::with(&json!({"target": target_tab}))
             }
+            "local_duckdb" => {
+                // {path, table, schema?} → a table of a DuckDB file as a local table with a Local tab → {tab, name}
+                let (Some(path), Some(table)) = (arg_str(args, "path"), arg_str(args, "table")) else { return ActionResult::BadArgs("path and table are required".into()) };
+                let obj = cobalt_core::ObjectRef { database: String::new(), schema: arg_str(args, "schema").unwrap_or_default(), name: table, kind: cobalt_core::ObjectKind::Table, object_id: None };
+                let r = self.with_ctx(egui, |s, cx| crate::localq::open_duckdb_table(s, cx, std::path::Path::new(&path), &obj));
+                match r {
+                    Ok(i) => {
+                        let name = self.local.tables().into_iter().find(|t| matches!(&t.source, cobalt_local::TableSource::DuckDb { table, .. } if *table == obj.name || table.ends_with(&format!(".{}", obj.name)))).map(|t| t.name);
+                        ActionResult::with(&json!({"tab": i, "title": self.state.tabs[i].title, "name": name}))
+                    }
+                    Err(e) => ActionResult::BadArgs(e),
+                }
+            }
+            "duckdb" => {
+                // the DuckDB engine library: {action: status|install|remove} → {version, installed, path}
+                let root = self.with_ctx(egui, |_, cx| ops::duckdb_root(cx));
+                let action = arg_str(args, "action").unwrap_or_else(|| "status".into());
+                let mut error = None;
+                match action.as_str() {
+                    "install" => {
+                        if !cobalt_duckdb::is_installed(&root) {
+                            error = cobalt_duckdb::install(&root, &mut |_, _| {}).err();
+                        }
+                    }
+                    "remove" => error = cobalt_duckdb::remove(&root).err(),
+                    _ => {}
+                }
+                ActionResult::with(&json!({"version": cobalt_duckdb::VERSION, "installed": cobalt_duckdb::is_installed(&root), "path": cobalt_duckdb::lib_path(&root), "url": cobalt_duckdb::download_url(), "error": error}))
+            }
             "local_sqlite" => {
                 // {path, table} → a table of a SQLite file as a local table with a Local tab → {tab, name}
                 let (Some(path), Some(table)) = (arg_str(args, "path"), arg_str(args, "table")) else { return ActionResult::BadArgs("path and table are required".into()) };
@@ -1678,8 +1714,9 @@ impl AgentApp for CobaltApp {
                     _ => 0,
                 };
                 let obj = cobalt_core::ObjectRef { database, schema, name: table, kind: cobalt_core::ObjectKind::Table, object_id: None };
+                let ext = if arg_str(args, "format").as_deref() == Some("duckdb") { "duckdb" } else { "sqlite" };
                 self.with_ctx(egui, |s, cx| {
-                    ops::table_to_sqlite(s, cx, p.id, &obj);
+                    ops::table_to_file(s, cx, p.id, &obj, ext);
                     if let crate::state::Dialog::Export(d) = &mut s.dialog {
                         d.path = path;
                         d.sqlite_mode = mode;

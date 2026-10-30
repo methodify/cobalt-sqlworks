@@ -68,7 +68,7 @@ pub fn sql_type_from_type_info(ti: &TypeInfo) -> (SqlType, bool) {
     match ti {
         TypeInfo::FixedLen(f) => (
             match f {
-                FixedLenType::Null => SqlType::Other("null".into()),
+                FixedLenType::Null => SqlType::Other { name: "null".into() },
                 FixedLenType::Int1 => SqlType::TinyInt,
                 FixedLenType::Bit => SqlType::Bit,
                 FixedLenType::Int2 => SqlType::SmallInt,
@@ -114,7 +114,7 @@ pub fn sql_type_from_type_info(ti: &TypeInfo) -> (SqlType, bool) {
                 VarLenType::NVarchar => (SqlType::NVarChar { len: len_opt(n).map(|b| b / 2) }, false),
                 VarLenType::NChar => (SqlType::NChar { len: Some((n / 2) as u32) }, false),
                 VarLenType::Xml => (SqlType::Xml, false),
-                VarLenType::Udt => (SqlType::Other("udt".into()), false),
+                VarLenType::Udt => (SqlType::Other { name: "udt".into() }, false),
                 VarLenType::Text => (SqlType::Text, false),
                 VarLenType::Image => (SqlType::Image, false),
                 VarLenType::NText => (SqlType::NText, false),
@@ -133,7 +133,7 @@ pub fn sql_type_from_type_info(ti: &TypeInfo) -> (SqlType, bool) {
                     "geography" => SqlType::Geography,
                     "geometry" => SqlType::Geometry,
                     "hierarchyid" => SqlType::HierarchyId,
-                    _ => SqlType::Other(u.type_name.clone()),
+                    _ => SqlType::Other { name: u.type_name.clone() },
                 },
                 false,
             )

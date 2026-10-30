@@ -713,6 +713,8 @@ impl EditorTab {
             crate::ui::editor::Syntax::Local
         } else if tabular.is_some() {
             crate::ui::editor::Syntax::Dax
+        } else if profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::DuckDb).unwrap_or(false) {
+            crate::ui::editor::Syntax::DuckDb
         } else if profile.as_ref().map(|p| p.is_file()).unwrap_or(false) {
             crate::ui::editor::Syntax::Sqlite
         } else {
@@ -2031,7 +2033,13 @@ impl AppState {
                         }
                     }
                     text.push_str(&message.message);
-                    r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, path: None });
+                    // a file engine's EXPLAIN text (marked by the driver) goes to the Plan pane
+                    if message.procedure.as_deref() == Some("plan") && !message.is_error {
+                        let (key, body) = message.message.split_once('\n').map(|(k, b)| (k.trim().to_string(), b.to_string())).unwrap_or_else(|| ("plan".to_string(), message.message.clone()));
+                        r.text_plan.get_or_insert_with(Vec::new).push((key, body));
+                    } else {
+                        r.messages.push(MessageLine { text, is_error: message.is_error, is_batch_header: is_fabric_trace, line, path: None });
+                    }
                 }
             }
             Event::RowsAffected { tab, run, rows } => {
@@ -2082,6 +2090,18 @@ impl AppState {
                 }
                 if self.tab_mut(tab).map(|t| t.is_notebook()).unwrap_or(false) {
                     out.push(Followup::NotebookPump(tab, failed || cancelled));
+                }
+                // a file database's catalog follows a run with DDL (the completion and the tree)
+                let ddl = self.run_mut(tab, run).map(|r| { let u = r.script.to_ascii_uppercase(); ["CREATE ", "DROP ", "ALTER ", "ATTACH ", "DETACH "].iter().any(|k| u.contains(k)) }).unwrap_or(false);
+                if ddl {
+                    if let Some(t) = self.tab_mut(tab) {
+                        if let Some(pid) = t.profile.as_ref().filter(|p| p.is_file()).map(|p| p.id) {
+                            if let Some(db) = t.conn.database().map(str::to_string) {
+                                out.push(Followup::ReloadCatalog(tab, db.clone()));
+                                out.push(Followup::RefreshDatabase { profile: pid, database: db });
+                            }
+                        }
+                    }
                 }
                 // Edit Data: a save script finished, or the query ran again after one
                 let run_ok = !failed && !cancelled && !self.run_mut(tab, run).map(|r| r.has_error()).unwrap_or(true);
@@ -2293,6 +2313,8 @@ impl AppState {
 pub enum Followup {
     LoadTabDatabases(TabId),
     LoadCatalog(TabId, String),
+    /// The tab's catalog again, past the cache (a run with DDL on a file database).
+    ReloadCatalog(TabId, String),
     FinishHistory { history_id: Option<i64>, elapsed: Duration, rows: u64, cancelled: bool, failed: bool, error: Option<String> },
     CacheCatalog { profile: ProfileId, database: String, catalog: Arc<DatabaseCatalog> },
     OpenScriptTab { title: String, sql: String, profile: ProfileId, database: String, run: bool },

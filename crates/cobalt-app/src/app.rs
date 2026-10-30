@@ -160,7 +160,7 @@ impl CobaltApp {
         // pictures in notebook outputs (a kept chart, matplotlib from Fabric) draw through egui's image loaders
         egui_extras::install_image_loaders(&cc.egui_ctx);
         let repaint: Arc<dyn Fn() + Send + Sync> = Arc::new(move || egui_ctx.request_repaint());
-        let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::MultiDriver { tds: Arc::new(cobalt_driver::mssql::MssqlDriver::new()), sqlite: Arc::new(cobalt_driver::sqlite::SqliteDriver) });
+        let driver: Arc<dyn cobalt_driver::Driver> = Arc::new(cobalt_driver::MultiDriver { tds: Arc::new(cobalt_driver::mssql::MssqlDriver::new()), sqlite: Arc::new(cobalt_driver::sqlite::SqliteDriver), duckdb: Arc::new(cobalt_driver::duckdb::DuckDbDriver { root: paths.local_data_dir.clone() }) });
         let session = SessionManager::start(driver, budget.clone(), paths.spill_dir(), repaint, crate::ops::cred_refresher(resolver.clone()));
         let local = Arc::new(cobalt_local::Engine::new(budget.clone(), settings.advanced.memory_budget_bytes as usize, paths.spill_dir().join("local")).expect("local query engine"));
         {

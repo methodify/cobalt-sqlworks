@@ -36,6 +36,8 @@ pub enum TableSource {
     OneLake { url: String },
     /// A table or view in a SQLite database file, read from the file on every scan.
     Sqlite { path: PathBuf, table: String },
+    /// A table or view in a DuckDB database file, read through DuckDB on every scan.
+    DuckDb { path: PathBuf, table: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -367,6 +369,32 @@ impl Engine {
         Ok(info)
     }
 
+    /// Register a table (or view) of a DuckDB database file as a local table, read through
+    /// DuckDB on every scan (projected columns only); `lib_root` is where the DuckDB library lives.
+    pub async fn register_duckdb(&self, name: &str, lib_root: &Path, path: &Path, table: &str) -> Result<TableInfo, String> {
+        let (root, p, t) = (lib_root.to_path_buf(), path.to_path_buf(), table.to_string());
+        let (schema, rows) = tokio::task::spawn_blocking(move || -> Result<(SchemaRef, u64), String> {
+            let schema = cobalt_duckdb::table_schema(&root, &p, &t)?;
+            let (_, b) = cobalt_duckdb::read_table(&root, &p, &t, Some(&[]), None).unwrap_or((Arc::new(arrow::datatypes::Schema::empty()), Vec::new()));
+            let rows = b.iter().map(|b| b.num_rows() as u64).sum();
+            Ok((schema, rows))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        let _ = self.ctx.deregister_table(name);
+        let provider = Arc::new(crate::sqlite_provider::DuckDbTableProvider::new(lib_root.to_path_buf(), path.to_path_buf(), table.to_string(), schema.clone()));
+        self.ctx.register_table(name, provider.clone()).map_err(|e| e.to_string())?;
+        let _ = self.ctx.deregister_table(LATEST);
+        let _ = self.ctx.register_table(LATEST, provider);
+        let info = TableInfo { name: name.to_string(), source: TableSource::DuckDb { path: path.to_path_buf(), table: table.to_string() }, columns: columns_for(&schema), rows: rows as usize, rows_known: true, live: false, memory_bytes: None, file_bytes: std::fs::metadata(path).ok().map(|m| m.len()) };
+        let mut r = self.registry.lock();
+        r.tables.insert(name.to_string(), Entry { info: info.clone(), rs: None });
+        r.latest = Some(name.to_string());
+        drop(r);
+        self.bump();
+        Ok(info)
+    }
+
     /// Register a file as a table: Parquet, CSV / TSV / delimited text (header and delimiter
     /// sniffed), JSON lines, Arrow IPC, or a Delta folder (through delta-rs). It also becomes `_`.
     pub async fn register_file(&self, name: &str, path: &Path) -> Result<TableInfo, String> {
@@ -643,28 +671,9 @@ pub fn sanitize_name(s: &str) -> String {
 
 /// The SQL type a result column takes for an Arrow type the engine produced.
 pub fn sql_type_for(dt: &DataType) -> SqlType {
-    match dt {
-        DataType::Boolean => SqlType::Bit,
-        DataType::UInt8 => SqlType::TinyInt,
-        DataType::Int8 | DataType::Int16 => SqlType::SmallInt,
-        DataType::Int32 | DataType::UInt16 => SqlType::Int,
-        DataType::Int64 | DataType::UInt32 => SqlType::BigInt,
-        DataType::UInt64 => SqlType::Decimal { precision: 20, scale: 0 },
-        DataType::Float16 | DataType::Float32 => SqlType::Real,
-        DataType::Float64 => SqlType::Float,
-        DataType::Decimal128(p, s) => SqlType::Decimal { precision: *p, scale: (*s).max(0) as u8 },
-        DataType::Date32 | DataType::Date64 => SqlType::Date,
-        DataType::Time32(_) | DataType::Time64(_) => SqlType::Time { scale: 7 },
-        DataType::Timestamp(_, None) => SqlType::DateTime2 { scale: 7 },
-        DataType::Timestamp(_, Some(_)) => SqlType::DateTimeOffset { scale: 7 },
-        DataType::Utf8 | DataType::Utf8View => SqlType::NVarChar { len: Some(4000) },
-        DataType::LargeUtf8 => SqlType::NVarChar { len: None },
-        DataType::Binary | DataType::BinaryView | DataType::FixedSizeBinary(_) => SqlType::VarBinary { len: Some(8000) },
-        DataType::LargeBinary => SqlType::VarBinary { len: None },
-        DataType::Null => SqlType::NVarChar { len: Some(1) },
-        other => SqlType::Other(other.to_string()),
-    }
+    SqlType::from_arrow(dt)
 }
+
 
 /// Columns for a result set from the engine's output schema.
 pub fn columns_for(schema: &SchemaRef) -> Vec<ColumnInfo> {

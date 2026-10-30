@@ -246,6 +246,8 @@ pub enum Dialect {
     Local,
     /// SQLite: `"name"`, `[name]` and `` `name` `` all quote, its own keywords and functions.
     Sqlite,
+    /// DuckDB: `"name"` quotes, PostgreSQL-flavoured keywords, its own functions.
+    DuckDb,
     /// DAX against a semantic model: `'Table'` quoted table names ([`TokenKind::QuotedIdentifier`]),
     /// `[Column or Measure]` ([`TokenKind::BracketedIdentifier`]), `"text"` strings, `//` as well
     /// as `--` line comments, `INFO.VIEW.TABLES` dotted function names kept as one token, and any
@@ -308,6 +310,44 @@ static SPARK_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.it
 static SPARK_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| FUNCTIONS.iter().chain(SPARK_FUNCTIONS.iter()).copied().collect());
 static SQLITE_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SQLITE_KEYWORDS.iter()).copied().collect());
 static SQLITE_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| SQLITE_FUNCTIONS.iter().copied().collect());
+static DUCKDB_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SQLITE_KEYWORDS.iter()).chain(DUCKDB_KEYWORDS.iter()).copied().collect());
+static DUCKDB_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| DUCKDB_FUNCTIONS.iter().copied().collect());
+
+/// DuckDB keywords on top of the shared and SQLite ones.
+pub static DUCKDB_KEYWORDS: &[&str] = &[
+    "ILIKE", "SIMILAR", "QUALIFY", "PIVOT", "UNPIVOT", "SAMPLE", "USING", "LATERAL", "POSITIONAL", "ASOF", "SEMI", "ANTI",
+    "STRUCT", "MAP", "LIST", "ARRAY", "UNION", "ENUM", "MACRO", "SEQUENCE", "TYPE", "COPY", "INSTALL", "LOAD", "ATTACH",
+    "DETACH", "CHECKPOINT", "FORCE", "DESCRIBE", "SUMMARIZE", "SHOW", "TABLES", "COMMENT", "RETURNING", "BY", "NAME",
+    "EXCLUDE", "REPLACE", "COLUMNS", "GROUPING", "SETS", "CUBE", "ROLLUP", "INTERVAL", "TIMESTAMPTZ", "HUGEINT", "UUID",
+    "VARCHAR", "BLOB", "DOUBLE", "BOOLEAN", "ANALYZE", "VACUUM", "PRAGMA", "SET", "RESET", "TRANSACTION", "ROLLBACK", "ABORT",
+    "ISNULL", "NOTNULL", "OVERLAPS", "FETCH", "FIRST", "NEXT", "ONLY", "PERCENT", "TRY_CAST", "VARIABLE", "GLOB",
+];
+
+/// DuckDB's commonly used functions (scalar, aggregate, window, table functions).
+pub static DUCKDB_FUNCTIONS: &[&str] = &[
+    "ABS", "ACOS", "AGE", "ALIAS", "APPROX_COUNT_DISTINCT", "APPROX_QUANTILE", "ARG_MAX", "ARG_MIN", "ARRAY_AGG", "ARRAY_LENGTH",
+    "ASIN", "ATAN", "ATAN2", "AVG", "BIT_AND", "BIT_OR", "BIT_XOR", "BOOL_AND", "BOOL_OR", "CBRT", "CEIL", "CEILING", "CENTURY",
+    "COALESCE", "CONCAT", "CONCAT_WS", "CONTAINS", "CORR", "COS", "COUNT", "COUNT_IF", "COVAR_POP", "COVAR_SAMP", "CUME_DIST",
+    "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "DATE_ADD", "DATE_DIFF", "DATE_PART", "DATE_SUB", "DATE_TRUNC", "DATEDIFF",
+    "DATEPART", "DATETRUNC", "DAY", "DAYNAME", "DAYOFMONTH", "DAYOFWEEK", "DAYOFYEAR", "DECADE", "DEGREES", "DENSE_RANK", "ENDS_WITH",
+    "ENTROPY", "EPOCH", "EPOCH_MS", "EXP", "FACTORIAL", "FAVG", "FIRST", "FIRST_VALUE", "FLOOR", "FORMAT", "FORMAT_BYTES", "FROM_JSON",
+    "FSUM", "GAMMA", "GCD", "GENERATE_SERIES", "GEOMEAN", "GREATEST", "GROUP_CONCAT", "HASH", "HISTOGRAM", "HOUR", "IFNULL", "INSTR",
+    "ISFINITE", "ISINF", "ISNAN", "JSON", "JSON_ARRAY", "JSON_EXTRACT", "JSON_EXTRACT_STRING", "JSON_GROUP_ARRAY", "JSON_GROUP_OBJECT",
+    "JSON_KEYS", "JSON_OBJECT", "JSON_STRUCTURE", "JSON_TRANSFORM", "JSON_TYPE", "JSON_VALID", "KURTOSIS", "LAG", "LAST", "LAST_DAY",
+    "LAST_VALUE", "LCASE", "LCM", "LEAD", "LEAST", "LEFT", "LEN", "LENGTH", "LGAMMA", "LIST", "LIST_AGGREGATE", "LIST_CONTAINS",
+    "LIST_DISTINCT", "LIST_FILTER", "LIST_SORT", "LIST_TRANSFORM", "LIST_VALUE", "LN", "LOG", "LOG10", "LOG2", "LOWER", "LPAD", "LTRIM",
+    "MAD", "MAKE_DATE", "MAKE_TIME", "MAKE_TIMESTAMP", "MAP", "MAX", "MAX_BY", "MD5", "MEDIAN", "MIN", "MIN_BY", "MINUTE", "MOD", "MODE",
+    "MONTH", "MONTHNAME", "NANOSECOND", "NEXTVAL", "NOW", "NTH_VALUE", "NTILE", "NULLIF", "OCTET_LENGTH", "ORD", "PERCENT_RANK",
+    "PERCENTILE_CONT", "PERCENTILE_DISC", "PI", "POSITION", "POW", "POWER", "PREFIX", "PRINTF", "PRODUCT", "QUANTILE", "QUANTILE_CONT",
+    "QUANTILE_DISC", "QUARTER", "RADIANS", "RANDOM", "RANGE", "RANK", "READ_CSV", "READ_CSV_AUTO", "READ_JSON", "READ_JSON_AUTO",
+    "READ_PARQUET", "REGEXP_EXTRACT", "REGEXP_EXTRACT_ALL", "REGEXP_FULL_MATCH", "REGEXP_MATCHES", "REGEXP_REPLACE", "REGEXP_SPLIT_TO_ARRAY",
+    "REGR_SLOPE", "REPEAT", "REPLACE", "REVERSE", "RIGHT", "ROUND", "ROW", "ROW_NUMBER", "RPAD", "RTRIM", "SECOND", "SETSEED", "SHA256",
+    "SIGN", "SIN", "SKEWNESS", "SPLIT", "SPLIT_PART", "SQRT", "STARTS_WITH", "STDDEV", "STDDEV_POP", "STDDEV_SAMP", "STRFTIME",
+    "STRING_AGG", "STRING_SPLIT", "STRING_TO_ARRAY", "STRLEN", "STRPOS", "STRPTIME", "STRUCT_PACK", "SUBSTR", "SUBSTRING", "SUFFIX", "SUM",
+    "TAN", "TIME_BUCKET", "TO_DAYS", "TO_HOURS", "TO_JSON", "TO_MINUTES", "TO_SECONDS", "TO_TIMESTAMP", "TODAY", "TRANSLATE", "TRIM",
+    "TRUNC", "TRY_CAST", "TRY_STRPTIME", "TYPEOF", "UCASE", "UNICODE", "UNNEST", "UPPER", "UUID", "VAR_POP", "VAR_SAMP", "VARIANCE",
+    "VERSION", "WEEK", "WEEKDAY", "WEEKOFYEAR", "YEAR", "YEARWEEK",
+];
 
 /// SQLite keywords on top of the shared ones.
 pub static SQLITE_KEYWORDS: &[&str] = &[
@@ -347,6 +387,7 @@ pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
     let set = match dialect {
         Dialect::TSql => &*KEYWORD_SET,
         Dialect::Sqlite => &*SQLITE_KEYWORD_SET,
+        Dialect::DuckDb => &*DUCKDB_KEYWORD_SET,
         Dialect::Spark | Dialect::Local => &*SPARK_KEYWORD_SET,
         Dialect::Dax => &*DAX_KEYWORD_SET,
     };
@@ -455,7 +496,7 @@ impl<'a> Lexer<'a> {
                 '\'' if self.dialect == Dialect::Dax => TokenKind::QuotedIdentifier,
                 '\'' => TokenKind::String,
                 // SQLite (like SQL Server with QUOTED_IDENTIFIER on) reads "double quotes" as an identifier
-                '"' if !matches!(self.dialect, Dialect::TSql | Dialect::Sqlite) => TokenKind::String,
+                '"' if !matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb) => TokenKind::String,
                 '"' | '`' => TokenKind::QuotedIdentifier,
                 _ => TokenKind::BracketedIdentifier,
             };
@@ -526,7 +567,7 @@ impl<'a> Lexer<'a> {
             b'"' => {
                 self.pos += 1;
                 self.consume_delimited('"');
-                self.push(if matches!(self.dialect, Dialect::TSql | Dialect::Sqlite) { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
+                self.push(if matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb) { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
             b'`' if self.dialect.is_sparkish() => {
                 self.pos += 1;
@@ -641,6 +682,7 @@ impl<'a> Lexer<'a> {
         let (functions, keywords) = match self.dialect {
             Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
             Dialect::Sqlite => (&*SQLITE_FUNCTION_SET, &*SQLITE_KEYWORD_SET),
+            Dialect::DuckDb => (&*DUCKDB_FUNCTION_SET, &*DUCKDB_KEYWORD_SET),
             Dialect::Spark | Dialect::Local => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
             Dialect::Dax => unreachable!(),
         };

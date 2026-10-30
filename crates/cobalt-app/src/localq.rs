@@ -260,6 +260,43 @@ pub fn open_sqlite_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path,
     Ok(i)
 }
 
+/// A table of a DuckDB database file as a local table (read through DuckDB on every scan),
+/// with a Local tab over it. Returns the tab index.
+pub fn open_duckdb_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path, obj: &cobalt_core::ObjectRef) -> Result<usize, String> {
+    let table = if obj.schema.is_empty() || obj.schema == "main" { obj.name.clone() } else { format!("{}.{}", obj.schema, obj.name) };
+    let mut name = cobalt_local::sanitize_name(&obj.name);
+    if name.is_empty() {
+        name = "table".into();
+    }
+    let existing = cx.local.tables().into_iter().find(|t| matches!(&t.source, TableSource::DuckDb { path: p, table: t } if p == path && *t == table)).map(|t| t.name);
+    let name = match existing {
+        Some(n) => n,
+        None => {
+            let base = name.clone();
+            let mut suffix = 2;
+            while cx.local.has_table(&name) {
+                name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            name
+        }
+    };
+    let engine = Arc::clone(cx.local);
+    let root = crate::ops::duckdb_root(cx);
+    let p = path.to_path_buf();
+    let n = name.clone();
+    let t = table.clone();
+    cx.session.handle().block_on(async move { engine.register_duckdb(&n, &root, &p, &t).await })?;
+    let text = format!("SELECT *\nFROM {}\nLIMIT 1000", quote(&name));
+    let i = new_tab(state, cx, Some(text));
+    state.tabs[i].title = format!("{} · local", obj.name);
+    state.tabs[i].custom_title = true;
+    state.active_tab = Some(i);
+    refresh_all_catalogs(state, cx);
+    run(state, cx, i, RunMode::All);
+    Ok(i)
+}
+
 /// A file (Parquet, CSV, JSON lines, Arrow) or a Delta folder as a local table, with a Local
 /// tab over it (`SELECT * FROM <name> LIMIT 1000`, run). Returns the tab index.
 pub fn open_file_table(state: &mut AppState, cx: &Ctx, path: &std::path::Path) -> Result<usize, String> {

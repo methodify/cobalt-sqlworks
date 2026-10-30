@@ -10,6 +10,7 @@ license.workspace = true
 cobalt-core.workspace = true
 cobalt-results.workspace = true
 cobalt-sqlite.workspace = true
+cobalt-duckdb.workspace = true
 arrow = { workspace = true, features = ["ipc_compression"] }
 arrow-ipc.workspace = true
 parquet.workspace = true

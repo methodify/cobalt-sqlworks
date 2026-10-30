@@ -29,6 +29,8 @@ serde_json.workspace = true
 parking_lot.workspace = true
 rusqlite.workspace = true
 cobalt-sqlite.workspace = true
+cobalt-duckdb.workspace = true
+cobalt-sql.workspace = true
 
 [dev-dependencies]
 native-tls = "0.2"

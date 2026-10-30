@@ -1,0 +1,19 @@
+[package]
+name = "cobalt-duckdb"
+description = "DuckDB through its C API loaded at run time: the official libduckdb shared library downloaded on first use, Arrow results through the C data interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+cobalt-core.workspace = true
+arrow = { workspace = true, features = ["ffi"] }
+libloading = "0.8"
+reqwest = { workspace = true, features = ["blocking"] }
+zip = { version = "8", default-features = false, features = ["deflate"] }
+parking_lot.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

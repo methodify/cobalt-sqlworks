@@ -31,6 +31,7 @@ cobalt-export.workspace = true
 cobalt-export-delta.workspace = true
 cobalt-import.workspace = true
 cobalt-sqlite.workspace = true
+cobalt-duckdb.workspace = true
 cobalt-plan.workspace = true
 cobalt-fabric.workspace = true
 cobalt-tabular.workspace = true

@@ -42,7 +42,7 @@ pub enum SqlType {
     Json,
     Vector { dims: Option<u32> },
     Timestamp,
-    Other(String),
+    Other { name: String },
 }
 
 impl SqlType {
@@ -88,7 +88,7 @@ impl SqlType {
             "json" => SqlType::Json,
             "vector" => SqlType::Vector { dims: None },
             "timestamp" | "rowversion" => SqlType::Timestamp,
-            other => SqlType::Other(other.to_string()),
+            other => SqlType::Other { name: other.to_string() },
         }
     }
 
@@ -123,6 +123,32 @@ impl SqlType {
     /// decimals → Decimal128, datetime2 → Timestamp(µs), datetimeoffset → Timestamp(µs, UTC) with the
     /// original offset kept in a companion column by the driver when needed, uniqueidentifier → Utf8,
     /// xml/json → Utf8 (LargeUtf8 for max types), sql_variant → Utf8 (formatted).
+    /// The SQL type a column of this Arrow type is shown as (the local engine, DuckDB, files).
+    pub fn from_arrow(dt: &arrow_schema::DataType) -> SqlType {
+        use arrow_schema::DataType;
+        match dt {
+            DataType::Boolean => SqlType::Bit,
+            DataType::UInt8 => SqlType::TinyInt,
+            DataType::Int8 | DataType::Int16 => SqlType::SmallInt,
+            DataType::Int32 | DataType::UInt16 => SqlType::Int,
+            DataType::Int64 | DataType::UInt32 => SqlType::BigInt,
+            DataType::UInt64 => SqlType::Decimal { precision: 20, scale: 0 },
+            DataType::Float16 | DataType::Float32 => SqlType::Real,
+            DataType::Float64 => SqlType::Float,
+            DataType::Decimal128(p, s) => SqlType::Decimal { precision: *p, scale: (*s).max(0) as u8 },
+            DataType::Date32 | DataType::Date64 => SqlType::Date,
+            DataType::Time32(_) | DataType::Time64(_) => SqlType::Time { scale: 7 },
+            DataType::Timestamp(_, None) => SqlType::DateTime2 { scale: 7 },
+            DataType::Timestamp(_, Some(_)) => SqlType::DateTimeOffset { scale: 7 },
+            DataType::Utf8 | DataType::Utf8View => SqlType::NVarChar { len: Some(4000) },
+            DataType::LargeUtf8 => SqlType::NVarChar { len: None },
+            DataType::Binary | DataType::BinaryView | DataType::FixedSizeBinary(_) => SqlType::VarBinary { len: Some(8000) },
+            DataType::LargeBinary => SqlType::VarBinary { len: None },
+            DataType::Null => SqlType::NVarChar { len: Some(1) },
+            other => SqlType::Other { name: other.to_string() },
+        }
+    }
+
     pub fn arrow_type(&self) -> arrow_schema::DataType {
         use arrow_schema::{DataType as D, TimeUnit as T};
         match self {
@@ -149,7 +175,7 @@ impl SqlType {
             SqlType::UniqueIdentifier => D::Utf8,
             SqlType::SqlVariant => D::Utf8,
             SqlType::Vector { .. } => D::LargeUtf8,
-            SqlType::Other(_) => D::LargeUtf8,
+            SqlType::Other { .. } => D::LargeUtf8,
         }
     }
 }
@@ -199,7 +225,7 @@ impl fmt::Display for SqlType {
             SqlType::Vector { dims: Some(d) } => write!(f, "vector({d})"),
             SqlType::Vector { dims: None } => write!(f, "vector"),
             SqlType::Timestamp => write!(f, "timestamp"),
-            SqlType::Other(s) => write!(f, "{s}"),
+            SqlType::Other { name } => write!(f, "{name}"),
         }
     }
 }

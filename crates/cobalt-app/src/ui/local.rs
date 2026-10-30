@@ -39,7 +39,7 @@ fn group_of(t: &TableInfo) -> usize {
         TableSource::File { .. } => 1,
         TableSource::Scratch { .. } => 2,
         TableSource::OneLake { .. } => 3,
-        TableSource::Sqlite { .. } => 4,
+        TableSource::Sqlite { .. } | TableSource::DuckDb { .. } => 4,
         TableSource::Statement => 5,
     }
 }
@@ -49,7 +49,7 @@ const GROUPS: [(&str, &str); 6] = [
     ("Files and Delta", "read on every scan; nothing is copied"),
     ("Scratch", "kept across sessions as Parquet in the app data folder"),
     ("OneLake", "lakehouse tables read with your Fabric sign-in"),
-    ("Databases", "tables of SQLite database files, read from the file on every scan"),
+    ("Databases", "tables of SQLite and DuckDB database files, read from the file on every scan"),
     ("Made by statements", "CREATE TABLE … AS in a Local tab; gone when the app closes"),
 ];
 
@@ -65,7 +65,7 @@ fn icon_of(t: &TableInfo) -> &'static str {
         }
         TableSource::Scratch { .. } => icons::ARCHIVE,
         TableSource::OneLake { .. } => icons::CLOUD,
-        TableSource::Sqlite { .. } => icons::FILE_SQL,
+        TableSource::Sqlite { .. } | TableSource::DuckDb { .. } => icons::FILE_SQL,
         TableSource::Statement => icons::CODE,
     }
 }
@@ -82,7 +82,7 @@ fn source_text(t: &TableInfo) -> String {
         TableSource::File { path } => path.display().to_string(),
         TableSource::Scratch { path } => format!("scratch table, {}", path.display()),
         TableSource::OneLake { url } => url.clone(),
-        TableSource::Sqlite { path, table } => format!("{table} in {}", path.display()),
+        TableSource::Sqlite { path, table } | TableSource::DuckDb { path, table } => format!("{table} in {}", path.display()),
         TableSource::Statement => "made by a statement in a Local tab".to_string(),
     }
 }
@@ -243,7 +243,7 @@ fn table_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, t: &TableInfo, ac
         let label = match t.source {
             TableSource::Scratch { .. } => format!("{} Delete the scratch table…", icons::TRASH),
             TableSource::Result { .. } => format!("{} Forget (the tab keeps its results)", icons::TRASH),
-            TableSource::File { .. } | TableSource::OneLake { .. } | TableSource::Sqlite { .. } => format!("{} Forget (the data stays where it is)", icons::TRASH),
+            TableSource::File { .. } | TableSource::OneLake { .. } | TableSource::Sqlite { .. } | TableSource::DuckDb { .. } => format!("{} Forget (the data stays where it is)", icons::TRASH),
             TableSource::Statement => format!("{} Drop", icons::TRASH),
         };
         if ui.button(label).clicked() {

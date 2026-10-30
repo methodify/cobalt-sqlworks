@@ -728,7 +728,7 @@ pub fn spark_type_to_sql(t: &Value) -> cobalt_core::SqlType {
     use cobalt_core::SqlType as S;
     let Some(name) = t.as_str() else {
         let kind = t.get("type").and_then(Value::as_str).unwrap_or("struct");
-        return S::Other(kind.to_string());
+        return S::Other { name: kind.to_string() };
     };
     let lower = name.to_ascii_lowercase();
     match lower.as_str() {
@@ -747,7 +747,7 @@ pub fn spark_type_to_sql(t: &Value) -> cobalt_core::SqlType {
             let args: Vec<u8> = lower.trim_start_matches("decimal").trim_matches(|c| c == '(' || c == ')').split(',').filter_map(|a| a.trim().parse().ok()).collect();
             S::Decimal { precision: args.first().copied().unwrap_or(10), scale: args.get(1).copied().unwrap_or(0) }
         }
-        _ => S::Other(name.to_string()),
+        _ => S::Other { name: name.to_string() },
     }
 }
 
@@ -1031,7 +1031,7 @@ org.apache.spark.sql.AnalysisException: [TABLE_OR_VIEW_NOT_FOUND] The table `nop
         assert_eq!(cols[0].sql_type, cobalt_core::SqlType::BigInt);
         assert!(!cols[0].nullable);
         assert_eq!(cols[1].sql_type, cobalt_core::SqlType::Decimal { precision: 18, scale: 2 });
-        assert_eq!(cols[2].sql_type, cobalt_core::SqlType::Other("array".into()));
+        assert_eq!(cols[2].sql_type, cobalt_core::SqlType::Other { name: "array".into() });
         assert!(delta_log_columns("{\"add\":{}}").is_none());
     }
 

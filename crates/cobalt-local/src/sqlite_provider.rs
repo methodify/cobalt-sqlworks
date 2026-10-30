@@ -16,6 +16,50 @@ use std::sync::Arc;
 
 pub const BATCH_ROWS: usize = 8192;
 
+/// A DataFusion table over a DuckDB table: the projected columns (and the limit) are read
+/// through DuckDB on each scan, with DuckDB's own Arrow types.
+#[derive(Debug)]
+pub struct DuckDbTableProvider {
+    lib_root: PathBuf,
+    path: PathBuf,
+    table: String,
+    schema: SchemaRef,
+}
+
+impl DuckDbTableProvider {
+    pub fn new(lib_root: PathBuf, path: PathBuf, table: String, schema: SchemaRef) -> Self {
+        Self { lib_root, path, table, schema }
+    }
+}
+
+#[async_trait]
+impl TableProvider for DuckDbTableProvider {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+    fn schema(&self) -> SchemaRef {
+        Arc::clone(&self.schema)
+    }
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+    async fn scan(&self, state: &dyn Session, projection: Option<&Vec<usize>>, _filters: &[Expr], limit: Option<usize>) -> Result<Arc<dyn ExecutionPlan>> {
+        let (root, path, table) = (self.lib_root.clone(), self.path.clone(), self.table.clone());
+        let names: Option<Vec<String>> = projection.map(|p| p.iter().map(|&i| self.schema.field(i).name().clone()).collect());
+        let projected: SchemaRef = match projection {
+            Some(p) => Arc::new(self.schema.project(p)?),
+            None => Arc::clone(&self.schema),
+        };
+        let (_, batches) = tokio::task::spawn_blocking(move || cobalt_duckdb::read_table(&root, &path, &table, names.as_deref(), limit))
+            .await
+            .map_err(|e| DataFusionError::External(Box::new(e)))?
+            .map_err(DataFusionError::Execution)?;
+        let batches: Vec<arrow::array::RecordBatch> = batches.into_iter().map(|b| crate::engine::conform(b, &projected)).collect::<std::result::Result<_, String>>().map_err(DataFusionError::Execution)?;
+        let mem = MemTable::try_new(projected, vec![batches])?;
+        mem.scan(state, None, &[], None).await
+    }
+}
+
 #[derive(Debug)]
 pub struct SqliteTableProvider {
     path: PathBuf,

@@ -5,6 +5,7 @@ members = [
     "crates/cobalt-local",
     "crates/cobalt-driver",
     "crates/cobalt-sqlite",
+    "crates/cobalt-duckdb",
     "crates/cobalt-auth",
     "crates/cobalt-store",
     "crates/cobalt-sql",
@@ -33,6 +34,7 @@ authors = ["Bryon Williams", "Cobalt SQL Works contributors"]
 cobalt-core = { path = "crates/cobalt-core" }
 cobalt-driver = { path = "crates/cobalt-driver" }
 cobalt-sqlite = { path = "crates/cobalt-sqlite" }
+cobalt-duckdb = { path = "crates/cobalt-duckdb" }
 cobalt-auth = { path = "crates/cobalt-auth" }
 cobalt-store = { path = "crates/cobalt-store" }
 cobalt-sql = { path = "crates/cobalt-sql" }

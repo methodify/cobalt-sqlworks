@@ -16,6 +16,7 @@ pub enum EngineKind {
     SqlEdge,
     /// A SQLite database file (rusqlite in process).
     Sqlite,
+    DuckDb,
     Unknown,
 }
 
@@ -61,6 +62,7 @@ impl EngineKind {
             EngineKind::FabricSqlDb => "Fabric SQL database",
             EngineKind::SqlEdge => "Azure SQL Edge",
             EngineKind::Sqlite => "SQLite",
+            EngineKind::DuckDb => "DuckDB",
             EngineKind::Unknown => "SQL Server (unknown edition)",
         }
     }
@@ -99,6 +101,7 @@ impl EngineKind {
             FabricSqlEndpoint => Capabilities { actual_plans: false, procedures: false, sequences: false, synonyms: false, table_types: false, triggers: false, transactions: false, read_only: true, sql_login: false, system_databases: false, set_xact_abort: false, set_statistics: false, ..full },
             FabricSqlDb => Capabilities { sql_login: false, multiple_databases: false, system_databases: false, ..full },
             Sqlite => Capabilities { actual_plans: false, estimated_plans: true, procedures: false, functions: false, sequences: false, synonyms: false, table_types: false, triggers: true, schemas: false, transactions: true, read_only: false, multiple_databases: false, sql_login: false, temp_tables: true, system_databases: false, set_xact_abort: false, set_statistics: false },
+            DuckDb => Capabilities { actual_plans: true, estimated_plans: true, procedures: false, functions: false, sequences: false, synonyms: false, table_types: false, triggers: false, schemas: true, transactions: true, read_only: false, multiple_databases: true, sql_login: false, temp_tables: true, system_databases: false, set_xact_abort: false, set_statistics: false },
         }
     }
 }

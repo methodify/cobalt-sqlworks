@@ -32,6 +32,7 @@ fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<ConnectionProfile> {
         last_used: opt_ts(row.get(10)?)?,
         engine: match row.get::<_, String>(11).unwrap_or_default().as_str() {
             "sqlite" => cobalt_core::EngineFamily::Sqlite,
+            "duckdb" => cobalt_core::EngineFamily::DuckDb,
             _ => cobalt_core::EngineFamily::Tds,
         },
     })
@@ -105,6 +106,7 @@ impl Store {
                 p.last_used.as_ref().map(fmt_ts),
                 match p.engine {
                     cobalt_core::EngineFamily::Sqlite => "sqlite",
+                    cobalt_core::EngineFamily::DuckDb => "duckdb",
                     cobalt_core::EngineFamily::Tds => "tds",
                 },
             ],

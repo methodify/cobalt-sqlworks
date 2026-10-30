@@ -54,6 +54,8 @@ pub enum TreeAction {
     Explore { profile: ProfileId, obj: ObjectRef },
     /// A server table into a SQLite file (Run to File with the SQLite format).
     CopyToSqlite { profile: ProfileId, obj: ObjectRef },
+    /// A server table into a DuckDB file.
+    CopyToDuckDb { profile: ProfileId, obj: ObjectRef },
     /// A table of a SQLite file connection as a local table, with a Local tab over it.
     LocalQuerySqlite { profile: ProfileId, obj: ObjectRef },
     /// Edit Data: a query over the table with its key, the grid editable.
@@ -104,7 +106,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
                 if crate::ui::widgets::icon_button(ui, icons::PLUS, "New connection (Ctrl+Shift+N)", true).clicked() {
                     actions.push(TreeAction::NewConnection { group: None });
                 }
-                let r = crate::ui::widgets::icon_button(ui, icons::FILE_SQL, "Open a SQLite database file as a connection…", true);
+                let r = crate::ui::widgets::icon_button(ui, icons::FILE_SQL, "Open a database file (SQLite or DuckDB) as a connection…", true);
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "open sqlite database"));
                 if r.clicked() {
                     actions.push(TreeAction::OpenSqlite);
@@ -258,7 +260,7 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
             cobalt_local::TableSource::Statement => "made by a statement".to_string(),
             cobalt_local::TableSource::Scratch { .. } => "scratch (kept across sessions)".to_string(),
             cobalt_local::TableSource::OneLake { .. } => "OneLake".to_string(),
-            cobalt_local::TableSource::Sqlite { path, table } => format!("{table} in {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+            cobalt_local::TableSource::Sqlite { path, table } | cobalt_local::TableSource::DuckDb { path, table } => format!("{table} in {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
         };
         let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
         let detail = format!("{rows} · {} cols · {src}{}", t.columns.len(), if t.live { " · arriving" } else { "" });
@@ -636,7 +638,11 @@ fn database_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionPr
 pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProfile, db: &DatabaseInfo, engine: Option<&EngineInfo>, depth: usize, actions: &mut Vec<TreeAction>) {
     let node = lib.servers.entry(p.id).or_default();
     // a file database has no schemas: the engine's capabilities (or the family's, before the probe answers) decide
-    let caps = engine.map(|e| e.capabilities).unwrap_or_else(|| if p.is_file() { EngineKind::Sqlite.capabilities() } else { EngineKind::SqlServer.capabilities() });
+    let caps = engine.map(|e| e.capabilities).unwrap_or_else(|| match p.engine {
+        cobalt_core::EngineFamily::Sqlite => EngineKind::Sqlite.capabilities(),
+        cobalt_core::EngineFamily::DuckDb => EngineKind::DuckDb.capabilities(),
+        cobalt_core::EngineFamily::Tds => EngineKind::SqlServer.capabilities(),
+    });
     let group_by_schema = node.group_by_schema && caps.schemas;
     let dbn = node.db_nodes.entry(db.name.clone()).or_default();
     if let Loadable::Failed(e) = &dbn.objects {
@@ -778,7 +784,8 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         _ => {
             let mut items: Vec<&ObjectRef> = objects.iter().filter(|o| folder.kinds().contains(&o.kind) && matches(o)).collect();
             items.sort_by(|a, b| a.schema.cmp(&b.schema).then(a.name.cmp(&b.name)));
-            if group_by_schema {
+            // objects without a schema (SQLite; DuckDB's main) list flat even when grouping is on
+            if group_by_schema && items.iter().any(|o| !o.schema.is_empty()) {
                 // one expandable row per schema; a filter opens every schema it matches into
                 let mut schemas: Vec<String> = items.iter().map(|o| o.schema.clone()).collect();
                 schemas.dedup();
@@ -905,6 +912,10 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
         }
         if !p.is_file() && matches!(obj.kind, ObjectKind::Table | ObjectKind::View) && ui.button(format!("{} Copy to SQLite file…", icons::FILE_SQL)).on_hover_text("Take this table with you: every row into a table of a SQLite database file.").clicked() {
             actions.push(TreeAction::CopyToSqlite { profile: p.id, obj: obj.clone() });
+            ui.close();
+        }
+        if !p.is_file() && matches!(obj.kind, ObjectKind::Table | ObjectKind::View) && ui.button(format!("{} Copy to DuckDB file…", icons::FILE_SQL)).on_hover_text("Take this table with you: every row into a table of a DuckDB database file (analytics-ready, columnar).").clicked() {
+            actions.push(TreeAction::CopyToDuckDb { profile: p.id, obj: obj.clone() });
             ui.close();
         }
         if p.is_file() && obj.kind == ObjectKind::Table && ui.button(format!("{} Edit Data", icons::PENCIL_SIMPLE)).on_hover_text("The table in an editable grid: change cells, add and delete rows; nothing is written until Save.").clicked() {

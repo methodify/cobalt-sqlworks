@@ -1002,8 +1002,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 Some(cobalt_local::TableSource::Result { title, .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the tab {title} keeps its results and the table comes back the next time that tab runs.")),
                 Some(cobalt_local::TableSource::File { path }) => ("Forget the table?".to_string(), format!("{name} is forgotten; the file stays:\n{}", path.display())),
                 Some(cobalt_local::TableSource::OneLake { .. }) => ("Forget the table?".to_string(), format!("{name} is forgotten; nothing changes in the lakehouse.")),
-                Some(cobalt_local::TableSource::Sqlite { path, table }) => ("Forget the table?".to_string(), format!("{name} is forgotten; {table} stays in
-{}", path.display())),
+                Some(cobalt_local::TableSource::Sqlite { path, table }) | Some(cobalt_local::TableSource::DuckDb { path, table }) => ("Forget the table?".to_string(), format!("{name} is forgotten; {table} stays in\n{}", path.display())),
                 Some(cobalt_local::TableSource::Statement) => ("Drop the table?".to_string(), format!("{name} was made by a statement and is dropped.")),
                 None => ("Forget the table?".to_string(), format!("{name} is no longer listed.")),
             };
@@ -1429,22 +1428,24 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                 ui.set_width(440.0);
                 egui::Grid::new("conn-grid").num_columns(2).spacing([10.0, 7.0]).min_col_width(120.0).show(ui, |ui| {
                     ui.label("Engine");
-                    let engine_labels = ["SQL Server, Azure SQL, Fabric", "SQLite database file"];
-                    egui::ComboBox::from_id_salt("engine").width(300.0).selected_text(engine_labels[d.engine_index.min(1)]).show_ui(ui, |ui| {
+                    let engine_labels = ["SQL Server, Azure SQL, Fabric", "SQLite database file", "DuckDB database file"];
+                    egui::ComboBox::from_id_salt("engine").width(300.0).selected_text(engine_labels[d.engine_index.min(2)]).show_ui(ui, |ui| {
                         for (i, l) in engine_labels.iter().enumerate() {
-                            if ui.selectable_value(&mut d.engine_index, i, *l).clicked() && i == 1 {
+                            if ui.selectable_value(&mut d.engine_index, i, *l).clicked() && i >= 1 {
                                 d.auth_index = 7;
                             }
                         }
                     });
                     ui.end_row();
-                    if d.engine_index == 1 {
+                    if d.engine_index >= 1 {
+                        let duck = d.engine_index == 2;
                         ui.label("Database file");
                         ui.horizontal(|ui| {
-                            let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text("C:\\path\\to\\file.sqlite").desired_width(230.0));
+                            let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text(if duck { "C:\\path\\to\\file.duckdb" } else { "C:\\path\\to\\file.sqlite" }).desired_width(230.0));
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "database file"));
                             if ui.button("Browse…").clicked() {
-                                if let Some(p) = rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]).add_filter("All files", &["*"]).pick_file() {
+                                let dlg = if duck { rfd::FileDialog::new().add_filter("DuckDB databases", &["duckdb", "ddb", "db"]) } else { rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]) };
+                                if let Some(p) = dlg.add_filter("All files", &["*"]).pick_file() {
                                     d.profile.server = p.to_string_lossy().to_string();
                                 }
                             }
@@ -1456,10 +1457,14 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                             ui.checkbox(&mut d.profile.options.create_if_missing, "Create if missing");
                         });
                         ui.end_row();
-                    }
-                    if d.engine_index == 1 {
                         ui.label("");
-                        ui.label(RichText::new("No server, port or sign-in: the file is the database. Attached databases show in the tree.").size(11.0).color(theme.text_muted));
+                        let note = if duck {
+                            let installed = cobalt_duckdb::is_installed(&f.cx.paths.local_data_dir);
+                            format!("No server, port or sign-in: the file is the database. {}", if installed { format!("DuckDB {} engine installed.", cobalt_duckdb::VERSION) } else { format!("The DuckDB {} engine (about 20 MB) downloads on the first connection.", cobalt_duckdb::VERSION) })
+                        } else {
+                            "No server, port or sign-in: the file is the database. Attached databases show in the tree.".to_string()
+                        };
+                        ui.label(RichText::new(note).size(11.0).color(theme.text_muted));
                         ui.end_row();
                     }
                     if d.engine_index == 0 {
@@ -2196,7 +2201,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                     ui.checkbox(&mut d.json_lines, "One object per line (JSON Lines)");
                     ui.end_row();
                 }
-                "sqlite" => {
+                "sqlite" | "duckdb" => {
                     ui.label("Table");
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.sqlite_table).hint_text("named after the file").desired_width(220.0));

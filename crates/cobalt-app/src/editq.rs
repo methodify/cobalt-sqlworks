@@ -99,7 +99,7 @@ fn tab_index(state: &AppState, tab: TabId) -> Option<usize> {
 /// Turn Edit Data on for a result set: find the table and its key; on failure a toast says why.
 pub fn begin(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) -> Result<(), String> {
     let Some(t) = state.tabs.get(idx) else { return Err("no tab".into()) };
-    let Some(p) = t.profile.as_ref().filter(|p| p.is_file()) else { return Err("Edit Data works on SQLite connections; SQL Server comes later.".into()) };
+    let Some(p) = t.profile.as_ref().filter(|p| p.is_file()) else { return Err("Edit Data works on SQLite and DuckDB connections; SQL Server comes later.".into()) };
     let path = std::path::PathBuf::from(&p.server);
     let Some(run) = t.run.as_ref() else { return Err("Run a SELECT over one table first.".into()) };
     if run.is_live() {
@@ -107,12 +107,20 @@ pub fn begin(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) -> Result<(
     }
     let Some(view) = run.result_sets.get(set) else { return Err("No result set to edit.".into()) };
     let Some(table) = single_table(&run.script) else { return Err("Edit Data needs a query over one table: SELECT … FROM table [WHERE …] [ORDER BY …] [LIMIT …].".into()) };
-    let conn = cobalt_sqlite::open_read_only(&path)?;
-    if !cobalt_sqlite::is_table(&conn, &table).map_err(|e| e.to_string())? {
-        return Err(format!("{table} is a view; only tables can be edited."));
-    }
-    let table_cols = cobalt_sqlite::table_columns(&conn, &table).map_err(|e| e.to_string())?;
-    drop(conn);
+    let table_cols = if p.engine == cobalt_core::EngineFamily::DuckDb {
+        let db = cobalt_duckdb::open(&crate::ops::duckdb_root(cx), &path, true)?;
+        let conn = cobalt_duckdb::Connection::new(&db)?;
+        if !cobalt_duckdb::is_table(&conn, &table)? {
+            return Err(format!("{table} is a view; only tables can be edited."));
+        }
+        cobalt_duckdb::table_columns(&conn, &table)?
+    } else {
+        let conn = cobalt_sqlite::open_read_only(&path)?;
+        if !cobalt_sqlite::is_table(&conn, &table).map_err(|e| e.to_string())? {
+            return Err(format!("{table} is a view; only tables can be edited."));
+        }
+        cobalt_sqlite::table_columns(&conn, &table).map_err(|e| e.to_string())?
+    };
     let cols = &view.rs.columns;
     let find = |name: &str| cols.iter().position(|c| c.name.eq_ignore_ascii_case(name));
     let mut key: Vec<(String, usize)> = Vec::new();
@@ -139,7 +147,6 @@ pub fn begin(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) -> Result<(
         v.edits = Some(edits);
         v.grid.focused = true;
     }
-    let _ = cx;
     Ok(())
 }
 
@@ -148,8 +155,12 @@ pub fn begin(state: &mut AppState, cx: &Ctx, idx: usize, set: usize) -> Result<(
 pub fn open_table(state: &mut AppState, cx: &Ctx, profile: ProfileId, obj: &ObjectRef) {
     let Some(p) = state.library.profile(profile).cloned() else { return };
     let path = std::path::PathBuf::from(&p.server);
-    let has_pk = cobalt_sqlite::open_read_only(&path).and_then(|c| cobalt_sqlite::table_columns(&c, &obj.name).map_err(|e| e.to_string())).map(|cols| cols.iter().any(|c| c.in_primary_key)).unwrap_or(false);
-    let q = cobalt_sqlite::quote(&obj.name);
+    let has_pk = if p.engine == cobalt_core::EngineFamily::DuckDb {
+        cobalt_duckdb::open(&crate::ops::duckdb_root(cx), &path, true).and_then(|db| cobalt_duckdb::Connection::new(&db).and_then(|c| cobalt_duckdb::table_columns(&c, &obj.name))).map(|cols| cols.iter().any(|c| c.in_primary_key)).unwrap_or(false)
+    } else {
+        cobalt_sqlite::open_read_only(&path).and_then(|c| cobalt_sqlite::table_columns(&c, &obj.name).map_err(|e| e.to_string())).map(|cols| cols.iter().any(|c| c.in_primary_key)).unwrap_or(false)
+    };
+    let q = crate::ops::quoted_object(Some(&p), obj);
     let sql = if has_pk { format!("SELECT *\nFROM {q}\nLIMIT 1000") } else { format!("SELECT rowid AS \"rowid\", *\nFROM {q}\nLIMIT 1000") };
     let idx = new_query_tab(state, cx, Some(profile), None, Some((format!("Edit {}", obj.name), sql)), true);
     state.tabs[idx].edit_reopen = Some(0);

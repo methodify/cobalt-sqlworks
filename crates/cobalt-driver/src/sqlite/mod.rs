@@ -125,7 +125,7 @@ fn run_batch(conn: &rusqlite::Connection, sql: &str, batch_rows: usize, plan: bo
                         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(3)?)))
                         .and_then(|it| it.collect::<rusqlite::Result<Vec<_>>>())
                         .unwrap_or_default();
-                    send(StreamItem::Message(info(plan_tree(&rows))));
+                    send(StreamItem::Message(ServerMessage { procedure: Some("plan".into()), ..info(plan_tree(&rows)) }));
                     let cols = vec![ColumnInfo::new("id", SqlType::BigInt, false, 0), ColumnInfo::new("parent", SqlType::BigInt, false, 1), ColumnInfo::new("detail", SqlType::NVarChar { len: None }, false, 2)];
                     send(StreamItem::ResultSetStart { columns: cols.clone() });
                     let values: Vec<Vec<rusqlite::types::Value>> = rows.iter().map(|(a, b, d)| vec![rusqlite::types::Value::Integer(*a), rusqlite::types::Value::Integer(*b), rusqlite::types::Value::Text(d.clone())]).collect();
