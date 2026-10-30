@@ -18,3 +18,4 @@ than re-litigating.
 | [D010](D010_egui_037_deferred.md) | egui 0.37 evaluated for the editor-groups slate and deferred: egui-notify, egui-phosphor and egui_agent are not on it; revisit as its own iteration | 2026-10-27 |
 | [D011](D011_duckdb_runtime_library.md) | DuckDB: the official library downloaded on first use and loaded at run time through its C API; version pinned; not linked into the binary | 2026-10-30 |
 | [D012](D012_egui_037_taken_up.md) | egui 0.37 taken up (supersedes D010): system font provider ends the tofu, egui-phosphor vendored, egui_agent 0.4.0 ported | 2026-10-30 |
+| [D013](D013_postgres_simple_protocol.md) | PostgreSQL: scripts run statement by statement over the simple query protocol, each row-returning statement described first; text to Arrow for the types the grid shows as themselves, the rest text with the PostgreSQL type name | 2026-10-30 |

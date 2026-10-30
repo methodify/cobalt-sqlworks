@@ -108,11 +108,13 @@ pub struct LineState {
     /// The opening delimiter of an unterminated literal: `'` (string), `"` (quoted
     /// identifier) or `[` (bracketed identifier).
     pub in_string: Option<char>,
+    /// Inside an unterminated `$$ … $$` body (PostgreSQL, DuckDB).
+    pub in_dollar: bool,
 }
 
 impl LineState {
     /// The state at the start of a script.
-    pub const INITIAL: LineState = LineState { in_block_comment: false, block_comment_depth: 0, in_string: None };
+    pub const INITIAL: LineState = LineState { in_block_comment: false, block_comment_depth: 0, in_string: None, in_dollar: false };
 }
 
 /// Reserved and commonly used T-SQL keywords (uppercase).
@@ -248,6 +250,8 @@ pub enum Dialect {
     Sqlite,
     /// DuckDB: `"name"` quotes, PostgreSQL-flavoured keywords, its own functions.
     DuckDb,
+    /// PostgreSQL: `"name"` quotes, `$$ dollar-quoted $$` strings, its keywords and functions.
+    Postgres,
     /// DAX against a semantic model: `'Table'` quoted table names ([`TokenKind::QuotedIdentifier`]),
     /// `[Column or Measure]` ([`TokenKind::BracketedIdentifier`]), `"text"` strings, `//` as well
     /// as `--` line comments, `INFO.VIEW.TABLES` dotted function names kept as one token, and any
@@ -312,6 +316,54 @@ static SQLITE_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.i
 static SQLITE_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| SQLITE_FUNCTIONS.iter().copied().collect());
 static DUCKDB_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(SQLITE_KEYWORDS.iter()).chain(DUCKDB_KEYWORDS.iter()).copied().collect());
 static DUCKDB_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| DUCKDB_FUNCTIONS.iter().copied().collect());
+static POSTGRES_KEYWORD_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| KEYWORDS.iter().chain(POSTGRES_KEYWORDS.iter()).copied().collect());
+static POSTGRES_FUNCTION_SET: Lazy<HashSet<&'static str>> = Lazy::new(|| POSTGRES_FUNCTIONS.iter().copied().collect());
+
+/// PostgreSQL keywords on top of the shared ones.
+pub static POSTGRES_KEYWORDS: &[&str] = &[
+    "ILIKE", "SIMILAR", "LATERAL", "RETURNING", "USING", "DO", "NOTHING", "CONFLICT", "LIMIT", "OFFSET", "FETCH", "FIRST", "NEXT",
+    "ONLY", "INTERVAL", "TIMESTAMPTZ", "SERIAL", "BIGSERIAL", "SMALLSERIAL", "BOOLEAN", "VACUUM", "ANALYZE", "ANALYSE", "EXPLAIN",
+    "VERBOSE", "COPY", "STDIN", "STDOUT", "LISTEN", "NOTIFY", "UNLISTEN", "ROLE", "EXTENSION", "SEQUENCE", "TYPE", "DOMAIN", "ENUM",
+    "LANGUAGE", "PLPGSQL", "RETURNS", "SETOF", "STABLE", "IMMUTABLE", "VOLATILE", "STRICT", "CALL", "PERFORM", "RAISE", "NOTICE",
+    "EXCEPTION", "LOOP", "ELSIF", "ARRAY", "GENERATED", "IDENTITY", "ALWAYS", "MATERIALIZED", "CONCURRENTLY", "TABLESAMPLE",
+    "OVERLAPS", "ISNULL", "NOTNULL", "RECURSIVE", "WINDOW", "FILTER", "PARTITION", "RANGE", "ROWS", "GROUPS", "PRECEDING",
+    "FOLLOWING", "UNBOUNDED", "CURRENT", "EXCLUDE", "TIES", "GROUPING", "SETS", "CUBE", "ROLLUP", "TEMP", "TEMPORARY", "UNLOGGED",
+    "INHERITS", "PARTITION", "COLLATE", "CAST", "IF", "EXISTS", "SAVEPOINT", "RELEASE", "ISOLATION", "LEVEL", "SERIALIZABLE",
+    "REPEATABLE", "READ", "COMMITTED", "UNCOMMITTED", "DEFERRABLE", "INITIALLY", "DEFERRED", "IMMEDIATE", "GRANT", "REVOKE",
+    "PRIVILEGES", "OWNER", "OWNED", "COMMENT", "CLUSTER", "REINDEX", "TRUNCATE", "CASCADE", "RESTRICT", "RENAME", "ATTACH", "SHOW",
+    "RESET", "SESSION", "LOCAL", "TIME", "ZONE", "DISCARD", "PREPARE", "DEALLOCATE", "TRIGGER", "BEFORE", "AFTER", "INSTEAD",
+    "EACH", "ROW", "STATEMENT", "BEGIN", "END", "DECLARE", "CURSOR", "MOVE", "LOCK", "SHARE", "NOWAIT", "SKIP", "LOCKED", "WITHIN",
+    "ORDINALITY", "VARIADIC", "INOUT", "OUT", "OPERATOR", "AGGREGATE", "POLICY", "PUBLICATION", "SUBSCRIPTION", "TABLESPACE",
+    "TEXT", "JSONB", "JSON", "UUID", "BYTEA", "INET", "CIDR", "MACADDR", "TSVECTOR", "TSQUERY", "NUMERIC", "REGCLASS", "OID",
+];
+
+/// PostgreSQL's commonly used functions (scalar, aggregate, window, set-returning).
+pub static POSTGRES_FUNCTIONS: &[&str] = &[
+    "ABS", "ACOS", "AGE", "ARRAY_AGG", "ARRAY_APPEND", "ARRAY_CAT", "ARRAY_LENGTH", "ARRAY_POSITION", "ARRAY_REMOVE",
+    "ARRAY_TO_STRING", "ASCII", "ASIN", "ATAN", "ATAN2", "AVG", "BIT_AND", "BIT_LENGTH", "BIT_OR", "BOOL_AND", "BOOL_OR", "BTRIM",
+    "CARDINALITY", "CBRT", "CEIL", "CEILING", "CHAR_LENGTH", "CHARACTER_LENGTH", "CHR", "CLOCK_TIMESTAMP", "COALESCE", "CONCAT",
+    "CONCAT_WS", "CORR", "COS", "COUNT", "COVAR_POP", "COVAR_SAMP", "CUME_DIST", "CURRENT_DATABASE", "CURRENT_DATE",
+    "CURRENT_SCHEMA", "CURRENT_SETTING", "CURRENT_TIME", "CURRENT_TIMESTAMP", "CURRENT_USER", "DATE_BIN", "DATE_PART",
+    "DATE_TRUNC", "DECODE", "DEGREES", "DENSE_RANK", "DIV", "ENCODE", "EVERY", "EXP", "EXTRACT", "FIRST_VALUE", "FLOOR", "FORMAT",
+    "GCD", "GEN_RANDOM_UUID", "GENERATE_SERIES", "GENERATE_SUBSCRIPTS", "GREATEST", "GROUPING", "INITCAP", "ISFINITE",
+    "JSON_AGG", "JSON_ARRAY_ELEMENTS", "JSON_ARRAY_LENGTH", "JSON_BUILD_ARRAY", "JSON_BUILD_OBJECT", "JSON_EACH", "JSON_EXTRACT_PATH",
+    "JSON_EXTRACT_PATH_TEXT", "JSON_OBJECT", "JSON_OBJECT_AGG", "JSON_TYPEOF", "JSONB_AGG", "JSONB_ARRAY_ELEMENTS", "JSONB_BUILD_OBJECT",
+    "JSONB_EACH", "JSONB_EXTRACT_PATH", "JSONB_OBJECT_AGG", "JSONB_PATH_QUERY", "JSONB_PRETTY", "JSONB_SET", "JSONB_TYPEOF",
+    "JUSTIFY_DAYS", "JUSTIFY_HOURS", "JUSTIFY_INTERVAL", "LAG", "LAST_VALUE", "LCM", "LEAD", "LEAST", "LEFT", "LENGTH", "LN",
+    "LOCALTIME", "LOCALTIMESTAMP", "LOG", "LOG10", "LOWER", "LPAD", "LTRIM", "MAKE_DATE", "MAKE_INTERVAL", "MAKE_TIME",
+    "MAKE_TIMESTAMP", "MAKE_TIMESTAMPTZ", "MAX", "MD5", "MIN", "MOD", "MODE", "NEXTVAL", "NOW", "NTH_VALUE", "NTILE", "NULLIF",
+    "NUM_NONNULLS", "NUM_NULLS", "OCTET_LENGTH", "OVERLAY", "PERCENT_RANK", "PERCENTILE_CONT", "PERCENTILE_DISC", "PG_BACKEND_PID",
+    "PG_CANCEL_BACKEND", "PG_DATABASE_SIZE", "PG_GET_CONSTRAINTDEF", "PG_GET_FUNCTIONDEF", "PG_GET_INDEXDEF", "PG_GET_VIEWDEF",
+    "PG_RELATION_SIZE", "PG_SIZE_PRETTY", "PG_SLEEP", "PG_TABLE_SIZE", "PG_TOTAL_RELATION_SIZE", "PG_TYPEOF", "PI", "POSITION",
+    "POWER", "QUOTE_IDENT", "QUOTE_LITERAL", "QUOTE_NULLABLE", "RADIANS", "RANDOM", "RANK", "REGEXP_COUNT", "REGEXP_MATCH",
+    "REGEXP_MATCHES", "REGEXP_REPLACE", "REGEXP_SPLIT_TO_ARRAY", "REGEXP_SPLIT_TO_TABLE", "REGEXP_SUBSTR", "REGR_SLOPE", "REPEAT",
+    "REPLACE", "REVERSE", "RIGHT", "ROUND", "ROW_NUMBER", "ROW_TO_JSON", "RPAD", "RTRIM", "SCALE", "SESSION_USER", "SETSEED",
+    "SETVAL", "SHA256", "SIGN", "SIN", "SPLIT_PART", "SQRT", "STARTS_WITH", "STATEMENT_TIMESTAMP", "STDDEV", "STDDEV_POP",
+    "STDDEV_SAMP", "STRING_AGG", "STRING_TO_ARRAY", "STRING_TO_TABLE", "STRPOS", "SUBSTR", "SUBSTRING", "SUM", "TAN", "TIMEOFDAY",
+    "TO_ASCII", "TO_CHAR", "TO_DATE", "TO_HEX", "TO_JSON", "TO_JSONB", "TO_NUMBER", "TO_TIMESTAMP", "TRANSACTION_TIMESTAMP",
+    "TRANSLATE", "TRIM", "TRIM_SCALE", "TRUNC", "UNNEST", "UPPER", "UUID_GENERATE_V4", "VAR_POP", "VAR_SAMP", "VARIANCE", "VERSION",
+    "WIDTH_BUCKET", "XMLAGG", "XMLELEMENT",
+];
 
 /// DuckDB keywords on top of the shared and SQLite ones.
 pub static DUCKDB_KEYWORDS: &[&str] = &[
@@ -388,6 +440,7 @@ pub fn is_keyword_in(word: &str, dialect: Dialect) -> bool {
         Dialect::TSql => &*KEYWORD_SET,
         Dialect::Sqlite => &*SQLITE_KEYWORD_SET,
         Dialect::DuckDb => &*DUCKDB_KEYWORD_SET,
+        Dialect::Postgres => &*POSTGRES_KEYWORD_SET,
         Dialect::Spark | Dialect::Local => &*SPARK_KEYWORD_SET,
         Dialect::Dax => &*DAX_KEYWORD_SET,
     };
@@ -490,13 +543,17 @@ impl<'a> Lexer<'a> {
             let start = self.pos;
             self.consume_block_comment(self.state.block_comment_depth);
             self.push(TokenKind::BlockComment, start);
+        } else if self.state.in_dollar {
+            let start = self.pos;
+            self.consume_dollar(b"$$");
+            self.push(TokenKind::String, start);
         } else if let Some(q) = self.state.in_string {
             let start = self.pos;
             let kind = match q {
                 '\'' if self.dialect == Dialect::Dax => TokenKind::QuotedIdentifier,
                 '\'' => TokenKind::String,
                 // SQLite (like SQL Server with QUOTED_IDENTIFIER on) reads "double quotes" as an identifier
-                '"' if !matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb) => TokenKind::String,
+                '"' if !matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb | Dialect::Postgres) => TokenKind::String,
                 '"' | '`' => TokenKind::QuotedIdentifier,
                 _ => TokenKind::BracketedIdentifier,
             };
@@ -554,6 +611,14 @@ impl<'a> Lexer<'a> {
                 }
                 self.push(TokenKind::LineComment, start);
             }
+            b'$' if matches!(self.dialect, Dialect::Postgres | Dialect::DuckDb) && self.dollar_tag_len() > 0 => {
+                // `$$ … $$` or `$tag$ … $tag$`: one string token, semicolons and quotes inside and all
+                let n = self.dollar_tag_len();
+                let tag = self.bytes[self.pos..self.pos + n].to_vec();
+                self.pos += n;
+                self.consume_dollar(&tag);
+                self.push(TokenKind::String, start);
+            }
             b'\'' => {
                 self.pos += 1;
                 self.consume_delimited('\'');
@@ -567,7 +632,7 @@ impl<'a> Lexer<'a> {
             b'"' => {
                 self.pos += 1;
                 self.consume_delimited('"');
-                self.push(if matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb) { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
+                self.push(if matches!(self.dialect, Dialect::TSql | Dialect::Sqlite | Dialect::DuckDb | Dialect::Postgres) { TokenKind::QuotedIdentifier } else { TokenKind::String }, start);
             }
             b'`' if self.dialect.is_sparkish() => {
                 self.pos += 1;
@@ -683,6 +748,7 @@ impl<'a> Lexer<'a> {
             Dialect::TSql => (&*FUNCTION_SET, &*KEYWORD_SET),
             Dialect::Sqlite => (&*SQLITE_FUNCTION_SET, &*SQLITE_KEYWORD_SET),
             Dialect::DuckDb => (&*DUCKDB_FUNCTION_SET, &*DUCKDB_KEYWORD_SET),
+            Dialect::Postgres => (&*POSTGRES_FUNCTION_SET, &*POSTGRES_KEYWORD_SET),
             Dialect::Spark | Dialect::Local => (&*SPARK_FUNCTION_SET, &*SPARK_KEYWORD_SET),
             Dialect::Dax => unreachable!(),
         };
@@ -792,6 +858,42 @@ impl<'a> Lexer<'a> {
     /// Consume the body of a delimited literal opened by `open` (`'`, `"` or `[`), the
     /// opening delimiter already consumed. Doubled closers escape; an unterminated
     /// literal extends to the end of the input and records itself in the line state.
+    /// At a `$`: the length of a dollar-quote opener (`$$`, `$tag$`) or 0 (a `$1` parameter,
+    /// a lone `$`).
+    fn dollar_tag_len(&self) -> usize {
+        let mut i = self.pos + 1;
+        if let Some(c) = self.bytes.get(i) {
+            if c.is_ascii_digit() {
+                return 0;
+            }
+        }
+        while let Some(&c) = self.bytes.get(i) {
+            if c == b'$' {
+                return i + 1 - self.pos;
+            }
+            if !(c.is_ascii_alphanumeric() || c == b'_') {
+                return 0;
+            }
+            i += 1;
+        }
+        0
+    }
+
+    /// Consume up to and including the closing `tag`; unterminated bodies run to the end of
+    /// the text (and resume as `$$` on the next line).
+    fn consume_dollar(&mut self, tag: &[u8]) {
+        match self.bytes[self.pos..].windows(tag.len().max(1)).position(|w| w == tag) {
+            Some(off) => {
+                self.pos += off + tag.len();
+                self.state.in_dollar = false;
+            }
+            None => {
+                self.pos = self.bytes.len();
+                self.state.in_dollar = true;
+            }
+        }
+    }
+
     fn consume_delimited(&mut self, open: char) {
         let close = if open == '[' { b']' } else { open as u8 };
         loop {
@@ -997,5 +1099,51 @@ mod tests {
         let nl: Vec<_> = toks.iter().filter(|t| t.kind == TokenKind::Newline).collect();
         assert_eq!(nl.len(), 3);
         assert_eq!(nl[0].len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod postgres_tests {
+    use super::*;
+
+    fn kinds(src: &str, d: Dialect) -> Vec<(TokenKind, String)> {
+        tokenize_dialect(src, d).into_iter().filter(|t| !matches!(t.kind, TokenKind::Whitespace | TokenKind::Newline)).map(|t| (t.kind, src[t.start..t.end].to_string())).collect()
+    }
+
+    #[test]
+    fn dollar_quoted_bodies_are_one_string() {
+        let src = "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1; SELECT 'x'; $$ LANGUAGE sql;";
+        let toks = kinds(src, Dialect::Postgres);
+        let body = toks.iter().find(|(k, _)| *k == TokenKind::String).expect("a string token");
+        assert_eq!(body.1, "$$ SELECT 1; SELECT 'x'; $$");
+        // a tagged body, with a lone $$ inside it
+        let src = "DO $fn$ BEGIN RAISE NOTICE '$$'; END $fn$;";
+        let toks = kinds(src, Dialect::Postgres);
+        assert_eq!(toks.iter().filter(|(k, _)| *k == TokenKind::String).count(), 1);
+        assert!(toks.iter().any(|(k, t)| *k == TokenKind::String && t.starts_with("$fn$") && t.ends_with("$fn$")));
+        // $1 is a parameter, not a quote; T-SQL does not know dollar quoting
+        let toks = kinds("SELECT $1, $$x$$", Dialect::Postgres);
+        assert!(toks.iter().any(|(k, t)| *k == TokenKind::String && t == "$$x$$"));
+        assert!(!kinds("SELECT $$x$$", Dialect::TSql).iter().any(|(k, _)| *k == TokenKind::String));
+    }
+
+    #[test]
+    fn unterminated_dollar_body_resumes_on_the_next_line() {
+        let (_, st) = tokenize_line_dialect("DO $$ BEGIN", LineState::INITIAL, Dialect::Postgres);
+        assert!(st.in_dollar);
+        let (toks, st) = tokenize_line_dialect("END $$; SELECT 1", st, Dialect::Postgres);
+        assert!(!st.in_dollar);
+        assert_eq!(toks[0].kind, TokenKind::String);
+        assert_eq!(&"END $$; SELECT 1"[toks[0].start..toks[0].end], "END $$");
+    }
+
+    #[test]
+    fn postgres_dialect_words() {
+        assert!(is_keyword_in("ILIKE", Dialect::Postgres) && is_keyword_in("RETURNING", Dialect::Postgres));
+        let toks = kinds("SELECT jsonb_build_object('a', 1), x::text FROM t", Dialect::Postgres);
+        assert!(toks.iter().any(|(k, t)| *k == TokenKind::Function && t == "jsonb_build_object"));
+        assert!(toks.iter().any(|(k, t)| *k == TokenKind::QuotedIdentifier || *k != TokenKind::String || t != "\"x\""));
+        let toks = kinds("SELECT \"Name\" FROM t", Dialect::Postgres);
+        assert!(toks.iter().any(|(k, t)| *k == TokenKind::QuotedIdentifier && t == "\"Name\""));
     }
 }

@@ -713,6 +713,8 @@ impl EditorTab {
             crate::ui::editor::Syntax::Local
         } else if tabular.is_some() {
             crate::ui::editor::Syntax::Dax
+        } else if profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false) {
+            crate::ui::editor::Syntax::Postgres
         } else if profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::DuckDb).unwrap_or(false) {
             crate::ui::editor::Syntax::DuckDb
         } else if profile.as_ref().map(|p| p.is_file()).unwrap_or(false) {
@@ -1042,6 +1044,10 @@ impl PlanView {
 #[derive(Clone, Debug, Default)]
 pub struct GridEdits {
     pub table: String,
+    /// The table's schema when the SELECT named one (PostgreSQL: `"schema"."table"`).
+    pub schema: Option<String>,
+    /// PostgreSQL: booleans are TRUE / FALSE, no rowid.
+    pub pg: bool,
     /// Key columns (name, index in the result): `rowid` or the primary key.
     pub key: Vec<(String, usize)>,
     /// Result columns that are columns of the table (writable); `rowid` is not.
@@ -2150,8 +2156,8 @@ impl AppState {
                 }
             }
             Event::ImportDone { tab, result } => {
-                let file = self.tabs.iter().find(|t| t.id == tab).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
-                let target = if let Dialog::Import(d) = &self.dialog { Some(if file { format!("\"{}\"", d.table_name) } else { format!("[{}].[{}]", d.schema_name, d.table_name) }) } else { None };
+                let (file, pg) = self.tabs.iter().find(|t| t.id == tab).and_then(|t| t.profile.as_ref()).map(|p| (p.is_file(), p.engine == cobalt_core::EngineFamily::Postgres)).unwrap_or((false, false));
+                let target = if let Dialog::Import(d) = &self.dialog { Some(if file { format!("\"{}\"", d.table_name) } else if pg { format!("\"{}\".\"{}\"", if d.schema_name.trim().is_empty() { "public" } else { d.schema_name.trim() }, d.table_name) } else { format!("[{}].[{}]", d.schema_name, d.table_name) }) } else { None };
                 let msg = match &result {
                     Ok((rows, el)) => Ok(format!("Imported {} rows into {} in {:.1}s", fmt_count(*rows), target.clone().unwrap_or_default(), el.as_secs_f32())),
                     Err(e) if e == "cancelled" => Err("Import cancelled; the transaction was rolled back.".to_string()),

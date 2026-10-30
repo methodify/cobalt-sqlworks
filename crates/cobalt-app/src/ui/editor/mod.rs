@@ -47,6 +47,7 @@ pub enum Syntax {
     /// SQLite: its keywords, functions and pragmas; `"name"`, `[name]`, `` `name` `` quote.
     Sqlite,
     DuckDb,
+    Postgres,
     Python,
     /// Markdown and anything else: no highlighting.
     Plain,
@@ -55,7 +56,7 @@ pub enum Syntax {
 impl Syntax {
     /// SQL of either dialect: statements, completion, the current-statement highlight.
     pub fn is_sql(self) -> bool {
-        matches!(self, Syntax::Sql | Syntax::SparkSql | Syntax::Local | Syntax::Sqlite | Syntax::DuckDb)
+        matches!(self, Syntax::Sql | Syntax::SparkSql | Syntax::Local | Syntax::Sqlite | Syntax::DuckDb | Syntax::Postgres)
     }
     pub fn dialect(self) -> cobalt_sql::Dialect {
         match self {
@@ -63,6 +64,7 @@ impl Syntax {
             Syntax::Local => cobalt_sql::Dialect::Local,
             Syntax::Sqlite => cobalt_sql::Dialect::Sqlite,
             Syntax::DuckDb => cobalt_sql::Dialect::DuckDb,
+            Syntax::Postgres => cobalt_sql::Dialect::Postgres,
             Syntax::Dax => cobalt_sql::Dialect::Dax,
             _ => cobalt_sql::Dialect::TSql,
         }
@@ -77,6 +79,7 @@ pub fn layout_job_for(syntax: Syntax, text: &str, colors: &TokenColors, font: Fo
         Syntax::Local => layout_job_dialect(text, cobalt_sql::Dialect::Local, colors, font, wrap_width),
         Syntax::Sqlite => layout_job_dialect(text, cobalt_sql::Dialect::Sqlite, colors, font, wrap_width),
         Syntax::DuckDb => layout_job_dialect(text, cobalt_sql::Dialect::DuckDb, colors, font, wrap_width),
+        Syntax::Postgres => layout_job_dialect(text, cobalt_sql::Dialect::Postgres, colors, font, wrap_width),
         Syntax::Dax => layout_job_dialect(text, cobalt_sql::Dialect::Dax, colors, font, wrap_width),
         Syntax::Python => python_layout_job(text, colors, font, wrap_width),
         Syntax::Plain => {
@@ -369,6 +372,8 @@ impl EditorTab {
             Syntax::Local
         } else if self.tabular.is_some() {
             Syntax::Dax
+        } else if self.profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false) {
+            Syntax::Postgres
         } else if self.profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::DuckDb).unwrap_or(false) {
             Syntax::DuckDb
         } else if self.profile.as_ref().map(|p| p.is_file()).unwrap_or(false) {

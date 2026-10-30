@@ -13,7 +13,7 @@
 //! body of a `CREATE PROCEDURE/FUNCTION/TRIGGER`. `SET` inside an `UPDATE` or `MERGE` is
 //! not a statement start.
 
-use crate::lexer::{tokenize, Token, TokenKind};
+use crate::lexer::{tokenize, tokenize_dialect, Dialect, Token, TokenKind};
 
 /// The location of one statement inside a batch. `start..end` is a half-open byte range
 /// that excludes leading and trailing trivia (whitespace, comments) but includes a
@@ -60,6 +60,14 @@ enum Block {
 pub fn statements(sql: &str) -> Vec<StatementSpan> {
     let tokens = tokenize(sql);
     Splitter::new(sql, &tokens).run()
+}
+
+/// [`statements`] lexed in `dialect` (PostgreSQL's `$$ … $$` bodies hold semicolons).
+pub fn statements_dialect(sql: &str, dialect: Dialect) -> Vec<StatementSpan> {
+    let tokens = tokenize_dialect(sql, dialect);
+    let mut sp = Splitter::new(sql, &tokens);
+    sp.postgres = dialect == Dialect::Postgres;
+    sp.run()
 }
 
 /// 1-based line number of byte `offset` in `text` (`\n`, `\r\n` and lone `\r` all
@@ -120,6 +128,9 @@ struct Splitter<'a> {
     set_seen: bool,
     /// Inside a `CREATE PROCEDURE/FUNCTION/TRIGGER` — nothing splits until the end.
     module_body: bool,
+    /// PostgreSQL: `BEGIN` is a transaction statement and module bodies are dollar-quoted
+    /// strings, so neither opens a block.
+    postgres: bool,
 }
 
 impl<'a> Splitter<'a> {
@@ -139,6 +150,7 @@ impl<'a> Splitter<'a> {
             in_merge: false,
             set_seen: false,
             module_body: false,
+            postgres: false,
         }
     }
 
@@ -283,7 +295,7 @@ impl<'a> Splitter<'a> {
                     match upper.as_str() {
                         "BEGIN" => {
                             let next = self.next_sig(i).map(|j| self.upper(j)).unwrap_or_default();
-                            if !matches!(next.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION") {
+                            if !self.postgres && !matches!(next.as_str(), "TRAN" | "TRANSACTION" | "DISTRIBUTED" | "DIALOG" | "CONVERSATION") {
                                 self.blocks.push(Block::Begin);
                             }
                             self.expect_body = false;
@@ -296,13 +308,13 @@ impl<'a> Splitter<'a> {
                             }
                         }
                         "IF" | "WHILE" => {
-                            if self.paren_depth == 0 {
+                            if self.paren_depth == 0 && !self.postgres {
                                 self.expect_body = true;
                             }
                         }
                         "ELSE" => {
                             // `CASE … ELSE …` is an expression, not flow control.
-                            if self.paren_depth == 0 && self.blocks.last() != Some(&Block::Case) {
+                            if self.paren_depth == 0 && !self.postgres && self.blocks.last() != Some(&Block::Case) {
                                 self.expect_body = true;
                             }
                         }
@@ -313,7 +325,7 @@ impl<'a> Splitter<'a> {
                             }
                         }
                         "CREATE" | "ALTER" if self.cur_start == Some(i) => {
-                            if self.creates_module(i) {
+                            if !self.postgres && self.creates_module(i) {
                                 self.module_body = true;
                             }
                         }
@@ -496,5 +508,29 @@ mod tests {
         assert!(statements("").is_empty());
         assert!(statements("  \n/* c */\n").is_empty());
         assert_eq!(texts(";;"), vec![";", ";"]);
+    }
+}
+
+#[cfg(test)]
+mod postgres_tests {
+    use super::*;
+
+    #[test]
+    fn dollar_quotes_do_not_split() {
+        let sql = "CREATE FUNCTION f() RETURNS int LANGUAGE sql AS $$\n    SELECT 1; -- inside\n$$;\nSELECT f();\nDO $x$ BEGIN PERFORM 1; END $x$;";
+        let spans = statements_dialect(sql, Dialect::Postgres);
+        let texts: Vec<&str> = spans.iter().map(|s| sql[s.start..s.end].trim()).collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert!(texts[0].starts_with("CREATE FUNCTION") && texts[0].ends_with("$$;"));
+        assert_eq!(texts[1], "SELECT f();");
+        assert!(texts[2].starts_with("DO $x$"));
+        assert_eq!(spans[1].line, 4);
+        // BEGIN is a transaction statement, not a block
+        let sql = "BEGIN;
+INSERT INTO t VALUES (1);
+COMMIT;";
+        assert_eq!(statements_dialect(sql, Dialect::Postgres).len(), 3);
+        assert_eq!(statements_dialect("CREATE TABLE t (id int);
+SELECT 1;", Dialect::Postgres).len(), 2);
     }
 }

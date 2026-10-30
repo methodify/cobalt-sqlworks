@@ -138,6 +138,7 @@ impl CobaltApp {
                     "catalog_objects": t.catalog.as_ref().map(|c| c.objects.len()),
                     "catalog_columns": t.catalog.as_ref().map(|c| c.columns.values().map(|v| v.len()).sum::<usize>()),
                     "text_plan_sections": t.run.as_ref().and_then(|r| r.text_plan.as_ref()).map(|p| p.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>()),
+                    "text_plan": t.run.as_ref().and_then(|r| r.text_plan.as_ref()).map(|p| p.iter().map(|(t, b)| json!({"title": t, "body": b})).collect::<Vec<_>>()),
                     "capped": t.run.as_ref().map(|r| r.capped),
                     "run": run,
                 })
@@ -429,6 +430,27 @@ impl AgentApp for CobaltApp {
                 let Some(server) = arg_str(args, "server") else { return ActionResult::BadArgs("server is required".into()) };
                 let user = arg_str(args, "user").unwrap_or_default();
                 let password = arg_str(args, "password").unwrap_or_default();
+                if engine.as_deref() == Some("postgres") {
+                    // {engine: postgres, server, port?, database?, user, password?, name?, trust_server_certificate?}
+                    let mut p = ConnectionProfile::postgres(server, arg_str(args, "database"), if user.is_empty() { "postgres".to_string() } else { user.clone() });
+                    p.port = args.and_then(|a| a.get("port")).and_then(|v| v.as_u64()).map(|v| v as u16);
+                    p.name = arg_str(args, "name");
+                    p.options.trust_server_certificate = args.and_then(|a| a.get("trust_server_certificate")).and_then(|v| v.as_bool()).unwrap_or(true);
+                    if !password.is_empty() {
+                        let r = SecretRef::for_profile(&p.id, "password");
+                        if self.secrets.set(&r, &Secret::new(password)).is_ok() {
+                            if let AuthMethod::SqlLogin { password: pw, .. } = &mut p.auth {
+                                *pw = Some(r);
+                            }
+                        }
+                    }
+                    if let Err(e) = self.store.upsert_profile(&p) {
+                        return ActionResult::Rejected(format!("save failed: {e}"));
+                    }
+                    let id = p.id.to_string();
+                    self.with_ctx(egui, ops::load_library);
+                    return ActionResult::with(&json!({"profile_id": id}));
+                }
                 let auth = match arg_str(args, "auth").as_deref() {
                     Some("entra") | Some("entra_interactive") => AuthMethod::EntraInteractive { tenant: arg_str(args, "tenant"), account_hint: arg_str(args, "account_hint") },
                     Some("device_code") => AuthMethod::EntraDeviceCode { tenant: arg_str(args, "tenant") },
@@ -497,7 +519,7 @@ impl AgentApp for CobaltApp {
                         let (schema, name) = match table.split_once('.') {
                             Some((s, n)) => (s.to_string(), n.to_string()),
                             // a file database's tables have no schema (SQLite) or sit in main (DuckDB)
-                            None => (if p.is_file() { String::new() } else { "dbo".to_string() }, table.clone()),
+                            None => (p.engine.default_schema().to_string(), table.clone()),
                         };
                         let database = arg_str(args, "database").or_else(|| p.database.clone()).unwrap_or_else(|| "master".into());
                         let pid = p.id;
@@ -875,8 +897,8 @@ impl AgentApp for CobaltApp {
                     _ => RunMode::All,
                 };
                 let Some(i) = self.state.active_tab else { return ActionResult::BadArgs("no active tab".into()) };
-                if args.and_then(|a| a.get("actual_plan")).and_then(|v| v.as_bool()).unwrap_or(false) {
-                    self.state.tabs[i].actual_plan = true;
+                if let Some(on) = args.and_then(|a| a.get("actual_plan")).and_then(|v| v.as_bool()) {
+                    self.state.tabs[i].actual_plan = on;
                 }
                 self.with_ctx(egui, |s, cx| ops::run(s, cx, i, mode));
                 ActionResult::ok()

@@ -31,6 +31,10 @@ rusqlite.workspace = true
 cobalt-sqlite.workspace = true
 cobalt-duckdb.workspace = true
 cobalt-sql.workspace = true
+tokio-postgres.workspace = true
+postgres-native-tls.workspace = true
+native-tls.workspace = true
+bytes = "1"
 
 [dev-dependencies]
 native-tls = "0.2"

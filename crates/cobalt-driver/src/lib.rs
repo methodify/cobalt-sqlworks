@@ -8,6 +8,7 @@ pub mod error;
 pub mod mssql;
 pub mod sqlite;
 pub mod duckdb;
+pub mod postgres;
 
 pub use error::DriverError;
 
@@ -244,6 +245,7 @@ pub struct MultiDriver {
     pub tds: std::sync::Arc<dyn Driver>,
     pub sqlite: std::sync::Arc<dyn Driver>,
     pub duckdb: std::sync::Arc<dyn Driver>,
+    pub postgres: std::sync::Arc<dyn Driver>,
 }
 
 #[async_trait]
@@ -257,6 +259,7 @@ impl Driver for MultiDriver {
             cobalt_core::EngineFamily::Tds => self.tds.connect(profile, creds, role).await,
             cobalt_core::EngineFamily::Sqlite => self.sqlite.connect(profile, creds, role).await,
             cobalt_core::EngineFamily::DuckDb => self.duckdb.connect(profile, creds, role).await,
+            cobalt_core::EngineFamily::Postgres => self.postgres.connect(profile, creds, role).await,
         }
     }
 }

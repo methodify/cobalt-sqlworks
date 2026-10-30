@@ -13,6 +13,8 @@ pub enum EngineFamily {
     Sqlite,
     /// A DuckDB database file; `server` is the path.
     DuckDb,
+    /// A PostgreSQL server over the network (`server`, `port`, `database`, SQL login).
+    Postgres,
 }
 
 impl EngineFamily {
@@ -25,6 +27,19 @@ impl EngineFamily {
             EngineFamily::Tds => "SQL Server",
             EngineFamily::Sqlite => "SQLite",
             EngineFamily::DuckDb => "DuckDB",
+            EngineFamily::Postgres => "PostgreSQL",
+        }
+    }
+    /// Identifiers are quoted with `"double quotes"` (not `[brackets]`).
+    pub fn double_quotes(self) -> bool {
+        matches!(self, EngineFamily::Sqlite | EngineFamily::DuckDb | EngineFamily::Postgres)
+    }
+    /// The default schema new tables land in when none is given.
+    pub fn default_schema(self) -> &'static str {
+        match self {
+            EngineFamily::Tds => "dbo",
+            EngineFamily::Postgres => "public",
+            EngineFamily::Sqlite | EngineFamily::DuckDb => "",
         }
     }
 }
@@ -95,6 +110,16 @@ impl ConnectionProfile {
 
     pub fn is_file(&self) -> bool {
         self.engine.is_file()
+    }
+
+    /// A PostgreSQL connection (SQL login; `database` defaults to `postgres` on the server).
+    pub fn postgres(server: impl Into<String>, database: Option<String>, user: impl Into<String>) -> Self {
+        let mut p = Self::new(server, AuthMethod::SqlLogin { user: user.into(), password: None });
+        p.engine = EngineFamily::Postgres;
+        p.database = database.filter(|d| !d.trim().is_empty());
+        // libpq's own default (sslmode=prefer): TLS when the server offers it
+        p.options.encrypt = Encrypt::Optional;
+        p
     }
 
     /// Fabric hosts look like `xxx.datawarehouse.fabric.microsoft.com` or `*.pbidedicated.windows.net`.

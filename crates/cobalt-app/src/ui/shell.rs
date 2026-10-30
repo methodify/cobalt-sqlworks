@@ -2449,7 +2449,7 @@ fn status_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                     ui.separator();
                 }
                 if let Some(t) = f.state.active() {
-                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else if t.local.is_some() { "Local SQL" } else if let Some(p) = t.profile.as_ref().filter(|p| p.is_file()) { p.engine.label() } else { "MSSQL" }).color(theme.text_muted));
+                    ui.label(RichText::new(if t.tabular.as_ref().map(|tt| tt.may_use_xmla(f.cx.settings)).unwrap_or(false) { "DAX / MDX" } else if t.tabular.is_some() { "DAX" } else if t.spark.is_some() { "Spark SQL" } else if t.local.is_some() { "Local SQL" } else if let Some(p) = t.profile.as_ref().filter(|p| p.engine != cobalt_core::EngineFamily::Tds) { p.engine.label() } else { "MSSQL" }).color(theme.text_muted));
                     if crate::gpu::is_software() {
                         ui.separator();
                         ui.label(RichText::new(format!("{} software rendering", icons::CPU)).color(theme.warning)).on_hover_text(format!("No GPU is available, so frames are drawn on the CPU.\nRenderer: {}", crate::gpu::adapter_label().unwrap_or("?")));

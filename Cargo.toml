@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -78,6 +78,9 @@ rsa = { version = "0.9", features = ["sha2", "pem"] }
 sha1 = "0.10"
 futures-util = "0.3"
 async-trait = "0.1"
+tokio-postgres = "0.7"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json", "column_decltype"] }
 
 # --- auth ---

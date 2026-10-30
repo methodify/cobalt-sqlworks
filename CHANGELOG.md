@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.15.0 — 2026-10-30
+
+- **PostgreSQL is a connection.** The connection dialog's engine list gains *PostgreSQL*:
+  server, port (5432 unless given), database, user name and password; *Encrypt* and *Trust
+  server certificate* under Advanced apply (*Optional* tries TLS and falls back). The server
+  sits in the Servers tree with its schemas, tables and views, sequences, functions and
+  procedures, columns with defaults and identity, primary / unique / foreign / check keys and
+  indexes with their definitions; *Script as* writes `CREATE TABLE` from the catalog,
+  `CREATE OR REPLACE VIEW` / `FUNCTION` from the server's own text, `CALL` or `SELECT * FROM`
+  for Execute, `SELECT … LIMIT` for Select. Query tabs speak PostgreSQL: its keywords and
+  functions complete, `"quoted"` names, `$$ dollar-quoted $$` bodies keep their semicolons,
+  `::` casts and `$1` parameters lex as themselves. A run goes statement by statement over the
+  simple query protocol (decision D013): a statement that returns rows is described by the
+  server first, so integers, floats, booleans, dates, times, timestamps with and without a
+  zone, `bytea` and `uuid` arrive as themselves and everything else — `numeric`, arrays, json,
+  intervals, user types — as text labelled with its PostgreSQL type name. Rows affected,
+  `RAISE NOTICE` output and errors with their SQLSTATE and line land in the Messages pane; an
+  error inside a script's own `BEGIN` rolls the transaction back and says so; *Cancel* sends
+  the backend cancel request; *Est. plan* and *Actual plan* put `EXPLAIN` / `EXPLAIN ANALYZE`
+  in the Plan pane.
+- **Writing into PostgreSQL.** *Save results as table* and *Import data from file* onto a
+  PostgreSQL tab create the table (`public` unless a schema is given) and load it with
+  `COPY … FROM STDIN`; **Copy to SQLite file…** and **Copy to DuckDB file…** take a PostgreSQL
+  table along. *Explore* over a PostgreSQL table writes the local engine's dialect (ROLLUP /
+  GROUPING run natively); *Edit Data* works on PostgreSQL tables with a primary key
+  (schema-qualified names, booleans as TRUE / FALSE); a save the server refuses — a foreign
+  key, a duplicate — is rolled back and the grid keeps its edits with the error.
+- **Agent.** `add_profile {engine: "postgres", server, port?, database?, user, password?,
+  name?}`; `connect`, `edit`, `results_to_table`, `table_to_sqlite`, `explore` and the rest
+  work on a PostgreSQL tab as on any other.
+- **Test bed.** `tests/seed_postgres.sql` seeds a Docker PostgreSQL 16 (`cobalt-postgres`,
+  localhost:5433); the driver's integration tests run with `COBALT_TEST_POSTGRES=1`.
+
 ## 0.14.0 — 2026-10-30
 
 - **DuckDB databases are connections.** Open a `.duckdb` file (File › Open Database File…

@@ -1428,16 +1428,26 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                 ui.set_width(440.0);
                 egui::Grid::new("conn-grid").num_columns(2).spacing([10.0, 7.0]).min_col_width(120.0).show(ui, |ui| {
                     ui.label("Engine");
-                    let engine_labels = ["SQL Server, Azure SQL, Fabric", "SQLite database file", "DuckDB database file"];
-                    egui::ComboBox::from_id_salt("engine").width(300.0).selected_text(engine_labels[d.engine_index.min(2)]).show_ui(ui, |ui| {
+                    let engine_labels = ["SQL Server, Azure SQL, Fabric", "SQLite database file", "DuckDB database file", "PostgreSQL"];
+                    egui::ComboBox::from_id_salt("engine").width(300.0).selected_text(engine_labels[d.engine_index.min(3)]).show_ui(ui, |ui| {
                         for (i, l) in engine_labels.iter().enumerate() {
-                            if ui.selectable_value(&mut d.engine_index, i, *l).clicked() && i >= 1 {
-                                d.auth_index = 7;
+                            if ui.selectable_value(&mut d.engine_index, i, *l).clicked() {
+                                if i == 1 || i == 2 {
+                                    d.auth_index = 7;
+                                } else if i == 3 {
+                                    d.auth_index = 0;
+                                    if d.profile.options.encrypt == cobalt_core::Encrypt::Mandatory {
+                                        d.profile.options.encrypt = cobalt_core::Encrypt::Optional;
+                                    }
+                                } else if d.auth_index == 7 {
+                                    d.auth_index = 0;
+                                }
                             }
                         }
                     });
                     ui.end_row();
-                    if d.engine_index >= 1 {
+                    let postgres = d.engine_index == 3;
+                    if d.engine_index == 1 || d.engine_index == 2 {
                         let duck = d.engine_index == 2;
                         ui.label("Database file");
                         ui.horizontal(|ui| {
@@ -1467,9 +1477,9 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                         ui.label(RichText::new(note).size(11.0).color(theme.text_muted));
                         ui.end_row();
                     }
-                    if d.engine_index == 0 {
+                    if d.engine_index == 0 || postgres {
                     ui.label("Server");
-                    let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text("host, host,port, host\\instance, or Fabric endpoint").desired_width(300.0));
+                    let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text(if postgres { "host or host:port" } else { "host, host,port, host\\instance, or Fabric endpoint" }).desired_width(300.0));
                     // focus Server once when a new dialog opens (not every frame: that would keep
                     // stealing focus from the other fields, e.g. the connection-string box)
                     if d.is_new && !d.focus_done {
@@ -1478,8 +1488,14 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                     }
                     ui.end_row();
                     ui.label("Port");
-                    ui.add(egui::TextEdit::singleline(&mut d.port_text).hint_text("1433").desired_width(80.0));
+                    ui.add(egui::TextEdit::singleline(&mut d.port_text).hint_text(if postgres { "5432" } else { "1433" }).desired_width(80.0));
                     ui.end_row();
+                    if postgres {
+                        d.auth_index = 0;
+                        ui.label("Authentication");
+                        ui.label("User name and password");
+                        ui.end_row();
+                    } else {
                     ui.label("Connection string").on_hover_text("Paste an ADO.NET / SqlClient connection string and click Apply to fill the fields above");
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.conn_string).hint_text("Server=…;Database=…;User ID=…;Password=…").desired_width(230.0));
@@ -1522,6 +1538,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                         }
                     });
                     ui.end_row();
+                    }
                     match d.auth_index {
                         0 => {
                             ui.label("User name");
@@ -1587,7 +1604,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                     }
                     ui.label("Database");
                     let mut db = d.profile.database.clone().unwrap_or_default();
-                    if ui.add(egui::TextEdit::singleline(&mut db).hint_text("<default>").desired_width(300.0)).changed() {
+                    if ui.add(egui::TextEdit::singleline(&mut db).hint_text(if postgres { "postgres" } else { "<default>" }).desired_width(300.0)).changed() {
                         d.profile.database = if db.trim().is_empty() { None } else { Some(db) };
                     }
                     ui.end_row();

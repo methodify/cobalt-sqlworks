@@ -247,8 +247,11 @@ pub fn regenerate(state: &mut AppState, idx: usize) {
         return;
     };
     let duck = state_engine_is_duckdb(&t.profile);
+    let pg = t.profile.as_ref().map(|p| p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false);
     let sql_from = ex.spec.source.as_ref().and_then(|s| s.sql_table()).map(|(_, db, schema, table)| {
-        if duck && !schema.is_empty() && schema != "main" {
+        if pg {
+            format!("{}.{}", cobalt_sqlite::quote(if schema.is_empty() { "public" } else { schema }), cobalt_sqlite::quote(table))
+        } else if duck && !schema.is_empty() && schema != "main" {
             format!("{}.{}", cobalt_sqlite::quote(schema), cobalt_sqlite::quote(table))
         } else if file {
             cobalt_sqlite::quote(table)
@@ -257,7 +260,7 @@ pub fn regenerate(state: &mut AppState, idx: usize) {
         }
     });
     // DuckDB speaks the local engine's dialect (ILIKE, intervals, ROLLUP); SQLite its own
-    let dialect = if duck { cobalt_local::explore::SqlDialect::DataFusion } else if file { cobalt_local::explore::SqlDialect::Sqlite } else { cobalt_local::explore::SqlDialect::TSql };
+    let dialect = if duck || pg { cobalt_local::explore::SqlDialect::DataFusion } else if file { cobalt_local::explore::SqlDialect::Sqlite } else { cobalt_local::explore::SqlDialect::TSql };
     let generated = match (ex.spec.source.as_ref().and_then(|s| s.local_table()), sql_from) {
         (Some(_), _) => cobalt_local::explore::to_sql(&ex.spec, &cat).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),
         (None, Some(from)) => cobalt_local::explore::to_sql_in(&ex.spec, &cat, dialect, Some(&from)).map(|q| cobalt_tabular::explore::DaxQuery { text: q.text, group_columns: q.group_columns, value_columns: q.value_columns, subtotal_columns: q.subtotal_columns }),

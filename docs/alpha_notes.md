@@ -1168,3 +1168,31 @@ Agent: `open_database {path, create: true, engine: "duckdb"}`, `duckdb {action: 
 `export {format: "duckdb", path, table, mode}`, `table_to_sqlite {…, format: "duckdb"}`,
 `local_duckdb {path, table}`, and everything from 0.13.0 (`edit`, `results_to_table`, …) on a
 DuckDB tab; labels unchanged.
+
+## PostgreSQL as a connection (0.15.0)
+
+**Connecting.** *New connection* › Engine › **PostgreSQL**: server (`host` or `host:port`),
+port, database (`postgres` when empty), user name and password (Remember keeps it in the OS
+keychain). A local Docker server with a self-signed certificate wants *Trust server
+certificate* under Advanced; *Encrypt: Optional* tries TLS and falls back to plain, which is
+what the Docker image offers. The tab is named after the database; a PostgreSQL connection is to
+one database (the tree lists the others, a new connection opens one of them).
+
+**Querying.** Write PostgreSQL: `LIMIT`, `::text`, `ILIKE`, `RETURNING`, `$$ … $$` function
+bodies, `DO $$ … $$` blocks, `\x` bytea. The grid shows `numeric` columns as text (every
+digit as the server sent it), arrays, json and intervals as text too, with the PostgreSQL type
+name in the column header's tooltip; integers, floats, booleans, dates and timestamps are
+themselves (sort and filter as numbers and dates). `RAISE NOTICE` lands in Messages; an error
+names its SQLSTATE and line. A script that opens a transaction and fails is rolled back for you
+(Messages says *The transaction was rolled back*), so the next run does not meet *current
+transaction is aborted*. Ctrl+L / *Actual plan* give `EXPLAIN` / `EXPLAIN ANALYZE` text.
+
+**The tree and Edit Data.** Tables group by schema (`shop.customers`); *Select Top 1000* writes
+`LIMIT`; *Script as* has CREATE for tables (from the catalog) and the server's own text for views
+and functions. *Edit Data* on a table with a primary key (the tree's *Edit Data*, or the pencil
+on a single-table SELECT): the save runs as `BEGIN … COMMIT` and a refused change (a foreign key,
+a duplicate key) comes back as the error with the grid's edits intact. *Save results as table*
+creates in `public` unless the dialog names a schema, then `COPY`s the rows in.
+
+Agent: `add_profile {engine: "postgres", server: "localhost", port: 5433, database,
+user, password, name}`, then `connect {profile}`; everything else as on other engines.

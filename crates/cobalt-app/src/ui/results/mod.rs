@@ -68,7 +68,7 @@ pub struct ResultsArgs<'a> {
 
 pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
     let diff_tab = args.tab.local.as_ref().map(|l| l.diff.is_some()).unwrap_or(false);
-    let file_conn = args.tab.profile.as_ref().map(|p| p.is_file()).unwrap_or(false);
+    let file_conn = args.tab.profile.as_ref().map(|p| p.is_file() || p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false);
     let mut actions = Vec::new();
     let theme = args.theme;
     let tab = args.tab;

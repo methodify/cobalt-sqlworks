@@ -3,7 +3,9 @@
 *Status: approved and built. Slices A–D shipped in 0.13.0 (2026-10-28) with the ten §6 decisions
 taken as recommended; slice E's DuckDB half shipped in 0.14.0 (2026-10-30) behind the same
 file-connection shape, with the engine loaded at run time rather than linked in (D011, revising
-§3.11's build-cost premise); PostgreSQL is next.
+§3.11's build-cost premise); slice E's PostgreSQL half shipped in 0.15.0 (2026-10-30) as a
+network engine behind the same engine picker and driver shape (D013: the simple query protocol,
+statement by statement, each described first). The slate is complete.
 Written for the founder's alignment on 2026-10-28. Picks up §5.9 of the product design
 ("after SQL Server: DuckDB and SQLite, then PostgreSQL") and D002's V2 engines list, and takes
 stock of what the app has become since: the local engine, file tables, scratch tables, Explore
@@ -182,6 +184,10 @@ because the engine is behind the same trait.
 - **PostgreSQL** is a network engine with its own wire protocol (`tokio-postgres`), auth
   stories and dialect; D002 puts it after DuckDB. Nothing in this slate is specific to files
   except the profile's path field, so it inherits the engine picker and the driver shape.
+  *Done in 0.15.0:* `EngineFamily::Postgres` on profiles (server, port, database, SQL login),
+  the driver in `cobalt-driver/src/postgres` (D013), `Dialect::Postgres` with dollar quoting,
+  the tree by schema, writes through `COPY`, Explore in the local engine's dialect, Edit Data
+  with the primary key from the catalog snapshot.
 
 ## 4. Architecture
 
@@ -243,7 +249,8 @@ here. *DuckDB now*: §3.11.
 - **D. Edit Data.** The staged-edits grid on SQLite tables and single-table results, Pending
   changes, Save and Discard, the agent's `edit` verb; the key-and-SQL trait left ready for
   T-SQL.
-- **E (the founder's call, §6.6). DuckDB** behind the same file-connection shape.
+- **E (the founder's call, §6.6). DuckDB** behind the same file-connection shape (0.14.0),
+  then **PostgreSQL** behind the same engine picker (0.15.0).
 
 ## 6. Decisions for the founder (recommendations in bold)
 

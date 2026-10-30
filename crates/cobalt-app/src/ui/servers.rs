@@ -477,7 +477,7 @@ fn server_node(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &ConnectionProf
             (false, e) => e,
         }
     };
-    let icon = if p.is_file() { icons::FILE_SQL } else if p.looks_like_fabric() || p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
+    let icon = if p.is_file() { icons::FILE_SQL } else if p.engine == cobalt_core::EngineFamily::Postgres { icons::HARD_DRIVES } else if p.looks_like_fabric() || p.looks_like_azure() { icons::CLOUD } else { icons::HARD_DRIVES };
     let icon_color = if connected { Some(theme.success) } else { None };
     let expanded = node.expanded;
     let r = tree_row(ui, theme, TreeRow { depth, expandable: true, expanded, loading, icon, icon_color, label: &name, detail: detail.as_deref(), selected: active == Some(p.id), color_dot: color, kind: "server" });
@@ -641,6 +641,7 @@ pub fn database_children(ui: &mut Ui, lib: &mut Library, theme: &Theme, p: &Conn
     let caps = engine.map(|e| e.capabilities).unwrap_or_else(|| match p.engine {
         cobalt_core::EngineFamily::Sqlite => EngineKind::Sqlite.capabilities(),
         cobalt_core::EngineFamily::DuckDb => EngineKind::DuckDb.capabilities(),
+        cobalt_core::EngineFamily::Postgres => EngineKind::Postgres.capabilities(),
         cobalt_core::EngineFamily::Tds => EngineKind::SqlServer.capabilities(),
     });
     let group_by_schema = node.group_by_schema && caps.schemas;
@@ -918,7 +919,7 @@ fn object_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             actions.push(TreeAction::CopyToDuckDb { profile: p.id, obj: obj.clone() });
             ui.close();
         }
-        if p.is_file() && obj.kind == ObjectKind::Table && ui.button(format!("{} Edit Data", icons::PENCIL_SIMPLE)).on_hover_text("The table in an editable grid: change cells, add and delete rows; nothing is written until Save.").clicked() {
+        if (p.is_file() || p.engine == cobalt_core::EngineFamily::Postgres) && obj.kind == ObjectKind::Table && ui.button(format!("{} Edit Data", icons::PENCIL_SIMPLE)).on_hover_text("The table in an editable grid: change cells, add and delete rows; nothing is written until Save.").clicked() {
             actions.push(TreeAction::EditData { profile: p.id, obj: obj.clone() });
             ui.close();
         }

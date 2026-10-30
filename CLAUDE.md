@@ -19,7 +19,7 @@ founder-facing test notes in `docs/alpha_notes.md`.
 
 ```
 crates/cobalt-core      shared types (profiles, engines, SqlType<->Arrow, catalog, settings)
-crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003); sqlite impl over rusqlite; duckdb impl over cobalt-duckdb
+crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003); sqlite impl over rusqlite; duckdb impl over cobalt-duckdb; postgres impl over tokio-postgres (D013)
 crates/cobalt-sqlite    shared SQLite plumbing (rusqlite): declared types, Arrow rows into inserts, file writer, affinity reading
 crates/cobalt-duckdb    DuckDB through its C API loaded at run time (libloading; the official library downloaded on first use, D011)
 crates/cobalt-results   Arrow chunk store: spill, display cache, sort/filter views, summaries
@@ -36,6 +36,7 @@ site/                   GitHub Pages homepage (static; lists the latest release 
 .github/workflows/      ci.yml (tests), release.yml (tag v* -> installers + GitHub release), pages.yml (site)
 scripts/                launch.sh, agent-smoke.sh, agent-ui.sh, agent-verify.sh (egui-agent-cli drivers)
 tests/seed.sql          test database for the Docker SQL Server
+tests/seed_postgres.sql test database for the Docker PostgreSQL
 ```
 
 ## Build, run, test
@@ -49,6 +50,10 @@ tests/seed.sql          test database for the Docker SQL Server
 - Test DB: Docker `cobalt-mssql` (SQL Server 2022, localhost:1433, sa / `Cobalt!Dev2026pw`,
   db `cobalt_test` from `tests/seed.sql`). Driver integration tests:
   `COBALT_TEST_MSSQL=1 cargo test -p cobalt-driver -- --test-threads=1`.
+- PostgreSQL test DB: Docker `cobalt-postgres` (postgres:16-alpine, localhost:5433, postgres / `Cobalt!Dev2026pw`,
+  db `cobalt_test` from `tests/seed_postgres.sql`; `docker run -d --name cobalt-postgres -p 5433:5432 -e POSTGRES_PASSWORD=… -e POSTGRES_DB=cobalt_test postgres:16-alpine`
+  then `docker exec -i cobalt-postgres psql -U postgres -d cobalt_test < tests/seed_postgres.sql`).
+  Driver tests: `COBALT_TEST_POSTGRES=1 cargo test -p cobalt-driver --test postgres -- --test-threads=1`.
 - Linux: `docker run --rm -v "$PWD:/src" -w /src -e CARGO_TARGET_DIR=/src/target-linux rust:1.95-bookworm
   bash -c "apt-get update && apt-get install -y pkg-config libssl-dev libxkbcommon-dev libwayland-dev
   libx11-dev libxcb1-dev libgl1-mesa-dev libfontconfig1-dev libdbus-1-dev cmake clang && cargo build --release -p cobalt-app"`.

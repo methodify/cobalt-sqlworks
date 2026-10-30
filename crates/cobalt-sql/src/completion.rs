@@ -576,6 +576,9 @@ impl<'a> Ctx<'a> {
         if self.dialect == Dialect::DuckDb {
             v.extend(crate::lexer::SQLITE_KEYWORDS.iter().chain(crate::lexer::DUCKDB_KEYWORDS.iter()).map(|k| item(*k, *k, CompletionKind::Keyword, None)));
         }
+        if self.dialect == Dialect::Postgres {
+            v.extend(crate::lexer::POSTGRES_KEYWORDS.iter().map(|k| item(*k, *k, CompletionKind::Keyword, None)));
+        }
         v.extend(self.functions());
         if with_snippets {
             v.extend(SNIPPETS.iter().map(|s| item(s.prefix, s.body, CompletionKind::Snippet, Some(s.label.to_string()))));
@@ -586,9 +589,12 @@ impl<'a> Ctx<'a> {
 
     fn functions(&self) -> Vec<CompletionItem> {
         // SQLite has its own function list; the shared one is T-SQL's
-        let mut v: Vec<CompletionItem> = if matches!(self.dialect, Dialect::Sqlite | Dialect::DuckDb) { Vec::new() } else { FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect() };
+        let mut v: Vec<CompletionItem> = if matches!(self.dialect, Dialect::Sqlite | Dialect::DuckDb | Dialect::Postgres) { Vec::new() } else { FUNCTIONS.iter().filter(|f| !f.starts_with('@')).map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))).collect() };
         if self.dialect == Dialect::DuckDb {
             v.extend(crate::lexer::DUCKDB_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
+        }
+        if self.dialect == Dialect::Postgres {
+            v.extend(crate::lexer::POSTGRES_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
         }
         if self.dialect == Dialect::Spark {
             v.extend(SPARK_FUNCTIONS.iter().map(|f| item(*f, *f, CompletionKind::Function, Some("Function".into()))));
@@ -1093,8 +1099,8 @@ pub fn quote_for(name: &str, dialect: Dialect) -> String {
                 format!("\"{}\"", name.replace('"', "\"\""))
             }
         }
-        Dialect::Local => {
-            // the local engine folds bare names to lower case, so a name with capitals is quoted
+        Dialect::Local | Dialect::Postgres => {
+            // the local engine (and PostgreSQL) folds bare names to lower case, so a name with capitals is quoted
             let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_lowercase() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
             if simple {
                 name.to_string()

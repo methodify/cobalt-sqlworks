@@ -28,6 +28,9 @@ impl DriverError {
     /// A hint we can show under the raw error (certificate/firewall/login guidance).
     pub fn hint(&self) -> Option<&'static str> {
         let text = self.to_string().to_ascii_lowercase();
+        if text.contains("tls handshake") {
+            return Some("The TLS handshake failed: the server may not offer TLS. Set Encrypt to Optional in the connection's advanced options for a server without SSL, or enable \"Trust server certificate\" for a self-signed one.");
+        }
         if text.contains("certificate") || text.contains("self signed") || text.contains("self-signed") || text.contains("unknown issuer") {
             return Some("The server's TLS certificate isn't trusted. For dev servers, enable \"Trust server certificate\" in the connection's advanced options.");
         }

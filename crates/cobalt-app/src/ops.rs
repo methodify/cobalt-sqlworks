@@ -321,6 +321,7 @@ pub fn open_connection_dialog_from(state: &mut AppState, cx: &Ctx, profile: Conn
     let engine_index = match profile.engine {
         cobalt_core::EngineFamily::Sqlite => 1,
         cobalt_core::EngineFamily::DuckDb => 2,
+        cobalt_core::EngineFamily::Postgres => 3,
         cobalt_core::EngineFamily::Tds => 0,
     };
     state.dialog = Dialog::Connection(Box::new(ConnectionDialog {
@@ -392,6 +393,7 @@ pub fn save_connection_dialog(state: &mut AppState, cx: &Ctx) -> Option<Connecti
     p.engine = match d.engine_index {
         1 => cobalt_core::EngineFamily::Sqlite,
         2 => cobalt_core::EngineFamily::DuckDb,
+        3 => cobalt_core::EngineFamily::Postgres,
         _ => cobalt_core::EngineFamily::Tds,
     };
     if p.is_file() {
@@ -441,6 +443,10 @@ pub fn save_connection_dialog(state: &mut AppState, cx: &Ctx) -> Option<Connecti
         }
     }
     p.auth = auth;
+    if p.engine == cobalt_core::EngineFamily::Postgres && !matches!(p.auth, AuthMethod::SqlLogin { .. }) {
+        d.error = Some(("PostgreSQL connections sign in with a user name and password.".into(), None));
+        return None;
+    }
     if p.looks_like_fabric() && matches!(p.auth, AuthMethod::SqlLogin { .. } | AuthMethod::WindowsIntegrated) {
         d.error = Some(("Fabric endpoints require Microsoft Entra ID authentication.".into(), None));
         return None;
@@ -629,11 +635,12 @@ pub fn duckdb_root(cx: &Ctx) -> PathBuf {
 }
 
 /// `[schema].[name]` for T-SQL, `"name"` for a file database (`"schema"."name"` when a DuckDB
-/// object sits outside `main`).
+/// object sits outside `main`), `"schema"."name"` on PostgreSQL.
 pub fn quoted_object(profile: Option<&ConnectionProfile>, obj: &cobalt_core::ObjectRef) -> String {
-    if profile.map(|p| p.is_file()).unwrap_or(false) {
+    if profile.map(|p| p.engine.double_quotes()).unwrap_or(false) {
         let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-        if obj.schema.is_empty() || obj.schema == "main" || profile.map(|p| p.engine != cobalt_core::EngineFamily::DuckDb).unwrap_or(true) {
+        let pg = profile.map(|p| p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false);
+        if obj.schema.is_empty() || (!pg && obj.schema == "main") || profile.map(|p| !matches!(p.engine, cobalt_core::EngineFamily::DuckDb | cobalt_core::EngineFamily::Postgres)).unwrap_or(true) {
             q(&obj.name)
         } else {
             format!("{}.{}", q(&obj.schema), q(&obj.name))
@@ -1188,7 +1195,7 @@ pub fn tree_action(state: &mut AppState, cx: &Ctx, action: TreeAction) {
         TreeAction::SelectTop { profile, obj } => {
             let n = cx.settings.execution.select_top_n;
             let cols = state.library.servers.get(&profile).and_then(|s| s.db_nodes.get(&obj.database)).and_then(|d| d.columns.get(&obj.object_id.unwrap_or(0))).and_then(|l| l.get()).cloned();
-            let file = state.library.profile(profile).map(|p| p.is_file()).unwrap_or(false);
+            let file = state.library.profile(profile).map(|p| p.engine.double_quotes()).unwrap_or(false);
             let target = quoted_object(state.library.profile(profile), &obj);
             let sql = if file {
                 let qc = |c: &str| format!("\"{}\"", c.replace('"', "\"\""));
@@ -1999,7 +2006,7 @@ pub fn open_import_dialog(state: &mut AppState, cx: &Ctx, idx: usize, path: Opti
         inspection: None,
         inspect_error: None,
         columns: Vec::new(),
-        schema_name: "dbo".into(),
+        schema_name: state.tabs.get(idx).and_then(|t| t.profile.as_ref()).map(|p| p.engine.default_schema()).unwrap_or("dbo").to_string(),
         table_name: cobalt_import::table_name_from(&path),
         existing: false,
         existing_columns: Loadable::NotLoaded,
@@ -2232,9 +2239,13 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
         }
         (_, ins) => ins,
     };
-    let schema_name = d.schema_name.trim().to_string();
     let table_name = d.table_name.trim().to_string();
     let file_target = state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.is_file()).unwrap_or(false);
+    let pg_target = state.tabs.get(d.tab_index).and_then(|t| t.profile.as_ref()).map(|p| p.engine == cobalt_core::EngineFamily::Postgres).unwrap_or(false);
+    let schema_name = {
+        let s = d.schema_name.trim().to_string();
+        if pg_target && s.is_empty() { "public".to_string() } else { s }
+    };
     if table_name.is_empty() || (schema_name.is_empty() && !file_target) {
         d.result = Some(Err(if file_target { "Give the target table a name." } else { "Give the target table a schema and a name." }.into()));
         return;
@@ -2260,10 +2271,18 @@ pub fn start_import(state: &mut AppState, cx: &Ctx) {
         Some(cobalt_duckdb::create_table_sql(&cobalt_duckdb::quote(&table_name), &col_defs))
     } else if file_target {
         Some(cobalt_sqlite::create_table_sql(&table_name, &col_defs))
+    } else if pg_target {
+        Some(cobalt_driver::postgres::create_table_sql(&schema_name, &table_name, &col_defs))
     } else {
         Some(cobalt_import::create_table_sql(&schema_name, &table_name, &col_defs))
     };
-    let table = if file_target { cobalt_sqlite::quote(&table_name) } else { format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]")) };
+    let table = if file_target {
+        cobalt_sqlite::quote(&table_name)
+    } else if pg_target {
+        format!("{}.{}", cobalt_driver::postgres::q(&schema_name), cobalt_driver::postgres::q(&table_name))
+    } else {
+        format!("[{}].[{}]", schema_name.replace(']', "]]"), table_name.replace(']', "]]"))
+    };
     let format = import_format(d);
     let path = PathBuf::from(d.path.trim());
     let schema = ins.map(|i| i.schema.clone());
@@ -2451,7 +2470,7 @@ pub fn open_results_to_table(state: &mut AppState, cx: &Ctx, idx: usize, set: us
         inspection: None,
         inspect_error: None,
         columns,
-        schema_name: "dbo".into(),
+        schema_name: state.tabs.get(target).and_then(|t| t.profile.as_ref()).map(|p| p.engine.default_schema()).unwrap_or("dbo").to_string(),
         table_name,
         existing: false,
         existing_columns: Loadable::NotLoaded,
