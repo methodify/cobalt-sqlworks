@@ -527,6 +527,28 @@ def __cobalt_sql_all(text, limit=None):
             print("Statement %d completed (%.1f s)" % (i, __time.time() - t0))
 "#;
 
+/// `ModuleNotFoundError: No module named 'x'` → where the package comes from: the Fabric
+/// runtime's roster (installable into either engine's environment from Settings) or a package
+/// of your own.
+pub fn module_hint(text: &str) -> Option<String> {
+    let rest = text.split("No module named '").nth(1)?;
+    let module = rest.split('\'').next()?.split('.').next()?.trim();
+    if module.is_empty() {
+        return None;
+    }
+    let m = cobalt_runtime::Manifest::embedded();
+    let profile = m.default_profile.clone();
+    let in_roster = m.engine_roster(cobalt_runtime::Engine::Sail, &profile).map(|r| r.packages.iter().any(|p| crate::runtime::module_matches(p, module))).unwrap_or(false);
+    let in_env = m.sail.delta_requirement().is_some() && module == "delta";
+    Some(if in_env {
+        format!("Hint: `{module}` is the delta-spark package, part of the LakeSail environment since Cobalt 0.14: Settings › Spark › Reinstall / update LakeSail (or Install for me) adds it.")
+    } else if in_roster {
+        format!("Hint: `{module}` is in Fabric Runtime {}'s package roster ({profile}). Settings › Spark › Fabric packages picks the roster for the LakeSail environment (or the Local Spark profile), then Install / Reinstall or \"Install Python packages\" puts it in.", m.profile(&profile).map(|p| p.fabric_runtime.clone()).unwrap_or_default())
+    } else {
+        format!("Hint: `{module}` is not installed in this environment and is not in the Fabric package roster; add its package under Settings › Spark › Python packages and run \"Install Python packages\".")
+    })
+}
+
 /// A `run_sql` error as the worker reports it (`AnalysisException: [CODE] message … JVM
 /// stacktrace: …` plus the worker's Python traceback) reduced to the message.
 pub fn compact_spark_error(text: &str) -> String {
@@ -1393,6 +1415,11 @@ pub fn outcome(result: &Result<Value, String>, blobs: &[Vec<u8>]) -> CellOutcome
             if let Some(n) = v.get("notices").and_then(Value::as_array) {
                 for x in n.iter().filter_map(Value::as_str) {
                     out.messages.push(msg(format!("notice: {x}"), false));
+                }
+            }
+            if failed {
+                if let Some(h) = out.messages.iter().filter(|m| m.is_error).find_map(|m| module_hint(&m.text)) {
+                    out.messages.push(msg(h, false));
                 }
             }
             if interrupted {

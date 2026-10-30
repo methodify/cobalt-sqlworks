@@ -900,7 +900,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
                 let lines = [
                     format!("uv: {}", if kept(&st.uv) { "kept" } else { "downloaded" }),
                     format!("Python: {}", if kept(&st.python) { "kept" } else { "installed by uv" }),
-                    format!("LakeSail: pysail {} + pyspark-client {} {}", manifest.sail.version, manifest.sail.pyspark_client, if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
+                    format!("LakeSail: pysail {} + pyspark-client {}{} {}", manifest.sail.version, manifest.sail.pyspark_client, manifest.sail.delta_requirement().map(|d| format!(" + {d} (the delta module, no dependencies)")).unwrap_or_default(), if kept(&st.env) { "reinstalled over themselves (fast, cached)" } else { "installed (about 250 MB)" }),
                     match manifest.engine_roster(cobalt_runtime::Engine::Sail, &draft.spark.sail_profile) {
                         Some(r) => format!("Fabric packages: the {} roster ({} packages at Fabric's versions; ones without a wheel here are skipped)", draft.spark.sail_profile, r.packages.len()),
                         None => "Fabric packages: none".to_string(),

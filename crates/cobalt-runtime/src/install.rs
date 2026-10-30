@@ -511,14 +511,29 @@ fn step_sail_env(cx: &Context, uv: &Path, python: &str, rec: &mut Installed) -> 
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_tool(cx, uv, &argv, &env)?;
     std::fs::write(cx.dirs.sail_worker_file(), crate::SAIL_WORKER)?;
+    install_sail_delta(cx, uv)?;
     let v = detect::installed_package_version(&env_dir, "pysail");
     let pv = detect::installed_package_version(&env_dir, "pyspark-client").or_else(|| detect::installed_package_version(&env_dir, "pyspark"));
-    cx.log(format!("pysail {} + pyspark-client {} installed in {}", v.clone().unwrap_or_default(), pv.clone().unwrap_or_default(), env_dir.display()));
+    let dv = detect::installed_package_version(&env_dir, "delta-spark");
+    cx.log(format!("pysail {} + pyspark-client {}{} installed in {}", v.clone().unwrap_or_default(), pv.clone().unwrap_or_default(), dv.as_ref().map(|d| format!(" + delta-spark {d}")).unwrap_or_default(), env_dir.display()));
     let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
     rec.sail_env = Some(env_dir.clone());
     rec.sail_version = v;
     rec.sail_pyspark = pv;
+    rec.sail_delta = dv;
     Ok(env_dir)
+}
+
+/// `delta-spark` into the LakeSail environment without its dependencies: it declares
+/// `pyspark`, which the Connect-only `pyspark-client` already provides under another name (a
+/// plain install would pull the full JVM pyspark over it). The `delta` module then imports as
+/// it does on Fabric; the SQL path to Delta tables is Sail's own.
+fn install_sail_delta(cx: &Context, uv: &Path) -> Result<()> {
+    let Some(req) = cx.manifest.sail.delta_requirement() else { return Ok(()) };
+    (cx.progress)(Progress::Step { step: Step::Env, label: format!("Installing {req} (the delta module Fabric notebooks import; no dependencies, pyspark-client stands in for pyspark)") });
+    let py = cx.dirs.sail_env_python().to_string_lossy().to_string();
+    run_tool(cx, uv, &["pip", "install", "--python", &py, "--no-deps", &req], &uv_env(cx.dirs))?;
+    Ok(())
 }
 
 /// A Fabric package roster into an engine's environment: all at once when the resolver agrees
@@ -590,6 +605,7 @@ fn reassert_sail_pins(cx: &Context, uv: &Path) -> Result<()> {
     args.extend(cx.manifest.sail_requirements());
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
     run_tool(cx, uv, &argv, &uv_env(cx.dirs))?;
+    install_sail_delta(cx, uv)?;
     let _ = std::fs::remove_dir_all(cx.dirs.cache_dir());
     Ok(())
 }

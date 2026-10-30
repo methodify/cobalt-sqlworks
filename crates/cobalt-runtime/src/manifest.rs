@@ -110,6 +110,12 @@ pub struct SailPins {
     /// Roster packages the engine owns (name → why): left out of a Fabric roster on this engine
     /// and re-asserted from `packages` after a roster install.
     pub reserved: BTreeMap<String, String>,
+    /// The `delta-spark` version installed without its dependencies (its `pyspark` requirement
+    /// is met by `pyspark-client`, another distribution name); empty = none.
+    #[serde(default)]
+    pub delta_spark: String,
+    #[serde(default)]
+    pub delta_spark_note: String,
 }
 
 /// A Fabric runtime's notebook-facing Python packages at Fabric's versions, as pip
@@ -250,7 +256,7 @@ pub struct PackageSource {
 
 impl Default for SailPins {
     fn default() -> Self {
-        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into(), "protobuf>=6.33,<7".into()], reserved: BTreeMap::new() }
+        Self { version: "0.7.2".into(), pyspark_client: "4.1.3".into(), python: "3.13".into(), python_windows: "3.11".into(), packages: vec!["ipython>=8.18".into(), "pandas>=2.0,<3".into(), "pyarrow>=15".into(), "protobuf>=6.33,<7".into()], reserved: BTreeMap::new(), delta_spark: String::new(), delta_spark_note: String::new() }
     }
 }
 
@@ -263,6 +269,11 @@ impl SailPins {
         }
     }
     /// What `uv pip install` gets.
+    /// `delta-spark==x.y.z`, installed on its own with `--no-deps` (see `delta_spark`).
+    pub fn delta_requirement(&self) -> Option<String> {
+        let v = self.delta_spark.trim();
+        if v.is_empty() { None } else { Some(format!("delta-spark=={v}")) }
+    }
     pub fn requirements(&self) -> Vec<String> {
         let mut v = vec![format!("pysail=={}", self.version), format!("pyspark-client=={}", self.pyspark_client)];
         v.extend(self.packages.iter().cloned());

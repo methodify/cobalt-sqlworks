@@ -340,6 +340,7 @@ class _FilesMixin:
             # no lakehouse in this session: the shim and the write guard still exist, Files do not
             self._install_notebookutils()
             _install_write_guard(self)
+            _install_delta_shim()
             return
         from pathlib import Path
 
@@ -386,6 +387,7 @@ class _FilesMixin:
                 self.warnings.append(f"/lakehouse/default could not be linked: {type(exc).__name__}: {exc}")
         self._install_notebookutils()
         _install_write_guard(self)
+        _install_delta_shim()
 
     def _install_notebookutils(self) -> None:
         from IPython.core.interactiveshell import InteractiveShell
@@ -623,6 +625,223 @@ class _SailShim:
 
 _WRITE_GUARD_INSTALLED = False
 _WRITE_GUARD_ENGINE = None
+
+
+
+# ---------------------------------------------------------------------------------------------
+# delta.tables.DeltaTable on LakeSail: the API Fabric notebooks use, as SQL
+# ---------------------------------------------------------------------------------------------
+
+_DELTA_SHIM_INSTALLED = False
+
+
+def _install_delta_shim() -> None:
+    """`from delta.tables import DeltaTable` works on LakeSail (delta-spark is in the
+    environment), but the package's own class drives a JVM (or a Delta Connect server, which
+    Sail is not). This replaces it with a class that turns the API into SQL Sail runs natively:
+    forPath / forName / isDeltaTable / toDF / alias / update / delete / merge (with every
+    whenMatched / whenNotMatched / whenNotMatchedBySource clause). Conditions and values are SQL
+    strings, as in the Delta docs; a Column object cannot be turned back into SQL on a Connect
+    client and is refused with a message. history / vacuum / optimize / restore raise
+    NotImplementedError naming the SQL Sail lacks."""
+    global _DELTA_SHIM_INSTALLED
+    if _DELTA_SHIM_INSTALLED:
+        return
+    try:
+        import delta
+        import delta.tables as _dtm
+    except Exception:
+        return
+
+    def _sql_text(x, what: str) -> str:
+        if x is None:
+            return ""
+        if isinstance(x, str):
+            return x
+        name = type(x).__name__
+        if name == "Column":
+            raise TypeError(f"{what}: on the LakeSail engine, pass a SQL string (\"t.id = s.id\", \"s.amount * 2\") instead of a Column; "
+                            "a Spark Connect Column cannot be rendered back to SQL here")
+        return str(x)
+
+    def _assignments(mapping, what: str) -> str:
+        if not mapping:
+            raise ValueError(f"{what}: give a dict of column -> SQL expression")
+        return ", ".join(f"{_ident(k)} = {_sql_text(v, what)}" for k, v in mapping.items())
+
+    def _ident(name: str) -> str:
+        if name.startswith("`") or "." in name or " " not in name and name.replace("_", "a").isalnum():
+            return name
+        return "`" + name.replace("`", "``") + "`"
+
+    class CobaltDeltaMergeBuilder:
+        def __init__(self, table, source, condition: str):
+            self._table = table
+            self._source = source
+            self._condition = condition
+            self._clauses: list[str] = []
+
+        def _when(self, kind: str, cond, action: str):
+            c = _sql_text(cond, f"{kind} condition")
+            self._clauses.append(f"WHEN {kind}{' AND ' + c if c else ''} THEN {action}")
+            return self
+
+        def whenMatchedUpdate(self, condition=None, set=None):  # noqa: N802 — Delta's spelling
+            return self._when("MATCHED", condition, "UPDATE SET " + _assignments(set, "whenMatchedUpdate"))
+
+        def whenMatchedUpdateAll(self, condition=None):  # noqa: N802
+            return self._when("MATCHED", condition, "UPDATE SET *")
+
+        def whenMatchedDelete(self, condition=None):  # noqa: N802
+            return self._when("MATCHED", condition, "DELETE")
+
+        def whenNotMatchedInsert(self, condition=None, values=None):  # noqa: N802
+            if not values:
+                raise ValueError("whenNotMatchedInsert: give a dict of column -> SQL expression")
+            cols = ", ".join(_ident(k) for k in values)
+            vals = ", ".join(_sql_text(v, "whenNotMatchedInsert") for v in values.values())
+            return self._when("NOT MATCHED", condition, f"INSERT ({cols}) VALUES ({vals})")
+
+        def whenNotMatchedInsertAll(self, condition=None):  # noqa: N802
+            return self._when("NOT MATCHED", condition, "INSERT *")
+
+        def whenNotMatchedBySourceUpdate(self, condition=None, set=None):  # noqa: N802
+            return self._when("NOT MATCHED BY SOURCE", condition, "UPDATE SET " + _assignments(set, "whenNotMatchedBySourceUpdate"))
+
+        def whenNotMatchedBySourceDelete(self, condition=None):  # noqa: N802
+            return self._when("NOT MATCHED BY SOURCE", condition, "DELETE")
+
+        def withSchemaEvolution(self):  # noqa: N802
+            return self
+
+        def execute(self):
+            if not self._clauses:
+                raise ValueError("merge: add at least one whenMatched / whenNotMatched clause before execute()")
+            spark = self._table._spark
+            view = f"__cobalt_merge_src_{id(self) & 0xFFFF:x}"
+            alias = getattr(getattr(self._source, "_plan", None), "_alias", None)
+            self._source.createOrReplaceTempView(view)
+            try:
+                using = f"{view} AS {_ident(alias)}" if alias else view
+                sql = f"MERGE INTO {self._table._target()} USING {using} ON {self._condition}\n" + "\n".join(self._clauses)
+                spark.sql(sql).collect()
+            finally:
+                try:
+                    spark.catalog.dropTempView(view)
+                except Exception:
+                    pass
+
+    class CobaltDeltaTable:
+        """`DeltaTable` over SQL on the LakeSail engine (see `_install_delta_shim`)."""
+
+        def __init__(self, spark, path: str | None = None, name: str | None = None, alias: str | None = None):
+            self._spark = spark
+            self._path = path
+            self._name = name
+            self._alias = alias
+
+        @classmethod
+        def forPath(cls, sparkSession, path, hadoopConf=None):  # noqa: N802, N803
+            try:
+                sparkSession.read.format("delta").load(path).schema
+            except Exception as exc:
+                raise ValueError(f"{path} is not a Delta table: {exc}") from None
+            return cls(sparkSession, path=path)
+
+        @classmethod
+        def forName(cls, sparkSession, tableOrViewName):  # noqa: N802, N803
+            return cls(sparkSession, name=tableOrViewName)
+
+        @classmethod
+        def isDeltaTable(cls, sparkSession, identifier):  # noqa: N802, N803
+            try:
+                sparkSession.read.format("delta").load(identifier).schema
+                return True
+            except Exception:
+                return False
+
+        @classmethod
+        def create(cls, sparkSession=None):  # noqa: N803
+            raise NotImplementedError("DeltaTable.create / createIfNotExists / replace builders are not available on the LakeSail engine; "
+                                      "use spark.sql('CREATE TABLE … USING delta …') or df.write.format('delta')")
+
+        createIfNotExists = create
+        replace = create
+        createOrReplace = create
+
+        def _ref(self) -> str:
+            if self._name:
+                return self._name
+            return "delta.`" + self._path.replace("`", "``") + "`"
+
+        def _target(self) -> str:
+            return f"{self._ref()} AS {_ident(self._alias)}" if self._alias else self._ref()
+
+        def toDF(self):  # noqa: N802
+            df = self._spark.table(self._name) if self._name else self._spark.read.format("delta").load(self._path)
+            return df.alias(self._alias) if self._alias else df
+
+        def alias(self, aliasName):  # noqa: N803
+            return CobaltDeltaTable(self._spark, self._path, self._name, aliasName)
+
+        def update(self, condition=None, set=None):
+            c = _sql_text(condition, "update condition")
+            sql = f"UPDATE {self._target()} SET {_assignments(set, 'update')}" + (f" WHERE {c}" if c else "")
+            self._spark.sql(sql).collect()
+
+        def delete(self, condition=None):
+            c = _sql_text(condition, "delete condition")
+            sql = f"DELETE FROM {self._target()}" + (f" WHERE {c}" if c else "")
+            self._spark.sql(sql).collect()
+
+        def merge(self, source, condition):
+            return CobaltDeltaMergeBuilder(self, source, _sql_text(condition, "merge condition"))
+
+        def _unsupported(self, what: str):
+            raise NotImplementedError(f"DeltaTable.{what} is not available on the LakeSail engine (Sail has no {what.upper()} SQL yet); "
+                                      "run this notebook on Local Spark (JVM) for it")
+
+        def history(self, limit=None):
+            self._unsupported("history")
+
+        def detail(self):
+            self._unsupported("detail")
+
+        def vacuum(self, retentionHours=None):  # noqa: N803
+            self._unsupported("vacuum")
+
+        def optimize(self):
+            self._unsupported("optimize")
+
+        def generate(self, mode):
+            self._unsupported("generate")
+
+        def restoreToVersion(self, version):  # noqa: N802
+            self._unsupported("restoreToVersion")
+
+        def restoreToTimestamp(self, timestamp):  # noqa: N802
+            self._unsupported("restoreToTimestamp")
+
+        def upgradeTableProtocol(self, readerVersion, writerVersion):  # noqa: N802, N803
+            self._unsupported("upgradeTableProtocol")
+
+        def addFeatureSupport(self, featureName):  # noqa: N802, N803
+            self._unsupported("addFeatureSupport")
+
+        def __repr__(self):
+            return f"<DeltaTable {self._ref()} (LakeSail, SQL-backed)>"
+
+    CobaltDeltaTable.__name__ = "DeltaTable"
+    CobaltDeltaMergeBuilder.__name__ = "DeltaMergeBuilder"
+    _dtm.DeltaTable = CobaltDeltaTable
+    _dtm.DeltaMergeBuilder = CobaltDeltaMergeBuilder
+    delta.DeltaTable = CobaltDeltaTable
+    try:
+        import delta.connect.tables as _dct
+        _dct.DeltaTable = CobaltDeltaTable
+    except Exception:
+        pass
+    _DELTA_SHIM_INSTALLED = True
 
 
 def _install_write_guard(engine) -> None:
@@ -1550,6 +1769,11 @@ def healthcheck() -> dict:
         versions["local-spark-mcp"] = None
     if _lsm_available():
         features += ["files", "notebookutils"]
+    try:
+        import delta  # noqa: F401
+        features.append("delta_tables")
+    except Exception:
+        warnings.append("the delta module is not in the LakeSail environment (Reinstall / update LakeSail adds delta-spark)")
     else:
         warnings.append("lakehouse Files for Python and notebookutils are off: the base local-spark-mcp package is missing (Reinstall / update LakeSail adds it)")
     return {"ok": not problems, "problems": problems, "warnings": warnings, "versions": versions, "engine": ENGINE,

@@ -1,6 +1,17 @@
 //! Settings → Spark runtime: status inspection and provisioning jobs on background threads,
 //! polled by the app each frame.
 
+/// Does a roster pin (`name==version`) provide the Python module `module`? Distribution and
+/// module names differ (scikit-learn → sklearn, delta-spark → delta, pillow → PIL).
+pub fn module_matches(spec: &str, module: &str) -> bool {
+    let dist = cobalt_runtime::libraries::python_dist_name(spec).to_lowercase().replace('-', "_");
+    let module = module.to_lowercase();
+    if dist == module || dist.starts_with(&format!("{module}_")) || dist.ends_with(&format!("_{module}")) {
+        return true;
+    }
+    matches!((dist.as_str(), module.as_str()), ("scikit_learn", "sklearn") | ("pillow", "pil") | ("beautifulsoup4", "bs4") | ("pyyaml", "yaml") | ("opencv_python", "cv2") | ("delta_spark", "delta") | ("azure_storage_blob", "azure") | ("google_cloud_storage", "google"))
+}
+
 use cobalt_core::Settings;
 use cobalt_runtime::install::{self, Plan, Progress, Step};
 use cobalt_runtime::{Engine, Installed, JdkVendor, Manifest, RuntimeDirs, RuntimeStatus};

@@ -30,6 +30,8 @@ pub struct Installed {
     pub sail_env: Option<PathBuf>,
     pub sail_version: Option<String>,
     pub sail_pyspark: Option<String>,
+    /// The delta-spark package in the LakeSail environment (the `delta` module), when installed.
+    pub sail_delta: Option<String>,
     pub sail_warmed: bool,
     pub sail_spark_version: Option<String>,
     /// The Fabric package roster installed into the LakeSail environment, and what failed.
