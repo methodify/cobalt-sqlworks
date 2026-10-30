@@ -31,3 +31,9 @@ the chart capture through the screenshot callback.
 - egui-phosphor is a vendored copy until upstream publishes a 0.37 release; the diff is one
   line of `Cargo.toml`.
 - `default_fonts` is no longer egui's default: Cobalt and egui_agent's test harness name it.
+
+*Postscript (0.15.1):* eframe 0.37 also made the system clipboard and the browser opener
+explicit features (`clipboard`, `links`) in its default set. Cobalt lists eframe's features by
+name (`default-features = false`), so 0.14.0 and 0.15.0 shipped without either: copy and paste
+worked inside the app and nowhere else, links opened nothing. When bumping eframe, diff its
+`default` feature list against ours.

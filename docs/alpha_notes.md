@@ -1196,3 +1196,9 @@ creates in `public` unless the dialog names a schema, then `COPY`s the rows in.
 
 Agent: `add_profile {engine: "postgres", server: "localhost", port: 5433, database,
 user, password, name}`, then `connect {profile}`; everything else as on other engines.
+
+## 0.15.1: the clipboard again
+
+0.14.0 and 0.15.0 could not copy to or paste from other applications (a feature eframe 0.37
+made explicit and Cobalt had not named; the same for opening links in the browser). 0.15.1 has
+both back. Nothing else changed.

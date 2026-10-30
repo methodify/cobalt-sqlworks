@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.1 — 2026-10-30
+
+- **Fixed: the clipboard and links since 0.14.0.** Copy and paste between Cobalt and other
+  applications stopped working in 0.14.0 (inside Cobalt they still did), and links opened
+  nowhere. eframe 0.37 made the system clipboard and the browser opener explicit features
+  (`clipboard`, `links`) that its defaults turn on; Cobalt names its eframe features one by
+  one and had not picked the two up. Both are back on.
+
 ## 0.15.0 — 2026-10-30
 
 - **PostgreSQL is a connection.** The connection dialog's engine list gains *PostgreSQL*:
