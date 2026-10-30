@@ -174,6 +174,14 @@ jobs:
         run: cargo binstall -y cargo-packager@0.11.8
       - name: Build
         run: cargo build --release -p cobalt-app --locked
+      - name: Free disk space for packaging
+        # The macOS runner's disk fills with the build's intermediates; hdiutil then fails with
+        # "No space left on device" (0.15.0, 0.15.2). Only the linked binary is needed from here.
+        run: |
+          df -h / | tail -1
+          rm -rf target/release/deps target/release/build target/release/incremental target/release/.fingerprint
+          rm -rf ~/.cargo/registry/src ~/.cargo/registry/cache ~/.cargo/git/checkouts
+          df -h / | tail -1
       - name: Package (app bundle, ad-hoc signed, dmg)
         # No Apple Developer ID yet. Apple Silicon refuses to launch an app bundle without a
         # signature ("damaged and can't be opened"), so seal the bundle with an ad-hoc signature:
