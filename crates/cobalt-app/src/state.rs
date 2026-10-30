@@ -729,9 +729,9 @@ impl EditorTab {
                     (cobalt_notebook::CellKind::Code, cobalt_notebook::CellLanguage::Python) => crate::ui::editor::Syntax::Python,
                     _ => crate::ui::editor::Syntax::Plain,
                 };
-                crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax , model: None, dax_functions: &[], local_functions: &[] }
+                crate::ui::editor::EditorHost { id: egui::Id::unique(("cobalt-cell", tab_id, cell.id.as_str())), text: &mut nb.nb.cells[i].source, editor: &mut cell.editor, catalog: catalog.as_deref(), databases, syntax , model: None, dax_functions: &[], local_functions: &[] }
             }
-            _ => crate::ui::editor::EditorHost { id: egui::Id::new(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: tab_syntax, model: model_catalog.as_deref(), dax_functions: dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]), local_functions: local.as_ref().map(|l| l.functions.as_slice()).unwrap_or(&[]) },
+            _ => crate::ui::editor::EditorHost { id: egui::Id::unique(("cobalt-editor", tab_id)), text, editor, catalog: catalog.as_deref(), databases, syntax: tab_syntax, model: model_catalog.as_deref(), dax_functions: dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]), local_functions: local.as_ref().map(|l| l.functions.as_slice()).unwrap_or(&[]) },
         }
     }
 

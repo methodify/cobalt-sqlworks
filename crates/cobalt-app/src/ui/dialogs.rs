@@ -13,7 +13,7 @@ use egui_phosphor::regular as icons;
 
 fn modal<R>(ctx: &egui::Context, theme: &Theme, id: &str, width: f32, add: impl FnOnce(&mut Ui) -> R) -> (R, bool) {
     let max_h = ctx.content_rect().height() - 60.0;
-    let m = egui::Modal::new(egui::Id::new(id)).frame(egui::Frame::window(&ctx.global_style()).fill(theme.bg_panel).inner_margin(16.0)).show(ctx, |ui| {
+    let m = egui::Modal::new(egui::Id::unique(id)).frame(egui::Frame::window(&ctx.global_style()).fill(theme.bg_panel).inner_margin(16.0)).show(ctx, |ui| {
         ui.set_width(width);
         ui.set_max_height(max_h);
         add(ui)
@@ -35,7 +35,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.heading(format!("Password for {}", profile.display_name()));
                 ui.label(RichText::new(format!("{} on {}", profile.auth.user_name().unwrap_or(""), profile.server)).color(theme.text_muted));
                 ui.add_space(8.0);
-                let r = ui.add(egui::TextEdit::singleline(&mut password).password(true).desired_width(f32::INFINITY).id(egui::Id::new("pw-field")));
+                let r = ui.add(egui::TextEdit::singleline(&mut password).password(true).desired_width(f32::INFINITY).id(egui::Id::unique("pw-field")));
                 r.request_focus();
                 if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter)) {
                     submit = true;
@@ -285,7 +285,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                             for (i, (name, value)) in params.iter_mut().enumerate() {
                                 ui.label(RichText::new(name.as_str()).monospace());
                                 let r = ui.add(egui::TextEdit::singleline(value).desired_width(300.0).font(egui::TextStyle::Monospace));
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("parameter {name}")));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("parameter {name}")));
                                 if i == 0 {
                                     r.request_focus();
                                 }
@@ -325,7 +325,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 egui::Grid::new("tile-editor-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Title");
                     let r = ui.add(egui::TextEdit::singleline(&mut draft.title).desired_width(440.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile title"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tile title"));
                     ui.end_row();
                     ui.label(if draft.source.is_model() { "Model" } else { "Connection" });
                     if let cobalt_core::TileSource::SemanticModel { target } = &draft.source {
@@ -347,12 +347,12 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                             }
                         }
                     });
-                    cb.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "tile connection"));
+                    cb.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "tile connection"));
                     ui.end_row();
                     ui.label("Database");
                     let mut db = draft.database.clone().unwrap_or_default();
                     let r = ui.add(egui::TextEdit::singleline(&mut db).hint_text("the connection's default").desired_width(440.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile database"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tile database"));
                     if r.changed() {
                         draft.database = if db.trim().is_empty() { None } else { Some(db) };
                     }
@@ -360,13 +360,13 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     }
                     ui.label("Query");
                     let r = ui.add(egui::TextEdit::multiline(&mut draft.sql).desired_width(440.0).desired_rows(6).font(egui::TextStyle::Monospace).hint_text("SELECT … (a number tile shows the first cell; a chart or grid the first result set)"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tile query"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tile query"));
                     ui.end_row();
                     ui.label("Show as");
                     ui.horizontal(|ui| {
                         for k in cobalt_core::TileKind::ALL {
                             let r = ui.add(egui::Button::selectable(draft.kind == k, k.label()).small());
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile kind {}", k.key())));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile kind {}", k.key())));
                             if r.clicked() {
                                 draft.kind = k;
                             }
@@ -384,11 +384,11 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                                     draft.interval_secs = secs;
                                 }
                             }
-                        }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "tile interval"));
+                        }).response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "tile interval"));
                         ui.label(RichText::new("Size").size(12.0).color(theme.text_muted));
                         for s in cobalt_core::TileSize::ALL {
                             let r = ui.add(egui::Button::selectable(draft.size == s, s.label()).small());
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile size {}", s.key())));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile size {}", s.key())));
                             if r.clicked() {
                                 draft.size = s;
                             }
@@ -447,7 +447,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 egui::Grid::new("pin-tile-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
                     ui.label("Title");
                     let r = ui.add(egui::TextEdit::singleline(&mut title).desired_width(300.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "pin title"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "pin title"));
                     ui.end_row();
                     ui.label("Dashboard");
                     let current = target.and_then(|i| dashboards.iter().find(|(j, _)| *j == i)).map(|(_, n)| n.clone()).unwrap_or_else(|| "a new dashboard".into());
@@ -460,13 +460,13 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                                 target = Some(*i);
                             }
                         }
-                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "pin target"));
+                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "pin target"));
                     ui.end_row();
                     ui.label("Show as");
                     ui.horizontal(|ui| {
                         for k in cobalt_core::TileKind::ALL {
                             let r = ui.add(egui::Button::selectable(kind == k, k.label()).small());
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("pin kind {}", k.key())));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("pin kind {}", k.key())));
                             if r.clicked() {
                                 kind = k;
                             }
@@ -480,7 +480,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                                 interval_secs = secs;
                             }
                         }
-                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "pin interval"));
+                    }).response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, "pin interval"));
                     ui.end_row();
                 });
                 ui.add_space(10.0);
@@ -794,7 +794,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                             }
                             for (name, id) in lhs {
                                 let r = ui.add(egui::Button::new(format!("{} {name}", icons::DROP)).frame(false).min_size(Vec2::new(ui.available_width(), 24.0)));
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("lakehouse {name}")));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("lakehouse {name}")));
                                 if r.clicked() {
                                     pick = Some((ws.clone(), id.clone()));
                                 }
@@ -886,7 +886,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     egui::ScrollArea::vertical().id_salt("choose-model-src").max_height(320.0).auto_shrink([false, true]).show(&mut cols[0], |ui| {
                         if !recent.is_empty() {
                             let r = ui.selectable_label(source == Some(ModelSource::Recent), format!("{} Recent models", icons::CLOCK));
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "model source recent"));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "model source recent"));
                             if r.clicked() {
                                 source = Some(ModelSource::Recent);
                             }
@@ -903,7 +903,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                         }
                         for (id, name) in &workspaces {
                             let r = ui.selectable_label(source == Some(ModelSource::Workspace(id.clone())), name);
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model source {name}")));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("model source {name}")));
                             if r.clicked() {
                                 source = Some(ModelSource::Workspace(id.clone()));
                                 load_ws = Some(id.clone());
@@ -913,7 +913,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                         ui.label(RichText::new("Analysis Services").size(11.0).color(theme.text_muted));
                         for (id, name, kind) in &profiles {
                             let r = ui.selectable_label(source == Some(ModelSource::Profile(*id)), name).on_hover_text(*kind);
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model source {name}")));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("model source {name}")));
                             if r.clicked() {
                                 source = Some(ModelSource::Profile(*id));
                                 load_profile = Some(*id);
@@ -925,7 +925,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                     });
                     cols[1].label(RichText::new("Semantic model").strong());
                     let r = cols[1].add(egui::TextEdit::singleline(&mut search).hint_text("Filter").desired_width(f32::INFINITY));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "model filter"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "model filter"));
                     egui::ScrollArea::vertical().id_salt("choose-model-models").max_height(296.0).auto_shrink([false, true]).show(&mut cols[1], |ui| match &models {
                         Models::None if source.is_none() => {
                             ui.label(RichText::new("Pick a workspace or an endpoint").size(11.0).color(theme.text_faint));
@@ -946,7 +946,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                                 shown += 1;
                                 let current = rebinding.as_ref().map(|t| t.key() == target.key()).unwrap_or(false);
                                 let r = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::CUBE)).color(if current { theme.accent } else { theme.text })).frame(false).min_size(Vec2::new(ui.available_width(), 24.0)));
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("model {}", target.model())));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("model {}", target.model())));
                                 if r.clicked() {
                                     pick = Some((target.clone(), *profile));
                                 }
@@ -1014,7 +1014,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = primary_button(ui, theme, "Forget", true);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "forget local go"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "forget local go"));
                     if r.clicked() {
                         ok = true;
                     }
@@ -1039,7 +1039,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.horizontal(|ui| {
                     ui.label("scratch.");
                     let r = ui.add(egui::TextEdit::singleline(&mut name).desired_width(260.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "scratch name"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "scratch name"));
                     if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                         ok = true;
                     }
@@ -1047,7 +1047,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let r = primary_button(ui, theme, "Save", !name.trim().is_empty());
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "scratch save"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "scratch save"));
                     if r.clicked() {
                         ok = true;
                     }
@@ -1086,7 +1086,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                                 }
                             }
                         });
-                        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, salt.to_string()));
+                        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, salt.to_string()));
                     });
                 }
                 ui.add_space(6.0);
@@ -1098,7 +1098,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                         for c in &shared {
                             let mut on = keys.iter().any(|k| k == c);
                             let r = ui.checkbox(&mut on, c);
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, format!("diff key {c}")));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, format!("diff key {c}")));
                             if r.changed() {
                                 if on { keys.push(c.clone()) } else { keys.retain(|k| k != c) }
                             }
@@ -1118,7 +1118,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     let r = primary_button(ui, theme, "Diff", !keys.is_empty() && a != b);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "diff go"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "diff go"));
                     if r.clicked() {
                         go = true;
                     }
@@ -1147,7 +1147,7 @@ pub fn show(ctx: &egui::Context, f: &mut Frame<'_>) {
                 ui.heading("Rename local table");
                 ui.label(RichText::new(format!("{name} → a name of letters, digits and underscores (lower-cased)")).size(12.0).color(theme.text_muted));
                 let r = ui.add(egui::TextEdit::singleline(&mut to).desired_width(f32::INFINITY));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "local table new name"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "local table new name"));
                 if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     ok = true;
                 }
@@ -1442,7 +1442,7 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                         ui.label("Database file");
                         ui.horizontal(|ui| {
                             let r = ui.add(egui::TextEdit::singleline(&mut d.profile.server).hint_text(if duck { "C:\\path\\to\\file.duckdb" } else { "C:\\path\\to\\file.sqlite" }).desired_width(230.0));
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "database file"));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "database file"));
                             if ui.button("Browse…").clicked() {
                                 let dlg = if duck { rfd::FileDialog::new().add_filter("DuckDB databases", &["duckdb", "ddb", "db"]) } else { rfd::FileDialog::new().add_filter("SQLite databases", &["sqlite", "db", "sqlite3", "db3"]) };
                                 if let Some(p) = dlg.add_filter("All files", &["*"]).pick_file() {
@@ -1483,9 +1483,9 @@ fn connection_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<Connecti
                     ui.label("Connection string").on_hover_text("Paste an ADO.NET / SqlClient connection string and click Apply to fill the fields above");
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.conn_string).hint_text("Server=…;Database=…;User ID=…;Password=…").desired_width(230.0));
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "connection string"));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "connection string"));
                         let apply = ui.add_enabled(!d.conn_string.trim().is_empty(), egui::Button::new("Apply"));
-                        apply.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "apply connection string"));
+                        apply.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "apply connection string"));
                         if apply.clicked() {
                             match d.profile.apply_connection_string(&d.conn_string) {
                                 Ok(secrets) => {
@@ -1802,7 +1802,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             ui.label("File");
             ui.horizontal(|ui| {
                 let r = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.path).desired_width(460.0));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import path"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "import path"));
                 if r.lost_focus() {
                     reinspect = true;
                 }
@@ -1865,12 +1865,12 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             ui.horizontal(|ui| {
                 let table_label = if db_name.is_empty() { "Table in this database".to_string() } else { format!("Table in {db_name}") };
                 let r = ui.add_enabled(!running && connected, egui::Button::selectable(to_table, table_label));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import destination table"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "import destination table"));
                 if r.clicked() {
                     d.destination = 0;
                 }
                 let r = ui.add_enabled(!running, egui::Button::selectable(!to_table, format!("{} File or lakehouse…", icons::EXPORT)));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import destination file"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "import destination file"));
                 if r.clicked() {
                     d.destination = 1;
                 }
@@ -1884,7 +1884,7 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
             ui.label("Target table");
             ui.horizontal(|ui| {
                 let r1 = ui.add_enabled(!running && !file_target, egui::TextEdit::singleline(&mut d.schema_name).desired_width(if file_target { 0.0 } else { 90.0 }).hint_text("dbo"));
-                r1.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import schema"));
+                r1.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "import schema"));
                 if file_target {
                     // a file database has no schemas: the field stays (for the agent) but takes no room
                     r1.surrender_focus();
@@ -1892,14 +1892,14 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                     ui.label(".");
                 }
                 let r2 = ui.add_enabled(!running, egui::TextEdit::singleline(&mut d.table_name).desired_width(220.0).hint_text("table"));
-                r2.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "import table"));
+                r2.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "import table"));
                 ui.add_space(10.0);
                 let was = d.existing;
                 if ui.add_enabled(!running, egui::RadioButton::new(!d.existing, "Create new table")).clicked() {
                     d.existing = false;
                 }
                 let r = ui.add_enabled(!running, egui::RadioButton::new(d.existing, "Append to existing table"));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "import existing table"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "import existing table"));
                 if r.clicked() {
                     d.existing = true;
                 }
@@ -1952,9 +1952,9 @@ fn import_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ImportDialog
                 for (i, c) in d.columns.iter_mut().enumerate() {
                     ui.add_enabled(!running, egui::Checkbox::without_text(&mut c.include));
                     let r = ui.add_enabled_ui(!running && !lock_types, |ui| ui.add_sized([200.0, 20.0], egui::TextEdit::singleline(&mut c.name))).inner;
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("import column {i}")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("import column {i}")));
                     let r = ui.add_enabled_ui(!running && !lock_types, |ui| ui.add_sized([170.0, 20.0], egui::TextEdit::singleline(&mut c.sql_type).font(egui::FontId::monospace(12.0)))).inner;
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("import type {i}")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("import type {i}")));
                     ui.add_enabled(!running && !lock_types, egui::Checkbox::without_text(&mut c.nullable));
                     ui.label(RichText::new(&c.source).size(11.0).color(theme.text_faint));
                     ui.end_row();
@@ -2205,7 +2205,7 @@ fn export_dialog(ctx: &egui::Context, f: &mut Frame<'_>, mut d: Box<ExportDialog
                     ui.label("Table");
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::TextEdit::singleline(&mut d.sqlite_table).hint_text("named after the file").desired_width(220.0));
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "sqlite table"));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "sqlite table"));
                         ui.label(RichText::new("a second result set gets _2, a third _3…").size(11.0).color(theme.text_faint));
                     });
                     ui.end_row();
@@ -2302,7 +2302,7 @@ fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_
         egui::Grid::new("tabular-profile-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
             ui.label("Name");
             let r = ui.add(egui::TextEdit::singleline(&mut draft.name).desired_width(380.0).hint_text("how it shows in the tree"));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular name"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular name"));
             ui.end_row();
             ui.label("Kind");
             ui.horizontal(|ui| {
@@ -2310,19 +2310,19 @@ fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_
                 let is_http = matches!(draft.target, TabularTarget::Http { .. });
                 let is_pbi = matches!(draft.target, TabularTarget::PowerBi { .. });
                 let r = ui.add(egui::Button::selectable(is_aas, "Azure Analysis Services").small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind asazure"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular kind asazure"));
                 if r.clicked() && !is_aas {
                     draft.target = TabularTarget::AzureAs { region: "westus".into(), server: String::new(), model: String::new() };
                     draft.auth = TabularAuthKind::Entra;
                 }
                 let r = ui.add(egui::Button::selectable(is_http, "HTTP (msmdpump)").small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind http"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular kind http"));
                 if r.clicked() && !is_http {
                     draft.target = TabularTarget::Http { url: "https://".into(), model: String::new() };
                     draft.auth = TabularAuthKind::Basic { user: String::new() };
                 }
                 let r = ui.add(egui::Button::selectable(is_pbi, "Power BI workspace").small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular kind powerbi"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular kind powerbi"));
                 if r.clicked() && !is_pbi {
                     draft.target = TabularTarget::PowerBi { workspace_id: String::new(), workspace_name: String::new(), dataset_id: String::new(), model_name: String::new() };
                     draft.auth = TabularAuthKind::Entra;
@@ -2333,39 +2333,39 @@ fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_
                 TabularTarget::AzureAs { region, server, model } => {
                     ui.label("Region");
                     let r = ui.add(egui::TextEdit::singleline(region).desired_width(160.0).hint_text("westus"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular region"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular region"));
                     ui.end_row();
                     ui.label("Server");
                     let r = ui.add(egui::TextEdit::singleline(server).desired_width(380.0).hint_text("the server name after asazure://<region>.asazure.windows.net/"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular server"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular server"));
                     ui.end_row();
                     ui.label("Model");
                     let r = ui.add(egui::TextEdit::singleline(model).desired_width(380.0).hint_text("optional: the tree lists the server's models"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular model"));
                     ui.end_row();
                 }
                 TabularTarget::Http { url, model } => {
                     ui.label("URL");
                     let r = ui.add(egui::TextEdit::singleline(url).desired_width(380.0).hint_text("https://host/olap/msmdpump.dll"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular url"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular url"));
                     ui.end_row();
                     ui.label("Model");
                     let r = ui.add(egui::TextEdit::singleline(model).desired_width(380.0).hint_text("optional: the tree lists the server's databases"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular model"));
                     ui.end_row();
                 }
                 TabularTarget::PowerBi { workspace_id, workspace_name, model_name, .. } => {
                     ui.label("Workspace");
                     let r = ui.add(egui::TextEdit::singleline(workspace_name).desired_width(380.0).hint_text("the workspace name (powerbi://api.powerbi.com/v1.0/myorg/<name>)"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular workspace"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular workspace"));
                     ui.end_row();
                     ui.label("Workspace id");
                     let r = ui.add(egui::TextEdit::singleline(workspace_id).desired_width(380.0).hint_text("the workspace GUID (from the portal URL)"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular workspace id"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular workspace id"));
                     ui.end_row();
                     ui.label("Model");
                     let r = ui.add(egui::TextEdit::singleline(model_name).desired_width(380.0).hint_text("optional"));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular model"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular model"));
                     ui.end_row();
                 }
             }
@@ -2375,17 +2375,17 @@ fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_
                 let basic = matches!(draft.auth, TabularAuthKind::Basic { .. });
                 let anon = matches!(draft.auth, TabularAuthKind::Anonymous);
                 let r = ui.add(egui::Button::selectable(entra, "Microsoft Entra").small()).on_hover_text("The Fabric panel's sign-in (Azure AS and Power BI)");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth entra"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular auth entra"));
                 if r.clicked() {
                     draft.auth = TabularAuthKind::Entra;
                 }
                 let r = ui.add(egui::Button::selectable(basic, "Basic").small()).on_hover_text("User name and password (IIS basic authentication over HTTPS)");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth basic"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular auth basic"));
                 if r.clicked() && !basic {
                     draft.auth = TabularAuthKind::Basic { user: String::new() };
                 }
                 let r = ui.add(egui::Button::selectable(anon, "Anonymous").small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tabular auth anonymous"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tabular auth anonymous"));
                 if r.clicked() {
                     draft.auth = TabularAuthKind::Anonymous;
                 }
@@ -2403,11 +2403,11 @@ fn tabular_profile_dialog(ctx: &egui::Context, f: &mut Frame<'_>, draft: cobalt_
                 TabularAuthKind::Basic { user } => {
                     ui.label("User");
                     let r = ui.add(egui::TextEdit::singleline(user).desired_width(380.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular user"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular user"));
                     ui.end_row();
                     ui.label("Password");
                     let r = ui.add(egui::TextEdit::singleline(&mut password).password(true).desired_width(380.0).hint_text(if editing { "unchanged unless typed" } else { "" }));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "tabular password"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "tabular password"));
                     ui.end_row();
                 }
                 TabularAuthKind::Anonymous => {}

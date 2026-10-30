@@ -196,7 +196,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
                         (cobalt_runtime::Engine::Sail, format!("LakeSail {sail_v} · experimental, no Java"), "Sail: a Rust Spark Connect server. Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs; notebookutils and lakehouse Files for Python work as on Local Spark."),
                     ] {
                         let r = ui.selectable_label(current == e, label);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("engine {}", e.key())));
                         if r.on_hover_text(hint).clicked() {
                             engine_pick = Some(e);
                             ui.close();
@@ -262,7 +262,7 @@ fn menu_bar(ui: &mut Ui, f: &mut Frame<'_>) {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let r = ui.add(egui::Button::new(format!("{}  Search commands  {}", icons::MAGNIFYING_GLASS, km.shortcut_text(ui.ctx(), Command::Palette))).frame(false));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "search commands"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "search commands"));
                 if r.clicked() {
                     cmds.push(Command::Palette);
                     f.state.palette_just_opened = true;
@@ -291,7 +291,7 @@ fn sidebar_strip(ui: &mut Ui, f: &mut Frame<'_>) {
                 ui.painter().rect_filled(rect.shrink(4.0), 6.0, theme.bg_hover);
             }
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(22.0), color);
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sidebar {:?}", view)));
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("sidebar {:?}", view)));
             let resp = resp.on_hover_text(tip);
             if resp.clicked() {
                 if active {
@@ -455,7 +455,7 @@ fn editor_groups(ui: &mut Ui, f: &mut Frame<'_>) {
         if let (Some(pos), Some(i)) = (ui.input(|i| i.pointer.interact_pos()), f.state.tab_index(p.tab)) {
             let title = f.state.tabs[i].display_title();
             let theme = f.theme;
-            egui::Area::new(egui::Id::new("drag-tab-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
+            egui::Area::new(egui::Id::unique("drag-tab-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
                 egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                     ui.label(RichText::new(title).size(13.0).color(theme.text));
                 });
@@ -497,8 +497,8 @@ fn render_node(ui: &mut Ui, f: &mut Frame<'_>, node: &crate::layout::Node, path:
                         Axis::Row => egui::Rect::from_min_max(egui::pos2(offset, rect.top()), egui::pos2(offset + gutter, rect.bottom())),
                         Axis::Col => egui::Rect::from_min_max(egui::pos2(rect.left(), offset), egui::pos2(rect.right(), offset + gutter)),
                     };
-                    let g = ui.interact(grect, egui::Id::new(("gutter", path.clone(), i)), Sense::click_and_drag());
-                    g.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("gutter {}", i + 1)));
+                    let g = ui.interact(grect, egui::Id::unique(("gutter", path.clone(), i)), Sense::click_and_drag());
+                    g.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("gutter {}", i + 1)));
                     ui.painter().rect_filled(grect, 0.0, if g.hovered() || g.dragged() { theme.accent } else { theme.border });
                     if g.hovered() || g.dragged() {
                         ui.ctx().set_cursor_icon(match axis {
@@ -538,7 +538,7 @@ fn render_group(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, rect: egui::Rect, 
     // the drop zones go first: widgets inside the editor area (the results table among them)
     // clear a drag payload on the release frame, so a drop handled after them never sees it.
     // The area is the one below last frame's strip (its height is stable).
-    let strip_key = egui::Id::new(("strip-h", gid));
+    let strip_key = egui::Id::unique(("strip-h", gid));
     let strip_h: f32 = cui.data(|d| d.get_temp(strip_key)).unwrap_or(34.0);
     drop_zones(&mut cui, f, gid, egui::Rect::from_min_max(egui::pos2(rect.left(), rect.top() + strip_h), rect.max));
     let strip_bottom = tab_strip(&mut cui, f, gid);
@@ -560,7 +560,7 @@ fn drop_zones(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, area: egui::Rect) {
         return;
     }
     let released = ui.input(|i| i.pointer.any_released());
-    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(("drop-zone", gid))));
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("drop-zone", gid))));
     if let Some(p) = egui::DragAndDrop::payload::<DragTab>(ui.ctx()) {
         let fx = (pos.x - area.left()) / area.width().max(1.0);
         let fy = (pos.y - area.top()) / area.height().max(1.0);
@@ -576,8 +576,8 @@ fn drop_zones(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, area: egui::Rect) {
             ("centre", area)
         };
         painter.rect(zrect.shrink(4.0), 6.0, theme.accent.gamma_multiply(0.18), egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
-        let r = ui.interact(zrect, egui::Id::new(("drop", gid, zone)), Sense::hover());
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("drop {zone} group {gid}")));
+        let r = ui.interact(zrect, egui::Id::unique(("drop", gid, zone)), Sense::hover());
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("drop {zone} group {gid}")));
         ui.ctx().request_repaint();
         if released {
             egui::DragAndDrop::clear_payload(ui.ctx());
@@ -590,7 +590,7 @@ fn drop_zones(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId, area: egui::Rect) {
     } else if let Some(file) = egui::DragAndDrop::payload::<crate::ui::files::DragFile>(ui.ctx()) {
         painter.rect(area.shrink(4.0), 6.0, theme.accent.gamma_multiply(0.12), egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
         let name = file.0.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        egui::Area::new(egui::Id::new("drag-file-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
+        egui::Area::new(egui::Id::unique("drag-file-ghost")).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(14.0, 10.0)).interactable(false).show(ui.ctx(), |ui| {
             egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(4.0).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
                 ui.label(RichText::new(format!("{} {name}", icons::FILE)).size(13.0).color(theme.text));
             });
@@ -666,7 +666,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w.max(90.0), 32.0), Sense::click_and_drag());
                     tab_rects.push((*tid, rect));
                     if active {
-                        let key = egui::Id::new(("strip-last-active", gid));
+                        let key = egui::Id::unique(("strip-last-active", gid));
                         let last: Option<TabId> = ui.data(|d| d.get_temp(key));
                         if last != Some(*tid) {
                             ui.scroll_to_rect_animation(rect, Some(egui::Align::Center), egui::style::ScrollAnimation::none());
@@ -675,7 +675,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                     }
                     let a11y_title = if dup(&plain_title) { format!("tab {title} (group {gid})") } else { format!("tab {title}") };
                     resp.widget_info(|| {
-                        let mut w = egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y_title.clone());
+                        let mut w = egui::WidgetInfo::labeled(egui::Role::Button, true, a11y_title.clone());
                         w.selected = Some(active && is_active_group);
                         w
                     });
@@ -776,7 +776,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                     ui.painter().rect_filled(rect.shrink(4.0), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, icons::PLUS, egui::FontId::proportional(16.0), theme.text_muted);
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if is_active_group { "new tab".to_string() } else { format!("new tab (group {gid})") }));
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if is_active_group { "new tab".to_string() } else { format!("new tab (group {gid})") }));
                 let default_kind = f.cx.settings.appearance.new_tab_kind.clone();
                 let (default_label, default_key) = match default_kind.as_str() {
                     "spark" => ("Spark SQL query", ""),
@@ -791,7 +791,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                     ui.painter().rect_filled(crect.shrink2(Vec2::new(0.0, 4.0)), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(crect.center(), egui::Align2::CENTER_CENTER, icons::CARET_DOWN, egui::FontId::proportional(11.0), theme.text_faint);
-                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "new tab menu"));
+                cresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "new tab menu"));
                 let menu = |ui: &mut Ui, new_tab: &mut bool, new_spark: &mut bool, new_dax: &mut bool, new_local: &mut bool, new_notebook: &mut bool, new_tab_kind: &mut Option<&str>| {
                     ui.set_min_width(230.0);
                     if ui.button(format!("{} New query{}", icons::DATABASE, if default_kind == "query" { "   (default)" } else { "" })).clicked() {
@@ -823,7 +823,7 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                         }
                     }
                 };
-                egui::Popup::menu(&cresp).id(egui::Id::new(("new-tab-menu", gid))).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
+                egui::Popup::menu(&cresp).id(egui::Id::unique(("new-tab-menu", gid))).show(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
                 resp.context_menu(|ui| menu(ui, &mut new_tab, &mut new_spark, &mut new_dax, &mut new_local, &mut new_notebook, &mut new_tab_kind));
                 if resp.on_hover_text(format!("New {default_label}{default_key} · the arrow (or a right-click) offers the other kinds")).clicked() {
                     match default_kind.as_str() {
@@ -840,8 +840,8 @@ fn tab_strip(ui: &mut Ui, f: &mut Frame<'_>, gid: GroupId) -> f32 {
                     ui.painter().rect_filled(grect.shrink2(Vec2::new(2.0, 4.0)), 4.0, theme.bg_hover);
                 }
                 ui.painter().text(grect.center(), egui::Align2::CENTER_CENTER, if maximized { icons::ARROWS_IN_SIMPLE } else { icons::DOTS_THREE }, egui::FontId::proportional(14.0), theme.text_muted);
-                gresp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("group menu {gid}")));
-                egui::Popup::menu(&gresp).id(egui::Id::new(("group-menu", gid))).show(|ui| {
+                gresp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("group menu {gid}")));
+                egui::Popup::menu(&gresp).id(egui::Id::unique(("group-menu", gid))).show(|ui| {
                     ui.set_min_width(240.0);
                     for tid in &group.tabs {
                         if let Some(i) = f.state.tab_index(*tid) {
@@ -984,7 +984,7 @@ fn font_suggestion(ctx: &egui::Context, f: &mut Frame<'_>) {
     let mut settings = false;
     let mut later = false;
     let mut never = false;
-    egui::Area::new(egui::Id::new("font-suggestion")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -96.0)).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("font-suggestion")).order(egui::Order::Foreground).anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-16.0, -96.0)).show(ctx, |ui| {
         egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).corner_radius(8.0).inner_margin(egui::Margin::symmetric(14, 10)).shadow(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: egui::Color32::from_black_alpha(50) }).show(ui, |ui| {
             ui.set_max_width(420.0);
             ui.label(RichText::new(format!("{}  Some text uses {} and no font on this computer draws it", icons::TEXT_AA, scripts.join(", "))).strong());
@@ -992,11 +992,11 @@ fn font_suggestion(ctx: &egui::Context, f: &mut Frame<'_>) {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let r = ui.add(egui::Button::new(format!("{} Download", icons::DOWNLOAD_SIMPLE)));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "font suggestion download"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "font suggestion download"));
                 download = r.clicked();
                 settings = ui.button("Settings › Fonts…").clicked();
                 let r = ui.button("Not now");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "font suggestion later"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "font suggestion later"));
                 later = r.clicked();
                 never = ui.add(egui::Button::new(RichText::new("Don't suggest again").size(11.0)).frame(false)).clicked();
             });
@@ -1033,12 +1033,12 @@ fn drop_overlay(ctx: &egui::Context, f: &mut Frame<'_>) {
     let screen = ctx.content_rect();
     // the veil goes in the Middle order (above the panels, below every window and area); the
     // card is an area of its own on top of it
-    let veil = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("drop-veil")));
+    let veil = ctx.layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("drop-veil")));
     veil.rect_filled(screen, 0.0, theme.bg.gamma_multiply(0.6));
     veil.rect_stroke(screen.shrink(6.0), 8.0, egui::Stroke::new(2.0, theme.accent), egui::StrokeKind::Inside);
     let card_w = 560.0_f32.min(screen.width() - 40.0);
     let card_h = 70.0 + 22.0 * lines.len() as f32;
-    egui::Area::new(egui::Id::new("drop-overlay")).order(egui::Order::Tooltip).fixed_pos(screen.center() - Vec2::new(card_w / 2.0, card_h / 2.0)).interactable(false).show(ctx, |ui| {
+    egui::Area::new(egui::Id::unique("drop-overlay")).order(egui::Order::Tooltip).fixed_pos(screen.center() - Vec2::new(card_w / 2.0, card_h / 2.0)).interactable(false).show(ctx, |ui| {
         let card = egui::Rect::from_min_size(ui.max_rect().min, Vec2::new(card_w, card_h));
         let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(card).layout(egui::Layout::top_down(egui::Align::Min)));
         egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(22, 16)).shadow(egui::Shadow { offset: [0, 4], blur: 18, spread: 0, color: egui::Color32::from_black_alpha(60) }).show(&mut cui, |ui| {
@@ -1071,7 +1071,7 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     {
         let sh = &f.state.shadows;
         let k = &f.state.kernel;
-        crate::ui::chrome::Window::new("Lakehouse shadows").id(egui::Id::new("shadows-window")).open(&mut open).default_size([640.0, 360.0]).resizable(true).show(ctx, theme, |ui| {
+        crate::ui::chrome::Window::new("Lakehouse shadows").id(egui::Id::unique("shadows-window")).open(&mut open).default_size([640.0, 360.0]).resizable(true).show(ctx, theme, |ui| {
             match &k.fabric {
                 Some(fb) => {
                     ui.horizontal(|ui| {
@@ -1188,7 +1188,7 @@ fn shadows_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     // preload progress: poll the worker (control socket) while a preload runs and the window is open
     if f.state.shadows.open && f.state.kernel.state.is_ready() {
         let running = f.state.shadows.preload.as_ref().map(|p| p.get("state").and_then(|s| s.as_str()) == Some("running")).unwrap_or(true);
-        let key = egui::Id::new("preload-poll");
+        let key = egui::Id::unique("preload-poll");
         let now = ctx.input(|i| i.time);
         let last: f64 = ctx.memory(|m| m.data.get_temp(key)).unwrap_or(0.0);
         if running && now - last > 3.0 {
@@ -1214,7 +1214,7 @@ fn changelog_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     let theme = f.theme;
     let mut open = true;
     let mut refetch = false;
-    crate::ui::chrome::Window::new("What's new").id(egui::Id::new("changelog-window")).open(&mut open).default_size([760.0, 560.0]).min_size([420.0, 300.0]).resizable(true).show(ctx, theme, |ui| {
+    crate::ui::chrome::Window::new("What's new").id(egui::Id::unique("changelog-window")).open(&mut open).default_size([760.0, 560.0]).min_size([420.0, 300.0]).resizable(true).show(ctx, theme, |ui| {
         let cl = &mut f.state.changelog;
         let (text, note, is_error) = match (&cl.fetched, cl.pending.is_some()) {
             (Some(Ok(t)), _) => (t.as_str(), "latest from GitHub".to_string(), false),
@@ -1262,7 +1262,7 @@ fn kernel_log_window(ctx: &egui::Context, f: &mut Frame<'_>) {
     let mut open = true;
     let k = &mut f.state.kernel;
     let title = format!("{} session", k.engine_label(&f.cx.settings.spark));
-    crate::ui::chrome::Window::new(title).id(egui::Id::new("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, theme, |ui| {
+    crate::ui::chrome::Window::new(title).id(egui::Id::unique("kernel-log")).open(&mut open).default_size([760.0, 380.0]).resizable(true).show(ctx, theme, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(k.state_label()).strong());
             if let crate::kernel::KernelState::Ready { info, .. } = &k.state {
@@ -1463,7 +1463,7 @@ fn local_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 };
                 let rows = if t.rows_known { format!("{} rows", crate::state::fmt_count(t.rows as u64)) } else { "rows on scan".to_string() };
                 let r = ui.add(egui::Button::new(RichText::new(format!("{}  {}   {rows} · {} columns · {src}", icons::TABLE, t.name, t.columns.len())).size(12.0)).frame(false)).on_hover_text("Insert a SELECT over this table");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local welcome table {}", t.name)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("local welcome table {}", t.name)));
                 if r.clicked() {
                     insert = Some(format!("SELECT *\nFROM {}\nLIMIT 100", crate::localq::quote(&t.name)));
                 }
@@ -1584,7 +1584,7 @@ fn dax_welcome_pane(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                 for r in &recent {
                     let label = format!("{}  {}   {}", icons::CUBE, r.target.model(), r.target.host_label());
                     let resp = ui.add(egui::Button::new(label).frame(false));
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("recent model {}", r.target.model())));
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("recent model {}", r.target.model())));
                     if resp.clicked() {
                         open_recent = Some(r.clone());
                     }
@@ -1778,8 +1778,8 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         } else if side {
             // a vertical separator: results to the right
             let sep_rect = egui::Rect::from_min_size(egui::pos2(editor_rect.right(), avail.top()), Vec2::new(sep_h, avail.height()));
-            let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
-            sep.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results separator"));
+            let sep = ui.interact(sep_rect, egui::Id::unique(("split", tab.id)), Sense::drag());
+            sep.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "results separator"));
             ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
             if sep.hovered() || sep.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -1793,8 +1793,8 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         } else {
             // a horizontal separator: results below
             let sep_rect = egui::Rect::from_min_size(egui::pos2(avail.left(), editor_rect.bottom()), Vec2::new(avail.width(), sep_h));
-            let sep = ui.interact(sep_rect, egui::Id::new(("split", tab.id)), Sense::drag());
-            sep.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results separator"));
+            let sep = ui.interact(sep_rect, egui::Id::unique(("split", tab.id)), Sense::drag());
+            sep.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "results separator"));
             ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
             if sep.hovered() || sep.dragged() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -1814,7 +1814,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         let actions = results::show(&mut res_ui, results::ResultsArgs { tab, theme, settings: f.cx.settings, fmt: &f.state.formatter });
         if f.state.tabs[idx].results_tab == ResultsTab::Plan {
             let tab = &mut f.state.tabs[idx];
-            let toolbar_h: f32 = ui.data(|d| d.get_temp(egui::Id::new(("results-toolbar-h", tab.id)))).unwrap_or(30.0);
+            let toolbar_h: f32 = ui.data(|d| d.get_temp(egui::Id::unique(("results-toolbar-h", tab.id)))).unwrap_or(30.0);
             let body = egui::Rect::from_min_max(egui::pos2(res_rect.left(), res_rect.top() + toolbar_h), res_rect.max);
             let mut plan_ui = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(egui::Layout::top_down(egui::Align::Min)));
             plan_ui.set_clip_rect(body);
@@ -1838,7 +1838,7 @@ fn editor_area(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
         let viewer_req = tab.run.as_mut().and_then(|r| r.result_sets.iter_mut().enumerate().find_map(|(i, s)| s.grid.viewer.map(|(row, col)| (i, row, col))));
         if let Some((set, row, col)) = viewer_req {
             let rs = tab.run.as_ref().unwrap().result_sets[set].rs.clone();
-            let id = egui::Id::new(("viewer", tab.id));
+            let id = egui::Id::unique(("viewer", tab.id));
             use crate::ui::results::viewer::ViewerOutcome;
             let want_record = std::mem::take(&mut tab.run.as_mut().unwrap().result_sets[set].grid.viewer_record);
             let mut vs: ViewerState = ui.ctx().memory(|m| m.data.get_temp::<std::sync::Arc<parking_lot::Mutex<Option<ViewerState>>>>(id)).and_then(|m| m.lock().take()).filter(|v| Arc::ptr_eq(&v.rs, &rs) && v.row == row && v.col == col).unwrap_or_else(|| ViewerState::new(rs.clone(), row, col));
@@ -1880,12 +1880,12 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
     let busy_here = f.state.kernel.busy.as_ref().map(|(t, _)| *t == tab_id).unwrap_or(false);
     let color = if busy_here { theme.accent } else if ready { theme.success } else if f.state.kernel.state.is_starting() { theme.warning } else { theme.text_muted };
     let r = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::FIRE)).size(12.0).color(color)).small());
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark session"));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "spark session"));
     let r = r.on_hover_text("The local Spark session this tab runs on (shared with Spark notebooks; one context per tab).");
     let mut session_cmd: Option<Command> = None;
     let mut show_log = false;
     let mut start = false;
-    egui::Popup::menu(&r).id(egui::Id::new(("spark-session-menu", tab_id))).show(|ui| {
+    egui::Popup::menu(&r).id(egui::Id::unique(("spark-session-menu", tab_id))).show(|ui| {
         ui.set_min_width(240.0);
         let k = &f.state.kernel.state;
         ui.label(RichText::new(format!("Session · {}", f.state.kernel.state_label())).strong());
@@ -1937,9 +1937,9 @@ fn spark_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cmds: &mut Vec<Comm
         None => (format!("{} no lakehouse", icons::DROP), theme.text_muted),
     };
     let r = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(color)).small());
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark lakehouse"));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "spark lakehouse"));
     let r = r.on_hover_text("Which workspace's lakehouses the session sees, the default lakehouse for unqualified names, and the write mode. Takes effect at the next run.");
-    let popup_id = egui::Id::new(("spark-lakehouse-menu", tab_id));
+    let popup_id = egui::Id::unique(("spark-lakehouse-menu", tab_id));
     if f.state.open_spark_chip == Some(tab_id) {
         f.state.open_spark_chip = None;
         egui::Popup::open_id(ui.ctx(), popup_id);
@@ -2088,10 +2088,10 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     // a narrow pane (a group beside another): the buttons drop their labels first, and wrap
     // onto a second line if even that does not fit; labels come back once the pane is wide again.
     // Wrapping also keeps the row from overflowing, which would widen the whole pane.
-    let compact_key = egui::Id::new(("toolbar-compact", f.state.tabs[idx].id));
+    let compact_key = egui::Id::unique(("toolbar-compact", f.state.tabs[idx].id));
     let avail_w = ui.available_width();
     let compact: bool = ui.data(|d| d.get_temp(compact_key)).unwrap_or(false);
-    ui.data_mut(|d| d.insert_temp(egui::Id::new("tool-button-compact"), compact));
+    ui.data_mut(|d| d.insert_temp(egui::Id::unique("tool-button-compact"), compact));
     let toolbar = egui::Frame::new().fill(theme.bg_panel).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             let tab = &f.state.tabs[idx];
@@ -2114,7 +2114,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             if let Some(tt) = &tab.tabular {
                 ui.label(RichText::new(icons::CUBE).color(theme.accent));
                 let r = ui.add(egui::Button::new(RichText::new(tt.target.model()).size(13.0)).frame(false)).on_hover_text(format!("Semantic model {} in {}{}\nClick to query another model", tt.target.model(), tt.target.host_label(), if tt.profile.is_some() { " (saved Analysis Services endpoint)" } else { "" }));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab model"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tab model"));
                 if r.clicked() {
                     cmds.push(Command::ChangeConnection);
                 }
@@ -2135,7 +2135,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     hover.push_str(&format!("\nLast run rewrote: {}", l.notes.join("; ")));
                 }
                 let r = ui.add(egui::Button::new(RichText::new(format!("Local · {} table{}", tables.len(), if tables.len() == 1 { "" } else { "s" })).size(13.0)).frame(false)).on_hover_text(hover);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab local tables"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tab local tables"));
                 if r.clicked() {
                     cmds.push(Command::ShowServers);
                 }
@@ -2148,7 +2148,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     ui.label(RichText::new(format!("{} was · {} now · key {}", d.spec.a, d.spec.b, d.spec.keys.join(", "))).size(12.0).color(theme.text_muted)).on_hover_text("A is the earlier side (\"was\"), B the later (\"now\"): rows only in B are added, only in A removed; rows in both whose compared columns differ are changed. Changed cells show B's value with <column>__was from A.");
                     let counts = d.counts.as_ref().map(|c| c.1.clone()).unwrap_or_default();
                     let r = ui.add(egui::Button::selectable(d.class.is_none(), "All").small());
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "diff filter all"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "diff filter all"));
                     if r.clicked() {
                         diff_class = Some(None);
                     }
@@ -2160,7 +2160,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             _ => theme.text_muted,
                         };
                         let r = ui.add(egui::Button::selectable(d.class.as_deref() == Some(class.as_str()), RichText::new(format!("{} {class}", crate::state::fmt_count(*n))).color(color)).small());
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("diff filter {class}")));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("diff filter {class}")));
                         if r.clicked() {
                             diff_class = Some(Some(class.clone()));
                         }
@@ -2171,7 +2171,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     let name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
                     ui.label(RichText::new(format!("{} {name}", icons::FILE)).size(12.0).color(theme.text_muted)).on_hover_text(format!("{}\nRead on every scan; the table stays while this tab is open.", file.display()));
                     let r = tool_button(ui, icons::UPLOAD_SIMPLE, "Import into a connection…", "Load this file into a table on a server (the Import dialog on a connected tab)", !running);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "tab local import"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "tab local import"));
                     if r.clicked() {
                         local_import = true;
                     }
@@ -2301,7 +2301,7 @@ fn editor_toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             });
         });
     });
-    ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("tool-button-compact")));
+    ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::unique("tool-button-compact")));
     let wrapped = toolbar.response.rect.height() > 38.0;
     if !compact && wrapped {
         ui.data_mut(|d| {

@@ -79,7 +79,7 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
             ui.spacing_mut().item_spacing.x = 6.0;
             for k in ChartKind::ALL {
                 let r = ui.add(egui::Button::selectable(c.spec.kind == k, RichText::new(k.label()).size(12.0)).small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y(&format!("kind {}", k.key()))));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y(&format!("kind {}", k.key()))));
                 if r.clicked() {
                     c.spec.kind = k;
                     if k == ChartKind::Scatter && c.spec.agg != Agg::None {
@@ -106,7 +106,7 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
                     }
                 }
             });
-            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, a11y("x")));
+            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, a11y("x")));
             ui.label(RichText::new("Y").size(12.0).color(theme.text_muted));
             let y_label = if c.spec.y.is_empty() { "count of rows".to_string() } else { c.spec.y.join(", ") };
             let r = ui.menu_button(RichText::new(y_label).size(12.0), |ui| {
@@ -118,7 +118,7 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
                     }
                     let mut on = c.spec.y.iter().any(|y| y == name);
                     let r = ui.checkbox(&mut on, name.as_str());
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y(&format!("y {name}"))));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, a11y(&format!("y {name}"))));
                     if r.changed() {
                         if on {
                             if c.spec.y.len() < 12 {
@@ -141,7 +141,7 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
                     ui.label(RichText::new("12 series at most").size(11.0).color(theme.warning));
                 }
             });
-            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("y")));
+            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y("y")));
             if c.spec.kind != ChartKind::Scatter {
                 let r = egui::ComboBox::from_id_salt(("chart-agg", set)).width(130.0).selected_text(RichText::new(c.spec.agg.label()).size(12.0)).show_ui(ui, |ui| {
                     for a in Agg::ALL {
@@ -156,18 +156,18 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
                         }
                     }
                 });
-                r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, a11y("agg")));
+                r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, a11y("agg")));
             }
             if c.spec.kind == ChartKind::Histogram {
                 let mut auto = c.spec.bins.is_none();
                 let r = ui.checkbox(&mut auto, RichText::new("Auto bins").size(12.0)).on_hover_text("Bin count from the data (Freedman–Diaconis, else Sturges), 5 to 200.");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y("auto bins")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, a11y("auto bins")));
                 if r.changed() {
                     c.spec.bins = if auto { None } else { Some(c.data.as_ref().map(|d| d.points()).filter(|n| *n > 0).unwrap_or(20)) };
                 }
                 if let Some(b) = c.spec.bins.as_mut() {
                     let r = ui.add(egui::DragValue::new(b).range(1..=10_000).speed(1.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, a11y("bins")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, a11y("bins")));
                     ui.label(RichText::new("bins").size(11.0).color(theme.text_faint));
                 } else if let Some(d) = &c.data {
                     ui.label(RichText::new(format!("{} bins", d.points())).size(11.0).color(theme.text_faint));
@@ -177,23 +177,23 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
             if is_category {
                 let mut on = c.spec.top_n.is_some();
                 let r = ui.checkbox(&mut on, RichText::new("Top").size(12.0));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y("top")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, a11y("top")));
                 if r.changed() {
                     c.spec.top_n = if on { Some(if c.spec.kind == ChartKind::Pie { 12 } else { 50 }) } else { None };
                 }
                 if let Some(n) = c.spec.top_n.as_mut() {
                     let r = ui.add(egui::DragValue::new(n).range(1..=10_000).speed(1.0));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, a11y("top n")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, a11y("top n")));
                     ui.label(RichText::new("+ other").size(11.0).color(theme.text_faint)).on_hover_text("The N largest X values by the first series; the rest fold into one \"other\" point (sum and count only).");
                 }
             }
             if matches!(c.spec.kind, ChartKind::Bar | ChartKind::Area) && c.spec.y.len() > 1 {
                 let r = ui.checkbox(&mut c.spec.stacked, RichText::new("Stacked").size(12.0));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y("stacked")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, a11y("stacked")));
             }
             if c.spec.kind == ChartKind::Bar {
                 let r = ui.checkbox(&mut c.spec.horizontal, RichText::new("Horizontal").size(12.0));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, a11y("horizontal")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, a11y("horizontal")));
             }
         });
         // second row: the status on the left, the image buttons and close on the right
@@ -201,24 +201,24 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
             ui.spacing_mut().item_spacing.x = 6.0;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let r = ui.small_button(icons::X).on_hover_text("Back to the grid");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("close")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y("close")));
                 if r.clicked() {
                     actions.push(ChartAction::Close);
                 }
                 let r = ui.small_button(format!("{} Save PNG…", icons::FLOPPY_DISK)).on_hover_text("Write the chart as it is on screen to a PNG file.");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("save png")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y("save png")));
                 if r.clicked() {
                     actions.push(ChartAction::Capture { save: true });
                 }
                 let r = ui.small_button(format!("{} Copy image", icons::COPY)).on_hover_text("Copy the chart as it is on screen to the clipboard (paste into Teams, a document, a mail).");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("copy image")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y("copy image")));
                 if r.clicked() {
                     actions.push(ChartAction::Capture { save: false });
                 }
                 if in_notebook {
                     let kept = c.png.is_some();
                     let r = ui.small_button(format!("{} {}", if kept { icons::CHECK } else { icons::PUSH_PIN }, if kept { "Kept" } else { "Keep in notebook" })).on_hover_text("Save the chart as a picture with the cell's outputs, so the .ipynb shows it in Fabric, VS Code and GitHub. The chart itself is saved as its settings and comes back live when the notebook opens.");
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y("keep")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y("keep")));
                     if r.clicked() {
                         actions.push(ChartAction::Keep);
                     }
@@ -241,7 +241,7 @@ pub fn show_with(ui: &mut Ui, view: &mut ResultSetView, theme: &Theme, fmt: &Cel
                         }
                     };
                     let l = ui.label(RichText::new(status).size(11.0).color(if d.error.is_some() { theme.error } else { theme.text_faint }));
-                    l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, a11y("status")));
+                    l.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, a11y("status")));
                 }
             });
         });

@@ -107,7 +107,7 @@ pub fn show(ui: &mut Ui, lib: &mut Library, theme: &Theme, active_profile: Optio
                     actions.push(TreeAction::NewConnection { group: None });
                 }
                 let r = crate::ui::widgets::icon_button(ui, icons::FILE_SQL, "Open a database file (SQLite or DuckDB) as a connection…", true);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "open sqlite database"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "open sqlite database"));
                 if r.clicked() {
                     actions.push(TreeAction::OpenSqlite);
                 }
@@ -247,7 +247,7 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
     }
     if v.tables.is_empty() {
         let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: false, expanded: false, loading: false, icon: icons::INFO, icon_color: None, label: "No local tables yet", detail: Some("run a query in any tab; its result lands here"), selected: false, color_dot: None, kind: "note" });
-        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "local table none"));
+        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "local table none"));
         return;
     }
     for t in v.tables {
@@ -266,7 +266,7 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
         let detail = format!("{rows} · {} cols · {src}{}", t.columns.len(), if t.live { " · arriving" } else { "" });
         let expanded = v.open.contains(&t.name);
         let r = tree_row(ui, theme, TreeRow { depth: 1, expandable: true, expanded, loading: t.live, icon: icons::TABLE, icon_color: None, label: &t.name, detail: Some(&detail), selected: false, color_dot: None, kind: "table" });
-        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local table {}", t.name)));
+        r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("local table {}", t.name)));
         if r.toggle || r.response.clicked() {
             actions.push(TreeAction::LocalToggle(t.name.clone()));
         }
@@ -304,7 +304,7 @@ fn local_root(ui: &mut Ui, theme: &Theme, v: &LocalRootView<'_>, filter: &str, a
             for c in &t.columns {
                 let ty = c.sql_type.to_string();
                 let r = tree_row(ui, theme, TreeRow { depth: 2, expandable: false, expanded: false, loading: false, icon: icons::COLUMNS, icon_color: None, label: &c.name, detail: Some(&ty), selected: false, color_dot: None, kind: "column" });
-                r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("local column {}.{}", t.name, c.name)));
+                r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("local column {}.{}", t.name, c.name)));
             }
         }
     }
@@ -747,7 +747,7 @@ fn folder_node(ui: &mut Ui, dbn: &mut DbNode, theme: &Theme, p: &ConnectionProfi
             ui.add_space(14.0 * (depth + 1) as f32 + 4.0);
             let text = dbn.folder_filters.entry(folder).or_default();
             let r = ui.add(egui::TextEdit::singleline(text).hint_text(format!("Filter {}", folder.label().to_lowercase())).desired_width(180.0));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("filter {}", folder.label().to_lowercase())));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("filter {}", folder.label().to_lowercase())));
             if ui.small_button(icons::X).on_hover_text("Clear and hide the filter").clicked() {
                 dbn.folder_filters.remove(&folder);
                 dbn.filter_open.remove(&folder);

@@ -1132,3 +1132,39 @@ database, schema, table, path}`, `results_to_table {table, target: "scratch"}`, 
 {action: insert|delete, row}`, `edit {action: save|discard|pending}`, `edit_table {profile,
 table}`; labels `edit data 0`, `edit save`, `edit add row`, `edit pending N`, `edit cell R C`,
 `server: Scratch`, `Table: name`, `sqlite table` (export dialog).
+
+## DuckDB as a connection, egui 0.37, delta on LakeSail (0.14.0)
+
+**DuckDB.** File › *Open Database File…* now takes SQLite and DuckDB files alike (told apart by
+their headers); *New DuckDB Database…* makes one; drop a `.duckdb` on the window. The first
+DuckDB connection on a machine downloads the DuckDB 1.5.6 library (about 20 MB) into Cobalt's
+data folder; the tab says *Connecting…* meanwhile and the connection dialog's note says whether
+the engine is installed. Then it is a connection like any other: the tree (Tables, Views,
+Schemas; attached databases as databases), *Select Top 1000* with `LIMIT`, *Script as*,
+completion with DuckDB's functions (`date_trunc`, `list_*`, `read_parquet`…), `EXPLAIN` in the
+Plan pane (Ctrl+L; *Actual plan* runs `EXPLAIN ANALYZE`), lists and structs as text in the grid,
+decimals and timestamps with zones as themselves. Running `CREATE TABLE … AS SELECT * FROM
+read_parquet('…')` is a fine way to bring files in; the tree and completion follow the DDL.
+
+**Writes.** *Save results as table* and *Import data from file* onto a DuckDB tab; *Save results
+as…* › **DuckDB database**; **Copy to DuckDB file…** on a SQL Server table (try `dbo.big`:
+2 million rows, 10 MB, four seconds). *Query locally*, *Explore*, *Diff* and *Edit Data* work on
+DuckDB tables as on SQLite ones.
+
+**Fonts (egui 0.37).** Symbols, non-Latin scripts and colour emoji render straight away from the
+system's fonts; the box-glyph ("tofu") problem in tab titles and cells is gone. If you still
+see one, it is a glyph no installed font has.
+
+**Delta on LakeSail.** A Fabric notebook's `from delta.tables import DeltaTable` imports on the
+LakeSail engine after *Reinstall / update LakeSail* (Settings › Spark), and `DeltaTable.forPath(spark,
+path)` / `forName` / `toDF` / `update` / `delete` / `merge(...).whenMatchedUpdateAll().whenNotMatchedInsertAll().execute()`
+run as SQL on Sail. Write conditions as SQL strings (`"t.id = s.id"`, `set={"v": "s.v * 2"}`);
+a `F.col(...)` condition is refused with a message saying so. `history()`, `vacuum()`,
+`optimize()` and `restoreToVersion()` are not available on Sail (the error names the SQL it
+lacks); run those notebooks on Local Spark. A cell that fails on a missing module now says
+whether the package is in Fabric Runtime 2.0's roster and where to install it.
+
+Agent: `open_database {path, create: true, engine: "duckdb"}`, `duckdb {action: status}`,
+`export {format: "duckdb", path, table, mode}`, `table_to_sqlite {…, format: "duckdb"}`,
+`local_duckdb {path, table}`, and everything from 0.13.0 (`edit`, `results_to_table`, …) on a
+DuckDB tab; labels unchanged.

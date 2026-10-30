@@ -1056,7 +1056,7 @@ impl AgentApp for CobaltApp {
                 v.grid.focused = true;
                 // like a click: the grid takes egui's keyboard focus away from the editor
                 let set_index = r.result_sets.iter().position(|s| s.grid.focused).unwrap_or(set);
-                egui.memory_mut(|m| m.request_focus(egui::Id::new(("grid", tab_id, run_id, set_index)).with("kb-focus")));
+                egui.memory_mut(|m| m.request_focus(egui::Id::unique(("grid", tab_id, run_id, set_index)).with("kb-focus")));
                 let v = r.result_sets.iter_mut().filter(|s| !s.is_plan).nth(set).unwrap();
                 v.grid.anchor = Some((row, col));
                 // optional row2/col2 select a rectangle
@@ -1284,7 +1284,7 @@ impl AgentApp for CobaltApp {
                     "scroll" => {
                         let dy = args.and_then(|a| a.get("dy")).and_then(|v| v.as_f64()).unwrap_or(300.0) as f32;
                         let dx = args.and_then(|a| a.get("dx")).and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-                        steps.push(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-dx, -dy), modifiers, phase: egui::TouchPhase::Move }]);
+                        steps.push(vec![egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(-dx, -dy), modifiers, source: egui::MouseWheelSource::Unknown, phase: egui::TouchPhase::Move }]);
                     }
                     "click" | "rclick" => {
                         steps.push(vec![press(at(x, y), true)]);
@@ -1835,7 +1835,7 @@ impl AgentApp for CobaltApp {
             "focus" => {
                 // which widget holds keyboard focus, and whether it is the active editor
                 let focused = egui.memory(|m| m.focused()).map(|id| format!("{id:?}"));
-                let editor = self.state.active_tab.and_then(|i| self.state.tabs.get(i)).map(|t| format!("{:?}", egui::Id::new(("cobalt-editor", t.id))));
+                let editor = self.state.active_tab.and_then(|i| self.state.tabs.get(i)).map(|t| format!("{:?}", egui::Id::unique(("cobalt-editor", t.id))));
                 ActionResult::with(&json!({"focused": focused, "editor": editor, "is_editor": focused.is_some() && focused == editor}))
             }
             "dismiss_dialog" => {

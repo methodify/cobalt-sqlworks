@@ -40,7 +40,7 @@ const TABS: &[(Tab, &str, &str)] = &[
 pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info: &str, runtime: &mut RuntimeUi, fonts: &mut crate::state::FontsState, fonts_dir: &std::path::Path, scroll_to: Option<&str>) -> Option<SettingsAction> {
     let mut action = None;
     let mut open = true;
-    let tab_key = egui::Id::new("settings-tab");
+    let tab_key = egui::Id::unique("settings-tab");
     let mut tab: Tab = ctx.memory(|m| m.data.get_temp(tab_key)).unwrap_or(Tab::Appearance);
     if scroll_to == Some("Spark runtime") {
         tab = Tab::Notebooks;
@@ -48,7 +48,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
     if scroll_to == Some("Fonts") {
         tab = Tab::Fonts;
     }
-    crate::ui::chrome::Window::new("Settings").id(egui::Id::new("settings-window")).open(&mut open).default_size([860.0, 620.0]).min_size([640.0, 420.0]).resizable(true).show(ctx, theme, |ui| {
+    crate::ui::chrome::Window::new("Settings").id(egui::Id::unique("settings-window")).open(&mut open).default_size([860.0, 620.0]).min_size([640.0, 420.0]).resizable(true).show(ctx, theme, |ui| {
         let total_h = ui.available_height();
         ui.horizontal_top(|ui| {
             // navigation
@@ -60,7 +60,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                     // min_size in the column's top-down(Min) layout keeps the label left-aligned
                     // (add_sized would centre it)
                     let r = ui.add(egui::Button::new(text).min_size(Vec2::new(168.0, 30.0)).fill(if selected { theme.bg_selection } else { Color32::TRANSPARENT }).stroke(Stroke::NONE).corner_radius(6.0));
-                    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, format!("settings tab {label}")));
+                    r.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, selected, format!("settings tab {label}")));
                     if r.clicked() {
                         tab = *t;
                     }
@@ -134,7 +134,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.add(egui::DragValue::new(&mut draft.execution.row_cap).range(0..=100_000_000).speed(1000));
             });
             let r = ui.checkbox(&mut draft.local.tsql_sugar, "Local queries: rewrite T-SQL habits ([brackets], TOP n, ISNULL, GETDATE(), LEN) for the local engine, noted in Messages");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "settings local tsql sugar"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, "settings local tsql sugar"));
             ui.horizontal(|ui| {
                 ui.label("Command timeout (seconds, 0 = none)");
                 ui.add(egui::DragValue::new(&mut draft.execution.command_timeout_secs).range(0..=86_400));
@@ -254,7 +254,7 @@ pub fn show(ctx: &egui::Context, draft: &mut Settings, theme: &Theme, paths_info
                 ui.label("Transport");
                 for (k, label, hint) in cobalt_core::SemanticSettings::TRANSPORTS {
                     let r = ui.selectable_label(draft.semantic.transport == k, label).on_hover_text(hint);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("semantic transport {k}")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("semantic transport {k}")));
                     if r.clicked() {
                         draft.semantic.transport = k.into();
                     }
@@ -480,7 +480,7 @@ fn fonts_page(ui: &mut Ui, theme: &Theme, draft: &mut Settings, fonts: &mut crat
                     }
                 }
             });
-            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, format!("settings {salt}")));
+            r.response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::ComboBox, true, format!("settings {salt}")));
         });
     }
     ui.label(RichText::new("Changes apply when you save; the previews below use the fonts in effect now.").size(11.0).color(theme.text_faint));
@@ -494,7 +494,7 @@ fn fonts_page(ui: &mut Ui, theme: &Theme, draft: &mut Settings, fonts: &mut crat
     section(ui, theme, "Font packs for other scripts");
     ui.label(RichText::new(format!("From the Noto project (OFL licence), stored in {}. A pack loads at startup and comes before any system font.", dir.display())).size(11.0).color(theme.text_muted));
     let r = ui.checkbox(&mut draft.fonts.suggest_downloads, "Suggest a pack when text uses a script no font on this computer draws");
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "settings suggest font downloads"));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, "settings suggest font downloads"));
     ui.add_space(4.0);
     for e in reg.entries.iter().filter(|e| e.kind == "fallback") {
         pack_row(ui, theme, e, dir, fonts);
@@ -506,7 +506,7 @@ fn fonts_page(ui: &mut Ui, theme: &Theme, draft: &mut Settings, fonts: &mut crat
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let r = ui.add_enabled(fonts.registry_fetch.is_none(), egui::Button::new("Refresh the list from cobaltsql.org"));
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "settings refresh font registry"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "settings refresh font registry"));
         if r.clicked() {
             fonts.actions.push(FontAction::Refresh);
         }
@@ -544,13 +544,13 @@ fn pack_row(ui: &mut Ui, theme: &Theme, e: &crate::fonts::Entry, dir: &std::path
                     ui.add(egui::ProgressBar::new(frac).desired_width(130.0).text(RichText::new(format!("{} / {}", crate::fonts::human_size(p.done), crate::fonts::human_size(p.total))).size(10.0)));
                 } else if installed {
                     let r = ui.button("Remove");
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("font pack remove {}", e.id)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("font pack remove {}", e.id)));
                     if r.clicked() {
                         fonts.actions.push(FontAction::Remove(e.id.clone()));
                     }
                 } else {
                     let r = ui.add(egui::Button::new(format!("{} Download", icons::DOWNLOAD_SIMPLE)));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("font pack download {}", e.id)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("font pack download {}", e.id)));
                     if r.clicked() {
                         fonts.actions.push(FontAction::Download(e.id.clone()));
                     }
@@ -606,7 +606,7 @@ fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut 
     if let Some(i) = remove {
         draft.spark.python_packages.remove(i);
     }
-    let py_input = egui::Id::new("lib-py-input");
+    let py_input = egui::Id::unique("lib-py-input");
     let mut text: String = ui.memory(|m| m.data.get_temp(py_input)).unwrap_or_default();
     ui.horizontal(|ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut text).hint_text("package, package==1.2, or a path to a .whl").desired_width(360.0));
@@ -660,7 +660,7 @@ fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut 
     if let Some(i) = remove_mvn {
         draft.spark.maven.remove(i);
     }
-    let mvn_input = egui::Id::new("lib-mvn-input");
+    let mvn_input = egui::Id::unique("lib-mvn-input");
     let mut mtext: String = ui.memory(|m| m.data.get_temp(mvn_input)).unwrap_or_default();
     ui.horizontal(|ui| {
         let r = ui.add(egui::TextEdit::singleline(&mut mtext).hint_text("Maven coordinate: group:artifact:version").desired_width(360.0));
@@ -682,7 +682,7 @@ fn libraries_ui(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut 
     ui.horizontal(|ui| {
         let any = !draft.spark.python_packages.is_empty();
         let b = ui.add_enabled(!busy && any, egui::Button::new("Install Python packages"));
-        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install libraries"));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "install libraries"));
         if b.on_hover_text("Saves these settings and installs the Python packages into the environment (jars and Maven packages need no install step)").clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::InstallLibraries, draft.clone()));
         }
@@ -722,7 +722,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             (cobalt_runtime::Engine::Sail, format!("LakeSail {} (experimental)", manifest.sail.version).as_str(), "Sail: Spark SQL and the DataFrame API on OneLake without a JVM; read-only or write-through (no sandbox), no RDDs; notebookutils and lakehouse Files for Python work as on Local Spark. About 250 MB, starts in seconds."),
         ] {
             let r = ui.selectable_label(cobalt_runtime::Engine::parse(&draft.spark.engine) == e, label);
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {}", e.key())));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("engine {}", e.key())));
             if r.on_hover_text(hint).clicked() {
                 draft.spark.engine = e.key().to_string();
                 // the component readout follows the engine being looked at, not the saved one
@@ -735,13 +735,13 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
         ui.horizontal(|ui| {
             ui.label("Fabric packages");
             let r = ui.selectable_label(draft.spark.sail_profile == "none", "None");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "sail profile none"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "sail profile none"));
             if r.on_hover_text("Only what LakeSail itself needs (pysail, the PySpark Connect client, IPython, pandas, pyarrow) plus your Libraries.").clicked() {
                 draft.spark.sail_profile = "none".into();
             }
             for (name, roster) in &manifest.engine_rosters(cobalt_runtime::Engine::Sail) {
                 let r = ui.selectable_label(draft.spark.sail_profile == *name, format!("{name} ({} packages)", roster.packages.len()));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("sail profile {name}")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("sail profile {name}")));
                 if r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update LakeSail\"; packages without a wheel for this machine are skipped and listed.", roster.note, roster.source)).clicked() {
                     draft.spark.sail_profile = name.clone();
                 }
@@ -766,7 +766,7 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
         ui.horizontal(|ui| {
             ui.label("Fabric packages");
             let r = ui.checkbox(&mut draft.spark.profile_packages, format!("{} ({} packages at Fabric Runtime {}'s versions)", roster.profile, roster.packages.len(), roster.fabric_runtime));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "profile packages"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, "profile packages"));
             r.on_hover_text(format!("{}\nSource: {}\nInstalled by \"Install\" / \"Reinstall / update\" and by \"Install Python packages\"; packages without a wheel for this machine are skipped and listed. A few hundred MB.", roster.note, roster.source));
             ui.label(RichText::new("pandas, scikit-learn, plotly, the azure-* clients… so notebooks written for Fabric import what they expect.").size(11.0).color(theme.text_muted));
         });
@@ -935,14 +935,14 @@ fn spark_runtime(ui: &mut Ui, theme: &Theme, draft: &mut Settings, runtime: &mut
             None => ("Install for me".to_string(), "Downloads what is missing (uv, Python, pyspark/delta-spark, a JDK), then starts Spark once so its jars are cached.".to_string()),
         };
         let b = ui.add_enabled(!busy, egui::Button::new(label));
-        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "install spark runtime"));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "install spark runtime"));
         if b.on_hover_text(format!("What this will do:
 {plan_text}
 Hash-checked and resumable; nothing present is downloaded again.")).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::Install, draft.clone()));
         }
         let b = ui.add_enabled(!busy && ready, egui::Button::new("Run smoke test"));
-        b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "spark smoke test"));
+        b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "spark smoke test"));
         if b.on_hover_text(if sail { "Starts a Sail session in the worker and runs SELECT 1" } else { "Starts a Spark session in the worker and runs SELECT 1" }).clicked() {
             *action = Some(SettingsAction::Runtime(RuntimeAction::SmokeTest, draft.clone()));
         }

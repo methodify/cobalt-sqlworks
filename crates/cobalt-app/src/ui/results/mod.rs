@@ -91,7 +91,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
     let run_state = run.state;
     let run_live = run.is_live();
     let tab_id = tab.id;
-    let rows_key = egui::Id::new(("results-toolbar-rows", tab_id));
+    let rows_key = egui::Id::unique(("results-toolbar-rows", tab_id));
     let two_rows: bool = ui.data(|d| d.get_temp(rows_key)).unwrap_or(false);
     // the result-set tools; on a narrow pane (a group beside another) they take their own row
     let icons = |ui: &mut Ui, tab: &mut EditorTab, actions: &mut Vec<ResultsAction>| {
@@ -99,7 +99,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                 {
                     let side = tab.results_side.unwrap_or(args.settings.appearance.results_side);
                     let r = icon_button(ui, if side { icons::ROWS } else { icons::COLUMNS }, if side { "Results under the editor" } else { "Results beside the editor" }, true);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "results side"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "results side"));
                     if r.clicked() {
                         tab.results_side = Some(!side);
                     }
@@ -110,7 +110,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         let is_max = run.maximized.is_some();
                         let charted = run.result_sets[set].chart.is_some();
                         let r = icon_button(ui, if charted { icons::TABLE } else { icons::CHART_LINE }, if charted { "Back to the grid" } else { "Chart this result set (bar, line, area, scatter, pie; follows the grid's sort and filter)" }, true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "chart toggle"));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "chart toggle"));
                         if r.clicked() {
                             let view = &mut run.result_sets[set];
                             if charted {
@@ -124,7 +124,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             }
                         }
                         let r = icon_button(ui, if is_max { icons::ARROWS_IN } else { icons::ARROWS_OUT }, if is_max { "Restore the editor" } else { "Maximize this result set (hides the editor)" }, true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if is_max { "restore results" } else { "maximize results" }));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, if is_max { "restore results" } else { "maximize results" }));
                         if r.clicked() {
                             run.maximized = if is_max { None } else { Some(set) };
                         }
@@ -151,28 +151,28 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         if file_conn {
                             let on = run.result_sets[set].edits.is_some();
                             let r = icon_button(ui, icons::PENCIL_SIMPLE, if on { "Leave Edit Data (drops pending changes)" } else { "Edit Data: change cells, add and delete rows in this grid; Save writes them in one transaction (single-table SELECT with the key)" }, !run_live);
-                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("edit data {set}")));
+                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("edit data {set}")));
                             if r.clicked() {
                                 actions.push(if on { ResultsAction::EditDiscard { set, off: true } } else { ResultsAction::EditBegin { set } });
                             }
                         }
                         let r = icon_button(ui, icons::FUNNEL_SIMPLE, "Query this result (SQL over it in a Local tab; join it with other results)", true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("query locally {set}")));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("query locally {set}")));
                         if r.clicked() {
                             actions.push(ResultsAction::QueryLocally { set });
                         }
                         let r = icon_button(ui, icons::ROWS, "Explore this result (pivot: rows, columns, values, filters; no SQL)", true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore locally {set}")));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("explore locally {set}")));
                         if r.clicked() {
                             actions.push(ResultsAction::ExploreLocally { set });
                         }
                         let r = icon_button(ui, icons::ARCHIVE, "Save as local table… (scratch.<name>, kept across sessions in the app data folder)", true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("save locally {set}")));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("save locally {set}")));
                         if r.clicked() {
                             actions.push(ResultsAction::SaveLocally { set });
                         }
                         let r = icon_button(ui, icons::ARROWS_LEFT_RIGHT, "Diff with another result… (added / removed / changed rows by key)", true);
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("diff locally {set}")));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("diff locally {set}")));
                         if r.clicked() {
                             actions.push(ResultsAction::DiffLocally { set });
                         }
@@ -216,7 +216,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                     text = text.color(theme.accent).strong();
                 }
                 let r = ui.add(egui::Button::new(text).frame(false));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("results tab {label}")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("results tab {label}")));
                 if selected {
                     let rect = r.rect;
                     ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(2.0, theme.accent));
@@ -267,7 +267,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
             });
         }
     });
-    ui.data_mut(|d| d.insert_temp(egui::Id::new(("results-toolbar-h", tab_id)), toolbar.response.rect.height()));
+    ui.data_mut(|d| d.insert_temp(egui::Id::unique(("results-toolbar-h", tab_id)), toolbar.response.rect.height()));
     let run = tab.run.as_mut().unwrap();
 
     match tab.results_tab {
@@ -368,7 +368,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     theme,
                                     fmt: args.fmt,
                                     font_size: args.settings.appearance.grid_font_size,
-                                    id_salt: egui::Id::new(("grid", tab.id, run.id, set)),
+                                    id_salt: egui::Id::unique(("grid", tab.id, run.id, set)),
                                     show_row_numbers: args.settings.results.show_row_numbers,
                                     max_col_width: args.settings.results.max_column_width,
                                     sample_rows: args.settings.results.auto_size_sample_rows,
@@ -383,7 +383,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                 GridAction::OpenViewer(r, c) => actions.push(ResultsAction::OpenViewer { set, row: r, col: c }),
                                 GridAction::ContextMenu(pos) => {
                                     view.grid.focused = true;
-                                    ui.memory_mut(|m| m.data.insert_temp(egui::Id::new(("grid-ctx", tab.id, set)), pos));
+                                    ui.memory_mut(|m| m.data.insert_temp(egui::Id::unique(("grid-ctx", tab.id, set)), pos));
                                 }
                                 GridAction::Copy => actions.push(ResultsAction::Copy { set, kind: CopyKind::Tsv }),
                             }
@@ -394,7 +394,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             run.maximized = None;
                         }
                         // context menu
-                        let ctx_id = egui::Id::new(("grid-ctx", tab.id, set));
+                        let ctx_id = egui::Id::unique(("grid-ctx", tab.id, set));
                         let ctx_pos: Option<Pos2> = ui.memory(|m| m.data.get_temp(ctx_id));
                         if let Some(pos) = ctx_pos {
                             let mut close = false;
@@ -552,7 +552,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(text);
                                 let b = ui.small_button(format!("{} Open folder", icons::FOLDER_OPEN));
-                                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "open export folder"));
+                                b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "open export folder"));
                                 if b.clicked() {
                                     if let Some(parent) = path.parent() {
                                         let _ = open::that(parent);
@@ -570,7 +570,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
             });
             // Only the messages pane itself takes the context-menu click. `ui.min_rect()` would
             // also cover the Results/Messages tab strip above and swallow its clicks.
-            let resp = ui.interact(frame.response.rect, egui::Id::new(("messages-ctx", tab.id)), egui::Sense::click());
+            let resp = ui.interact(frame.response.rect, egui::Id::unique(("messages-ctx", tab.id)), egui::Sense::click());
             resp.context_menu(|ui| {
                 if ui.button("Copy all").clicked() {
                     let all: String = run.messages.iter().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
@@ -634,8 +634,8 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(icons::MAGNIFYING_GLASS);
-            let r = ui.add(egui::TextEdit::singleline(&mut find.text).hint_text("Find in results").desired_width(220.0).id(egui::Id::new(("grid-find", rs.index, std::sync::Arc::as_ptr(&rs) as usize))));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "find in results"));
+            let r = ui.add(egui::TextEdit::singleline(&mut find.text).hint_text("Find in results").desired_width(220.0).id(egui::Id::unique(("grid-find", rs.index, std::sync::Arc::as_ptr(&rs) as usize))));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "find in results"));
             if !r.has_focus() && find.matches.is_empty() && find.text.is_empty() {
                 r.request_focus();
             }
@@ -646,7 +646,7 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
             recompute |= r.changed();
             let toggle = |ui: &mut Ui, on: &mut bool, label: &str, tip: &str, a11y: &str| {
                 let b = ui.add(egui::Button::selectable(*on, RichText::new(label).size(12.0)).small());
-                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y));
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y));
                 if b.on_hover_text(tip).clicked() {
                     *on = !*on;
                     true
@@ -719,7 +719,7 @@ fn find_bar(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme, 
                 (None, false, false) => (format!("{} of {}{progress}", find.current + 1, find.matches.len()), theme.text_muted),
             };
             let l = ui.label(RichText::new(label).size(12.0).color(color));
-            l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "find status"));
+            l.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, "find status"));
             if !complete {
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
             }
@@ -754,7 +754,7 @@ pub fn profile_window(ctx: &egui::Context, tab_id: cobalt_core::TabId, set: usiz
     }
     let mut open = true;
     crate::ui::chrome::Window::new(format!("Column profile · result {}", set + 1))
-        .id(egui::Id::new(("profile", tab_id, set)))
+        .id(egui::Id::unique(("profile", tab_id, set)))
         .open(&mut open)
         .default_width(860.0)
         .default_height(420.0)
@@ -873,10 +873,10 @@ fn edit_strip(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new(format!("{} Edit Data · {table}", icons::PENCIL_SIMPLE)).strong().color(theme.accent)).on_hover_text("Double-click or F2 edits a cell, Tab moves on, Delete marks the selected rows. Nothing is written until Save.");
             let r = ui.label(RichText::new(if n == 0 { "no pending changes".to_string() } else { format!("{n} pending change{}", if n == 1 { "" } else { "s" }) }).color(if n == 0 { theme.text_muted } else { theme.warning }));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("edit pending {n}")));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("edit pending {n}")));
             ui.add_space(8.0);
             let r = ui.add_enabled(!saving, egui::Button::new(format!("{} Row", icons::PLUS))).on_hover_text("A new row at the bottom; fill its cells, Save inserts it");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit add row"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "edit add row"));
             if r.clicked() {
                 if let Some(e) = view.edits.as_mut() {
                     e.inserted.push(vec![None; cols_n]);
@@ -884,7 +884,7 @@ fn edit_strip(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme
                 view.grid.scroll_to = Some((data_rows + view.edits.as_ref().map(|e| e.inserted.len()).unwrap_or(1) - 1, 0));
             }
             let r = ui.add_enabled(!saving && !sel_rows.is_empty(), egui::Button::new(format!("{} Delete row{}", icons::TRASH, if sel_rows.len() == 1 { "" } else { "s" }))).on_hover_text("Mark the selected rows for deletion (again to unmark); a new row is removed");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit delete rows"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "edit delete rows"));
             if r.clicked() {
                 if let Some(e) = view.edits.as_mut() {
                     for &row in sel_rows.iter().rev() {
@@ -901,17 +901,17 @@ fn edit_strip(ui: &mut Ui, view: &mut crate::state::ResultSetView, theme: &Theme
             }
             ui.separator();
             let r = ui.add_enabled(n > 0 && !saving, egui::Button::new(RichText::new(format!("{} Save", icons::CHECK)).color(theme.success))).on_hover_text("Run the statements in one transaction, then run the query again");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit save"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "edit save"));
             if r.clicked() {
                 actions.push(ResultsAction::EditSave { set });
             }
             let r = ui.add_enabled(!saving, egui::Button::new(format!("{} Discard", icons::ARROW_COUNTER_CLOCKWISE))).on_hover_text("Drop every pending change");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit discard"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "edit discard"));
             if r.clicked() {
                 actions.push(ResultsAction::EditDiscard { set, off: false });
             }
             let r = ui.add(egui::Button::selectable(show_sql, "SQL")).on_hover_text("The statements Save will run");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "edit show sql"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "edit show sql"));
             if r.clicked() {
                 if let Some(e) = view.edits.as_mut() {
                     e.show_sql = !e.show_sql;

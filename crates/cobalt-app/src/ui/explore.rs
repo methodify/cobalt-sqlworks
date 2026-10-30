@@ -80,7 +80,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             } else {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 if let Some(pos) = pointer {
-                    egui::Area::new(egui::Id::new(("explore-drag-label", tab.id))).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(12.0, 8.0)).interactable(false).show(ui.ctx(), |ui| {
+                    egui::Area::new(egui::Id::unique(("explore-drag-label", tab.id))).order(egui::Order::Tooltip).fixed_pos(pos + Vec2::new(12.0, 8.0)).interactable(false).show(ui.ctx(), |ui| {
                         egui::Frame::new().fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.accent)).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
                             ui.add(egui::Label::new(RichText::new(format!("{} {}", if p.field.is_measure() { icons::SIGMA } else { icons::COLUMNS }, p.field.label())).size(12.0)).extend());
                         });
@@ -93,7 +93,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let mut res_actions: Vec<ResultsAction> = Vec::new();
     if results_visible {
         let sep_rect = egui::Rect::from_min_size(egui::pos2(avail.left(), top_rect.bottom()), Vec2::new(avail.width(), sep_h));
-        let sep = ui.interact(sep_rect, egui::Id::new(("explore-split", tab.id)), Sense::drag());
+        let sep = ui.interact(sep_rect, egui::Id::unique(("explore-split", tab.id)), Sense::drag());
         ui.painter().rect_filled(sep_rect, 0.0, if sep.hovered() || sep.dragged() { theme.accent } else { theme.border });
         if sep.hovered() || sep.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
@@ -181,10 +181,10 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = ui.add(egui::TextEdit::singleline(&mut ex.spec.title).hint_text("Explore title").desired_width(200.0));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "explore title"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "explore title"));
             ui.label(RichText::new(if is_local { icons::TABLE } else { icons::CUBE }).color(theme.accent));
             let r = ui.add(egui::Button::new(RichText::new(&model).strong()).frame(false)).on_hover_text(if is_sql { format!("Table {model} on {host}\nThe builder writes T-SQL and runs it on this connection") } else if is_local { format!("Local table {model}") } else { format!("Semantic model {model} in {host}\nClick to explore another model") });
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore model"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore model"));
             if r.clicked() {
                 acts.push(Act::ChooseModel);
             }
@@ -219,43 +219,43 @@ fn toolbar(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, acts: &mut Vec<Act>) {
             } else {
                 let dirty = ex.dirty && !ex.spec.is_empty();
                 let r = tool_button(ui, icons::PLAY, if dirty { "Run" } else { "Refresh" }, "Run the query for the current wells (F5)", !ex.spec.is_empty());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore run"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore run"));
                 if r.clicked() {
                     acts.push(Act::Run);
                 }
             }
             let r = ui.checkbox(&mut ex.auto_run, "Auto").on_hover_text("Run again whenever a well changes");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "explore auto run"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, "explore auto run"));
             ui.separator();
             ui.label(RichText::new("Top").size(12.0).color(theme.text_muted));
             let mut n = ex.spec.top_n.unwrap_or(0);
             let r = ui.add(egui::DragValue::new(&mut n).range(0..=1_000_000).speed(1.0).custom_formatter(|v, _| if v == 0.0 { "all".to_string() } else { format!("{v:.0}") }));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::DragValue, true, "explore top n"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::SpinButton, true, "explore top n"));
             if r.changed() {
                 acts.push(Act::TopN(if n == 0 { None } else { Some(n) }));
             }
             let mut sub = ex.spec.subtotals;
             let r = ui.checkbox(&mut sub, "Subtotals").on_hover_text("Subtotal rows per grouping field (ROLLUPADDISSUBTOTAL)");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, "explore subtotals"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, "explore subtotals"));
             if r.changed() {
                 acts.push(Act::Subtotals(sub));
             }
             let has_cols = !ex.spec.columns.is_empty();
             if has_cols {
                 let r = ui.selectable_label(ex.matrix, "Matrix").on_hover_text("Column fields across the top (a local pivot of the result)");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore matrix"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore matrix"));
                 if r.clicked() {
                     ex.matrix = true;
                 }
                 let r = ui.selectable_label(!ex.matrix, "Flat");
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore flat"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore flat"));
                 if r.clicked() {
                     ex.matrix = false;
                 }
             }
             ui.separator();
             let r = ui.selectable_label(ex.show_dax, format!("{} {}", icons::CODE, if is_local { "SQL" } else { "DAX" })).on_hover_text("Show the generated query");
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore show dax"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore show dax"));
             if r.clicked() {
                 ex.show_dax = !ex.show_dax;
             }
@@ -280,7 +280,7 @@ fn fields_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, ca
     ui.horizontal(|ui| {
         ui.add_space(6.0);
         let r = ui.add(egui::TextEdit::singleline(&mut ex.field_filter).hint_text(format!("{} Find a field", icons::MAGNIFYING_GLASS)).desired_width(FIELDS_W - 16.0));
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "explore field filter"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "explore field filter"));
     });
     let Some(cat) = cat else {
         ui.add_space(8.0);
@@ -420,7 +420,7 @@ fn wells_pane(ui: &mut Ui, theme: &Theme, tab: &mut crate::state::EditorTab, cat
                 egui::Frame::new().fill(theme.bg_hover).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 3)).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         let r = ui.add(egui::Label::new(RichText::new(fl.summary()).size(12.0)).selectable(false).sense(Sense::click()));
-                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore filter {}", fl.column)));
+                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("explore filter {}", fl.column)));
                         if r.clicked() {
                             acts.push(Act::EditFilter(i));
                         }
@@ -486,7 +486,7 @@ fn well(ui: &mut Ui, theme: &Theme, title: &str, icon: &str, a11y: &str, which: 
         });
     }
     let r = frame.allocate_space(ui);
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, a11y.to_string()));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, a11y.to_string()));
     if dragging.is_some() {
         let over = takes && r.contains_pointer();
         frame.frame.stroke = if !takes { egui::Stroke::new(1.0, theme.border) } else if over { egui::Stroke::new(1.5, theme.accent) } else { egui::Stroke::new(1.0, theme.accent.gamma_multiply(0.55)) };
@@ -510,7 +510,7 @@ fn field_chip(ui: &mut Ui, theme: &Theme, f: &FieldRef, well: Well, i: usize, n:
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { f.label() } else { format!("{} {sorted}", f.label()) };
             let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).selectable(false).sense(Sense::click_and_drag()));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore chip {}", f.qualified())));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("explore chip {}", f.qualified())));
             r.dnd_set_drag_payload(DragField { field: f.clone(), from: Some(well) });
             if let Some(p) = r.dnd_release_payload::<DragField>() {
                 if p.field != *f {
@@ -573,7 +573,7 @@ fn value_chip(ui: &mut Ui, theme: &Theme, i: usize, v: &cobalt_core::explore::Va
             let sorted = ops::sort_label(spec, &by);
             let label = if sorted.is_empty() { v.name() } else { format!("{} {sorted}", v.name()) };
             let r = ui.add(egui::Label::new(RichText::new(label).size(12.0)).selectable(false).sense(Sense::click_and_drag()));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("explore value {}", v.name())));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("explore value {}", v.name())));
             r.dnd_set_drag_payload(DragField { field: v.field.clone(), from: Some(Well::Values) });
             if let Some(p) = r.dnd_release_payload::<DragField>() {
                 if p.field != v.field {
@@ -632,7 +632,7 @@ fn filter_window(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cat: Option<&ModelC
     let mut open = true;
     let mut apply = false;
     let mut cancel = false;
-    crate::ui::chrome::Window::new(format!("Filter: {}", ed.column)).id(egui::Id::new(("explore-filter", tab_id))).open(&mut open).default_size([360.0, 420.0]).resizable(true).show(ui.ctx(), theme, |ui: &mut egui::Ui| {
+    crate::ui::chrome::Window::new(format!("Filter: {}", ed.column)).id(egui::Id::unique(("explore-filter", tab_id))).open(&mut open).default_size([360.0, 420.0]).resizable(true).show(ui.ctx(), theme, |ui: &mut egui::Ui| {
         ui.label(RichText::new(format!("{}[{}] · {}", ed.table, ed.column, dtype.label())).size(12.0).color(theme.text_muted));
         ui.add_space(4.0);
         // operator
@@ -676,7 +676,7 @@ fn filter_window(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cat: Option<&ModelC
                             for v in list.iter().filter(|v| search.is_empty() || v.to_lowercase().contains(&search)) {
                                 let mut on = values.contains(v);
                                 let r = ui.checkbox(&mut on, if v.is_empty() { "(blank)" } else { v.as_str() });
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Checkbox, true, format!("explore filter value {v}")));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::CheckBox, true, format!("explore filter value {v}")));
                                 if r.changed() {
                                     if on {
                                         values.push(v.clone());
@@ -748,7 +748,7 @@ fn filter_window(ui: &mut Ui, f: &mut Frame<'_>, idx: usize, cat: Option<&ModelC
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let r = ui.add(egui::Button::new(RichText::new("Apply").color(egui::Color32::WHITE)).fill(theme.accent));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "explore filter apply"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "explore filter apply"));
             if r.clicked() {
                 apply = true;
             }

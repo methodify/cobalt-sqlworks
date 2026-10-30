@@ -136,10 +136,10 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme, keymap: &Keymap) -
     });
     let screen = ui.ctx().content_rect();
     let width = 640.0f32.min(screen.width() - 40.0);
-    egui::Area::new(egui::Id::new("palette")).order(egui::Order::Foreground).fixed_pos(egui::pos2(screen.center().x - width / 2.0, screen.top() + 80.0)).show(ui.ctx(), |ui| {
+    egui::Area::new(egui::Id::unique("palette")).order(egui::Order::Foreground).fixed_pos(egui::pos2(screen.center().x - width / 2.0, screen.top() + 80.0)).show(ui.ctx(), |ui| {
         egui::Frame::popup(ui.style()).fill(theme.bg_panel).stroke(egui::Stroke::new(1.0, theme.border_strong)).inner_margin(8.0).shadow(egui::Shadow { offset: [0, 6], blur: 24, spread: 0, color: egui::Color32::from_black_alpha(90) }).show(ui, |ui| {
             ui.set_width(width);
-            let r = ui.add(egui::TextEdit::singleline(&mut state.palette_query).hint_text("Type a command or connection name… (# to find a table, view or procedure)").desired_width(f32::INFINITY).font(egui::FontId::proportional(16.0)).id(egui::Id::new("palette-input")));
+            let r = ui.add(egui::TextEdit::singleline(&mut state.palette_query).hint_text("Type a command or connection name… (# to find a table, view or procedure)").desired_width(f32::INFINITY).font(egui::FontId::proportional(16.0)).id(egui::Id::unique("palette-input")));
             r.request_focus();
             if r.changed() {
                 state.palette_selected = 0;

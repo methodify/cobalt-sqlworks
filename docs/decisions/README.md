@@ -16,3 +16,5 @@ than re-litigating.
 | [D008](D008_license.md) | License: MIT OR Apache-2.0 | 2026-09-16 |
 | [D009](D009_notebooks_and_local_spark.md) | Notebooks: .ipynb with SQL + Markdown + PySpark cells; PySpark on a Cobalt-managed local Spark (local-spark-mcp worker, no Jupyter) | 2026-10-05 |
 | [D010](D010_egui_037_deferred.md) | egui 0.37 evaluated for the editor-groups slate and deferred: egui-notify, egui-phosphor and egui_agent are not on it; revisit as its own iteration | 2026-10-27 |
+| [D011](D011_duckdb_runtime_library.md) | DuckDB: the official library downloaded on first use and loaded at run time through its C API; version pinned; not linked into the binary | 2026-10-30 |
+| [D012](D012_egui_037_taken_up.md) | egui 0.37 taken up (supersedes D010): system font provider ends the tofu, egui-phosphor vendored, egui_agent 0.4.0 ported | 2026-10-30 |

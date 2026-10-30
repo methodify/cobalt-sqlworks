@@ -10,7 +10,7 @@ use crate::ui::theme::TokenColors;
 use egui::text::CCursor;
 use egui::text::CCursorRange;
 use egui::text_selection::visuals::paint_text_selection;
-use egui::{Color32, Event, EventFilter, FontId, Id, ImeEvent, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2, WidgetInfo, WidgetType};
+use egui::{Color32, Event, EventFilter, FontId, Id, ImeEvent, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2, WidgetInfo};
 use egui::epaint::text::cursor::LayoutCursor;
 use egui::epaint::text::CharIndex;
 use egui::Galley;
@@ -171,12 +171,12 @@ impl<'a> CodeEditor<'a> {
                     Event::Copy => {
                         let (s, line) = copy_text(text, cursors);
                         ui.ctx().copy_text(s.clone());
-                        ui.data_mut(|d| d.insert_temp(Id::new("cobalt-line-clipboard"), LineClipboard(line.then_some(s))));
+                        ui.data_mut(|d| d.insert_temp(Id::unique("cobalt-line-clipboard"), LineClipboard(line.then_some(s))));
                     }
                     Event::Cut => {
                         let (s, line) = copy_text(text, cursors);
                         ui.ctx().copy_text(s.clone());
-                        ui.data_mut(|d| d.insert_temp(Id::new("cobalt-line-clipboard"), LineClipboard(line.then_some(s))));
+                        ui.data_mut(|d| d.insert_temp(Id::unique("cobalt-line-clipboard"), LineClipboard(line.then_some(s))));
                         undo.record(EditKind::Other, text, cursors);
                         if cursors.has_selection() {
                             delete_at_cursors(text, cursors, false, false);
@@ -186,7 +186,7 @@ impl<'a> CodeEditor<'a> {
                         relayout = true;
                     }
                     Event::Paste(s) if !s.is_empty() => {
-                        let line = ui.data(|d| d.get_temp::<LineClipboard>(Id::new("cobalt-line-clipboard"))).and_then(|l| l.0).map(|l| l == *s).unwrap_or(false);
+                        let line = ui.data(|d| d.get_temp::<LineClipboard>(Id::unique("cobalt-line-clipboard"))).and_then(|l| l.0).map(|l| l == *s).unwrap_or(false);
                         undo.record(EditKind::Other, text, cursors);
                         paste_at_cursors(text, cursors, s, line);
                         relayout = true;
@@ -253,7 +253,7 @@ impl<'a> CodeEditor<'a> {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
         // interact under our own id so egui keeps keyboard focus on it across frames
         let mut response = ui.interact(rect, id, Sense::click_and_drag() | Sense::FOCUSABLE);
-        response.widget_info(|| WidgetInfo::labeled(WidgetType::TextEdit, true, "editor"));
+        response.widget_info(|| WidgetInfo::labeled(egui::Role::TextInput, true, "editor"));
         let origin = rect.min + Vec2::new(margin.left as f32, margin.top as f32);
 
         // drag-and-drop from the Servers tree: a bracketed object name lands at the pointer
@@ -403,7 +403,7 @@ impl<'a> CodeEditor<'a> {
         // the background the caret stays visible but stops blinking.
         let os_focused = ui.input(|i| i.focused);
         let focus_flag_seen = ui.ctx().data_mut(|d| {
-            let seen = d.get_temp_mut_or_default::<bool>(Id::new("cobalt-os-focus-seen"));
+            let seen = d.get_temp_mut_or_default::<bool>(Id::unique("cobalt-os-focus-seen"));
             *seen |= os_focused;
             *seen
         });

@@ -11,6 +11,7 @@ sqlworks/
 │  ├─ cobalt-core/            plain types shared by everything (no egui, no tokio)
 │  ├─ cobalt-driver/          Driver/Connection/QueryStream traits + TDS→Arrow mapping; feature "mssql" = tiberius-ng impl; sqlite impl (rusqlite on a thread per connection)
 │  ├─ cobalt-sqlite/          shared SQLite plumbing: declared types from SqlType, Arrow rows into prepared inserts, .sqlite file writer, affinity reading (driver, export and local engine)
+│  ├─ cobalt-duckdb/          DuckDB through its C API loaded at run time (libloading over the official library, downloaded on first use; Arrow via the C data interface) — driver, export and local engine
 │  ├─ cobalt-auth/            Entra PKCE + device code + az CLI; keyring storage
 │  ├─ cobalt-store/           rusqlite: profiles, groups, history, tab snapshots, catalog cache, settings migration
 │  ├─ cobalt-sql/             T-SQL lexer, batch/statement splitter, completion engine, formatter wrapper

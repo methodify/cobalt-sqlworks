@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.14.0 — 2026-10-30
+
+- **DuckDB databases are connections.** Open a `.duckdb` file (File › Open Database File…
+  tells SQLite and DuckDB apart by their headers; File › New DuckDB Database…; the Servers
+  rail's database button; a drop; or a connection whose engine is *DuckDB database file*) and
+  it sits in the Servers tree with its schemas, tables and views, columns, keys, indexes and
+  the CREATE text DuckDB keeps. Query tabs speak DuckDB (its keywords and functions complete,
+  `"quoted"` names), results carry DuckDB's types (decimals, timestamps with zones, lists and
+  structs shown as text), *Est. plan* and *Actual plan* put `EXPLAIN` / `EXPLAIN ANALYZE` in
+  the Plan pane, and a run with DDL refreshes the tab's completion and the tree. The engine
+  itself is not in the installer: the official DuckDB 1.5.6 library (about 20 MB) downloads
+  into Cobalt's data folder on the first connection and is loaded at run time, so the binary
+  stays small and the build stays fast (decision D011).
+- **Writing into DuckDB.** *Save results as table* and *Import data from file* on a DuckDB tab,
+  a **DuckDB database** export format (Fail / Replace table / Append rows; every result set of a
+  *Run to File* into the one file), and **Copy to DuckDB file…** on a server table: 2 million
+  SQL Server rows become a 10 MB DuckDB file in about four seconds.
+- **The bridge and the grid.** *Query locally* on a DuckDB table registers it with the local
+  engine (read through DuckDB on every scan, only the columns a query asks for), the Local
+  sidebar's Databases group lists it, Diff works, and Explore writes the local engine's dialect
+  (ROLLUP / GROUPING run natively on DuckDB). *Edit Data* works on DuckDB tables with their
+  primary key or rowid, as on SQLite.
+- **egui 0.37.** Cobalt moves to egui / eframe 0.37 (decision D012, superseding D010). The
+  one visible change is text: with 0.37's system font provider, every glyph a system font has
+  renders — arrows, math and box symbols, Cyrillic, Greek, CJK and colour emoji — where 0.36
+  showed boxes until a font pack had been fetched. Also from 0.37: widgets describe themselves
+  to assistive technology with AccessKit roles, collapsing headers included; the chart capture
+  uses the new screenshot callback. Companions: egui_table 0.11, egui-notify 0.24,
+  egui_commonmark 0.26, egui_plot 0.38, egui_kittest 0.37, egui_agent 0.4.0 (ported to 0.37 in
+  methodify/egui_agent), and egui-phosphor 0.14 vendored under `vendor/` with its egui pin
+  bumped.
+- **LakeSail runs Fabric notebooks' `delta` imports.** `delta-spark` 4.2.0 (Fabric Runtime
+  2.0's own pin) is part of the LakeSail environment, installed without its dependencies (the
+  Connect-only `pyspark-client` stands in for `pyspark`), and the worker replaces
+  `delta.tables.DeltaTable` with a class that runs the API as SQL on Sail: `forPath`,
+  `forName`, `isDeltaTable`, `toDF`, `alias`, `update`, `delete`, and `merge` with every
+  `whenMatched…` / `whenNotMatched…` / `whenNotMatchedBySource…` clause. Conditions and values
+  are SQL strings (a Spark Connect `Column` cannot be rendered back to SQL and is refused with a
+  message); `history`, `vacuum`, `optimize` and `restore…` raise `NotImplementedError` naming
+  the SQL Sail lacks. A cell that fails with `ModuleNotFoundError` now gets a hint naming the
+  Fabric package roster (Settings › Spark › Fabric packages) or Python packages. *Reinstall /
+  update LakeSail* adds delta-spark to an existing environment.
+- **Agent.** `add_profile {engine: duckdb}`, `open_database {engine}`, `local_duckdb`,
+  `duckdb {status|install|remove}`, `table_to_sqlite {format: duckdb}`; `import_state` reports a
+  plain export dialog; the roster hint is in the cell's messages.
+- Under the hood: `cobalt-duckdb` (libloading bindings over DuckDB's C API, one database
+  instance per file per process, Arrow through the C data interface, Arrow streams registered
+  as views for writes); `SqlType::Other` is a struct variant (the agent's state JSON could not
+  serialise the newtype, which a list column surfaced); `"double quotes"` lex as identifiers in
+  the DuckDB dialect; a file engine's plan text is marked by the driver and routed to the Plan
+  pane.
+
 ## 0.13.0 — 2026-10-28
 
 - **SQLite databases are connections.** Open a `.sqlite` / `.db` file (File › Open SQLite

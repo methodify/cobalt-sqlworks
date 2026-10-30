@@ -141,8 +141,8 @@ impl TableDelegate for Delegate<'_> {
         painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
         let Some(col) = self.data_col(cell.col_range.start) else {
             // gutter header: select-all corner (like ADS/Excel)
-            let resp = ui.interact(rect, ui.id().with("corner"), Sense::click());
-            resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "select all cells"));
+            let resp = ui.interact(rect, ui.scope_id().with("corner"), Sense::click());
+            resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "select all cells"));
             if resp.hovered() {
                 ui.painter().rect_filled(rect.shrink(2.0), 2.0, self.theme.bg_selection_inactive);
             }
@@ -178,15 +178,15 @@ impl TableDelegate for Delegate<'_> {
         }
         // funnel
         let funnel_rect = Rect::from_center_size(Pos2::new(rect.right() - 11.0, rect.center().y), Vec2::new(18.0, 18.0));
-        let funnel_resp = ui.interact(funnel_rect, ui.id().with(("funnel", col)), Sense::click());
+        let funnel_resp = ui.interact(funnel_rect, ui.scope_id().with(("funnel", col)), Sense::click());
         let funnel_color = if filtered { self.theme.accent } else if funnel_resp.hovered() { self.theme.text } else { self.theme.text_faint };
         painter.text(funnel_rect.center(), Align2::CENTER_CENTER, egui_phosphor::regular::FUNNEL, FontId::proportional(13.0), funnel_color);
-        funnel_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("filter {}", info.name)));
+        funnel_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("filter {}", info.name)));
         if funnel_resp.clicked() {
             self.funnel_click = Some((col, Pos2::new(rect.left(), rect.bottom() + 2.0)));
         }
-        let head_resp = ui.interact(Rect::from_min_max(rect.min, Pos2::new(funnel_rect.left(), rect.max.y)), ui.id().with(("head", col)), Sense::click());
-        head_resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("column {}", info.name)));
+        let head_resp = ui.interact(Rect::from_min_max(rect.min, Pos2::new(funnel_rect.left(), rect.max.y)), ui.scope_id().with(("head", col)), Sense::click());
+        head_resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("column {}", info.name)));
         if head_resp.clicked() {
             let shift = ui.input(|i| i.modifiers.shift);
             self.header_click = Some((col, shift));
@@ -213,7 +213,7 @@ impl TableDelegate for Delegate<'_> {
             painter.line_segment([rect.right_top(), rect.right_bottom()], Stroke::new(1.0, self.theme.border));
             let label = if row >= self.data_rows { "+".to_string() } else { (row + 1).to_string() };
             painter.text(Pos2::new(rect.right() - 6.0, rect.center().y), Align2::RIGHT_CENTER, label, FontId::proportional((self.font.size - 1.0).max(9.0)), self.theme.text_muted);
-            let resp = ui.interact(rect, ui.id().with(("gutter", row)), Sense::click());
+            let resp = ui.interact(rect, ui.scope_id().with(("gutter", row)), Sense::click());
             if resp.clicked() {
                 self.gutter_click = Some((row, ui.input(|i| i.modifiers.shift)));
             }
@@ -280,9 +280,9 @@ impl TableDelegate for Delegate<'_> {
         if let Some(e) = self.edits.as_mut() {
             if let Some(ce) = e.editing.as_mut() {
                 if ce.row == row && ce.col == col && ui.clip_rect().intersects(rect) {
-                    let id = ui.id().with(("cell-edit", row, col));
+                    let id = ui.scope_id().with(("cell-edit", row, col));
                     let r = ui.put(rect.shrink2(Vec2::new(2.0, 1.0)), egui::TextEdit::singleline(&mut ce.text).id(id).font(self.font.clone()).frame(egui::Frame::new()).margin(egui::Margin::symmetric(4, 2)));
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, format!("edit cell {row} {col}")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, format!("edit cell {row} {col}")));
                     if !ce.focused {
                         r.request_focus();
                         let mut st = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
@@ -327,7 +327,7 @@ impl TableDelegate for Delegate<'_> {
         if !ui.clip_rect().intersects(rect) {
             return; // clipped duplicate visit (see header_cell_ui)
         }
-        let resp = ui.interact(rect, ui.id().with(("cell", row, col)), Sense::click_and_drag());
+        let resp = ui.interact(rect, ui.scope_id().with(("cell", row, col)), Sense::click_and_drag());
         // Selection is press-driven, not click-driven: the press picks the cell (or extends with
         // Shift) and, while the button stays down, whichever cell the pointer is over extends the
         // range. egui stops reporting `hovered`/`dragged` on other widgets once a drag has begun
@@ -720,7 +720,7 @@ fn filter_popup(ui: &mut Ui, grid: &mut GridState, theme: &Theme, rs: &Arc<Resul
     let popup = grid.filter_popup.as_mut()?;
     let col = popup.column;
     let name = rs.columns.get(col).map(|c| c.name.clone()).unwrap_or_default();
-    let id = egui::Id::new(("filter-popup", rs.index, col));
+    let id = egui::Id::unique(("filter-popup", rs.index, col));
     let mut window = crate::ui::chrome::Window::new(format!("Filter: {name}"))
         .id(id)
         .resizable(true)

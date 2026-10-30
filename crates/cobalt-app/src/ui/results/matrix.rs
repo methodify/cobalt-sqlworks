@@ -70,7 +70,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, pt: &PivotTable, a11y: &str) -> Vec<Matr
     let subtotal_bg = theme.bg_hover;
     let resp = egui::ScrollArea::both().id_salt(("matrix", a11y)).auto_shrink([false, false]).show_viewport(ui, |ui, viewport| {
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w.max(ui.available_width()), total_h), Sense::click());
-        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, a11y.to_string()));
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, a11y.to_string()));
         let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
         let origin = rect.min;
         let first_row = ((viewport.min.y / ROW_H) as usize).saturating_sub(header_rows + 1);

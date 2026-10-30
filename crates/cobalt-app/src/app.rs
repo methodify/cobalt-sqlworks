@@ -629,10 +629,8 @@ impl eframe::App for CobaltApp {
         }
         // the frame a chart capture asked for: crop the plot's rect and hand it on
         if self.state.pending_capture.as_ref().map(|p| p.requested).unwrap_or(false) {
-            if let Some(image) = raw_input.events.iter().find_map(|e| match e {
-                egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            }) {
+            let captured: Option<std::sync::Arc<egui::ColorImage>> = ctx.data_mut(|d| d.remove_temp(egui::Id::unique("cobalt::capture-image")));
+            if let Some(image) = captured {
                 if let Some(pc) = self.state.pending_capture.take() {
                     let region = image.region(&pc.rect, Some(ctx.pixels_per_point()));
                     let [w, h] = region.size;
@@ -826,7 +824,11 @@ impl eframe::App for CobaltApp {
         if let Some(pc) = self.state.pending_capture.as_mut() {
             if !pc.requested {
                 pc.requested = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+                let ctx2 = ctx.clone();
+                ctx.request_screenshot(move |image| {
+                    ctx2.data_mut(|d| d.insert_temp(egui::Id::unique("cobalt::capture-image"), image));
+                    ctx2.request_repaint();
+                });
                 ctx.request_repaint();
             }
         }

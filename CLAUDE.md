@@ -1,7 +1,7 @@
 # Cobalt SQL Works
 
 A free, open-source, cross-platform desktop SQL client — the spiritual successor to
-Azure Data Studio (retired by Microsoft, Feb 2026). Pure Rust + egui 0.36.
+Azure Data Studio (retired by Microsoft, Feb 2026). Pure Rust + egui 0.37.
 
 Primary audience: people who do everyday query work against SQL Server, Azure SQL, and
 Microsoft Fabric (Data Warehouse / SQL analytics endpoint), and who want something fast
@@ -19,8 +19,9 @@ founder-facing test notes in `docs/alpha_notes.md`.
 
 ```
 crates/cobalt-core      shared types (profiles, engines, SqlType<->Arrow, catalog, settings)
-crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003); sqlite impl over rusqlite
+crates/cobalt-driver    Driver/Connection traits; mssql impl over vendor/tiberius-ng (patched, see D003); sqlite impl over rusqlite; duckdb impl over cobalt-duckdb
 crates/cobalt-sqlite    shared SQLite plumbing (rusqlite): declared types, Arrow rows into inserts, file writer, affinity reading
+crates/cobalt-duckdb    DuckDB through its C API loaded at run time (libloading; the official library downloaded on first use, D011)
 crates/cobalt-results   Arrow chunk store: spill, display cache, sort/filter views, summaries
 crates/cobalt-sql       T-SQL lexer, batches/statements, completion, format, snippets
 crates/cobalt-plan      showplan XML -> model, layout, icons (fixtures from real SQL Server)
@@ -29,6 +30,7 @@ crates/cobalt-auth      Entra PKCE loopback / device code / az CLI / service pri
 crates/cobalt-export    CSV/TSV/JSON/JSONL/XML/Markdown/Excel/Parquet/Arrow; cobalt-export-delta = delta-rs
 crates/cobalt-app       the binary: session actors (tokio), state, ui/, ops, agent verbs
 vendor/tiberius-ng      vendored TDS driver + COBALT-PATCH.md
+vendor/egui-phosphor    egui-phosphor 0.14 with its egui pin bumped to 0.37 (D012)
 assets/                 icon.svg / logo.svg (source of truth) + rendered PNGs and icon.ico (resvg + Pillow)
 site/                   GitHub Pages homepage (static; lists the latest release via the GitHub API)
 .github/workflows/      ci.yml (tests), release.yml (tag v* -> installers + GitHub release), pages.yml (site)

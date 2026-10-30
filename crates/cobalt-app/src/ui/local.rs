@@ -128,7 +128,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, tables: &[TableInfo], theme: &The
                     actions.push(LocalAction::Refresh);
                 }
                 let r = icon_button(ui, icons::FILE_ARROW_UP, "Register a file or a Delta folder as a local table…", true);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "local register"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "local register"));
                 egui::Popup::menu(&r).show(|ui| {
                     if ui.button(format!("{} A file (Parquet, CSV, JSON lines, Arrow)…", icons::FILE)).clicked() {
                         actions.push(LocalAction::RegisterFile);
@@ -140,7 +140,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, tables: &[TableInfo], theme: &The
                     }
                 });
                 let r = icon_button(ui, icons::LIGHTNING, "New local query (SQL over these tables)", true);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "local new query"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "local new query"));
                 if r.clicked() {
                     actions.push(LocalAction::Query(None));
                 }
@@ -163,7 +163,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, tables: &[TableInfo], theme: &The
             return;
         }
         let r = ui.add(egui::TextEdit::singleline(&mut state.local_filter).hint_text(format!("{} Filter tables and columns", icons::MAGNIFYING_GLASS)).desired_width(f32::INFINITY));
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "local filter"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "local filter"));
         let filter = state.local_filter.trim().to_lowercase();
         let active_local = state.active().map(|t| t.local.is_some()).unwrap_or(false);
         egui::ScrollArea::vertical().id_salt("local-tables").auto_shrink([false, false]).show(ui, |ui| {

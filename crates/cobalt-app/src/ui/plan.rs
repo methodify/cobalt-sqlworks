@@ -86,7 +86,7 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
     }
     // which PlanView? one per statement result set; a selector when several
     let plan_count = run.plans.len();
-    let sel_id = egui::Id::new(("plan-sel", tab.id));
+    let sel_id = egui::Id::unique(("plan-sel", tab.id));
     let mut selected: usize = ui.ctx().memory(|m| m.data.get_temp(sel_id)).unwrap_or(0);
     selected = selected.min(plan_count - 1);
     for pv in run.plans.iter_mut() {
@@ -241,14 +241,14 @@ pub fn show(ui: &mut Ui, tab: &mut EditorTab, theme: &Theme, settings: &Settings
     }
     if let Some(xml) = open_xml {
         ui.ctx().copy_text(xml);
-        ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::new("plan-xml-copied"), true));
+        ui.ctx().memory_mut(|m| m.data.insert_temp(egui::Id::unique("plan-xml-copied"), true));
     }
 }
 
 fn canvas(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, layout: &cobalt_plan::Layout, theme: &Theme, _settings: &Settings) {
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 0.0, theme.bg_editor);
-    let resp = ui.interact(rect, egui::Id::new(("plan-canvas", stmt.id, pv.statement_index)), Sense::click_and_drag());
+    let resp = ui.interact(rect, egui::Id::unique(("plan-canvas", stmt.id, pv.statement_index)), Sense::click_and_drag());
     // zoom to fit
     if pv.zoom <= 0.0 {
         let (w, h) = layout.size;
@@ -364,7 +364,7 @@ fn canvas(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, layout: 
     }
     if let Some(h) = hovered {
         let node = &stmt.nodes[h];
-        egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::new(("plan-tip", h)), egui::PopupAnchor::Pointer).show(|ui| {
+        egui::Tooltip::always_open(ui.ctx().clone(), ui.layer_id(), egui::Id::unique(("plan-tip", h)), egui::PopupAnchor::Pointer).show(|ui| {
             ui.set_max_width(420.0);
             ui.label(RichText::new(format!("{} — {}", node.physical_op, node.logical_op)).strong());
             if let Some(o) = &node.object {
@@ -406,11 +406,11 @@ fn canvas(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, layout: 
     }
     // zoom badge
     painter.text(rect.right_top() + Vec2::new(-8.0, 8.0), Align2::RIGHT_TOP, format!("{:.0}%", z * 100.0), FontId::proportional(11.0), theme.text_faint);
-    if ui.ctx().memory(|m| m.data.get_temp::<bool>(egui::Id::new("plan-xml-copied")).unwrap_or(false)) {
+    if ui.ctx().memory(|m| m.data.get_temp::<bool>(egui::Id::unique("plan-xml-copied")).unwrap_or(false)) {
         painter.text(rect.left_top() + Vec2::new(8.0, 8.0), Align2::LEFT_TOP, "Plan XML copied to clipboard", FontId::proportional(11.0), theme.accent);
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(3));
         if ui.input(|i| i.time) as i64 % 7 == 0 {
-            ui.ctx().memory_mut(|m| m.data.remove::<bool>(egui::Id::new("plan-xml-copied")));
+            ui.ctx().memory_mut(|m| m.data.remove::<bool>(egui::Id::unique("plan-xml-copied")));
         }
     }
 }
@@ -428,7 +428,7 @@ fn properties(ui: &mut Ui, pv: &mut PlanView, stmt: &Statement, theme: &Theme) {
             ui.label(RichText::new(o.display()).size(12.0).color(theme.text_muted));
         }
         ui.separator();
-        let filter_id = egui::Id::new(("prop-filter", stmt.id));
+        let filter_id = egui::Id::unique(("prop-filter", stmt.id));
         let mut filter: String = ui.ctx().memory(|m| m.data.get_temp(filter_id)).unwrap_or_default();
         ui.add(egui::TextEdit::singleline(&mut filter).hint_text("Filter properties").desired_width(f32::INFINITY));
         ui.ctx().memory_mut(|m| m.data.insert_temp(filter_id, filter.clone()));
@@ -620,7 +620,7 @@ fn tree_text(ui: &mut Ui, rect: Rect, pv: &mut PlanView, stmt: &Statement, theme
             let t = (node_metric(stmt, i, metric) / max_metric).clamp(0.0, 1.0) as f32;
             let color = if matches.contains(&i) { theme.warning } else if t > 0.5 { theme.error } else if t > 0.2 { theme.warning } else { theme.text };
             let r = ui.add(egui::Button::selectable(selected, RichText::new(line).family(egui::FontFamily::Monospace).size(12.0).color(color)).frame(false));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("plan node {}", n.physical_op)));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("plan node {}", n.physical_op)));
             if r.clicked() {
                 pv.selected_node = Some(i);
             }

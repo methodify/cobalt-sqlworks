@@ -142,12 +142,12 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(6, 3)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = icon_button(ui, icons::PLAY, "Run cell (Ctrl+Enter) · Shift+Enter runs and moves on", !running);
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "run cell"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "run cell"));
             if r.clicked() {
                 actions.push(NbAction::Run(vec![selected]));
             }
             let r = icon_button(ui, icons::FAST_FORWARD, "Run all cells (F5)", !running);
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "run all cells"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "run all cells"));
             if r.clicked() {
                 actions.push(NbAction::Run((0..n_cells).collect()));
             }
@@ -156,23 +156,23 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             }
             let has_params = f.state.tabs[idx].notebook.as_deref().map(|nb| nb.nb.parameters_cell().is_some()).unwrap_or(false);
             let r = ui.add_enabled(!running && has_params, egui::Button::new(RichText::new("Run with parameters…").size(12.0)).small());
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "run with parameters"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "run with parameters"));
             if r.on_hover_text(if has_params { "Override the parameters cell's values for one run, then run every cell (what Fabric's Run with parameters and notebookutils.notebook.run(path, args) do)." } else { "Mark a Python cell as the parameters cell first (its run menu › Parameters cell)." }).clicked() {
                 actions.push(NbAction::RunWithParameters);
             }
             let r = icon_button(ui, icons::STOP, "Stop", running);
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "stop notebook"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "stop notebook"));
             if r.clicked() {
                 actions.push(NbAction::Cancel);
             }
             ui.separator();
             let r = ui.add(egui::Button::new(format!("{} Code", icons::PLUS)).small());
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "add code cell"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "add code cell"));
             if r.on_hover_text("Add a code cell below the current one (B)").clicked() {
                 actions.push(NbAction::Insert { at: selected + 1, kind: CellKind::Code });
             }
             let r = ui.add(egui::Button::new(format!("{} Markdown", icons::PLUS)).small());
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "add markdown cell"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "add markdown cell"));
             if r.on_hover_text("Add a Markdown cell below the current one").clicked() {
                 actions.push(NbAction::Insert { at: selected + 1, kind: CellKind::Markdown });
             }
@@ -213,7 +213,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                     }
                 };
                 let r = ui.add(egui::Button::new(RichText::new(format!("{kicon} {klabel}")).size(12.0).color(kcolor)).small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "notebook kernel"));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "notebook kernel"));
                 let r = r.on_hover_text("Where code cells run. Click to choose: the tab's connection (SQL cells), or the local Spark session (PySpark and Spark SQL cells).");
                 let mut pick: Option<NotebookKernel> = None;
                 let mut engine_pick: Option<&str> = None;
@@ -237,7 +237,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         ("sail", format!("{} LakeSail {sail_version} · experimental, no Java", icons::FIRE), "Switch the Spark engine to Sail: a Rust Spark Connect server; read-only or write-through on OneLake, no sandbox (restarts a running session).")
                     };
                     let r = ui.selectable_label(false, other_label);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("engine {other_key}")));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("engine {other_key}")));
                     if r.on_hover_text(other_hint).clicked() {
                         engine_pick = Some(other_key);
                         ui.close();
@@ -285,7 +285,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         None => (format!("{} no lakehouse", icons::DROP), theme.text_muted),
                     };
                     let r = ui.add(egui::Button::new(RichText::new(label).size(12.0).color(color)).small());
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "notebook lakehouse"));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "notebook lakehouse"));
                     let r = r.on_hover_text("Which workspace's lakehouses the Spark session sees, the default lakehouse for unqualified names, and the write mode. Changing it takes effect at the next session start.");
                     let mut set: Option<Option<NotebookFabric>> = None;
                     let mut load_ws: Option<String> = None;
@@ -470,7 +470,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             let has_selection = nb.cells[i].editor.cursors.has_selection();
             let is_params = nb.nb.cells[i].is_parameters();
             let pip_packages = nb.cells[i].pip_packages.clone();
-            let frame_id = egui::Id::new(("nbcell-frame", tab_id, cell_id.as_str()));
+            let frame_id = egui::Id::unique(("nbcell-frame", tab_id, cell_id.as_str()));
             let hovered_before: bool = ui.memory(|m| m.data.get_temp(frame_id)).unwrap_or(false);
             let stroke = if is_selected { egui::Stroke::new(1.0, theme.accent) } else if hovered_before { egui::Stroke::new(1.0, theme.border_strong) } else { egui::Stroke::new(1.0, theme.border) };
             let resp = egui::Frame::new().fill(theme.bg_panel).stroke(stroke).corner_radius(4.0).inner_margin(egui::Margin { left: 2, right: 6, top: 4, bottom: 4 }).outer_margin(egui::Margin { left: 6, right: 10, top: 0, bottom: 6 }).show(ui, |ui| {
@@ -494,7 +494,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 0.0;
                                 let btn = ui.add(egui::Button::new(RichText::new(icon).size(13.0).color(icon_color)).frame(false));
-                                btn.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.clone()));
+                                btn.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y.clone()));
                                 if btn.on_hover_text(tip).clicked() {
                                     if is_live {
                                         actions.push(NbAction::Cancel);
@@ -506,7 +506,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 }
                                 // run options for this cell
                                 let more = ui.add(egui::Button::new(RichText::new(icons::CARET_DOWN).size(10.0).color(theme.text_faint)).frame(false).min_size(Vec2::new(12.0, 18.0)));
-                                more.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("run options cell {}", i + 1)));
+                                more.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("run options cell {}", i + 1)));
                                 egui::Popup::menu(&more).id(more.id.with("run-menu")).show(|ui| {
                                     ui.set_min_width(220.0);
                                     if ui.add_enabled(!is_live, egui::Button::new("Run cell")).clicked() {
@@ -529,7 +529,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                     if nb_kernel == NotebookKernel::Spark && lang == CellLanguage::Python {
                                         ui.separator();
                                         let r = ui.selectable_label(is_params, "Parameters cell");
-                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} parameters", i + 1)));
+                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("cell {} parameters", i + 1)));
                                         if r.on_hover_text("Fabric's convention: the cell tagged `parameters` holds `name = value` defaults; Run with parameters… (toolbar) overrides them for one run, as notebookutils.notebook.run(path, args) does.").clicked() {
                                             actions.push(NbAction::SetParameters(i, !is_params));
                                             ui.close();
@@ -538,7 +538,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                     if nb_kernel == NotebookKernel::Spark && lang == CellLanguage::Sql {
                                         ui.separator();
                                         let r = ui.button(format!("{} Open in a Spark SQL tab", icons::FIRE));
-                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} open in spark tab", i + 1)));
+                                        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("cell {} open in spark tab", i + 1)));
                                         if r.on_hover_text("The cell's SQL in a query tab on the same lakehouse: streamed rows, plans, exports.").clicked() {
                                             actions.push(NbAction::OpenSparkTab(i));
                                             ui.close();
@@ -617,7 +617,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                         // body
                         let editing = cell_kind != CellKind::Markdown || nb.cells[i].md_editing;
                         if editing {
-                            let host_id = egui::Id::new(("cobalt-cell", tab_id, cell_id.as_str()));
+                            let host_id = egui::Id::unique(("cobalt-cell", tab_id, cell_id.as_str()));
                             let cs = &mut nb.cells[i];
                             let syntax = match (cell_kind, &lang) {
                                 (CellKind::Code, CellLanguage::Sql) => if nb_kernel == NotebookKernel::Spark { editor::Syntax::SparkSql } else { editor::Syntax::Sql },
@@ -656,8 +656,8 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 }
                             });
                             let rect = r.response.rect.expand2(Vec2::new(4.0, 2.0));
-                            let click = ui.interact(rect, egui::Id::new(("md-click", tab_id, cell_id.as_str())), Sense::click());
-                            click.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("markdown cell {}", i + 1)));
+                            let click = ui.interact(rect, egui::Id::unique(("md-click", tab_id, cell_id.as_str())), Sense::click());
+                            click.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("markdown cell {}", i + 1)));
                             if click.double_clicked() {
                                 nb.cells[i].md_editing = true;
                                 nb.cells[i].editor.request_focus = true;
@@ -672,7 +672,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                 ui.add_space(10.0);
                                 ui.label(RichText::new(format!("{} pip: {}", icons::PACKAGE, pip_packages.join(", "))).size(11.0).color(theme.text_muted)).on_hover_text("%pip lines are not run in the session; the packages belong to the runtime environment (Settings › Notebooks & Spark › Libraries).");
                                 let r = ui.small_button("Add to runtime");
-                                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} add pip packages", i + 1)));
+                                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("cell {} add pip packages", i + 1)));
                                 if r.on_hover_text("Adds the packages to the runtime's Python packages and installs them into every installed engine environment.").clicked() {
                                     actions.push(NbAction::AddPipPackages(i));
                                 }
@@ -744,7 +744,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             }
                                             let charted = view.chart.is_some();
                                             let r = icon_button(ui, if charted { icons::TABLE } else { icons::CHART_LINE }, if charted { "Back to the grid" } else { "Chart this result (saved with the cell; Keep in notebook adds a picture)" }, true);
-                                            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("cell {} chart toggle", i + 1)));
+                                            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("cell {} chart toggle", i + 1)));
                                             if r.clicked() {
                                                 if charted {
                                                     view.chart = None;
@@ -806,7 +806,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             theme,
                                             fmt: &fmt,
                                             font_size: settings.appearance.grid_font_size,
-                                            id_salt: egui::Id::new(("grid", tab_id, run_id, set)),
+                                            id_salt: egui::Id::unique(("grid", tab_id, run_id, set)),
                                             show_row_numbers: settings.results.show_row_numbers,
                                             max_col_width: settings.results.max_column_width,
                                             sample_rows: settings.results.auto_size_sample_rows,
@@ -828,7 +828,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                             GridAction::Copy => actions.push(NbAction::Results(i, ResultsAction::Copy { set, kind: crate::copy::CopyKind::Tsv })),
                                             GridAction::ContextMenu(pos) => {
                                                 view.grid.focused = true;
-                                                ui.memory_mut(|m| m.data.insert_temp(egui::Id::new(("nb-grid-ctx", tab_id, cell_id.as_str(), set)), pos));
+                                                ui.memory_mut(|m| m.data.insert_temp(egui::Id::unique(("nb-grid-ctx", tab_id, cell_id.as_str(), set)), pos));
                                             }
                                         }
                                     }
@@ -836,7 +836,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
                                         focused_cell = Some(i);
                                     }
                                     // context menu (a subset of the results pane's)
-                                    let ctx_id = egui::Id::new(("nb-grid-ctx", tab_id, cell_id.as_str(), set));
+                                    let ctx_id = egui::Id::unique(("nb-grid-ctx", tab_id, cell_id.as_str(), set));
                                     let ctx_pos: Option<egui::Pos2> = ui.memory(|m| m.data.get_temp(ctx_id));
                                     if let Some(pos) = ctx_pos {
                                         let mut close = false;
@@ -1019,7 +1019,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             actions.push(NbAction::UndoDelete);
         } else if consume(Key::D) {
             // D D deletes
-            let armed_id = egui::Id::new(("nb-dd", tab_id));
+            let armed_id = egui::Id::unique(("nb-dd", tab_id));
             let armed: Option<f64> = ui.memory(|m| m.data.get_temp(armed_id));
             let now = ui.input(|i| i.time);
             match armed {
@@ -1154,7 +1154,7 @@ fn cell_viewer(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     let Some((ci, set, row, col)) = req else { return };
     let run = nb.cells[ci].run.as_mut().unwrap();
     let rs = run.result_sets[set].rs.clone();
-    let id = egui::Id::new(("nb-viewer", tab_id));
+    let id = egui::Id::unique(("nb-viewer", tab_id));
     let want_record = std::mem::take(&mut run.result_sets[set].grid.viewer_record);
     let mut vs: ViewerState = ui.ctx().memory(|m| m.data.get_temp::<std::sync::Arc<parking_lot::Mutex<Option<ViewerState>>>>(id)).and_then(|m| m.lock().take()).filter(|v| std::sync::Arc::ptr_eq(&v.rs, &rs) && v.row == row && v.col == col).unwrap_or_else(|| ViewerState::new(rs.clone(), row, col));
     if want_record {

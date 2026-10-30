@@ -21,7 +21,6 @@
 use egui::epaint::text::{FontData, FontInsert, FontPriority, InsertFontFamily};
 use egui::{Context, FontDefinitions, FontFamily};
 use parking_lot::Mutex;
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -484,7 +483,7 @@ pub fn definitions(settings: &cobalt_core::Settings, paths: &cobalt_store::AppPa
             match std::fs::read(path) {
                 Ok(bytes) => {
                     let name = format!("chosen-{:?}-{}", family, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
-                    fonts.font_data.insert(name.clone(), Arc::new(FontData { font: Cow::Owned(bytes), index: *index, tweak: Default::default() }));
+                    fonts.font_data.insert(name.clone(), Arc::new({ let mut fd = FontData::from_owned(bytes); fd.index = *index; fd }));
                     fonts.families.entry(family.clone()).or_default().insert(0, name);
                 }
                 Err(e) => tracing::warn!(path = %path.display(), "the chosen font could not be read: {e}"),
@@ -498,7 +497,7 @@ pub fn definitions(settings: &cobalt_core::Settings, paths: &cobalt_store::AppPa
             match std::fs::read(&path) {
                 Ok(bytes) => {
                     let name = format!("pack-{}-{}-{index}", e.id, path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default());
-                    fonts.font_data.insert(name.clone(), Arc::new(FontData { font: Cow::Owned(bytes), index, tweak: Default::default() }));
+                    fonts.font_data.insert(name.clone(), Arc::new({ let mut fd = FontData::from_owned(bytes); fd.index = index; fd }));
                     for fam in [FontFamily::Proportional, FontFamily::Monospace] {
                         fonts.families.entry(fam).or_default().push(name.clone());
                     }
@@ -574,7 +573,7 @@ fn load_pack(ctx: &Context, pack: Pack) {
         }
     };
     tracing::info!(?pack, path = %path.display(), index, size = bytes.len(), "system font loaded for glyph fallback");
-    let data = Arc::new(FontData { font: Cow::Owned(bytes), index, tweak: Default::default() });
+    let data = Arc::new({ let mut fd = FontData::from_owned(bytes); fd.index = index; fd });
     let name = format!("system-{pack:?}");
     loader().lock().system.push(Loaded { name: name.clone(), data: Arc::clone(&data) });
     ctx.add_font(FontInsert {

@@ -1,7 +1,9 @@
 # File databases: SQLite as a first-class connection, the local engine as the bridge, and what follows
 
-*Status: approved and built, 0.13.0 (2026-10-28): slices A–D shipped as designed with the ten §6
-decisions taken as recommended; E (DuckDB, then PostgreSQL) waits for the founder's call.
+*Status: approved and built. Slices A–D shipped in 0.13.0 (2026-10-28) with the ten §6 decisions
+taken as recommended; slice E's DuckDB half shipped in 0.14.0 (2026-10-30) behind the same
+file-connection shape, with the engine loaded at run time rather than linked in (D011, revising
+§3.11's build-cost premise); PostgreSQL is next.
 Written for the founder's alignment on 2026-10-28. Picks up §5.9 of the product design
 ("after SQL Server: DuckDB and SQLite, then PostgreSQL") and D002's V2 engines list, and takes
 stock of what the app has become since: the local engine, file tables, scratch tables, Explore

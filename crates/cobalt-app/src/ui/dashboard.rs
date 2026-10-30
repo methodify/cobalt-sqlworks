@@ -35,14 +35,14 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
     egui::Frame::new().fill(theme.bg_sidebar).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let r = ui.add(egui::TextEdit::singleline(&mut d.file.title).desired_width(260.0).font(egui::TextStyle::Heading));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "dashboard title"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "dashboard title"));
             if r.changed() {
                 d.dirty = true;
             }
             ui.label(RichText::new("Columns").size(12.0).color(theme.text_muted));
             for n in 2..=4u32 {
                 let r = ui.add(egui::Button::selectable(d.file.columns == n, RichText::new(n.to_string()).size(12.0)).small());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("dashboard columns {n}")));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("dashboard columns {n}")));
                 if r.clicked() && d.file.columns != n {
                     d.file.columns = n;
                     d.dirty = true;
@@ -50,17 +50,17 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             }
             ui.separator();
             let r = ui.button(format!("{} Add tile…", icons::PLUS));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "dashboard add tile"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "dashboard add tile"));
             if r.clicked() {
                 actions.push(DashAction::Edit(None));
             }
             let r = ui.button(format!("{} Refresh all", icons::ARROWS_CLOCKWISE));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "dashboard refresh all"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "dashboard refresh all"));
             if r.clicked() {
                 actions.push(DashAction::RefreshAll);
             }
             let r = ui.add_enabled(d.dirty, egui::Button::new(format!("{} Save", icons::FLOPPY_DISK)));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "dashboard save"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "dashboard save"));
             if r.on_hover_text("Ctrl+S. A dashboard is a .cobalt-dash.json file you can share; connections are named by profile.").clicked() {
                 actions.push(DashAction::Save);
             }
@@ -198,34 +198,34 @@ fn tile_card(ui: &mut Ui, tile: &mut Tile, k: usize, theme: &Theme, fmt: &cobalt
                 }
             };
             let l = ui.add(egui::Label::new(RichText::new(status.0).size(11.0).color(status.1)).truncate());
-            l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("tile {} status", k + 1)));
+            l.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("tile {} status", k + 1)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let r = icon_button(ui, icons::TRASH, "Remove tile", true);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} remove", k + 1)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile {} remove", k + 1)));
                 if r.clicked() {
                     actions.push(DashAction::Remove(k));
                 }
                 let r = icon_button(ui, icons::PENCIL_SIMPLE, "Edit tile (title, query, connection, interval, size)", true);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} edit", k + 1)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile {} edit", k + 1)));
                 if r.clicked() {
                     actions.push(DashAction::Edit(Some(k)));
                 }
                 if tile.spec.explore.is_some() {
                     let r = icon_button(ui, icons::TABLE, "Open in Explore (the pivot builder this tile came from)", true);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} explore", k + 1)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile {} explore", k + 1)));
                     if r.clicked() {
                         actions.push(DashAction::OpenExplore(k));
                     }
                 }
                 if tile.spec.kind == TileKind::Chart {
                     let r = icon_button(ui, icons::SLIDERS_HORIZONTAL, if tile.configure { "Hide the chart settings" } else { "Chart settings (kind, X, Y, aggregation…)" }, true);
-                    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} configure", k + 1)));
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile {} configure", k + 1)));
                     if r.clicked() {
                         tile.configure = !tile.configure;
                     }
                 }
                 let r = icon_button(ui, icons::ARROWS_CLOCKWISE, "Refresh now", !tile.is_live());
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("tile {} refresh", k + 1)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("tile {} refresh", k + 1)));
                 if r.clicked() {
                     actions.push(DashAction::Refresh(k));
                 }
@@ -257,7 +257,7 @@ fn tile_card(ui: &mut Ui, tile: &mut Tile, k: usize, theme: &Theme, fmt: &cobalt
                         ui.add_space((avail.y * 0.5 - 30.0).max(0.0));
                         let size = (avail.y * 0.35).clamp(22.0, 64.0);
                         let l = ui.label(RichText::new(&text).size(size).strong().color(theme.accent));
-                        l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("tile {} value", k + 1)));
+                        l.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, format!("tile {} value", k + 1)));
                         if !name.is_empty() && name != text {
                             ui.label(RichText::new(name).size(12.0).color(theme.text_muted));
                         }
@@ -286,7 +286,7 @@ fn tile_card(ui: &mut Ui, tile: &mut Tile, k: usize, theme: &Theme, fmt: &cobalt
                         theme,
                         fmt,
                         font_size: settings.appearance.grid_font_size,
-                        id_salt: egui::Id::new(("tile-grid", tile.tab.id)),
+                        id_salt: egui::Id::unique(("tile-grid", tile.tab.id)),
                         show_row_numbers: false,
                         max_col_width: settings.results.max_column_width,
                         sample_rows: settings.results.auto_size_sample_rows,

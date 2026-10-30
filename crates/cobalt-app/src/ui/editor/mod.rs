@@ -376,7 +376,7 @@ impl EditorTab {
         } else {
             Syntax::Sql
         };
-        EditorHost { id: egui::Id::new(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax, model: self.model_catalog.as_deref(), dax_functions: self.dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]), local_functions: &[] }
+        EditorHost { id: egui::Id::unique(("cobalt-editor", self.id)), text: &mut self.text, editor: &mut self.editor, catalog: self.catalog.as_deref(), databases: &self.databases, syntax, model: self.model_catalog.as_deref(), dax_functions: self.dax_functions.as_deref().map(|v| v.as_slice()).unwrap_or(&[]), local_functions: &[] }
     }
 }
 

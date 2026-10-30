@@ -41,7 +41,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
             ui.add_space(6.0);
             let ready = state.fabric.status() == FabricStatus::Ready;
             let r = ui.add_enabled(ready, egui::Button::new(icons::ARROWS_CLOCKWISE).frame(false));
-            r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "fabric refresh"));
+            r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "fabric refresh"));
             if r.on_hover_text("Refresh workspaces").clicked() {
                 actions.push(FabricAction::Refresh);
             }
@@ -62,7 +62,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
                     None => "Sign in with Microsoft".to_string(),
                 };
                 let b = ui.add(egui::Button::new(RichText::new(format!("{} {label}", icons::SIGN_IN)).color(egui::Color32::WHITE)).fill(theme.accent));
-                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "fabric sign in"));
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "fabric sign in"));
                 if b.clicked() {
                     actions.push(FabricAction::SignIn);
                 }
@@ -108,7 +108,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
             ui.label(RichText::new("Your sign-in predates them. Approving takes one browser round; nothing else changes.").size(11.0).color(theme.text_muted));
             ui.horizontal(|ui| {
                 let b = ui.add(egui::Button::new(RichText::new(format!("{} Grant permissions…", icons::SIGN_IN)).color(egui::Color32::WHITE)).fill(theme.accent));
-                b.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "fabric grant permissions"));
+                b.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "fabric grant permissions"));
                 if b.clicked() {
                     actions.push(FabricAction::GrantPermissions);
                 }
@@ -138,7 +138,7 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FabricActio
         ui.add_space(6.0);
         let mut s = state.fabric.search.clone();
         let r = ui.add(egui::TextEdit::singleline(&mut s).hint_text(format!("{} Filter workspaces and items", icons::MAGNIFYING_GLASS)).desired_width(f32::INFINITY));
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, "fabric filter"));
+        r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, true, "fabric filter"));
         if r.changed() {
             actions.push(FabricAction::Search(s));
         }
@@ -365,7 +365,7 @@ fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>
     // click_and_drag: rows can carry a drag payload (Explore's fields, the model tree's names)
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click_and_drag());
     crate::fonts::note(ui.ctx(), label);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, a11y.to_string()));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, a11y.to_string()));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, theme.bg_hover);
     }
@@ -389,7 +389,7 @@ fn tree_row_opt(ui: &mut Ui, theme: &Theme, depth: usize, expanded: Option<bool>
 fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, name: &str, kind: Option<SqlItemKind>, subtitle: Option<&str>, pinned: bool, known: bool, actions: &mut Vec<FabricAction>, depth: usize, expandable: bool) {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), ROW_H), Sense::click());
     crate::fonts::note(ui.ctx(), name);
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("fabric item {name}")));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("fabric item {name}")));
     if resp.hovered() {
         ui.painter().rect_filled(rect, 3.0, theme.bg_hover);
     }
@@ -399,9 +399,9 @@ fn item_row(ui: &mut Ui, state: &mut AppState, theme: &Theme, item_id: &str, nam
     let font = egui::FontId::proportional(13.0);
     // chevron
     let chevron_rect = egui::Rect::from_center_size(egui::pos2(x + 5.0, cy), Vec2::new(16.0, ROW_H));
-    let chevron = if expandable && known { ui.interact(chevron_rect, ui.id().with(("fabric-chevron", item_id)), Sense::click()) } else { resp.clone() };
+    let chevron = if expandable && known { ui.interact(chevron_rect, ui.scope_id().with(("fabric-chevron", item_id)), Sense::click()) } else { resp.clone() };
     if expandable && known {
-        chevron.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("fabric expand {name}")));
+        chevron.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("fabric expand {name}")));
         ui.painter().text(egui::pos2(x, cy), egui::Align2::LEFT_CENTER, if expanded { icons::CARET_DOWN } else { icons::CARET_RIGHT }, egui::FontId::proportional(11.0), theme.text_muted);
     }
     let provisioning = state.fabric.details.get(item_id).and_then(|d| d.get()).and_then(|t| t.provisioning.clone());

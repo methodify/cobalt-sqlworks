@@ -23,7 +23,7 @@ pub struct Window<'a> {
 impl<'a> Window<'a> {
     pub fn new(title: impl Into<String>) -> Self {
         let title = title.into();
-        Self { id: Id::new(("cobalt-window", title.as_str())), title, open: None, default_size: Vec2::new(520.0, 400.0), resizable: true, min_size: Vec2::new(280.0, 120.0), current_pos: None }
+        Self { id: Id::unique(("cobalt-window", title.as_str())), title, open: None, default_size: Vec2::new(520.0, 400.0), resizable: true, min_size: Vec2::new(280.0, 120.0), current_pos: None }
     }
     pub fn id(mut self, id: Id) -> Self {
         self.id = id;
@@ -93,7 +93,7 @@ impl<'a> Window<'a> {
             bar.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(8.0);
                 let (r, resp) = ui.allocate_exact_size(Vec2::new(28.0, 28.0), Sense::click());
-                resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("close {title}")));
+                resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("close {title}")));
                 if resp.hovered() {
                     ui.painter().rect_filled(r, 6.0, theme.bg_hover);
                 }

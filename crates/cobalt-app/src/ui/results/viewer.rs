@@ -88,12 +88,12 @@ pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> ViewerOutcome {
                 ui.label(RichText::new(format!("Row {}", v.row + 1)).strong());
                 ui.label(RichText::new(format!("of {}", crate::state::fmt_count(nrows as u64))).small().color(theme.text_muted));
                 let prev = ui.add_enabled(v.row > 0, egui::Button::new(egui_phosphor::regular::CARET_LEFT).small());
-                prev.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "record previous row"));
+                prev.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "record previous row"));
                 if prev.on_hover_text("Previous row").clicked() {
                     out = ViewerOutcome::Goto { row: v.row - 1, col: v.col, record: true };
                 }
                 let next = ui.add_enabled(v.row + 1 < nrows, egui::Button::new(egui_phosphor::regular::CARET_RIGHT).small());
-                next.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "record next row"));
+                next.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "record next row"));
                 if next.on_hover_text("Next row").clicked() {
                     out = ViewerOutcome::Goto { row: v.row + 1, col: v.col, record: true };
                 }
@@ -109,7 +109,7 @@ pub fn show(ui: &mut Ui, theme: &Theme, v: &mut ViewerState) -> ViewerOutcome {
                     ui.ctx().copy_text(if v.record { v.row_json() } else { v.shown().to_string() });
                 }
                 let rec = ui.selectable_label(v.record, "Record");
-                rec.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "viewer record mode"));
+                rec.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "viewer record mode"));
                 if rec.on_hover_text("Every column of this row, one per line").clicked() {
                     v.record = !v.record;
                 }
@@ -178,7 +178,7 @@ fn record_body(ui: &mut Ui, theme: &Theme, v: &ViewerState, out: &mut ViewerOutc
                 let shown = if one_line.chars().count() > MAX_CHARS { format!("{}…", one_line.chars().take(MAX_CHARS).collect::<String>()) } else { one_line };
                 let label = egui::Label::new(RichText::new(shown).monospace().color(if is_null { theme.null_text } else { theme.text })).sense(egui::Sense::click()).truncate();
                 let r = ui.add(label);
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, format!("record value {}", col.name)));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, format!("record value {}", col.name)));
                 if r.on_hover_text("Open this value").clicked() {
                     *out = ViewerOutcome::Goto { row: v.row, col: c, record: false };
                 }

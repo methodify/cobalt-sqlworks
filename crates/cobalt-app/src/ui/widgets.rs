@@ -12,12 +12,12 @@ pub fn icon_button(ui: &mut Ui, icon: &str, tooltip: &str, enabled: bool) -> Res
 /// Icon + label toolbar button.
 pub fn tool_button(ui: &mut Ui, icon: &str, label: &str, tooltip: &str, enabled: bool) -> Response {
     // a toolbar that does not fit its pane sets this: the icon alone, the label in the tooltip
-    let compact = ui.data(|d| d.get_temp::<bool>(egui::Id::new("tool-button-compact"))).unwrap_or(false);
+    let compact = ui.data(|d| d.get_temp::<bool>(egui::Id::unique("tool-button-compact"))).unwrap_or(false);
     let shown = if compact { icon.to_string() } else { format!("{icon} {label}") };
     let r = ui.add_enabled(enabled, egui::Button::new(shown).frame(false).min_size(Vec2::new(0.0, 24.0)));
     // the accessibility label is the text alone (agents click "Open in query tab", not the glyph)
     let text = label.to_string();
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, text.clone()));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, text.clone()));
     let tip = if compact {
         if tooltip.is_empty() { label.to_string() } else { format!("{label}\n{tooltip}") }
     } else {
@@ -78,7 +78,7 @@ pub fn mnemonic_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonSty
     }
     let r = ui.add_enabled(enabled, b);
     let a11y = plain.clone();
-    r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, a11y.clone()));
+    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, enabled, a11y.clone()));
     let mut hint = String::new();
     let mut hit = r.clicked();
     if let Some(c) = letter {
@@ -146,7 +146,7 @@ pub fn tree_row(ui: &mut Ui, theme: &Theme, row: TreeRow<'_>) -> TreeRowResponse
     let (rect, response) = ui.allocate_exact_size(desired, Sense::click_and_drag());
     let label_for_a11y = if row.kind.is_empty() { row.label.to_owned() } else { format!("{}: {}", row.kind, row.label) };
     let expanded_a11y = row.expanded;
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, expanded_a11y, label_for_a11y.clone()));
+    response.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, true, expanded_a11y, label_for_a11y.clone()));
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let hovered = response.hovered();
     let painter = ui.painter();
