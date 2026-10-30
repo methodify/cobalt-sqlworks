@@ -289,6 +289,34 @@ def _q(name: str) -> str:
     return "`" + name.replace("`", "``") + "`"
 
 
+# a dotted name of two or more identifiers (`quoted` or bare), or a single-quoted string
+_DOTTED_OR_STRING = re.compile(
+    r"('(?:''|[^'])*')"
+    r"|((?<![\w.`$])(?:`[^`]+`|[A-Za-z_]\w*)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z_]\w*))+)(?![\w.`]|\s*\()"
+)
+
+
+def _qualify_sql_text(sql: str, schema_of) -> str:
+    """Rewrite `lakehouse.table` to `lakehouse`.`schema`.`table` wherever a two-part name's first
+    part is a lakehouse (`schema_of(name)` gives the schema, None for anything else). Fabric
+    Spark reads a plain lakehouse as a database, Sail sees a catalog and wants the namespace
+    in between (`invalid argument: empty namespace`). Three-part names, column references,
+    function calls and string literals are left alone."""
+
+    def fix(m):
+        if m.group(1) is not None:
+            return m.group(0)
+        parts = _parts(re.sub(r"\s*\.\s*", ".", m.group(2)))
+        if len(parts) != 2:
+            return m.group(0)
+        schema = schema_of(parts[0])
+        if not schema:
+            return m.group(0)
+        return f"{_q(parts[0])}.{_q(schema)}.{_q(parts[1])}"
+
+    return _DOTTED_OR_STRING.sub(fix, sql)
+
+
 def _missing_table(exc: BaseException) -> list[str] | None:
     text = str(exc)
     if "TABLE_OR_VIEW_NOT_FOUND" not in text and "not found" not in text.lower():
@@ -869,6 +897,21 @@ def _install_write_guard(engine) -> None:
     def _is_onelake_path(p) -> bool:
         return isinstance(p, str) and p.lower().startswith("abfss://") and "onelake" in p.lower()
 
+    try:
+        from pyspark.sql.connect.readwriter import DataFrameReader
+
+        orig_read_table = DataFrameReader.table
+
+        def read_table(self, tableName):  # noqa: N802, N803
+            e = _eng()
+            if e is not None:
+                tableName = e._qualify_name(tableName)
+            return orig_read_table(self, tableName)
+
+        DataFrameReader.table = read_table
+    except Exception:
+        pass
+
     orig_save, orig_insert, orig_save_as_table = DataFrameWriter.save, DataFrameWriter.insertInto, DataFrameWriter.saveAsTable
 
     def save(self, path=None, format=None, mode=None, partitionBy=None, **options):
@@ -1431,14 +1474,41 @@ class SailEngine(_FilesMixin):
         df.columns  # noqa: B018 — forces analysis
         return df
 
+    def _schema_for_two_part(self, first: str) -> str | None:
+        """The schema a `first.table` name is missing when `first` is a lakehouse (None otherwise)."""
+        lh = self._resolve_lakehouse(first)
+        if lh is None:
+            return None
+        return self._default_schema(lh.name) or "dbo"
+
+    def _qualify_name(self, name: str) -> str:
+        """`lakehouse.table` → `lakehouse`.`schema`.`table` (see `_qualify_sql_text`)."""
+        parts = _parts(name)
+        if len(parts) != 2:
+            return name
+        schema = self._schema_for_two_part(parts[0])
+        if not schema:
+            return name
+        return f"{_q(parts[0])}.{_q(schema)}.{_q(parts[1])}"
+
+    def _qualify_sql(self, sql: str) -> str:
+        if not self.lakehouses:
+            return sql
+        return _qualify_sql_text(sql, self._schema_for_two_part)
+
     def _lakehouse_target(self, target: str, ctx: Context) -> tuple[Lakehouse, str, str] | None:
         """(lakehouse, schema, table) when a write target names a lakehouse table: three parts
-        with a lakehouse first, or one / two parts in a context whose current catalog is a
-        lakehouse. `spark_catalog.…` and plain sessions are not lakehouse targets."""
+        with a lakehouse first, two parts with a lakehouse first (a plain lakehouse's `lh.t`),
+        or one / two parts in a context whose current catalog is a lakehouse. `spark_catalog.…`
+        and plain sessions are not lakehouse targets."""
         parts = _parts(target)
         if len(parts) >= 3:
             lh = self._resolve_lakehouse(".".join(parts[:-2]))
             return (lh, parts[-2], parts[-1]) if lh is not None else None
+        if len(parts) == 2:
+            lh = self._resolve_lakehouse(parts[0])
+            if lh is not None:
+                return lh, self._default_schema(lh.name) or "dbo", parts[1]
         lh = self._resolve_lakehouse(ctx.default_lakehouse)
         if lh is None:
             return None
@@ -1583,6 +1653,7 @@ class SailEngine(_FilesMixin):
         t0 = time.time()
         if _USE_PLAIN.match(sql):
             sql = re.sub(r"^\s*USE\s+", "USE DATABASE ", sql, count=1, flags=re.IGNORECASE)
+        sql = self._qualify_sql(sql)
         sql = self._guard_write(sql, ctx)
         with self._running("run_sql", job_description):
             try:
@@ -1703,13 +1774,14 @@ class _SessionProxy:
             return self._session.sql(sqlQuery, args, **kwargs)
         if _USE_PLAIN.match(sqlQuery):
             sqlQuery = re.sub(r"^\s*USE\s+", "USE DATABASE ", sqlQuery, count=1, flags=re.IGNORECASE)
+        sqlQuery = self._engine._qualify_sql(sqlQuery)
         sqlQuery = self._engine._guard_write(sqlQuery, self._ctx)
         df = self._engine._sql_with_automount(sqlQuery, self._ctx)
         self._engine._finish_create(self._ctx)
         return df
 
     def table(self, tableName):  # noqa: N803
-        return self._session.table(tableName)
+        return self._session.table(self._engine._qualify_name(tableName))
 
     def __getattr__(self, name):
         return getattr(self._session, name)

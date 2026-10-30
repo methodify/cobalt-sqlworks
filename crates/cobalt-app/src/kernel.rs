@@ -683,7 +683,17 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
 /// jar; the lakehouse binding and the token endpoint go to the worker as on the JVM engine.
 /// There is no sandbox: `sandbox` becomes `readonly` and the log says so.
 fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabric: Option<FabricStart>, dirs: cobalt_runtime::RuntimeDirs) -> Result<(), StartError> {
-    if !dirs.sail_env_python().is_file() || !dirs.sail_worker_file().is_file() {
+    if !dirs.sail_env_python().is_file() {
+        return Err(StartError::NotProvisioned);
+    }
+    // the worker module follows the Cobalt build, not the environment: refresh it when it changed
+    let worker = dirs.sail_worker_file();
+    if std::fs::read_to_string(&worker).map(|s| s != cobalt_runtime::SAIL_WORKER).unwrap_or(true) {
+        if let Err(e) = std::fs::write(&worker, cobalt_runtime::SAIL_WORKER) {
+            tracing::warn!(error = %e, "could not refresh the LakeSail worker module");
+        }
+    }
+    if !worker.is_file() {
         return Err(StartError::NotProvisioned);
     }
     let out_dir = dirs.state_dir().join("outputs");

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.15.2 — 2026-10-30
+
+- **LakeSail: `lakehouse.table` names on a plain lakehouse.** Fabric Spark reads a lakehouse
+  without schemas as a database, so `spark.read.table("dataverse.dirpartytable")` and
+  `SELECT … FROM dataverse.dirpartytable` work there; LakeSail sees each lakehouse as a
+  catalog and wanted the schema in between (`IllegalArgumentException: invalid argument:
+  empty namespace`), accepting only `dataverse.dbo.dirpartytable`. Cobalt's worker now
+  fills the schema in: a two-part name whose first part is a lakehouse becomes
+  `lakehouse.<its schema>.table` in `spark.table`, `spark.read.table`, `DeltaTable.forName`,
+  the DataFrame writers and SQL text (string literals, column references, function calls and
+  three-part names are left alone). The worker module is refreshed from the running Cobalt
+  build whenever the LakeSail engine starts, so a fix like this no longer waits for
+  *Reinstall / update LakeSail*.
+
 ## 0.15.1 — 2026-10-30
 
 - **Fixed: the clipboard and links since 0.14.0.** Copy and paste between Cobalt and other

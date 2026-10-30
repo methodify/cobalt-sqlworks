@@ -1202,3 +1202,12 @@ user, password, name}`, then `connect {profile}`; everything else as on other en
 0.14.0 and 0.15.0 could not copy to or paste from other applications (a feature eframe 0.37
 made explicit and Cobalt had not named; the same for opening links in the browser). 0.15.1 has
 both back. Nothing else changed.
+
+## 0.15.2: `lakehouse.table` on LakeSail
+
+`spark.read.table("dataverse.dirpartytable")` and `FROM dataverse.dirpartytable` now work on
+the LakeSail engine for a lakehouse without schemas, as they do on Fabric; the worker inserts
+the lakehouse's schema (`dbo`) between the two parts. `dataverse.dbo.dirpartytable` still
+works. If a table alias happens to share a lakehouse's name (`FROM x AS dataverse …
+dataverse.col`), the rewrite would qualify that column reference; pick another alias. The
+LakeSail worker is now refreshed from the Cobalt build at every engine start.
