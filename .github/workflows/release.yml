@@ -197,7 +197,11 @@ jobs:
           staging="$(mktemp -d)"
           cp -R "$app" "$staging/"
           ln -s /Applications "$staging/Applications"
-          hdiutil create -volname "Cobalt SQL Works" -srcfolder "$staging" -ov -format UDZO "dist/packages/cobalt-sqlworks-$v-macos-aarch64.dmg"
+          # hdiutil sizes its scratch volume from the source folder and comes up short for the
+          # bundle ("No space left on device" with 95 GiB free on the runner): give it an explicit
+          # size on HFS+; UDZO compresses the result back down. Two tries, hdiutil being flaky.
+          dmg="dist/packages/cobalt-sqlworks-$v-macos-aarch64.dmg"
+          hdiutil create -volname "Cobalt SQL Works" -srcfolder "$staging" -ov -fs HFS+ -size 600m -format UDZO "$dmg"             || { sleep 5; hdiutil create -volname "Cobalt SQL Works" -srcfolder "$staging" -ov -fs HFS+ -size 800m -format UDZO "$dmg"; }
           rm -rf "$app"
           ls -la dist/packages
       - uses: actions/upload-artifact@v4
