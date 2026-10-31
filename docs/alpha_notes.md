@@ -1212,7 +1212,7 @@ works. If a table alias happens to share a lakehouse's name (`FROM x AS datavers
 dataverse.col`), the rewrite would qualify that column reference; pick another alias. The
 LakeSail worker is now refreshed from the Cobalt build at every engine start.
 
-## Next release: arranging servers, Fabric folders, a Files tab that does things
+## 0.15.3: arranging servers, Fabric folders, a Files tab that does things
 
 **Servers.** Drag connections to reorder them or drop them on a group; drag groups to reorder
 them. A thin accent line shows where a row will land, an outline shows the group it will join.

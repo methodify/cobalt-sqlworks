@@ -1,6 +1,6 @@
 # The Files sidebar: every row does what a drop does
 
-*Status: designed and built for the release after 0.15.2 (2026-10-30), from the founder's note
+*Status: designed and built, shipped in 0.15.3 (2026-10-30), from the founder's note
 that the Files tab "is in-actionable": a folder opens, its items show, and nothing can be done
 with them. Companion to `docs/design/local_query.md` (file tables) and `docs/design/file_databases.md`
 (SQLite / DuckDB connections).*

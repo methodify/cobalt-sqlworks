@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.3 — 2026-10-30
 
 - **Servers tree: drag to arrange.** Drag a connection onto another to put it just before it
   (in that connection's group, or ungrouped), onto a group to move it in; drag a group onto a
