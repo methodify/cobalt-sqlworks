@@ -26,6 +26,8 @@ enum Act {
     Remove(FieldRef),
     Move(FieldRef, Well, i32),
     Agg(usize, Agg),
+    /// A value's number format (`None` = the model's, else the engine's text).
+    Format(usize, Option<cobalt_core::NumberFormat>),
     Sort(Option<SortSpec>),
     TopN(Option<u64>),
     Subtotals(bool),
@@ -125,6 +127,7 @@ pub fn show(ui: &mut Ui, f: &mut Frame<'_>, idx: usize) {
             Act::Remove(field) => ops::remove_field(f.state, f.cx, idx, &field),
             Act::Move(field, well, d) => ops::move_field(f.state, f.cx, idx, &field, well, d),
             Act::Agg(i, agg) => ops::set_agg(f.state, f.cx, idx, i, agg),
+            Act::Format(i, fmt) => ops::set_format(f.state, idx, i, fmt),
             Act::Sort(s) => ops::set_sort(f.state, f.cx, idx, s),
             Act::TopN(n) => ops::set_top_n(f.state, f.cx, idx, n),
             Act::Subtotals(on) => ops::set_subtotals(f.state, f.cx, idx, on),
@@ -580,8 +583,21 @@ fn value_chip(ui: &mut Ui, theme: &Theme, i: usize, v: &cobalt_core::explore::Va
                     acts.push(Act::Drop(p.field.clone(), p.from, Well::Values, Some(v.field.clone())));
                 }
             }
-            let r = r.on_hover_text(format!("{}\nright-click: aggregation, sort · drag to reorder · ✕ removes", v.field.qualified()));
+            let r = r.on_hover_text(format!("{}\nright-click: aggregation, number format, sort · drag to reorder · ✕ removes", v.field.qualified()));
             r.context_menu(|ui| {
+                ui.menu_button("Number format", |ui| {
+                    if ui.radio(v.format.is_none(), "Auto (the model's format, else as sent)").clicked() {
+                        acts.push(Act::Format(i, None));
+                        ui.close();
+                    }
+                    for p in cobalt_core::NumberFormat::PRESETS {
+                        if ui.radio(v.format == Some(p), p.label()).clicked() {
+                            acts.push(Act::Format(i, Some(p)));
+                            ui.close();
+                        }
+                    }
+                });
+                ui.separator();
                 if let FieldRef::Column { .. } = v.field {
                     for (agg, label) in AGGS {
                         if ui.radio(v.agg == agg, label).clicked() {

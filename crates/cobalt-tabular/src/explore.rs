@@ -622,7 +622,7 @@ mod tests {
         cat.tables.push(Table { name: "O'Brien".into(), columns: vec![col("a]b", TabularDataType::String)], ..Default::default() });
         let mut s = ExploreSpec::default();
         s.rows.push(c("O'Brien", "a]b"));
-        s.values.push(ValueRef { field: FieldRef::Measure { name: "Sales Amount".into() }, agg: Agg::None, label: Some("Say \"x\"".into()) });
+        s.values.push(ValueRef { field: FieldRef::Measure { name: "Sales Amount".into() }, agg: Agg::None, label: Some("Say \"x\"".into()), format: None });
         let q = to_dax(&s, &cat).unwrap();
         assert!(q.text.contains("'O''Brien'[a]]b],\n        \"Say \"\"x\"\"\", [Sales Amount]"));
         assert_eq!(q.group_columns, vec!["O'Brien[a]b]"]);

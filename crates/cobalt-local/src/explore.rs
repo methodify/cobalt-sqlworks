@@ -319,7 +319,7 @@ mod tests {
     fn spec() -> ExploreSpec {
         let mut s = ExploreSpec::new(ExploreSource::SemanticModel { target: cobalt_core::tabular::TabularTarget::Http { url: "x".into(), model: "m".into() } });
         s.rows.push(FieldRef::Column { table: "orders".into(), column: "customer".into() });
-        s.values.push(ValueRef { field: FieldRef::Column { table: "orders".into(), column: "amount".into() }, agg: Agg::Sum, label: None });
+        s.values.push(ValueRef { field: FieldRef::Column { table: "orders".into(), column: "amount".into() }, agg: Agg::Sum, label: None, format: None });
         s
     }
 
@@ -385,7 +385,7 @@ mod tests {
     fn tsql_dialect() {
         let mut spec = ExploreSpec::new(ExploreSource::Local { table: "orders".into() });
         spec.rows.push(FieldRef::Column { table: "orders".into(), column: "customer".into() });
-        spec.values.push(ValueRef { field: FieldRef::Column { table: "orders".into(), column: "amount".into() }, agg: Agg::Sum, label: None });
+        spec.values.push(ValueRef { field: FieldRef::Column { table: "orders".into(), column: "amount".into() }, agg: Agg::Sum, label: None, format: None });
         spec.filters.push(FilterSpec { table: "orders".into(), column: "customer".into(), op: FilterOp::Contains { text: "an".into() } });
         spec.filters.push(FilterSpec { table: "orders".into(), column: "ordered_on".into(), op: FilterOp::RelativeDate { unit: DateUnit::Months, last: 3 } });
         spec.filters.push(FilterSpec { table: "orders".into(), column: "ordered_on".into(), op: FilterOp::Between { lo: Some("2024-01-01".into()), hi: None } });

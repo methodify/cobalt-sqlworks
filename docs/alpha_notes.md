@@ -1227,3 +1227,12 @@ connection; click a notebook and you are in the notebook editor; a plan opens in
 viewer; an Excel workbook opens the import dialog on your active connection. Right-click for the
 rest (*Import into a table…* on a data file, *Open as text* on anything, *Open as the root* on a
 folder); the eye button lists files of other kinds too. Ctrl+O now opens files the same way.
+
+## Next: number formats
+
+Money measures no longer have to show every digit: right-click a numeric column (or select a
+few) › *Number format*, or in Explore right-click the value chip › *Number format*, and pick
+`$1,234.57`, `1,234`, `12.3%`, `1.2M`… A measure from a semantic model starts with the model's
+own format string when it has one. The format is how the cell reads; the number underneath is
+what sorts, filters, totals, charts and exports use. Formats on a plain query result last for
+the tab; an Explore's value formats are saved with the Explore.

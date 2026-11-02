@@ -367,8 +367,56 @@ pub fn tick(state: &mut AppState, cx: &Ctx, fmt: &CellFormatter) {
     }
 }
 
+/// The number formats a result view shows: an Explore's value formats (chosen, else the
+/// model's format string), overridden by the grid's own choices. None when nothing is set.
+pub fn column_formats(explore: Option<&ExploreState>, catalog: Option<&ModelCatalog>, grid: Option<&crate::state::GridState>) -> Option<Arc<std::collections::BTreeMap<String, cobalt_core::NumberFormat>>> {
+    let mut map = std::collections::BTreeMap::new();
+    if let Some(ex) = explore {
+        for v in &ex.spec.values {
+            let f = v.format.or_else(|| {
+                let cat = catalog?;
+                let fs = match &v.field {
+                    FieldRef::Measure { name } => cat.measure(name).and_then(|(_, m)| m.format_string.clone()),
+                    FieldRef::Column { table, column } => match v.agg {
+                        Agg::Count | Agg::CountDistinct => None,
+                        _ => cat.table(table).and_then(|t| t.columns.iter().find(|c| c.name.eq_ignore_ascii_case(column))).and_then(|c| c.format_string.clone()),
+                    },
+                }?;
+                cobalt_core::NumberFormat::from_format_string(&fs)
+            });
+            if let Some(f) = f {
+                map.insert(v.name(), f);
+            }
+        }
+    }
+    if let Some(g) = grid {
+        for (k, v) in &g.formats {
+            map.insert(k.clone(), *v);
+        }
+    }
+    if map.is_empty() { None } else { Some(Arc::new(map)) }
+}
+
+/// The formatter a result view draws with: `base` plus the view's number formats, when any.
+pub fn view_formatter(base: &CellFormatter, explore: Option<&ExploreState>, catalog: Option<&ModelCatalog>, grid: &crate::state::GridState) -> Option<CellFormatter> {
+    column_formats(explore, catalog, Some(grid)).map(|m| base.clone().with_column_formats(m))
+}
+
+/// A value's number format (`None` = back to the model's or the engine's text); the matrix
+/// is rebuilt, nothing is re-queried.
+pub fn set_format(state: &mut AppState, idx: usize, value_index: usize, format: Option<cobalt_core::NumberFormat>) {
+    if let Some(ex) = state.tabs.get_mut(idx).and_then(|t| t.explore.as_deref_mut()) {
+        if let Some(v) = ex.spec.values.get_mut(value_index) {
+            v.format = format;
+        }
+        ex.pivot_built_for = None;
+    }
+}
+
 /// Build (or rebuild) the matrix from the first result set when the Columns well is used.
 pub fn ensure_pivot(t: &mut EditorTab, fmt: &CellFormatter) {
+    let derived = view_formatter(fmt, t.explore.as_deref(), t.model_catalog.as_deref(), t.run.as_ref().and_then(|r| r.result_sets.first()).map(|v| &v.grid).unwrap_or(&Default::default()));
+    let fmt: &CellFormatter = derived.as_ref().unwrap_or(fmt);
     let Some(ex) = t.explore.as_deref_mut() else { return };
     if !ex.matrix {
         return;
@@ -449,7 +497,7 @@ pub fn add_field(state: &mut AppState, cx: &Ctx, idx: usize, field: FieldRef, we
                     FieldRef::Column { table, column } => default_agg(cat.as_deref(), table, column),
                     FieldRef::Measure { .. } => Agg::None,
                 };
-                ex.spec.values.push(ValueRef { field, agg, label: None });
+                ex.spec.values.push(ValueRef { field, agg, label: None, format: None });
             }
             Well::Filters => {
                 if let FieldRef::Column { table, column } = field {
@@ -514,7 +562,7 @@ pub fn drop_field(state: &mut AppState, cx: &Ctx, idx: usize, field: FieldRef, f
                         FieldRef::Column { table, column } => default_agg(cat.as_deref(), table, column),
                         FieldRef::Measure { .. } => Agg::None,
                     };
-                    ValueRef { field: field.clone(), agg, label: None }
+                    ValueRef { field: field.clone(), agg, label: None, format: None }
                 });
                 let at = before.and_then(|b| ex.spec.values.iter().position(|v| v.field == b)).unwrap_or(ex.spec.values.len());
                 ex.spec.values.insert(at, v);

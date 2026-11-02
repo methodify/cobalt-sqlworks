@@ -21,6 +21,8 @@ use grid::GridAction;
 #[derive(Debug, Clone)]
 pub enum ResultsAction {
     FetchMore { rows: Option<u64> },
+    /// The number format of columns (by name) of a result set; `None` = the engine's text.
+    SetFormat { set: usize, columns: Vec<String>, format: Option<cobalt_core::NumberFormat> },
     /// A capped Spark result: run the same text again without the row cap.
     RerunUncapped,
     Cancel,
@@ -322,6 +324,9 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             });
                         }
                         let view = &mut run.result_sets[set];
+                        // the view's number formats (Explore's values, the column menu) on top of the app's formatter
+                        let fmt_owned = crate::exploreq::view_formatter(args.fmt, tab.explore.as_deref(), tab.model_catalog.as_deref(), &view.grid);
+                        let fmt: &CellFormatter = fmt_owned.as_ref().unwrap_or(args.fmt);
                         // keep the totals row current when rows arrive or the view changes
                         if let Some(t) = view.grid.totals.as_mut() {
                             let g = view.rs.generation();
@@ -332,7 +337,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                         }
                         let find_h = if view.grid.find.is_some() { 28.0 } else { 0.0 };
                         if view.grid.find.is_some() {
-                            find_bar(ui, view, theme, args.fmt);
+                            find_bar(ui, view, theme, fmt);
                         }
                         let grid_h = (grid_h - find_h).max(60.0);
                         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), grid_h), egui::Sense::hover());
@@ -348,7 +353,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             Vec::new()
                         } else if view.chart.is_some() {
                             // the chart in place of the grid; the grid's state (selection, view) stays
-                            for a in chart::show(&mut child, view, theme, args.fmt, set, false) {
+                            for a in chart::show(&mut child, view, theme, fmt, set, false) {
                                 match a {
                                     chart::ChartAction::Capture { save } => actions.push(ResultsAction::CaptureChart { set, purpose: if save { crate::state::CapturePurpose::SaveFile } else { crate::state::CapturePurpose::Clipboard } }),
                                     chart::ChartAction::Keep => {}
@@ -358,7 +363,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                             Vec::new()
                         } else {
                             if view.edits.is_some() {
-                                edit_strip(&mut child, view, theme, args.fmt, set, &mut actions);
+                                edit_strip(&mut child, view, theme, fmt, set, &mut actions);
                             }
                             grid::show(
                                 &mut child,
@@ -366,7 +371,7 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     rs: &view.rs,
                                     grid: &mut view.grid,
                                     theme,
-                                    fmt: args.fmt,
+                                    fmt,
                                     font_size: args.settings.appearance.grid_font_size,
                                     id_salt: egui::Id::unique(("grid", tab.id, run.id, set)),
                                     show_row_numbers: args.settings.results.show_row_numbers,
@@ -450,6 +455,33 @@ pub fn show(ui: &mut Ui, args: ResultsArgs<'_>) -> Vec<ResultsAction> {
                                     if ui.button("Find in results…").on_hover_text("Ctrl+F while the grid has focus; match case, whole word and regex toggles").clicked() {
                                         view.grid.find.get_or_insert_with(Default::default);
                                         close = true;
+                                    }
+                                    // the columns the menu's number format applies to: the selected ones, else the clicked one
+                                    let fmt_cols: Vec<String> = {
+                                        let (c0, c1) = match view.grid.selection {
+                                            crate::state::Selection::Cols { c0, c1 } | crate::state::Selection::Cells { c0, c1, .. } => (c0.min(c1), c0.max(c1)),
+                                            _ => match view.grid.anchor {
+                                                Some((_, c)) => (c, c),
+                                                None => (usize::MAX, 0),
+                                            },
+                                        };
+                                        view.rs.columns.iter().enumerate().filter(|(i, c)| *i >= c0 && *i <= c1 && c.sql_type.is_numeric()).map(|(_, c)| c.name.clone()).collect()
+                                    };
+                                    if !fmt_cols.is_empty() {
+                                        ui.menu_button("Number format", |ui| {
+                                            let current = view.grid.formats.get(&fmt_cols[0]).copied();
+                                            ui.label(RichText::new(if fmt_cols.len() == 1 { fmt_cols[0].clone() } else { format!("{} columns", fmt_cols.len()) }).size(11.0).color(theme.text_muted));
+                                            if ui.selectable_label(current.is_none(), "As the engine sends it").clicked() {
+                                                actions.push(ResultsAction::SetFormat { set, columns: fmt_cols.clone(), format: None });
+                                                ui.close();
+                                            }
+                                            for p in cobalt_core::NumberFormat::PRESETS {
+                                                if ui.selectable_label(current == Some(p), p.label()).clicked() {
+                                                    actions.push(ResultsAction::SetFormat { set, columns: fmt_cols.clone(), format: Some(p) });
+                                                    ui.close();
+                                                }
+                                            }
+                                        });
                                     }
                                     ui.menu_button("Totals row", |ui| {
                                         let current = view.grid.totals.as_ref().map(|t| t.kind);

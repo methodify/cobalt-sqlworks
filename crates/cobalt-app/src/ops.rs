@@ -2449,6 +2449,24 @@ pub fn results_action(state: &mut AppState, cx: &Ctx, idx: usize, action: Result
         }
         ResultsAction::PopOut { set } => pop_out_result(state, idx, set),
         ResultsAction::OpenInExcel { set, selection_only } => open_in_excel(state, cx, idx, set, selection_only),
+        ResultsAction::SetFormat { set, columns, format } => {
+            if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
+                for c in columns {
+                    match format {
+                        Some(f) => {
+                            v.grid.formats.insert(c, f);
+                        }
+                        None => {
+                            v.grid.formats.remove(&c);
+                        }
+                    }
+                }
+            }
+            // an Explore's matrix is built with the formats: again
+            if let Some(ex) = state.tabs.get_mut(idx).and_then(|t| t.explore.as_deref_mut()) {
+                ex.pivot_built_for = None;
+            }
+        }
         ResultsAction::SetTotals { set, kind } => {
             if let Some(v) = state.tabs.get_mut(idx).and_then(|t| t.run.as_mut()).and_then(|r| r.result_sets.get_mut(set)) {
                 v.grid.totals = kind.map(|k| crate::state::TotalsRow { kind: k, generation: v.rs.generation(), values: crate::ui::results::profile::totals(&v.rs, k) });

@@ -2,7 +2,7 @@ use crate::value::{hex, CellValue};
 use arrow::array::{Array, ArrayRef, AsArray};
 use arrow::datatypes::{DataType, Decimal128Type};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
-use cobalt_core::{ColumnInfo, ResultsSettings};
+use cobalt_core::{ColumnInfo, NumberFormat, ResultsSettings};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -15,6 +15,9 @@ pub struct CellFormatter {
     pub datetime_format: Arc<str>,
     /// Truncate long text in the grid to this many chars (0 = never). Viewer always gets the full value.
     pub max_chars: usize,
+    /// Number formats by column name (a grid's or an Explore's choice); numeric columns
+    /// named here show as money, percentages, rounded counts.
+    pub column_formats: Arc<std::collections::BTreeMap<String, NumberFormat>>,
     generation: u64,
 }
 
@@ -36,6 +39,7 @@ impl CellFormatter {
             bit_as_number: s.bit_as_number,
             datetime_format: Arc::from(s.datetime_format.as_str()),
             max_chars: 4096,
+            column_formats: Arc::new(Default::default()),
             generation: h.finish(),
         }
     }
@@ -65,6 +69,13 @@ impl CellFormatter {
         self
     }
 
+    /// Builder: the number formats per column name (empty = the engine's text everywhere).
+    pub fn with_column_formats(mut self, formats: Arc<std::collections::BTreeMap<String, NumberFormat>>) -> Self {
+        self.column_formats = formats;
+        self.bump_generation();
+        self
+    }
+
     /// Builder: render `bit` as `1`/`0` (true) or `true`/`false` (false).
     pub fn with_bit_as_number(mut self, bit_as_number: bool) -> Self {
         self.bit_as_number = bit_as_number;
@@ -81,6 +92,10 @@ impl CellFormatter {
         self.bit_as_number.hash(&mut h);
         self.datetime_format.hash(&mut h);
         self.max_chars.hash(&mut h);
+        for (k, v) in self.column_formats.iter() {
+            k.hash(&mut h);
+            v.hash(&mut h);
+        }
         self.generation = h.finish();
     }
 
@@ -90,6 +105,15 @@ impl CellFormatter {
         let n = arr.len();
         let mut out: Vec<Arc<str>> = Vec::with_capacity(n);
         let null = self.null_text.clone();
+        // a column with a chosen number format: every numeric value through it
+        if let Some(f) = self.column_formats.get(&col.name) {
+            if let Some(a) = crate::chart::as_f64(arr) {
+                for i in 0..n {
+                    out.push(if a.is_null(i) { null.clone() } else { Arc::from(f.format(a.value(i))) });
+                }
+                return Arc::new(out);
+            }
+        }
         match arr.data_type() {
             DataType::Boolean => {
                 let a = arr.as_boolean();

@@ -76,14 +76,18 @@ pub struct ValueRef {
     /// The result column's name; `None` = derived ("Sum of Amount", the measure's name).
     #[serde(default)]
     pub label: Option<String>,
+    /// How the values are shown; `None` = the model's format string when it has one, else
+    /// the engine's text.
+    #[serde(default)]
+    pub format: Option<crate::NumberFormat>,
 }
 
 impl ValueRef {
     pub fn measure(name: impl Into<String>) -> Self {
-        Self { field: FieldRef::Measure { name: name.into() }, agg: Agg::None, label: None }
+        Self { field: FieldRef::Measure { name: name.into() }, agg: Agg::None, label: None, format: None }
     }
     pub fn column(table: impl Into<String>, column: impl Into<String>, agg: Agg) -> Self {
-        Self { field: FieldRef::Column { table: table.into(), column: column.into() }, agg, label: None }
+        Self { field: FieldRef::Column { table: table.into(), column: column.into() }, agg, label: None, format: None }
     }
     /// The result column's name.
     pub fn name(&self) -> String {

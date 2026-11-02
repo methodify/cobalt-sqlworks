@@ -1167,6 +1167,8 @@ pub struct GridState {
     pub summary: Option<(Selection, u64, usize, cobalt_results::summary::Summary)>,
     /// Totals row (context menu → Totals row).
     pub totals: Option<TotalsRow>,
+    /// Number formats chosen for columns of this result (context menu → Number format).
+    pub formats: std::collections::BTreeMap<String, cobalt_core::NumberFormat>,
 }
 
 

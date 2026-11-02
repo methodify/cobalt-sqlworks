@@ -22,7 +22,7 @@
 //! - `library {action: export|import, path}` → connection library as JSON (no secrets)
 //! - `import {path, table, schema?, existing?, delimiter?, header?, types?, exclude?, destination?: "file"}` → Import Data on the active tab; `import_start`, `import_state`
 //! - `results_to_table {table, schema?, existing?, set?, target?: tab index, selection_only?}` → Save results as table through the target tab's connection
-//! - `grid {action: totals|profile|find|find_state|chart|chart_state, kind?, set?, text?, regex?, case?, word?, x?, y?, agg?, top_n?, bins?, stacked?, horizontal?, off?}`; `files_root {path}`; `plan_view {text?, metric?}`
+//! - `grid {action: totals|profile|find|find_state|chart|chart_state|format|cell, kind?, set?, text?, regex?, case?, word?, x?, y?, agg?, top_n?, bins?, stacked?, horizontal?, off?, column?, format?: auto|number[n]|currency[n]|percent[n]|compact, row?, col?}`; `files_root {path}`; `plan_view {text?, metric?}`
 //! - `import_to {format, path | lakehouse, name, schema?, delta_mode?}` → with the Import dialog open in file mode, write the file to that export target (any format, local or OneLake)
 //! - `pointer {action: click|rclick|dblclick|tripleclick|drag|dbldrag|tripledrag|move, x, y, x2?, y2?, shift?, ctrl?, alt?}` → real mouse input in screenshot pixels
 //! - `paste {text}` → a paste event (bypasses the OS clipboard); `state` tabs carry `cursors: [[anchor, head]…]`
@@ -600,6 +600,14 @@ impl AgentApp for CobaltApp {
                         let i = arg_usize(args, "index").unwrap_or(0);
                         let Some(agg) = arg_str(args, "agg").and_then(|a| cobalt_core::chart::Agg::parse(&a)) else { return ActionResult::BadArgs("agg is required (sum|count|avg|min|max|count_distinct)".into()) };
                         self.with_ctx(egui, |s, cx| crate::exploreq::set_agg(s, cx, idx, i, agg));
+                    }
+                    // {action: format, index, format: auto|number[n]|currency[n]|percent[n]|compact}
+                    "format" => {
+                        let i = arg_usize(args, "index").unwrap_or(0);
+                        let f = arg_str(args, "format").unwrap_or_else(|| "auto".into());
+                        let format = if f == "auto" { None } else { Some(cobalt_core::NumberFormat::parse(&f).ok_or(()).map_err(|_| ()).unwrap_or(cobalt_core::NumberFormat::Number { decimals: 2 })) };
+                        crate::exploreq::set_format(&mut self.state, idx, i, format);
+                        egui.request_repaint();
                     }
                     "sort" => {
                         let desc = arg_bool(args, "desc").unwrap_or(true);
@@ -1503,6 +1511,29 @@ impl AgentApp for CobaltApp {
                 let act = arg_str(args, "action").unwrap_or_default();
                 let flag = |k: &str| args.and_then(|a| a.get(k)).and_then(|v| v.as_bool());
                 match act.as_str() {
+                    // {action: format, column, format: auto|number[n]|currency[n]|percent[n]|compact}
+                    "format" => {
+                        let Some(column) = arg_str(args, "column") else { return ActionResult::BadArgs("column is required".into()) };
+                        let f = arg_str(args, "format").unwrap_or_else(|| "auto".into());
+                        let format = if f == "auto" { None } else { cobalt_core::NumberFormat::parse(&f) };
+                        if f != "auto" && format.is_none() {
+                            return ActionResult::BadArgs(format!("unknown format {f}"));
+                        }
+                        self.with_ctx(egui, |s, cx| ops::results_action(s, cx, i, crate::ui::results::ResultsAction::SetFormat { set, columns: vec![column], format }));
+                        ActionResult::ok()
+                    }
+                    // {action: cell, row, col} → the text the grid shows (with the view's number formats)
+                    "cell" => {
+                        let (row, col) = (arg_usize(args, "row").unwrap_or(0), arg_usize(args, "col").unwrap_or(0));
+                        let Some(t) = self.state.tabs.get(i) else { return ActionResult::BadArgs("no tab".into()) };
+                        let Some(v) = t.run.as_ref().and_then(|r| r.result_sets.get(set)) else { return ActionResult::BadArgs("no result set".into()) };
+                        let fmt = crate::exploreq::view_formatter(&self.state.formatter, t.explore.as_deref(), t.model_catalog.as_deref(), &v.grid);
+                        let fmt = fmt.as_ref().unwrap_or(&self.state.formatter);
+                        if row >= v.rs.visible_count() || col >= v.rs.columns.len() {
+                            return ActionResult::BadArgs("row or col out of range".into());
+                        }
+                        ActionResult::with(&json!({"text": v.rs.cell_text(row, col, fmt).to_string(), "column": v.rs.columns[col].name, "format": v.grid.formats.get(&v.rs.columns[col].name).map(|f| f.key())}))
+                    }
                     "totals" => {
                         let kind = arg_str(args, "kind").and_then(|k| crate::state::TotalKind::ALL.iter().copied().find(|t| t.label().eq_ignore_ascii_case(&k)));
                         self.with_ctx(egui, |s, cx| ops::results_action(s, cx, i, crate::ui::results::ResultsAction::SetTotals { set, kind }));

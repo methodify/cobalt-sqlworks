@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **Number formats.** A numeric column can show as money, a percentage, a rounded count or a
+  compact `1.2M` instead of every digit the engine sent: right-click the grid › *Number
+  format* (the selected columns, or the one under the pointer) and pick a preset
+  (`1,234` · `1,234.6` · `1,234.57` · `$1,234.57` · `$1,235` · `12.3%` · `1.2M`). In Explore
+  the value chip's menu has the same *Number format*; a value from a semantic model follows
+  the model's own format string (`$#,0`, `#,0.00`, `0.0%`) until you pick one. The value
+  itself is untouched: sorting, filtering, totals, charts and exports see the number. Agent:
+  `grid {action: format, column, format: auto|number[n]|currency[n]|percent[n]|compact}`,
+  `grid {action: cell, row, col}` (the text as shown), `explore {action: format, index, format}`.
+
 ## 0.15.3 — 2026-10-30
 
 - **Servers tree: drag to arrange.** Drag a connection onto another to put it just before it
