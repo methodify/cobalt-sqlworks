@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Files sidebar: clicks land, and the folder closes.** Since 0.15.3 a click on a file row
+  showed the drag cursor and opened nothing: a second drag-only hit area sat on top of the row
+  and took the pointer. The row now carries its own drag payload, so click, double-click and
+  drag all work. A *Close folder* button in the header forgets the folder.
 - **Number formats.** A numeric column can show as money, a percentage, a rounded count or a
   compact `1.2M` instead of every digit the engine sent: right-click the grid › *Number
   format* (the selected columns, or the one under the pointer) and pick a preset

@@ -20,6 +20,8 @@ pub enum FilesAction {
     PickRoot,
     /// This folder becomes the root (a subfolder, or the parent through the Up button).
     SetRoot(PathBuf),
+    /// Forget the root: back to the empty sidebar with Open folder….
+    CloseRoot,
     Refresh,
     /// Open the file as what it is; `preview` = reuse / mark a preview tab (a single click).
     Open(PathBuf, bool),
@@ -134,6 +136,11 @@ pub fn show(ui: &mut Ui, state: &mut AppState, theme: &Theme) -> Vec<FilesAction
                     actions.push(FilesAction::PickRoot);
                 }
                 if let Some(root) = state.files.root.clone() {
+                    let r = icon_button(ui, icons::X, "Close the folder (the sidebar forgets it)", true);
+                    r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, "files close"));
+                    if r.clicked() {
+                        actions.push(FilesAction::CloseRoot);
+                    }
                     if icon_button(ui, icons::ARROWS_CLOCKWISE, "Refresh", true).clicked() {
                         actions.push(FilesAction::Refresh);
                     }
@@ -263,11 +270,9 @@ fn dir_children(ui: &mut Ui, fs: &mut FilesState, theme: &Theme, dir: &Path, dep
         } else if r.response.clicked() {
             actions.push(FilesAction::Open(path.clone(), true));
         }
-        // a drag takes the file to an editor group (clicks still open it here)
-        let drag = ui.interact(r.response.rect, r.response.id.with("drag"), egui::Sense::drag());
-        if drag.drag_started() {
-            egui::DragAndDrop::set_payload(ui.ctx(), DragFile(path.clone()));
-        }
+        // a drag takes the file to an editor group; the row senses click and drag itself (a
+        // second drag-only widget on top of it took the real pointer and ate the clicks)
+        r.response.dnd_set_drag_payload(DragFile(path.clone()));
         let response = r.response.on_hover_text(open_hint(&kind));
         response.context_menu(|ui| {
             ui.label(RichText::new(if detail.is_empty() { "File".to_string() } else { detail.to_string() }).size(11.0).color(theme.text_muted));

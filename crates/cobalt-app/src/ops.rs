@@ -2599,6 +2599,13 @@ pub fn files_action(state: &mut AppState, cx: &Ctx, a: crate::ui::files::FilesAc
             state.files.expanded.clear();
             state.files.filter.clear();
         }
+        A::CloseRoot => {
+            let _ = cx.store.fabric_cache_put(FILES_ROOT_KEY, "");
+            state.files.root = None;
+            state.files.cache.clear();
+            state.files.expanded.clear();
+            state.files.filter.clear();
+        }
         A::Refresh => state.files.cache.clear(),
         A::Open(p, preview) => open_file_as(state, cx, p, preview),
         A::OpenText(p) => open_file(state, cx, Some(p)),
