@@ -1344,6 +1344,7 @@ dependencies = [
  "humansize",
  "image",
  "indexmap",
+ "interprocess",
  "once_cell",
  "open",
  "parking_lot",

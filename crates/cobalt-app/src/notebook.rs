@@ -672,7 +672,9 @@ fn kernel_fabric(state: &mut AppState, cx: &Ctx, idx: usize) -> Result<Option<cr
     let preload = if preload.is_empty() { serde_json::Value::Null } else { serde_json::Value::Object(preload) };
     // LakeSail has no shallow clones: its sessions are read-only or write-through
     let write_mode = if crate::runtime::engine(cx.settings).is_sail() && b.write_mode == "sandbox" { "readonly".to_string() } else { b.write_mode.clone() };
-    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode, slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, preload_last, persist_shadow, extra_workspaces: Vec::new() }))
+    // a lakehouse whose detail is loaded says whether it keeps tables under schema folders
+    let schema_flags: std::collections::HashMap<String, bool> = lakehouses.iter().filter_map(|(_, id)| state.fabric.details.get(id).and_then(|d| d.get()).map(|t| (id.clone(), t.default_schema.is_some()))).collect();
+    Ok(Some(crate::kernel::KernelFabric { workspace_id: b.workspace_id.clone(), workspace_name: state.fabric.workspace(&b.workspace_id).map(|w| w.display_name.clone()).unwrap_or_default(), lakehouses, default_lakehouse, write_mode, slot, tenant: cx.settings.connections.entra_default_tenant.clone().filter(|s| !s.trim().is_empty()), preload, preload_last, persist_shadow, extra_workspaces: Vec::new(), schema_flags }))
 }
 
 /// Pump every Spark notebook with queued cells (after the kernel came up or items loaded).

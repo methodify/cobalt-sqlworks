@@ -133,7 +133,7 @@ pub fn apply_launch(state: &mut AppState, cx: &Ctx, launch: LaunchArgs) {
                         Err(e) => cx.toast(ToastKind::Error, format!("Could not open {}: {e}", path.display())),
                     }
                 } else {
-                    open_file(state, cx, Some(path.clone()));
+                    open_file_as(state, cx, path.clone(), false);
                 }
             }
         }

@@ -10,6 +10,7 @@ mod commands;
 mod copy;
 mod fabric;
 mod gpu;
+mod instance;
 mod kernel;
 mod layout;
 mod delta_schema;
@@ -52,6 +53,14 @@ fn app_icon() -> egui::IconData {
 
 fn main() -> eframe::Result {
     init_tracing();
+    // one Cobalt per user: a second launch hands its files to the running one and exits (the
+    // dev build takes part only when COBALT_INSTANCE is set)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let instance = if cfg!(feature = "agent") && std::env::var("COBALT_INSTANCE").is_err() { instance::Claim::Primary(instance::Receiver::none()) } else { instance::claim(args) };
+    let instance = match instance {
+        instance::Claim::Forwarded => return Ok(()),
+        instance::Claim::Primary(r) => r,
+    };
     select_gpu_backend();
     // the renderer must be chosen before the window exists; settings are loaded again by the app
     let renderer_setting = cobalt_store::AppPaths::new().map(|p| cobalt_store::load_settings(&p.settings_file()).advanced.renderer).unwrap_or_else(|_| "auto".into());
@@ -120,7 +129,9 @@ fn main() -> eframe::Result {
         cobalt_core::APP_NAME,
         native_options,
         Box::new(move |cc| {
-            let app = app::CobaltApp::new(cc);
+            let mut app = app::CobaltApp::new(cc);
+            instance.bind(cc.egui_ctx.clone());
+            app.instance = Some(instance);
             #[cfg(feature = "agent")]
             {
                 control.bind_context(cc.egui_ctx.clone());

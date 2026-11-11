@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **One Cobalt.** Opening a `.sql` (or any file) from Explorer while Cobalt is running hands
+  it to the running window instead of starting a second one: the file opens there and the
+  window comes forward. A second plain launch just brings the window forward.
+- **The editor keeps its keys.** Ctrl+Alt+Up/Down add cursors again while the editor has the
+  keyboard (as do Alt+Up/Down, Ctrl+Shift+Alt+arrows, Ctrl+D and Ctrl+Shift+L); *Move Tab to
+  Group Above / Below* still answer to Ctrl+Alt+Up/Down from the grid or the tree, and from
+  the command palette anywhere.
+- **Brackets survive completion.** Typing `[` then a name and accepting a completion (Tab,
+  Enter or a click) used to drop the bracket, which matters for names like `order`. The
+  completion now keeps the bracket you opened, and a column or table whose name is a T-SQL
+  keyword is bracketed whenever it is completed.
+- **LakeSail writes to a lakehouse without schemas.** `saveAsTable`, `CREATE TABLE … AS` and
+  `writeTo` on a plain lakehouse wrote the Delta table under a `dbo/` folder Fabric then showed
+  as a broken table. The worker now asks whether a lakehouse keeps its tables under schema
+  folders (the Fabric item's default schema, else a listed table's storage location) and writes
+  a plain lakehouse's table straight under `Tables/`.
 - **Files sidebar: clicks land, and the folder closes.** Since 0.15.3 a click on a file row
   showed the drag cursor and opened nothing: a second drag-only hit area sat on top of the row
   and took the pointer. The row now carries its own drag payload, so click, double-click and

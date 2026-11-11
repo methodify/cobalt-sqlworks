@@ -26,11 +26,16 @@ pub struct LakehouseRef {
     pub name: String,
     pub id: String,
     pub workspace_id: String,
+    /// Tables live under `Tables/<schema>/` (true) or straight under `Tables/` (false), from
+    /// the Fabric item's `defaultSchema`; None until a table's storage location tells.
+    pub schema_enabled: Option<bool>,
 }
 
 #[derive(Default)]
 struct LhCache {
     schemas: Option<Vec<String>>,
+    /// Learned from a table's storage location (`Tables/<schema>/<t>` or `Tables/<t>`).
+    schema_enabled: Option<bool>,
     /// schema → table names
     tables: HashMap<String, Vec<String>>,
     /// "schema.table" → full table info (Unity shape, normalised)
@@ -189,6 +194,34 @@ fn split_full_name(full: &str) -> Option<(String, String, String)> {
     Some((catalog.to_string(), schema.to_string(), table.to_string()))
 }
 
+fn urlencoding_decode(s: &str) -> String {
+    let mut out = Vec::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'%' if i + 2 < b.len() + 0 && i + 2 <= b.len() - 1 => {
+                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                    out.push(v);
+                    i += 3;
+                    continue;
+                }
+                out.push(b'%');
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn find_lakehouse(reg: &Registry, catalog: &str) -> Option<LakehouseRef> {
     reg.lakehouses.iter().find(|l| l.name.eq_ignore_ascii_case(catalog) || l.id == catalog).cloned()
 }
@@ -276,6 +309,31 @@ fn handle_request(registry: &Arc<Mutex<Registry>>, up: &Upstream, method: &str, 
         Some((p, q)) => (p, Some(q)),
         None => (url, None),
     };
+    // Cobalt's own: does the lakehouse keep its tables under schema folders? (the worker asks
+    // before writing a table, so a plain lakehouse gets `Tables/<t>`, not a `dbo/` folder Fabric
+    // would take for a broken table)
+    if method == "GET" && path == "/cobalt/lakehouse" {
+        let q: HashMap<String, String> = query.map(|q| q.split('&').filter_map(|kv| kv.split_once('=').map(|(k, v)| (k.to_string(), urlencoding_decode(v)))).collect()).unwrap_or_default();
+        let cat = q.get("name").cloned().unwrap_or_default();
+        let Some(lh) = find_lakehouse(&registry.lock(), &cat) else { return err(404, "CATALOG_DOES_NOT_EXIST", cat) };
+        let known = lh.schema_enabled.or_else(|| registry.lock().cache.get(&lh.id).and_then(|c| c.schema_enabled));
+        let flag = known.or_else(|| {
+            // learn it from the first table the API lists (none: unknown)
+            let schemas = schemas(registry, up, &lh).ok()?;
+            for s in schemas.iter().chain(std::iter::once(&"dbo".to_string())) {
+                if let Ok(names) = table_names(registry, up, &lh, s) {
+                    if let Some(t) = names.first() {
+                        let _ = table_info(registry, up, &lh, s, t);
+                        if let Some(f) = registry.lock().cache.get(&lh.id).and_then(|c| c.schema_enabled) {
+                            return Some(f);
+                        }
+                    }
+                }
+            }
+            None
+        });
+        return (200, json!({"name": lh.name, "id": lh.id, "schema_enabled": flag}));
+    }
     // Cobalt's own: the worker asks to list a schema again after creating a table in it
     if method == "POST" && path == "/cobalt/invalidate" {
         let b: Value = serde_json::from_str(body).unwrap_or(Value::Null);
@@ -440,10 +498,19 @@ fn table_info(registry: &Arc<Mutex<Registry>>, up: &Upstream, lh: &LakehouseRef,
     // Fabric's table API says only "struct" / "array" / "map" for nested columns; the Delta log
     // carries the exact Spark schema, which Sail needs as `type_json`
     let rel = info.get("storage_location").and_then(Value::as_str).and_then(|l| l.find("/Tables/").map(|i| l[i + "/Tables/".len()..].to_string())).unwrap_or_else(|| format!("{schema}/{table}"));
+    // the API's own storage location says whether the lakehouse keeps tables under schema folders
+    let layout_known = v.get("storage_location").and_then(Value::as_str).map(|l| l.contains("/Tables/")).unwrap_or(false);
     if let Some(fields) = up.delta_schema(lh, &rel) {
         apply_delta_schema(&mut info, &fields);
     }
-    registry.lock().cache.entry(lh.id.clone()).or_default().infos.insert(key, info.clone());
+    {
+        let mut r = registry.lock();
+        let c = r.cache.entry(lh.id.clone()).or_default();
+        c.infos.insert(key, info.clone());
+        if layout_known && c.schema_enabled.is_none() {
+            c.schema_enabled = Some(rel.trim_matches('/').contains('/'));
+        }
+    }
     Ok(Some(info))
 }
 
@@ -519,7 +586,7 @@ mod tests {
 
     #[test]
     fn table_shape_and_location() {
-        let lh = LakehouseRef { name: "test".into(), id: "lh-id".into(), workspace_id: "ws-id".into() };
+        let lh = LakehouseRef { name: "test".into(), id: "lh-id".into(), workspace_id: "ws-id".into(), schema_enabled: None };
         let t = normalize_table(&json!({"name": "t", "columns": null, "storage_location": "https://onelake.dfs.fabric.microsoft.com/Fabric test/test.Lakehouse/Tables/dbo/t", "properties": null}), &lh, "dbo");
         assert_eq!(t["full_name"], "test.dbo.t");
         assert_eq!(t["storage_location"], "abfss://ws-id@onelake.dfs.fabric.microsoft.com/lh-id/Tables/dbo/t");

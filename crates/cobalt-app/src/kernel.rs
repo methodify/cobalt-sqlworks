@@ -168,6 +168,9 @@ pub struct KernelFabric {
     pub persist_shadow: bool,
     /// Workspaces attached after start through `register_lakehouse` (`(id, name)`).
     pub extra_workspaces: Vec<(String, String)>,
+    /// Lakehouse id → keeps tables under schema folders (from the item's `defaultSchema`, when
+    /// its detail was loaded); the catalog endpoint learns the rest from table locations.
+    pub schema_flags: std::collections::HashMap<String, bool>,
 }
 
 impl KernelFabric {
@@ -620,7 +623,7 @@ pub fn start(k: &mut KernelUi, settings: &Settings, paths: &AppPaths, egui: &egu
         let jar = cobalt_runtime::detect::package_jar(&dirs.env_dir(&profile), &scala).ok_or(StartError::NoJar)?;
         let ts = crate::onelake_tokens::TokenServer::start(fs.resolver.clone(), fs.fabric.slot, fs.fabric.tenant.clone(), fs.handle.clone()).map_err(|e| StartError::TokenServer(e.to_string()))?;
         extra.insert("onelake".into(), json!({"endpoint": ts.url, "secret": ts.secret, "jar_path": jar.to_string_lossy()}));
-        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id})).collect()));
+        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id, "schema_enabled": fs.fabric.schema_flags.get(id).copied()})).collect()));
         if let Some(d) = &fs.fabric.default_lakehouse {
             extra.insert("default_lakehouse".into(), Value::String(d.clone()));
         }
@@ -707,7 +710,7 @@ fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabri
     if let Some(fs) = fabric {
         let ts = crate::onelake_tokens::TokenServer::start(fs.resolver.clone(), fs.fabric.slot, fs.fabric.tenant.clone(), fs.handle.clone()).map_err(|e| StartError::TokenServer(e.to_string()))?;
         extra.insert("onelake".into(), json!({"endpoint": ts.url, "secret": ts.secret}));
-        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id})).collect()));
+        extra.insert("lakehouses".into(), Value::Array(fs.fabric.lakehouses.iter().map(|(name, id)| json!({"name": name, "id": id, "workspace_id": fs.fabric.workspace_id, "schema_enabled": fs.fabric.schema_flags.get(id).copied()})).collect()));
         if let Some(d) = &fs.fabric.default_lakehouse {
             extra.insert("default_lakehouse".into(), Value::String(d.clone()));
         }
@@ -724,7 +727,7 @@ fn start_sail(k: &mut KernelUi, settings: &Settings, egui: &egui::Context, fabri
         extra.insert("files_mode".into(), Value::String(if settings.spark.files_mode == "mirror" { "mirror".into() } else { "lazy".into() }));
         extra.insert("mirror_root".into(), Value::String(dirs.state_dir().join("lakehouses").to_string_lossy().to_string()));
         // the lakehouse catalog Sail reads: Cobalt's endpoint over Fabric's table API
-        let refs: Vec<crate::sail_catalog::LakehouseRef> = f.lakehouses.iter().map(|(name, id)| crate::sail_catalog::LakehouseRef { name: name.clone(), id: id.clone(), workspace_id: f.workspace_id.clone() }).collect();
+        let refs: Vec<crate::sail_catalog::LakehouseRef> = f.lakehouses.iter().map(|(name, id)| crate::sail_catalog::LakehouseRef { name: name.clone(), id: id.clone(), workspace_id: f.workspace_id.clone(), schema_enabled: f.schema_flags.get(id).copied() }).collect();
         let cat = crate::sail_catalog::CatalogServer::start(fs.resolver.clone(), f.slot, f.tenant.clone(), fs.handle.clone(), refs, &f.write_mode).map_err(|e| StartError::TokenServer(format!("lakehouse catalog endpoint: {e}")))?;
         extra.insert("catalog".into(), json!({"endpoint": cat.url}));
         k.sail_catalog = Some(cat);
@@ -1063,7 +1066,7 @@ pub fn run(k: &mut KernelUi, req: RunReq) {
     if let Some(cat) = &k.sail_catalog {
         for lh in &req.register {
             if let (Some(name), Some(id), Some(ws)) = (lh.get("name").and_then(Value::as_str), lh.get("id").and_then(Value::as_str), lh.get("workspace_id").and_then(Value::as_str)) {
-                cat.register(crate::sail_catalog::LakehouseRef { name: name.into(), id: id.into(), workspace_id: ws.into() });
+                cat.register(crate::sail_catalog::LakehouseRef { name: name.into(), id: id.into(), workspace_id: ws.into(), schema_enabled: None });
             }
         }
     }

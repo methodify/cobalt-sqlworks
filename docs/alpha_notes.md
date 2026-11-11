@@ -1236,3 +1236,14 @@ few) › *Number format*, or in Explore right-click the value chip › *Number f
 own format string when it has one. The format is how the cell reads; the number underneath is
 what sorts, filters, totals, charts and exports use. Formats on a plain query result last for
 the tab; an Explore's value formats are saved with the Explore.
+
+## Next: one window, editor keys, brackets, plain-lakehouse writes
+
+Double-clicking a `.sql` in Explorer opens it in the Cobalt that is already running. Ctrl+Alt+Up
+and Ctrl+Alt+Down add cursors again when you are typing; to move a tab to another group with
+those keys, click into the grid or the tree first, or use the command palette. `[ord` + Tab gives
+`[Orders]`, and a column named `order` completes as `[order]`. On LakeSail a `saveAsTable` or
+`CREATE TABLE` against a lakehouse that has no schemas lands under `Tables/<table>` as Fabric
+expects; a schema-enabled lakehouse keeps `Tables/<schema>/<table>`. If the lakehouse is empty
+and its detail has never been loaded in the Fabric panel, Cobalt cannot tell which it is and
+writes under the schema as before: expand the lakehouse in the Fabric panel once and it knows.

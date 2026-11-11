@@ -492,10 +492,17 @@ impl Keymap {
 
     /// Consume pressed shortcuts this frame. `editor_focused` suppresses bindings that would fight
     /// plain typing (none of ours do, but Ctrl+Space etc. are only meaningful there).
-    pub fn consume(&self, ctx: &egui::Context) -> Vec<Command> {
+    /// [`consume`] with the editor's own keys left alone while a text editor has the keyboard:
+    /// Ctrl+Alt+Up/Down add cursors, Alt+Up/Down duplicate lines, Ctrl+Shift+Alt+arrows grow a
+    /// column selection. A command bound to one of them works from anywhere else (the grid, the
+    /// tree) and from the palette.
+    pub fn consume_scoped(&self, ctx: &egui::Context, editor_focused: bool) -> Vec<Command> {
         let mut out = Vec::new();
         ctx.input_mut(|i| {
             for (cmd, sc) in &self.bindings {
+                if editor_focused && editor_keys().iter().any(|k| k.logical_key == sc.logical_key && k.modifiers.matches_exact(sc.modifiers)) {
+                    continue;
+                }
                 if consume_exact(i, sc) {
                     out.push(*cmd);
                 }
@@ -513,6 +520,23 @@ impl Keymap {
 /// Like `InputState::consume_shortcut`, but the modifiers must match exactly: egui's own version
 /// accepts extra Shift/Alt, so Ctrl+Shift+L would fire the Ctrl+L binding and steal the editor's
 /// multi-cursor keys.
+/// Keys the query editor handles itself (multi-cursor, line moves, column selection).
+pub fn editor_keys() -> [KeyboardShortcut; 10] {
+    let cas = Modifiers { alt: true, ctrl: false, shift: true, mac_cmd: false, command: true };
+    [
+        KeyboardShortcut::new(CTRL_ALT, Key::ArrowUp),
+        KeyboardShortcut::new(CTRL_ALT, Key::ArrowDown),
+        KeyboardShortcut::new(Modifiers::ALT, Key::ArrowUp),
+        KeyboardShortcut::new(Modifiers::ALT, Key::ArrowDown),
+        KeyboardShortcut::new(cas, Key::ArrowUp),
+        KeyboardShortcut::new(cas, Key::ArrowDown),
+        KeyboardShortcut::new(cas, Key::ArrowLeft),
+        KeyboardShortcut::new(cas, Key::ArrowRight),
+        KeyboardShortcut::new(Modifiers::COMMAND, Key::D),
+        KeyboardShortcut::new(Modifiers { alt: false, ctrl: false, shift: true, mac_cmd: false, command: true }, Key::L),
+    ]
+}
+
 pub fn consume_exact(i: &mut egui::InputState, sc: &KeyboardShortcut) -> bool {
     let mut hit = false;
     i.events.retain(|e| match e {

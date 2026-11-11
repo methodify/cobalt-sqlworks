@@ -165,7 +165,9 @@ pub fn complete(req: &CompletionRequest) -> Completions {
         end += 1;
     }
     let mut prefix = text[start..cursor].to_string();
-    if start > 0 && bytes[start - 1] == b'[' {
+    // the user opened a bracket: it belongs to the word, and the completion keeps it
+    let bracketed = start > 0 && bytes[start - 1] == b'[';
+    if bracketed {
         start -= 1;
         if end < bytes.len() && bytes[end] == b']' {
             end += 1;
@@ -199,6 +201,16 @@ pub fn complete(req: &CompletionRequest) -> Completions {
     items.dedup_by(|a, b| a.label == b.label && a.kind == b.kind && a.detail == b.detail);
     if req.max_items > 0 && items.len() > req.max_items {
         items.truncate(req.max_items);
+    }
+    if bracketed {
+        // `[ord` + Orders → `[Orders]`, not `Orders` with the bracket eaten; names that are
+        // already quoted, dotted or snippets are left as they are
+        for it in &mut items {
+            let plain = !it.insert.starts_with('[') && !it.insert.contains('.') && !it.insert.contains('$') && it.kind != CompletionKind::Snippet;
+            if plain {
+                it.insert = format!("[{}]", cobalt_core::bracket(&it.insert));
+            }
+        }
     }
     Completions { items, replace_start: start, replace_end: end }
 }
@@ -1081,7 +1093,8 @@ fn qualified_insert(o: &ObjectRef, dialect: Dialect) -> String {
 /// Spark SQL, `'name'` (a table) in DAX.
 pub fn quote_for(name: &str, dialect: Dialect) -> String {
     match dialect {
-        Dialect::TSql => quote_ident(name),
+        // a column or table named like a keyword (`order`, `user`, `key`) needs its brackets
+        Dialect::TSql => if crate::lexer::is_keyword(name) { format!("[{}]", cobalt_core::bracket(name)) } else { quote_ident(name) },
         Dialect::Dax => cobalt_core::tabular::dax_table_ref(name),
         Dialect::Spark => {
             let simple = !name.is_empty() && name.chars().next().map(|c| c.is_ascii_alphabetic() || c == '_').unwrap_or(false) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -1393,6 +1406,16 @@ mod tests {
         assert_eq!((c.replace_start, c.replace_end), (20, 24));
         let c = at("SELECT * FROM sales.[Ord|]");
         assert_eq!((c.replace_start, c.replace_end), (20, 25));
+        // the bracket the user opened stays on the inserted name
+        let inserts: Vec<&str> = c.items.iter().map(|i| i.insert.as_str()).collect();
+        assert_eq!(inserts, vec!["[Order Lines]", "[Orders]"]);
+    }
+
+    #[test]
+    fn keyword_named_columns_are_bracketed() {
+        assert_eq!(quote_for("order", Dialect::TSql), "[order]");
+        assert_eq!(quote_for("Amount", Dialect::TSql), "Amount");
+        assert_eq!(quote_for("order", Dialect::Spark), "order");
     }
 
     #[test]

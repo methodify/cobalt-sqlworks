@@ -164,14 +164,16 @@ class Lakehouse:
     # schema -> tables
     schema_tables: dict = field(default_factory=dict)
     listed_at: float | None = None
-
-    @property
-    def schema_enabled(self) -> bool:
-        return bool(self.schemas)
+    # tables under Tables/<schema>/ (True) or straight under Tables/ (False); None = not yet known
+    # (Fabric's table API lists a plain lakehouse's tables under `dbo` too, so the schema list
+    # cannot tell; the item's defaultSchema or a table's storage location can)
+    schema_enabled: bool | None = None
 
     def path(self, schema: str | None, table: str) -> str:
+        """The table's OneLake folder: a plain lakehouse keeps every table straight under
+        `Tables/` (a `dbo/` folder there is a broken table to Fabric)."""
         base = f"abfss://{self.workspace_id}@onelake.dfs.fabric.microsoft.com/{self.id}/Tables"
-        return f"{base}/{schema}/{table}" if schema else f"{base}/{table}"
+        return f"{base}/{schema}/{table}" if schema and self.schema_enabled is not False else f"{base}/{table}"
 
 
 @dataclass
@@ -605,6 +607,28 @@ class _FilesMixin:
         else:
             fs.get_file_client(rel).rename_file(f"{fs.file_system_name}/{rel2}")
 
+    def _layout_of(self, lh: Lakehouse) -> bool | None:
+        """Whether `lh` keeps tables under schema folders, asked of Cobalt's catalog endpoint
+        once (the Fabric item's defaultSchema, else a listed table's storage location) and kept
+        on the lakehouse record. None when nothing can tell (an empty lakehouse without a loaded
+        detail): the write then goes under the schema, as before."""
+        if lh.schema_enabled is not None:
+            return lh.schema_enabled
+        endpoint = (self.catalog or {}).get("endpoint")
+        if not endpoint:
+            return None
+        try:
+            base = endpoint.split("/api/2.1/unity-catalog")[0]
+            url = f"{base}/cobalt/lakehouse?name={urllib.parse.quote(lh.name)}"
+            with urllib.request.urlopen(urllib.request.Request(url, method="GET"), timeout=15) as resp:
+                flag = json.loads(resp.read().decode("utf-8") or "{}").get("schema_enabled")
+            if isinstance(flag, bool):
+                lh.schema_enabled = flag
+            return flag
+        except Exception as exc:
+            self.warnings.append(f"could not tell whether {lh.name} uses schemas: {type(exc).__name__}: {str(exc)[:160]}")
+            return None
+
     def _invalidate_catalog(self, lh, schema: str, created: str | None = None) -> None:
         """Tell Cobalt's catalog endpoint to list the schema again (a table was created by path)."""
         endpoint = (self.catalog or {}).get("endpoint")
@@ -938,6 +962,7 @@ def _install_write_guard(engine) -> None:
         fmt = (format or getattr(self._write, "source", None) or "delta").lower()
         if fmt != "delta":
             raise ValueError(f"saveAsTable({name!r}): lakehouse tables are Delta tables; use format='delta' (got {fmt!r})")
+        e._layout_of(lh)
         orig_save(self, lh.path(schema, table), "delta", mode, partitionBy, **options)
         e._invalidate_catalog(lh, schema, created=table)
         e._notices.append(f"wrote {lh.name}.{schema}.{table} in the lakehouse (saveAsTable as a Delta write at the table's path)")
@@ -1036,6 +1061,8 @@ class SailEngine(_FilesMixin):
         schemas = lh.get("schemas")
         if isinstance(schemas, list):
             info.schemas = [str(s) for s in schemas]
+        if isinstance(lh.get("schema_enabled"), bool):
+            info.schema_enabled = lh["schema_enabled"]
         self.lakehouses[info.name] = info
         return info
 
@@ -1551,6 +1578,7 @@ class SailEngine(_FilesMixin):
             return sql
         rest = sql[m.end():]
         scratch = f"{_q(DEFAULT_CATALOG)}.{_q('default')}.{_q('__cobalt_create_' + table)}"
+        self._layout_of(lh)
         location = f"LOCATION '{lh.path(schema, table)}'"
         if re.search(r"\bUSING\s+delta\b", rest, re.IGNORECASE):
             rest = re.sub(r"\bUSING\s+delta\b", lambda mm: f"{mm.group(0)} {location}", rest, count=1, flags=re.IGNORECASE)

@@ -8,6 +8,11 @@
 use super::core::*;
 use crate::ui::theme::TokenColors;
 use egui::text::CCursor;
+
+/// The frame number an editor last had the keyboard (see `Keymap::consume_scoped`).
+pub fn editor_focus_frame_id() -> egui::Id {
+    egui::Id::unique("cobalt::editor-focus-frame")
+}
 use egui::text::CCursorRange;
 use egui::text_selection::visuals::paint_text_selection;
 use egui::{Color32, Event, EventFilter, FontId, Id, ImeEvent, Key, Modifiers, Pos2, Rect, Sense, Stroke, Ui, Vec2, WidgetInfo};
@@ -161,6 +166,9 @@ impl<'a> CodeEditor<'a> {
         let mut typed = false;
         let mut cursor_moved = false;
         if has_focus {
+            // the frame an editor had the keyboard: the shell leaves the editor's own keys alone
+            let frame = ui.ctx().cumulative_frame_nr();
+            ui.ctx().data_mut(|d| d.insert_temp(editor_focus_frame_id(), frame));
             ui.memory_mut(|m| m.set_focus_lock_filter(id, filter));
             let events = ui.input(|i| i.filtered_events(&filter));
             for ev in &events {

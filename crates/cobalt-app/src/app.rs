@@ -72,6 +72,8 @@ pub struct CobaltApp {
     frames: u64,
     /// Command-line request, applied on the first frame.
     launch: Option<ops::LaunchArgs>,
+    /// Command lines handed over by later launches (one Cobalt per user).
+    pub instance: Option<crate::instance::Receiver>,
     pub perf: PerfStats,
     /// Diagnostics: request a repaint every frame until this instant (the `spin` agent verb), so
     /// the measured fps is the renderer's real maximum.
@@ -232,6 +234,7 @@ impl CobaltApp {
             applied_theme: None,
             frames: 0,
             launch: ops::LaunchArgs::parse(std::env::args().skip(1)),
+            instance: None,
             perf: PerfStats::default(),
             spin_until: None,
         };
@@ -420,6 +423,15 @@ impl CobaltApp {
             // command-line launch (files to open, -S server -d database), once the UI exists
             if let Some(launch) = self.launch.take() {
                 ops::apply_launch(&mut self.state, &cx, launch);
+            }
+            // a later launch handed its command line over: open its files here, come forward
+            let handed: Vec<Vec<String>> = self.instance.as_ref().map(|r| std::iter::from_fn(|| r.rx.try_recv().ok()).collect()).unwrap_or_default();
+            for args in handed {
+                if let Some(launch) = ops::LaunchArgs::parse(args.into_iter()) {
+                    ops::apply_launch(&mut self.state, &cx, launch);
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             // files dropped on the window (the OS drag-and-drop; the hover overlay is in ui/shell.rs)
             let dropped: Vec<std::path::PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_path_buf()).collect());
@@ -727,7 +739,9 @@ impl eframe::App for CobaltApp {
         let mut cmds = Vec::new();
         let mut query_shortcut: Option<String> = None;
         if !self.state.dialog.is_open() && !self.state.palette_open {
-            cmds = self.keymap.consume(&ctx);
+            // a text editor had the keyboard last frame: its own keys (Ctrl+Alt+Up/Down…) are not commands
+            let editor_focused = ctx.data(|d| d.get_temp::<u64>(crate::ui::editor::widget::editor_focus_frame_id())).map(|f| f + 1 >= ctx.cumulative_frame_nr()).unwrap_or(false);
+            cmds = self.keymap.consume_scoped(&ctx, editor_focused);
             // query shortcuts (Alt+F1 = sp_help …): only while the editor or nothing has the keyboard
             for q in &self.settings.execution.query_shortcuts {
                 if let Some(sc) = crate::commands::parse_shortcut(&q.keys) {
