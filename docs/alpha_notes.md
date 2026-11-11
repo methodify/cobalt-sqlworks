@@ -1228,7 +1228,7 @@ viewer; an Excel workbook opens the import dialog on your active connection. Rig
 rest (*Import into a table…* on a data file, *Open as text* on anything, *Open as the root* on a
 folder); the eye button lists files of other kinds too. Ctrl+O now opens files the same way.
 
-## Next: number formats
+## 0.16.0: number formats
 
 Money measures no longer have to show every digit: right-click a numeric column (or select a
 few) › *Number format*, or in Explore right-click the value chip › *Number format*, and pick
@@ -1237,7 +1237,7 @@ own format string when it has one. The format is how the cell reads; the number 
 what sorts, filters, totals, charts and exports use. Formats on a plain query result last for
 the tab; an Explore's value formats are saved with the Explore.
 
-## Next: one window, editor keys, brackets, plain-lakehouse writes
+## 0.16.0: one window, editor keys, brackets, plain-lakehouse writes
 
 Double-clicking a `.sql` in Explorer opens it in the Cobalt that is already running. Ctrl+Alt+Up
 and Ctrl+Alt+Down add cursors again when you are typing; to move a tab to another group with

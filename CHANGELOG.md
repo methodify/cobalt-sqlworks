@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.16.0 — 2026-11-11
 
 - **One Cobalt.** Opening a `.sql` (or any file) from Explorer while Cobalt is running hands
   it to the running window instead of starting a second one: the file opens there and the
